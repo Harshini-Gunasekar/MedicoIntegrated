@@ -103,6 +103,7 @@ namespace Booking.Models
 
         public string? bedno { get; set; }
 
+        [Required(ErrorMessage = "First Name is required")]
         public string? doctorfullname { get; set; }
 
         public bool? isreferral { get; set; }

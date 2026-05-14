@@ -17,6 +17,7 @@ builder.Services.AddHttpClient("DoctorApi", client =>
 builder.Services.AddScoped(sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi"));
 builder.Services.AddScoped<Booking.Services.DoctorService>();
 builder.Services.AddScoped<Booking.Services.SlotService>();
+builder.Services.AddScoped<Booking.Services.DoctorAppointmentSlotTypeService>();
 builder.Services.AddScoped<Booking.Services.ToastService>();
 
 var app = builder.Build();

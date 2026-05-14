@@ -11,6 +11,8 @@ namespace Booking.Models
         public Guid slot_master_id { get; set; } = Guid.NewGuid();
         
         public int dcode { get; set; }
+
+        public long slot_type_id { get; set; }
         
         public string? tenant_code { get; set; }
         
@@ -20,6 +22,8 @@ namespace Booking.Models
         public TimeOnly slot_start_time { get; set; }
         
         public TimeOnly slot_end_time { get; set; }
+        
+        public string? typeofslot { get; set; }
         
         public int max_patients { get; set; } = 10;
         
