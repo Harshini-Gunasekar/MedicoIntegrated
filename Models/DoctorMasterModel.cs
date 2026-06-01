@@ -13,6 +13,7 @@ namespace Booking.Models
 
         public string? description { get; set; }
 
+        [Required(ErrorMessage = "First Name is required")]
         public string? name { get; set; }
 
         public int? qualification { get; set; }
@@ -103,7 +104,6 @@ namespace Booking.Models
 
         public string? bedno { get; set; }
 
-        [Required(ErrorMessage = "First Name is required")]
         public string? doctorfullname { get; set; }
 
         public bool? isreferral { get; set; }

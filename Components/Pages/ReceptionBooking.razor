@@ -1,0 +1,1297 @@
+@page "/booking/reception"
+@rendermode InteractiveServer
+@inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.AppointmentBookingService BookingService
+@inject Booking.Services.ToastService ToastService
+@inject NavigationManager Navigation
+
+<div class="animated-background">
+    <div class="floating-blob blob-1"></div>
+    <div class="floating-blob blob-2"></div>
+    <div class="pattern-overlay"></div>
+</div>
+
+<div class="dashboard-container">
+    <!-- Header -->
+    <div class="dashboard-header">
+        <div class="dashboard-title">
+            <h1>Reception Scheduling Portal</h1>
+            <p>Monitor patient queues, verify bookings, transition statuses, and handle rescheduling pipelines.</p>
+        </div>
+        <div style="display:flex; gap:0.5rem;">
+            <button class="btn-header-action secondary" @onclick="OpenRescheduleWholeSlotModal">
+                <i class="bi bi-arrow-left-right"></i> Move Whole Slot
+            </button>
+            <button class="btn-header-action" @onclick="OpenWalkinModal">
+                <i class="bi bi-plus-circle"></i> Add Walk-in
+            </button>
+        </div>
+    </div>
+
+    <!-- Quick Stats Cards -->
+    <div class="stats-grid">
+        <div class="stat-card">
+            <div class="stat-icon blue">
+                <i class="bi bi-calendar3"></i>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">@statsTotal</span>
+                <span class="stat-label">Total Booked</span>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon green">
+                <i class="bi bi-shield-check"></i>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">@statsConfirmed</span>
+                <span class="stat-label">Confirmed</span>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon orange">
+                <i class="bi bi-check-circle-fill"></i>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">@statsCompleted</span>
+                <span class="stat-label">Completed</span>
+            </div>
+        </div>
+        <div class="stat-card">
+            <div class="stat-icon red">
+                <i class="bi bi-x-circle-fill"></i>
+            </div>
+            <div class="stat-info">
+                <span class="stat-value">@statsCancelled</span>
+                <span class="stat-label">Cancelled</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Live Filters Control Board -->
+    <div class="filters-card">
+        <div class="filters-row">
+            <div class="filter-group">
+                <label>Filter Date</label>
+                <input type="date" class="filter-control" @bind="filterDate" @bind:after="OnFiltersChanged" />
+            </div>
+            <div class="filter-group">
+                <label>Doctor Specialist</label>
+                <select class="filter-control" @bind="filterDoctor" @bind:after="OnFiltersChanged">
+                    <option value="0">All Specialists</option>
+                    @foreach (var doc in doctors)
+                    {
+                        <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                    }
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Status</label>
+                <select class="filter-control" @bind="filterStatus" @bind:after="OnFiltersChanged">
+                    <option value="ALL">All Statuses</option>
+                    <option value="BOOKED">BOOKED</option>
+                    <option value="CONFIRMED">CONFIRMED</option>
+                    <option value="VISITED">COMPLETED</option>
+                    <option value="CANCELLED">CANCELLED</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Booking Type</label>
+                <select class="filter-control" @bind="filterType" @bind:after="OnFiltersChanged">
+                    <option value="ALL">All Types</option>
+                    <option value="ONLINE">ONLINE</option>
+                    <option value="WALKIN">WALKIN</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Search Patient / Doctor</label>
+                <input type="text" class="filter-control" @bind="filterSearch" @bind:event="oninput" @bind:after="OnFiltersChanged" placeholder="e.g. CUST-1001, 2026..." />
+            </div>
+            <div style="display:flex; gap:0.5rem; align-self: flex-end;">
+                <button class="btn-header-action secondary" style="height:38px; padding:0 1rem;" @onclick="ClearFilters">
+                    <i class="bi bi-arrow-counterclockwise"></i> Reset
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Live Queue Board Table -->
+    <div class="table-card">
+        @if (loading)
+        {
+            <div style="text-align: center; padding: 4rem; color: #026aa7;">
+                <div class="spinner-border" role="status" style="width: 3rem; height: 3rem; margin-bottom: 1rem;"></div>
+                <p style="font-weight: 600;">Updating scheduler logs...</p>
+            </div>
+        }
+        else
+        {
+            @if (filteredBookings.Any())
+            {
+                <div class="table-responsive">
+                    <table class="medico-table">
+                        <thead>
+                            <tr>
+                                <th>Booking No</th>
+                                <th>Patient ID</th>
+                                <th>Specialist</th>
+                                <th>Appt Date</th>
+                                <th>Time Slot</th>
+                                <th>Type</th>
+                                <th>Notes</th>
+                                <th>Status</th>
+                                <th style="text-align:center;">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var book in filteredBookings)
+                            {
+                                var displayType = book.booking_type;
+                                var displayNotes = book.notes ?? "-";
+                                if (book.booking_type == "ONLINE" && book.notes != null && book.notes.StartsWith("[WALKIN]"))
+                                {
+                                    displayType = "WALKIN";
+                                    displayNotes = book.notes.Substring("[WALKIN]".Length).Trim();
+                                    if (string.IsNullOrWhiteSpace(displayNotes)) displayNotes = "-";
+                                }
+                                <tr>
+                                    <td style="font-weight: 800; color: #026aa7;">#@book.booking_no</td>
+                                    <td><span style="font-family: monospace; font-weight: 700;">@book.custid</span></td>
+                                    <td style="font-weight: 700; color: #334155;">Dr. @GetDoctorName(book.dcode)</td>
+                                    <td>@book.appointment_date.ToString("dd MMM yyyy")</td>
+                                    <td><i class="bi bi-clock" style="color:#94a3b8; margin-right:4px;"></i>@FormatTime(book.slot_start_time) - @FormatTime(book.slot_end_time)</td>
+                                    <td>
+                                        <span class="badge-type @displayType.ToLower()">@displayType</span>
+                                    </td>
+                                    <td style="font-size: 0.8rem; max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="@displayNotes">
+                                        @displayNotes
+                                    </td>
+                                    <td>
+                                        <select class="status-dropdown @book.booking_status.ToLower()" 
+                                                disabled='@(book.booking_status == "CANCELLED")'
+                                                @onchange='(e) => UpdateBookingStatus(book, e.Value?.ToString() ?? "")'>
+                                            <option value="BOOKED" selected='@(book.booking_status == "BOOKED")'>Booked</option>
+                                            <option value="CONFIRMED" selected='@(book.booking_status == "CONFIRMED")'>Confirm</option>
+                                            
+                                            @if (book.booking_status == "RESCHEDULED")
+                                            {
+                                                <option value="RESCHEDULED" selected>Rescheduled</option>
+                                            }
+                                            @if (book.booking_status == "CANCELLED")
+                                            {
+                                                <option value="CANCELLED" selected>Cancelled</option>
+                                            }
+                                        </select>
+                                    </td>
+                                    <td>
+                                        <div class="action-buttons-cell" style="justify-content: center;">
+                                            @if (book.booking_status == "CONFIRMED" || book.booking_status == "BOOKED" || book.booking_status == "RESCHEDULED")
+                                            {
+                                                <button class="btn-table-action reschedule" title="Reschedule Single Slot" @onclick="() => OpenRescheduleModal(book)">
+                                                    <i class="bi bi-calendar2-range"></i>
+                                                </button>
+                                                <button class="btn-table-action cancel" title="Cancel Appointment" @onclick="() => OpenCancelModal(book)">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            }
+                                            @if (book.booking_status == "CANCELLED")
+                                            {
+                                                <span style="font-size: 0.75rem; color:#ef4444; font-weight:600;" title="@book.cancel_reason">
+                                                    Cancelled
+                                                </span>
+                                            }
+                                            @if (book.booking_status == "COMPLETED" || book.booking_status == "VISITED")
+                                            {
+                                                <span style="font-size: 0.75rem; color:#10b981; font-weight:600;">
+                                                    Completed
+                                                </span>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else
+            {
+                <div style="text-align: center; padding: 4rem; color: #64748b;">
+                    <i class="bi bi-calendar-x" style="font-size: 3rem; display: block; margin-bottom: 1rem; color: #cbd5e1;"></i>
+                    <p style="font-size: 1.1rem; font-weight: 600;">No scheduled appointments match the current filters.</p>
+                </div>
+            }
+        }
+    </div>
+</div>
+
+<!-- MODAL 1: WALK-IN BOOKING MODAL -->
+@if (showWalkinModal)
+{
+    <div class="modal-backdrop" @onclick="CloseWalkinModal"></div>
+    <div class="glass-modal" style="max-width: 780px; width: 95%;">
+        <div class="modal-header" style="padding: 1.25rem 2rem;">
+            <h3>Add Walk-in Appointment</h3>
+            <button class="close-btn" @onclick="CloseWalkinModal">×</button>
+        </div>
+        <div class="modal-body" style="padding: 1.75rem 2rem;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start;">
+                <!-- Left Column: Form Fields -->
+                <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Select Doctor Specialist</label>
+                        <select class="filter-control" @bind="walkinDcode" @bind:after="OnWalkinDoctorOrDateChanged" style="height: 42px; border-radius: 8px;">
+                            <option value="0">Select Doctor</option>
+                            @foreach (var doc in doctors)
+                            {
+                                <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Appointment Date</label>
+                        <input type="date" class="filter-control" @bind="walkinDate" @bind:after="OnWalkinDoctorOrDateChanged" style="height: 42px; border-radius: 8px;" />
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Patient ID / Customer Code <span style="color:#ef4444;">*</span></label>
+                        <input type="number" class="filter-control" style="height: 42px; border-radius: 8px;" @bind="walkinCustid" />
+                    </div>
+                    
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Notes</label>
+                        <textarea class="filter-control" style="min-height:90px; border-radius: 8px; line-height: 1.4; resize: none;" @bind="walkinNotes" placeholder="Reason for walk-in consultation..."></textarea>
+                    </div>
+                </div>
+
+                <!-- Right Column: Slots Selection -->
+                <div class="form-group" style="margin-bottom: 0; display: flex; flex-direction: column; height: 100%;">
+                    <label>Select Available Time Slot</label>
+                    <div style="display: flex; flex-direction: column; min-height: 330px; justify-content: stretch; flex: 1;">
+                        @if (loadingWalkinSlots)
+                        {
+                            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; border: 2px dashed #cbd5e1; border-radius: 12px; background: #f8fafc; padding: 2rem;">
+                                <div class="spinner-border text-primary" role="status" style="width: 2rem; height: 2rem; margin-bottom: 1rem; color: #026aa7;"></div>
+                                <span style="font-weight: 600; color: #475569; font-size: 0.9rem;">Fetching active slots...</span>
+                            </div>
+                        }
+                        else
+                        {
+                            @if (walkinDcode > 0)
+                            {
+                                @if (walkinSlots.Any())
+                                {
+                                    <div class="slots-subgrid" style="max-height: 330px; flex: 1; overflow-y: auto; margin-top: 0; padding: 0.75rem;">
+                                        @foreach (var s in walkinSlots)
+                                        {
+                                            var isSelected = selectedWalkinSlot?.slot_detail_id == s.slot_detail_id;
+                                            var walkinLeft = s.remaining_walkin > 0 ? s.remaining_walkin : (s.max_walkin > 0 ? Math.Max(0, s.max_walkin - s.walkin_count) : Math.Max(0, s.remaining_seats));
+                                            var isFull = walkinLeft <= 0;
+                                            <div class="slot-subitem @(isSelected ? "selected" : "") @(isFull ? "disabled" : "")" 
+                                                 @onclick="() => { if (!isFull) selectedWalkinSlot = s; }"
+                                                 style="padding: 0.65rem 0.8rem; border-radius: 8px;">
+                                                <div style="font-weight: 700; font-size: 0.85rem;">@FormatTime(s.slot_start_time)</div>
+                                                <div style="font-size:0.65rem; opacity:0.8; margin-top: 2px;">@walkinLeft left (W)</div>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; border: 1.5px solid #fca5a5; border-radius: 12px; background: #fef2f2; padding: 2rem; text-align: center; color: #b91c1c;">
+                                        <i class="bi bi-exclamation-circle-fill" style="font-size: 2rem; margin-bottom: 0.75rem;"></i>
+                                        <span style="font-weight: 700; font-size: 0.95rem;">No active slots found on this day.</span>
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; border: 2px dashed #cbd5e1; border-radius: 14px; background: #f8fafc; padding: 2rem; text-align: center; color: #64748b;">
+                                    <i class="bi bi-calendar3" style="font-size: 2.5rem; color: #94a3b8; margin-bottom: 1rem;"></i>
+                                    <span style="font-weight: 700; color: #475569; font-size: 0.95rem; margin-bottom: 0.25rem;">Available Time Slots</span>
+                                    <p style="font-size: 0.8rem; color: #64748b; margin: 0; max-width: 220px; line-height: 1.4;">Select a doctor specialist and date on the left to display slots.</p>
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer" style="padding: 1.25rem 2rem;">
+            <button class="btn-modal cancel" @onclick="CloseWalkinModal">Cancel</button>
+            <button class="btn-modal confirm" @onclick="BookWalkinAsync" disabled="@(selectedWalkinSlot == null || walkinCustid <= 0 || bookingInProgress)">
+                @if (bookingInProgress)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                }
+                Add Walk-in
+            </button>
+        </div>
+    </div>
+}
+
+<!-- MODAL 2: CANCEL BOOKING MODAL -->
+@if (showCancelModal)
+{
+    <div class="modal-backdrop" @onclick="CloseCancelModal"></div>
+    <div class="glass-modal" style="max-width:450px;">
+        <div class="modal-header">
+            <h3>Cancel Appointment</h3>
+            <button class="close-btn" @onclick="CloseCancelModal">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="info-alert-panel" style="background:#fef2f2; color:#b91c1c; border-color:#fca5a5; margin-bottom:1.25rem;">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+                <span>Are you sure you want to cancel this booking? This decrement slot bookings.</span>
+            </div>
+            <div class="form-group">
+                <label>Cancellation Reason <span style="color:#ef4444;">*</span></label>
+                <textarea class="filter-control" style="min-height:90px;" @bind="cancelReason" placeholder="Enter reason (e.g. Patient not available, Doctor emergency)..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-modal cancel" @onclick="CloseCancelModal">Keep Appointment</button>
+            <button class="btn-modal danger" @onclick="CancelBookingAsync" disabled="@(string.IsNullOrWhiteSpace(cancelReason) || bookingInProgress)">
+                @if (bookingInProgress)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                }
+                Cancel Appointment
+            </button>
+        </div>
+    </div>
+}
+
+<!-- MODAL 3: RESCHEDULE SINGLE APPOINTMENT MODAL -->
+@if (showRescheduleModal)
+{
+    <div class="modal-backdrop" @onclick="CloseRescheduleModal"></div>
+    <div class="glass-modal" style="max-width: 780px; width: 95%;">
+        <div class="modal-header" style="padding: 1.25rem 2rem;">
+            <h3>Reschedule Appointment</h3>
+            <button class="close-btn" @onclick="CloseRescheduleModal">×</button>
+        </div>
+        <div class="modal-body" style="padding: 1.75rem 2rem;">
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start;">
+                <!-- Left Column: Form Fields & Details -->
+                <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+                    <div class="reschedule-original-summary" style="margin-bottom: 0; padding: 1.25rem; border-radius: 10px; background: #f8fafc; border: 1px solid #e2e8f0; display:flex; flex-direction:column; justify-content:center;">
+                        <div style="font-weight:800; text-transform:uppercase; font-size:0.75rem; margin-bottom:0.6rem; color:#475569; border-bottom:1px solid #cbd5e1; padding-bottom:0.25rem; letter-spacing: 0.5px;">Original Slot</div>
+                        <div style="font-size:0.85rem; margin-bottom:0.3rem;">Patient ID: <b>@selectedBookingToReschedule?.custid</b></div>
+                        <div style="font-size:0.85rem; margin-bottom:0.3rem;">Doctor: <b>Dr. @GetDoctorName(selectedBookingToReschedule!.dcode)</b></div>
+                        <div style="font-size:0.85rem; line-height: 1.4;">Time: <b>@selectedBookingToReschedule.appointment_date.ToString("dd MMM yyyy")</b><br/><b>@FormatTime(selectedBookingToReschedule.slot_start_time) - @FormatTime(selectedBookingToReschedule.slot_end_time)</b></div>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Select Doctor Specialist</label>
+                        <select class="filter-control" @bind="rescheduleDcode" @bind:after="LoadRescheduleSlotsAsync" style="height: 42px; border-radius: 8px;">
+                            @foreach (var d in doctors)
+                            {
+                                <option value="@d.dcode">Dr. @(string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name)</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Choose New Date</label>
+                        <input type="date" class="filter-control" @bind="rescheduleDate" @bind:after="LoadRescheduleSlotsAsync" style="height:42px; border-radius:8px;" />
+                    </div>
+
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Reschedule Reason <span style="color:#ef4444;">*</span></label>
+                        <textarea class="filter-control" style="min-height:90px; border-radius: 8px; line-height: 1.4; resize: none;" @bind="rescheduleReason" placeholder="Enter reason (e.g. Patient requested morning slot, Doctor schedule changed)..."></textarea>
+                    </div>
+                </div>
+
+                <!-- Right Column: Slots Selection -->
+                <div class="form-group" style="margin-bottom: 0; display: flex; flex-direction: column; height: 100%;">
+                    <label>Select New Available Slot</label>
+                    <div style="display: flex; flex-direction: column; min-height: 350px; justify-content: stretch; flex: 1;">
+                        @if (loadingRescheduleSlots)
+                        {
+                            <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; border: 2px dashed #cbd5e1; border-radius: 12px; background: #f8fafc; padding: 2rem; min-height: 350px;">
+                                <div class="spinner-border text-primary" role="status" style="width: 2rem; height: 2rem; margin-bottom: 1rem; color: #026aa7;"></div>
+                                <span style="font-weight: 600; color: #475569; font-size: 0.9rem;">Retrieving available slots...</span>
+                            </div>
+                        }
+                        else
+                        {
+                            @if (rescheduleSlots.Any())
+                            {
+                                <div class="slots-subgrid" style="max-height: 330px; flex: 1; overflow-y: auto; margin-top: 0; padding: 0.75rem;">
+                                    @foreach (var s in rescheduleSlots)
+                                    {
+                                        var isSelected = selectedRescheduleSlot?.slot_detail_id == s.slot_detail_id;
+                                        var isFull = s.remaining_seats <= 0 && s.booked_count >= s.max_patients;
+                                        <div class="slot-subitem @(isSelected ? "selected" : "") @(isFull ? "disabled" : "")" 
+                                             @onclick="() => { if (!isFull) selectedRescheduleSlot = s; }"
+                                             style="padding: 0.65rem 0.8rem; border-radius: 8px;">
+                                            <div style="font-weight: 700; font-size: 0.85rem;">@FormatTime(s.slot_start_time)</div>
+                                            <div style="font-size:0.65rem; opacity:0.8; margin-top: 2px;">@s.remaining_seats left</div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <div style="display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; border: 1.5px solid #fca5a5; border-radius: 12px; background: #fef2f2; padding: 2rem; text-align: center; color: #b91c1c;">
+                                    <i class="bi bi-exclamation-circle-fill" style="font-size: 2rem; margin-bottom: 0.75rem;"></i>
+                                    <span style="font-weight: 700; font-size: 0.95rem;">No active slots found on this day.</span>
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer" style="padding: 1.25rem 2rem;">
+            <button class="btn-modal cancel" @onclick="CloseRescheduleModal">Cancel</button>
+            <button class="btn-modal confirm" @onclick="RescheduleBookingAsync" disabled="@bookingInProgress">
+                @if (bookingInProgress)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                }
+                Reschedule Slot
+            </button>
+        </div>
+    </div>
+}
+
+<!-- MODAL 4: RESCHEDULE WHOLE SLOT MODAL (Doctor unavailable/leave) -->
+@if (showRescheduleWholeSlotModal)
+{
+    <div class="modal-backdrop" @onclick="CloseRescheduleWholeSlotModal"></div>
+    <div class="glass-modal" style="max-width: 950px; width: 95%;">
+        <div class="modal-header" style="padding: 1.25rem 2rem;">
+            <h3>Reschedule Whole Slot Master</h3>
+            <button class="close-btn" @onclick="CloseRescheduleWholeSlotModal">×</button>
+        </div>
+        <div class="modal-body" style="padding: 1.5rem 2rem;">
+            <div class="info-alert-panel" style="margin-bottom: 1.5rem; padding: 0.85rem 1.25rem; font-size: 0.88rem;">
+                <i class="bi bi-info-circle-fill" style="margin-right: 8px;"></i>
+                <span>Use this when a doctor is on leave or unavailable. All patient bookings under the selected slot will be moved to the new slot.</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:2.5rem; margin-bottom:1.5rem;">
+                <!-- Source Column (Original Slot) -->
+                <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:14px; padding:1.75rem; box-shadow: inset 0 1px 3px rgba(0,0,0,0.01);">
+                    <h4 style="color:#475569; font-size:0.85rem; font-weight:800; text-transform:uppercase; margin-bottom:1.25rem; border-bottom:1px solid #cbd5e1; padding-bottom:0.5rem; letter-spacing: 0.5px;">SOURCE (Original Slot)</h4>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 700; font-size: 0.82rem; margin-bottom: 0.35rem; color:#475569;">Doctor</label>
+                            <select class="filter-control" @bind="wholeSourceDcode" @bind:after="OnWholeSourceChanged" style="padding: 0.5rem 0.75rem; font-size:0.875rem; height:42px; border-radius:8px;">
+                                <option value="0">Select Doctor</option>
+                                @foreach (var doc in doctors)
+                                {
+                                    <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                                }
+                            </select>
+                        </div>
+                        
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 700; font-size: 0.82rem; margin-bottom: 0.35rem; color:#475569;">Date</label>
+                            <input type="date" class="filter-control" @bind="wholeSourceDate" @bind:after="OnWholeSourceChanged" style="padding: 0.5rem 0.75rem; font-size:0.875rem; height:42px; border-radius:8px;" />
+                        </div>
+                    </div>
+
+                    @if (loadingWholeSourceSlots)
+                    {
+                        <div style="text-align:center; padding:3rem; color:#026aa7; font-size:0.85rem;">
+                            <span class="spinner-border spinner-border-sm" role="status" style="width:18px; height:18px; margin-right:6px;"></span> Fetching source slots...
+                        </div>
+                    }
+                    else
+                    {
+                        @if (wholeSourceDcode > 0)
+                        {
+                            <label style="font-size:0.8rem; font-weight:700; color:#475569; display:block; margin-bottom:0.6rem;">Select Original Slot</label>
+                            @if (wholeSourceSlots.Any())
+                            {
+                                <div class="slots-subgrid" style="max-height:260px; padding: 2px;">
+                                    @foreach (var s in wholeSourceSlots)
+                                    {
+                                        var isSel = selectedWholeSourceSlot?.slot_detail_id == s.slot_detail_id;
+                                        <div class="slot-subitem @(isSel ? "selected" : "")" @onclick="() => selectedWholeSourceSlot = s" style="font-size:0.85rem; padding:0.65rem 0.85rem; border-radius: 8px;">
+                                            <div style="font-weight: 700;">@FormatTime(s.slot_start_time)</div>
+                                            <div style="font-size:0.68rem; color:#475569; font-weight:800; margin-top:3px;">Booked: @s.booked_count</div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <div style="font-size:0.85rem; color:#dc2626; font-style:italic; padding: 1.5rem 0;">No active slots found on this day.</div>
+                            }
+                        }
+                    }
+                </div>
+
+                <!-- Target Column (Destination Slot) -->
+                <div style="background:#f0f9ff; border:1px solid #bae6fd; border-radius:14px; padding:1.75rem; box-shadow: inset 0 1px 3px rgba(0,0,0,0.01);">
+                    <h4 style="color:#026aa7; font-size:0.85rem; font-weight:800; text-transform:uppercase; margin-bottom:1.25rem; border-bottom:1px solid #93c5fd; padding-bottom:0.5rem; letter-spacing: 0.5px;">TARGET (Destination Slot)</h4>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 700; font-size: 0.82rem; margin-bottom: 0.35rem; color:#026aa7;">Doctor</label>
+                            <select class="filter-control" @bind="wholeTargetDcode" @bind:after="OnWholeTargetChanged" style="padding: 0.5rem 0.75rem; font-size:0.875rem; height:42px; border-radius:8px;">
+                                <option value="0">Select Doctor</option>
+                                @foreach (var doc in doctors)
+                                {
+                                    <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                                }
+                            </select>
+                        </div>
+                        
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 700; font-size: 0.82rem; margin-bottom: 0.35rem; color:#026aa7;">Date</label>
+                            <input type="date" class="filter-control" @bind="wholeTargetDate" @bind:after="OnWholeTargetChanged" style="padding: 0.5rem 0.75rem; font-size:0.875rem; height:42px; border-radius:8px;" />
+                        </div>
+                    </div>
+
+                    @if (loadingWholeTargetSlots)
+                    {
+                        <div style="text-align:center; padding:3rem; color:#026aa7; font-size:0.85rem;">
+                            <span class="spinner-border spinner-border-sm" role="status" style="width:18px; height:18px; margin-right:6px;"></span> Fetching target slots...
+                        </div>
+                    }
+                    else
+                    {
+                        @if (wholeTargetDcode > 0)
+                        {
+                            <label style="font-size:0.8rem; font-weight:700; color:#475569; display:block; margin-bottom:0.6rem;">Select New Destination Slot</label>
+                            @if (wholeTargetSlots.Any())
+                            {
+                                <div class="slots-subgrid" style="max-height:260px; padding: 2px;">
+                                    @foreach (var s in wholeTargetSlots)
+                                    {
+                                        var isSel = selectedWholeTargetSlot?.slot_detail_id == s.slot_detail_id;
+                                        <div class="slot-subitem @(isSel ? "selected" : "")" @onclick="() => selectedWholeTargetSlot = s" style="font-size:0.85rem; padding:0.65rem 0.85rem; border-radius: 8px;">
+                                            <div style="font-weight: 700;">@FormatTime(s.slot_start_time)</div>
+                                            <div style="font-size:0.68rem; color:#059669; font-weight:800; margin-top:3px;">Available: @s.remaining_seats</div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <div style="font-size:0.85rem; color:#dc2626; font-style:italic; padding: 1.5rem 0;">No active slots found on this day.</div>
+                            }
+                        }
+                    }
+                </div>
+            </div>
+
+            <div class="form-group" style="margin-top: 1.25rem;">
+                <label style="font-weight: 700; font-size: 0.92rem; margin-bottom: 0.5rem; display:block; color:#334155;">Reschedule Reason <span style="color:#ef4444;">*</span></label>
+                <textarea class="filter-control" style="min-height:90px; padding: 0.85rem; font-size:0.92rem; border-radius:8px; line-height: 1.4;" @bind="wholeRescheduleReason" placeholder="Reason (e.g. Doctor leave — moved slots)..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer" style="padding: 1.25rem 2.5rem;">
+            <button class="btn-modal cancel" @onclick="CloseRescheduleWholeSlotModal" style="padding: 0.65rem 1.75rem; font-size: 0.92rem;">Cancel</button>
+            <button class="btn-modal confirm" @onclick="RescheduleWholeSlotAsync" disabled="@(selectedWholeSourceSlot == null || selectedWholeTargetSlot == null || string.IsNullOrWhiteSpace(wholeRescheduleReason) || bookingInProgress)" style="padding: 0.65rem 2rem; font-size: 0.92rem;">
+                @if (bookingInProgress)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                }
+                Migrate All Bookings
+            </button>
+        </div>
+    </div>
+}
+
+<!-- MODAL 5: REGISTER OUTPATIENT MODAL -->
+@if (showRegisterModal && selectedBookingForReg != null)
+{
+    <div class="modal-backdrop" @onclick="CloseRegisterModal"></div>
+    <div class="glass-modal">
+        <div class="modal-header">
+            <h3>Register Outpatient</h3>
+            <button class="close-btn" @onclick="CloseRegisterModal">×</button>
+        </div>
+        <div class="modal-body">
+            <div class="form-group">
+                <label>Booking No</label>
+                <input type="text" class="filter-control" value="@selectedBookingForReg.booking_no" disabled />
+            </div>
+            <div class="form-group">
+                <label>Visit Type</label>
+                <select class="filter-control" @bind="newOpRequest.visit_type">
+                    <option value="NEWVISIT">New Visit</option>
+                    <option value="FOLLOWUP">Follow-up</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Notes</label>
+                <textarea class="filter-control" @bind="newOpRequest.notes" placeholder="Enter arrival notes..."></textarea>
+            </div>
+            <div class="form-group mt-3">
+                <details class="payload-details">
+                    <summary class="text-muted small fw-bold" style="cursor:pointer; outline:none; user-select:none;">
+                        <i class="bi bi-code-slash"></i> View JSON Payload Preview
+                    </summary>
+                    <pre class="bg-dark text-light p-2 rounded mt-2 small" style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; text-align: left;">@System.Text.Json.JsonSerializer.Serialize(new {
+    booking_id = newOpRequest.booking_id,
+    booking_no = newOpRequest.booking_no,
+    slot_detail_id = newOpRequest.slot_detail_id,
+    custid = newOpRequest.custid,
+    dcode = newOpRequest.dcode,
+    department_code = newOpRequest.department_code,
+    visit_type = newOpRequest.visit_type,
+    reg_type = newOpRequest.reg_type,
+    notes = newOpRequest.notes
+}, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull })</pre>
+                </details>
+            </div>
+        </div>
+        <div class="modal-footer">
+            <button class="btn-modal cancel" @onclick="CloseRegisterModal">Cancel</button>
+            <button class="btn-modal confirm" @onclick="SubmitRegistrationAsync" disabled="@registerSaving">
+                @if (registerSaving) { <span class="spinner-border spinner-border-sm me-2"></span> }
+                Register
+            </button>
+        </div>
+    </div>
+}
+
+@code {
+    private bool loading = true;
+    private bool bookingInProgress = false;
+
+    private List<DoctorMasterModel> doctors = new();
+    private List<AppointmentBookingModel> allBookings = new();
+    private List<AppointmentBookingModel> filteredBookings = new();
+
+    // Filters state (Defaults to current date)
+    private DateTime? filterDate = DateTime.Today;
+    private int filterDoctor = 0;
+    private string filterStatus = "ALL";
+    private string filterType = "ALL";
+    private string filterSearch = string.Empty;
+
+    // Dashboard Statistics Counters
+    private int statsTotal = 0;
+    private int statsConfirmed = 0;
+    private int statsCompleted = 0;
+    private int statsCancelled = 0;
+
+    // Walk-in booking state
+    private bool showWalkinModal = false;
+    private int walkinDcode = 0;
+    private DateTime walkinDate = DateTime.Today;
+    private List<AvailableSlotModel> walkinSlots = new();
+    private AvailableSlotModel? selectedWalkinSlot;
+    private decimal walkinCustid = 1003;
+    private string walkinNotes = string.Empty;
+    private bool loadingWalkinSlots = false;
+
+    // Cancellation state
+    private bool showCancelModal = false;
+    private AppointmentBookingModel? selectedBookingToCancel;
+    private string cancelReason = string.Empty;
+
+    // Register Outpatient state
+    private bool showRegisterModal = false;
+    private AppointmentBookingModel? selectedBookingForReg;
+    private OPRegistrationModel.OpRegistrationModel newOpRequest = new();
+    private bool registerSaving = false;
+
+    // Rescheduling single appointment state
+    private bool showRescheduleModal = false;
+    private AppointmentBookingModel? selectedBookingToReschedule;
+    private int rescheduleDcode = 0;
+    private DateTime rescheduleDate = DateTime.Today;
+    private List<AvailableSlotModel> rescheduleSlots = new();
+    private AvailableSlotModel? selectedRescheduleSlot;
+    private string rescheduleReason = string.Empty;
+    private bool loadingRescheduleSlots = false;
+
+    // Reschedule WHOLE SLOT state
+    private bool showRescheduleWholeSlotModal = false;
+    private int wholeSourceDcode = 0;
+    private DateTime wholeSourceDate = DateTime.Today;
+    private List<AvailableSlotModel> wholeSourceSlots = new();
+    private AvailableSlotModel? selectedWholeSourceSlot;
+
+    private int wholeTargetDcode = 0;
+    private DateTime wholeTargetDate = DateTime.Today;
+    private List<AvailableSlotModel> wholeTargetSlots = new();
+    private AvailableSlotModel? selectedWholeTargetSlot;
+
+    private string wholeRescheduleReason = string.Empty;
+    private bool loadingWholeSourceSlots = false;
+    private bool loadingWholeTargetSlots = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDoctorsAsync();
+        await LoadBookingsAsync();
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            var raw = await DoctorService.GetDoctorsAsync();
+            doctors = raw.Where(d => !d.deleted).OrderBy(d => string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name).ToList();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load doctors list: {ex.Message}");
+        }
+    }
+
+    private async Task LoadBookingsAsync()
+    {
+        loading = true;
+        try
+        {
+            allBookings = await BookingService.GetAllBookingsAsync();
+            
+            // Remove deleted ones
+            allBookings = allBookings.Where(b => !b.isdeleted).ToList();
+
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to fetch scheduled bookings: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        var query = allBookings.AsQueryable();
+
+        // 0. Date filter
+        if (filterDate.HasValue)
+        {
+            var filterDateOnly = DateOnly.FromDateTime(filterDate.Value);
+            query = query.Where(b => b.appointment_date == filterDateOnly);
+        }
+
+        // 1. Doctor filter
+        if (filterDoctor > 0)
+        {
+            query = query.Where(b => b.dcode == filterDoctor);
+        }
+
+        // 2. Status filter
+        if (filterStatus != "ALL")
+        {
+            query = query.Where(b => b.booking_status == filterStatus);
+        }
+
+        // 3. Booking Type filter
+        if (filterType != "ALL")
+        {
+            if (filterType == "WALKIN")
+            {
+                query = query.Where(b => b.booking_type == "WALKIN" || (b.booking_type == "ONLINE" && b.notes != null && b.notes.StartsWith("[WALKIN]")));
+            }
+            else if (filterType == "ONLINE")
+            {
+                query = query.Where(b => b.booking_type == "ONLINE" && (b.notes == null || !b.notes.StartsWith("[WALKIN]")));
+            }
+            else
+            {
+                query = query.Where(b => b.booking_type == filterType);
+            }
+        }
+
+        // 4. Search Filter (by Booking No, Patient ID or Doctor ID/Name)
+        if (!string.IsNullOrWhiteSpace(filterSearch))
+        {
+            var searchLower = filterSearch.Trim().ToLower();
+            query = query.Where(b => 
+                (b.booking_no != null && b.booking_no.ToLower().Contains(searchLower)) ||
+                ("cust-" + b.custid).ToLower().Contains(searchLower) ||
+                b.custid.ToString().Contains(searchLower) ||
+                ("doc-" + b.dcode).ToLower().Contains(searchLower) ||
+                b.dcode.ToString().Contains(searchLower)
+            );
+        }
+
+        filteredBookings = query.OrderBy(b => b.appointment_date).ThenBy(b => b.slot_start_time).ThenBy(b => b.token_no).ToList();
+
+        // Recalculate statistics from the current live filtered set
+        statsTotal = filteredBookings.Count;
+        statsConfirmed = filteredBookings.Count(b => b.booking_status == "CONFIRMED");
+        statsCompleted = filteredBookings.Count(b => b.booking_status == "COMPLETED" || b.booking_status == "VISITED");
+        statsCancelled = filteredBookings.Count(b => b.booking_status == "CANCELLED");
+    }
+
+    private async Task OnFiltersChanged()
+    {
+        await LoadBookingsAsync();
+    }
+
+    private async Task ClearFilters()
+    {
+        filterDate = DateTime.Today; // Re-align to current date
+        filterDoctor = 0;
+        filterStatus = "ALL";
+        filterType = "ALL";
+        filterSearch = string.Empty;
+        await LoadBookingsAsync();
+    }
+
+    private string GetDoctorName(int dcode)
+    {
+        var doc = doctors.FirstOrDefault(d => d.dcode == dcode);
+        if (doc == null) return $"Dr. [Code: {dcode}]";
+        return string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name;
+    }
+
+    private string FormatTime(TimeOnly time)
+    {
+        return time.ToString("hh:mm tt");
+    }
+
+    private async Task UpdateBookingStatus(AppointmentBookingModel booking, string newStatus)
+    {
+        if (newStatus == "CONFIRMED")
+        {
+            OpenRegisterModal(booking);
+            return;
+        }
+
+        try
+        {
+            var success = await BookingService.UpdateStatusAsync(booking.booking_id, newStatus);
+            if (success)
+            {
+                ToastService.ShowSuccess($"Appointment status set to {newStatus}!");
+                await LoadBookingsAsync();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to update status on the Medico API.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Status transition error: {ex.Message}");
+        }
+    }
+
+    // Modal 1: Walk-in Booking logic
+    private void OpenWalkinModal()
+    {
+        walkinDcode = 0;
+        walkinDate = DateTime.Today;
+        walkinCustid = 1003;
+        walkinNotes = string.Empty;
+        selectedWalkinSlot = null;
+        walkinSlots.Clear();
+        showWalkinModal = true;
+    }
+
+    private void CloseWalkinModal()
+    {
+        showWalkinModal = false;
+    }
+
+    private async Task OnWalkinDoctorOrDateChanged()
+    {
+        if (walkinDcode <= 0) return;
+        loadingWalkinSlots = true;
+        selectedWalkinSlot = null;
+        try
+        {
+            var allSlots = await BookingService.GetAvailableSlotsAsync(walkinDcode, DateOnly.FromDateTime(walkinDate));
+            var today = DateOnly.FromDateTime(DateTime.Today);
+            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            walkinSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error fetching slots: {ex.Message}");
+        }
+        finally
+        {
+            loadingWalkinSlots = false;
+        }
+    }
+
+    private async Task BookWalkinAsync()
+    {
+        if (selectedWalkinSlot == null || walkinCustid <= 0) return;
+        bookingInProgress = true;
+        try
+        {
+            // Resolve booking type dynamically based on capacity limits
+            string resolvedBookingType = "WALKIN";
+            if (selectedWalkinSlot.max_walkin == 0 || 
+                (selectedWalkinSlot.typeofslot != null && selectedWalkinSlot.typeofslot.Equals("ONLINE", StringComparison.OrdinalIgnoreCase)) ||
+                (selectedWalkinSlot.max_walkin > 0 && selectedWalkinSlot.walkin_count >= selectedWalkinSlot.max_walkin && selectedWalkinSlot.remaining_seats > 0))
+            {
+                resolvedBookingType = "ONLINE";
+            }
+
+            string finalNotes = walkinNotes;
+            if (resolvedBookingType == "ONLINE")
+            {
+                finalNotes = "[WALKIN]" + (string.IsNullOrWhiteSpace(walkinNotes) ? "" : " " + walkinNotes);
+            }
+
+            var newBooking = new AppointmentBookingModel
+            {
+                booking_id = Guid.NewGuid(),
+                custid = walkinCustid,
+                dcode = walkinDcode,
+                slot_detail_id = selectedWalkinSlot.slot_detail_id,
+                slot_master_id = selectedWalkinSlot.slot_master_id,
+                appointment_date = selectedWalkinSlot.appointment_date,
+                slot_start_time = selectedWalkinSlot.slot_start_time,
+                slot_end_time = selectedWalkinSlot.slot_end_time,
+                booking_type = resolvedBookingType,
+                booking_status = "BOOKED",
+                notes = finalNotes,
+                isdeleted = false
+            };
+
+            var res = await BookingService.BookAppointmentAsync(newBooking);
+            if (res.StartsWith("Success", StringComparison.OrdinalIgnoreCase))
+            {
+                ToastService.ShowSuccess("Walk-in appointment created successfully!");
+                showWalkinModal = false;
+                await LoadBookingsAsync();
+            }
+            else
+            {
+                ToastService.ShowError($"Failed to create booking: {res}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Walk-in creation error: {ex.Message}");
+        }
+        finally
+        {
+            bookingInProgress = false;
+        }
+    }
+
+    // Register Outpatient logic
+    private void OpenRegisterModal(AppointmentBookingModel booking)
+    {
+        selectedBookingForReg = booking;
+        
+        string regType = (booking.booking_type == "WALKIN" || (booking.booking_type == "ONLINE" && booking.notes != null && booking.notes.StartsWith("[WALKIN]"))) ? "WALKIN" : "ONLINE";
+        
+        newOpRequest = new OPRegistrationModel.OpRegistrationModel
+        {
+            booking_id = regType == "ONLINE" ? booking.booking_id : null,
+            booking_no = regType == "ONLINE" ? booking.booking_no : null,
+            slot_detail_id = regType == "WALKIN" ? booking.slot_detail_id : null,
+            custid = booking.custid,
+            dcode = booking.dcode,
+            department_code = 3,
+            visit_type = "NEWVISIT",
+            reg_type = regType,
+            notes = "Patient arrived",
+            visit_date = DateOnly.FromDateTime(DateTime.Today)
+        };
+        showRegisterModal = true;
+    }
+
+    private void CloseRegisterModal()
+    {
+        showRegisterModal = false;
+        selectedBookingForReg = null;
+    }
+
+    private async Task SubmitRegistrationAsync()
+    {
+        if (selectedBookingForReg == null) return;
+        
+        registerSaving = true;
+        try
+        {
+            var result = await BookingService.RegisterOpAsync(newOpRequest);
+            if (result != null && result.StartsWith("Success"))
+            {
+                ToastService.ShowSuccess("Outpatient registered successfully!");
+                
+                // Also update booking status to CONFIRMED!
+                await BookingService.UpdateStatusAsync(selectedBookingForReg.booking_id, "CONFIRMED");
+                
+                CloseRegisterModal();
+                await LoadBookingsAsync();
+            }
+            else
+            {
+                ToastService.ShowError($"Failed to register outpatient: {result}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Registration error: {ex.Message}");
+        }
+        finally
+        {
+            registerSaving = false;
+        }
+    }
+
+    // Modal 2: Cancellation logic
+    private void OpenCancelModal(AppointmentBookingModel booking)
+    {
+        selectedBookingToCancel = booking;
+        cancelReason = string.Empty;
+        showCancelModal = true;
+    }
+
+    private void CloseCancelModal()
+    {
+        showCancelModal = false;
+    }
+
+    private async Task CancelBookingAsync()
+    {
+        if (selectedBookingToCancel == null || string.IsNullOrWhiteSpace(cancelReason)) return;
+        bookingInProgress = true;
+        try
+        {
+            var req = new CancelAppointmentRequest
+            {
+                booking_id = selectedBookingToCancel.booking_id,
+                cancel_reason = cancelReason
+            };
+
+            var success = await BookingService.CancelAppointmentAsync(req);
+            if (success)
+            {
+                ToastService.ShowSuccess("Appointment cancelled successfully.");
+                showCancelModal = false;
+                await LoadBookingsAsync();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to process cancellation on Medico API.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Cancellation error: {ex.Message}");
+        }
+        finally
+        {
+            bookingInProgress = false;
+        }
+    }
+
+    // Modal 3: Reschedule single appointment
+    private async Task OpenRescheduleModal(AppointmentBookingModel booking)
+    {
+        selectedBookingToReschedule = booking;
+        rescheduleDcode = booking.dcode; // Initialize to the original booking's doctor!
+        rescheduleDate = booking.appointment_date.ToDateTime(TimeOnly.MinValue);
+        selectedRescheduleSlot = null;
+        rescheduleReason = string.Empty;
+        rescheduleSlots.Clear();
+        showRescheduleModal = true;
+        await LoadRescheduleSlotsAsync();
+    }
+
+    private void CloseRescheduleModal()
+    {
+        showRescheduleModal = false;
+    }
+
+    private async Task LoadRescheduleSlotsAsync()
+    {
+        if (selectedBookingToReschedule == null) return;
+        loadingRescheduleSlots = true;
+        selectedRescheduleSlot = null;
+        try
+        {
+            var allSlots = await BookingService.GetAvailableSlotsAsync(rescheduleDcode, DateOnly.FromDateTime(rescheduleDate));
+            var today = DateOnly.FromDateTime(DateTime.Today);
+            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            rescheduleSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading slots: {ex.Message}");
+        }
+        finally
+        {
+            loadingRescheduleSlots = false;
+        }
+    }
+
+    private async Task RescheduleBookingAsync()
+    {
+        if (selectedBookingToReschedule == null) return;
+
+        if (selectedRescheduleSlot == null)
+        {
+            ToastService.ShowError("Please select a new available time slot!");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(rescheduleReason))
+        {
+            ToastService.ShowError("Please enter a reason for rescheduling!");
+            return;
+        }
+
+        bookingInProgress = true;
+        try
+        {
+            var req = new RescheduleAppointmentRequest
+            {
+                old_booking_id = selectedBookingToReschedule.booking_id,
+                booking_type = selectedBookingToReschedule.booking_type,
+                reschedule_reason = rescheduleReason,
+                new_booking = new AppointmentBookingModel
+                {
+                    custid = selectedBookingToReschedule.custid,
+                    dcode = rescheduleDcode, // Assign selected new doctor!
+                    slot_detail_id = selectedRescheduleSlot.slot_detail_id,
+                    slot_master_id = selectedRescheduleSlot.slot_master_id,
+                    appointment_date = selectedRescheduleSlot.appointment_date,
+                    slot_start_time = selectedRescheduleSlot.slot_start_time,
+                    slot_end_time = selectedRescheduleSlot.slot_end_time,
+                    booking_type = selectedBookingToReschedule.booking_type,
+                    notes = selectedBookingToReschedule.notes,
+                    isdeleted = false
+                }
+            };
+
+            var success = await BookingService.RescheduleAppointmentAsync(req);
+            if (success)
+            {
+                ToastService.ShowSuccess("Appointment rescheduled successfully!");
+                showRescheduleModal = false;
+                await LoadBookingsAsync();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to reschedule on the Medico API.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Rescheduling error: {ex.Message}");
+        }
+        finally
+        {
+            bookingInProgress = false;
+        }
+    }
+
+    // Modal 4: Reschedule Whole Slot Master (doctor leave or slot migration)
+    private void OpenRescheduleWholeSlotModal()
+    {
+        wholeSourceDcode = 0;
+        wholeSourceDate = DateTime.Today;
+        wholeSourceSlots.Clear();
+        selectedWholeSourceSlot = null;
+
+        wholeTargetDcode = 0;
+        wholeTargetDate = DateTime.Today;
+        wholeTargetSlots.Clear();
+        selectedWholeTargetSlot = null;
+
+        wholeRescheduleReason = string.Empty;
+        showRescheduleWholeSlotModal = true;
+    }
+
+    private void CloseRescheduleWholeSlotModal()
+    {
+        showRescheduleWholeSlotModal = false;
+    }
+
+    private async Task OnWholeSourceChanged()
+    {
+        if (wholeSourceDcode <= 0) return;
+        loadingWholeSourceSlots = true;
+        selectedWholeSourceSlot = null;
+        try
+        {
+            // We fetch the slots. The slots returnbooked_count representing how many patients are locked in
+            var allSlots = await BookingService.GetAvailableSlotsAsync(wholeSourceDcode, DateOnly.FromDateTime(wholeSourceDate));
+            var today = DateOnly.FromDateTime(DateTime.Today);
+            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            wholeSourceSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Source slots fetch error: {ex.Message}");
+        }
+        finally
+        {
+            loadingWholeSourceSlots = false;
+        }
+    }
+
+    private async Task OnWholeTargetChanged()
+    {
+        if (wholeTargetDcode <= 0) return;
+        loadingWholeTargetSlots = true;
+        selectedWholeTargetSlot = null;
+        try
+        {
+            var allSlots = await BookingService.GetAvailableSlotsAsync(wholeTargetDcode, DateOnly.FromDateTime(wholeTargetDate));
+            var today = DateOnly.FromDateTime(DateTime.Today);
+            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            wholeTargetSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Target slots fetch error: {ex.Message}");
+        }
+        finally
+        {
+            loadingWholeTargetSlots = false;
+        }
+    }
+
+    private async Task RescheduleWholeSlotAsync()
+    {
+        if (selectedWholeSourceSlot == null || selectedWholeTargetSlot == null || string.IsNullOrWhiteSpace(wholeRescheduleReason)) return;
+        bookingInProgress = true;
+        try
+        {
+            var req = new RescheduleWholeSlotRequest
+            {
+                slot_master_id = selectedWholeSourceSlot.slot_master_id,
+                new_slot_detail_id = selectedWholeTargetSlot.slot_detail_id,
+                new_slot_master_id = selectedWholeTargetSlot.slot_master_id,
+                new_appointment_date = selectedWholeTargetSlot.appointment_date,
+                new_slot_start_time = selectedWholeTargetSlot.slot_start_time,
+                new_slot_end_time = selectedWholeTargetSlot.slot_end_time,
+                new_dcode = selectedWholeTargetSlot.dcode,
+                reschedule_reason = wholeRescheduleReason
+            };
+
+            var success = await BookingService.RescheduleWholeSlotAsync(req);
+            if (success)
+            {
+                ToastService.ShowSuccess($"Moved whole slot bookings successfully!");
+                showRescheduleWholeSlotModal = false;
+                await LoadBookingsAsync();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to move whole slot bookings. Ensure target slot has enough remaining capacity.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Slot migration error: {ex.Message}");
+        }
+        finally
+        {
+            bookingInProgress = false;
+        }
+    }
+}
