@@ -44,7 +44,8 @@ namespace Booking.Models
             public decimal custid { get; set; }
             public int dcode { get; set; }
 
-            // Basic Vitals
+
+            // ── Basic Vitals ─────────────────────────────
             public decimal? height_cm { get; set; }
             public decimal? weight_kg { get; set; }
             public decimal? bmi { get; set; }               // auto calculated
@@ -55,15 +56,33 @@ namespace Booking.Models
             public int? bp_diastolic { get; set; }
             public decimal? spo2 { get; set; }
 
-            // Additional
+
+            // ── Additional Measurements ───────────────────
             public decimal? sugar_level { get; set; }
             public int? pain_scale { get; set; }
+            public decimal? waist_cm { get; set; }         
+            public decimal? hip_cm { get; set; }           
+            // ── Clinical Examination ──────────────────────
+            public string? pedal_oedema { get; set; }       
+            public string? jvp { get; set; }                
+            public string? cvs { get; set; }                
+            public string? rs { get; set; }                 
+            public string? cns { get; set; }                
+            public string? abdomen { get; set; }           
+
+
+            // ── Investigations ────────────────────────────
+            public string? cardiac_monitor { get; set; }    
+            public string? cd_echo { get; set; }            
+            public string? blood_chemistry { get; set; }    
             public string? allergy_notes { get; set; }
 
-            // Special dept
+
+            // ── Special Dept ──────────────────────────────
             public decimal? hba1c { get; set; }
             public string? ecg_notes { get; set; }
             public decimal? head_circumference_cm { get; set; }
+
 
             public string? entered_by { get; set; }
             public string? tenant_code { get; set; }
@@ -74,10 +93,23 @@ namespace Booking.Models
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         }
 
+
+
         public class UpdateVisitStatusRequest
         {
             public Guid op_id { get; set; }
             public string visit_status { get; set; } = string.Empty;
+        }
+
+        public class DirectWalkinRequest
+        {
+            public decimal custid { get; set; }
+            public int? dcode { get; set; }           // null if patient doesn't know which doctor
+            public int? duty_dcode { get; set; }      // assigned at reception if no dcode
+            public int? department_code { get; set; }
+            public Guid? slot_detail_id { get; set; }
+            public string visit_type { get; set; } = "NEWVISIT";
+            public string? notes { get; set; }
         }
     }
 }

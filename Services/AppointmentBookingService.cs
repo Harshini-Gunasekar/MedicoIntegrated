@@ -172,16 +172,69 @@ namespace Booking.Services
             }
         }
 
+        public async Task<string> DirectWalkinAsync(OPRegistrationModel.DirectWalkinRequest request)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/OpRegistration/direct-walkin", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error doing direct walkin: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
         public async Task<bool> SaveOpVitalsAsync(OPRegistrationModel.PatientVitalsModel request)
         {
             try
             {
+                // var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request);
+                // Console.WriteLine("--- SAVE VITALS PAYLOAD ---");
+                // Console.WriteLine(jsonPayload);
+                // Console.WriteLine("---------------------------");
+
                 var response = await _http.PostAsJsonAsync("api/OpRegistration/save-vitals", request);
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error saving OP vitals: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<List<OPRegistrationModel.PatientVitalsModel>> GetOpVitalsAsync(Guid opId)
+        {
+            try
+            {
+                var response = await _http.GetFromJsonAsync<List<OPRegistrationModel.PatientVitalsModel>>($"api/OpRegistration/vitals/all?op_id={opId}");
+                return response ?? new List<OPRegistrationModel.PatientVitalsModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting OP vitals: {ex.Message}");
+                return new List<OPRegistrationModel.PatientVitalsModel>();
+            }
+        }
+
+        public async Task<bool> UpdateOpVitalsAsync(OPRegistrationModel.PatientVitalsModel request)
+        {
+            try
+            {
+                // var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request);
+                // Console.WriteLine("--- UPDATE VITALS PAYLOAD ---");
+                // Console.WriteLine(jsonPayload);
+                // Console.WriteLine("-----------------------------");
+
+                var response = await _http.PostAsJsonAsync("api/OpRegistration/update-vitals", request);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating OP vitals: {ex.Message}");
                 return false;
             }
         }
@@ -211,6 +264,20 @@ namespace Booking.Services
             {
                 Console.WriteLine($"Error getting all OP registrations: {ex.Message}");
                 return new List<OPRegistrationModel.OpRegistrationModel>();
+            }
+        }
+
+        public async Task<List<DoctorBookingListModel>> GetDoctorBookingsAsync(int dcode, DateOnly appointmentDate)
+        {
+            try
+            {
+                var response = await _http.GetFromJsonAsync<List<DoctorBookingListModel>>($"api/OpRegistration/doctor-bookings?dcode={dcode}&appointment_date={appointmentDate:yyyy-MM-dd}");
+                return response ?? new List<DoctorBookingListModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting doctor bookings: {ex.Message}");
+                return new List<DoctorBookingListModel>();
             }
         }
     }
