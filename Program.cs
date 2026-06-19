@@ -21,6 +21,7 @@ builder.Services.AddScoped<Booking.Services.DoctorAppointmentSlotTypeService>();
 builder.Services.AddScoped<Booking.Services.ToastService>();
 builder.Services.AddScoped<Booking.Services.AppointmentBookingService>();
 builder.Services.AddScoped<Booking.Services.CaseSheetService>();
+builder.Services.AddScoped<Booking.Services.HmsBillingService>();
 
 var app = builder.Build();
 

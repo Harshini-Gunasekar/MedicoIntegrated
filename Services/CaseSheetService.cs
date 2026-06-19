@@ -115,6 +115,57 @@ namespace Booking.Services
             }
         }
 
+        public async Task<List<IcdItem>> GetAllIcd10Async()
+        {
+            try
+            {
+                var response = await _http.GetFromJsonAsync<List<IcdItem>>("api/CaseSheet/getall");
+                return response ?? new List<IcdItem>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting all ICD-10 codes: {ex.Message}");
+                return new List<IcdItem>();
+            }
+        }
+
+        public async Task<List<item_master>> GetAllItemsAsync()
+        {
+            try
+            {
+                var request = new HttpRequestMessage(HttpMethod.Get, "api/ItemMaster/getallitems");
+                request.Headers.Add("tenantcode", "TEN1011");
+                
+                var response = await _http.SendAsync(request);
+                response.EnsureSuccessStatusCode();
+                
+                var rawJson = await response.Content.ReadAsStringAsync();
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                
+                if (rawJson.TrimStart().StartsWith("{"))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            return System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(prop.Value.GetRawText(), options) ?? new List<item_master>();
+                        }
+                    }
+                    Console.WriteLine("No array found in JSON object wrapper.");
+                    return new List<item_master>();
+                }
+                
+                var items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(rawJson, options);
+                return items ?? new List<item_master>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting all items: {ex.Message}");
+                return new List<item_master>();
+            }
+        }
+
         public async Task<bool> UpdateInvestigationResultAsync(UpdateInvestigationResultRequest request)
         {
             try

@@ -125,10 +125,10 @@
                         <thead>
                             <tr>
                                 <th style="width: 100px;">Token</th>
-                                <th>Patient Name</th>
-                                <th>Patient ID</th>
-                                <th>Time Range</th>
-                                <th>Booking Ref</th>
+                                <th style="width: 220px;">Patient Name</th>
+                                <th style="width: 140px;">Patient ID</th>
+                                <th style="width: 200px;">Time Range</th>
+                                <!-- <th>Booking Ref</th> -->
                                 <th>Notes</th>
                                 <th style="width: 150px;">Status</th>
                             </tr>
@@ -157,12 +157,12 @@
                                             @FormatTime(b.slot_start_time) - @FormatTime(b.slot_end_time)
                                         </span>
                                     </td>
-                                    <td>
+                                    <!-- <td>
                                         <div class="booking-ref-block">
                                             <span class="booking-no">@(string.IsNullOrWhiteSpace(b.booking_no) ? "N/A" : b.booking_no)</span>
                                             <span class="booking-type-label @b.booking_type?.ToLower()">@b.booking_type</span>
                                         </div>
-                                    </td>
+                                    </td> -->
                                     <td>
                                         <span class="notes-text" title="@b.notes">
                                             @(string.IsNullOrWhiteSpace(b.notes) ? "-" : b.notes)
@@ -205,8 +205,8 @@
 @code {
     private List<DoctorMasterModel> doctors = new();
     private List<DoctorBookingListModel> todayBookings = new();
-    private int? selectedDoctorDcode = 18; // Defaulting to doctor 18
-    private DateTime selectedDate = new DateTime(2026, 6, 2); // Defaulting to 2026-06-02
+    private int? selectedDoctorDcode = null; // Defaulting to all specialists
+    private DateTime selectedDate = DateTime.Today; // Defaulting to current date
     private string searchQuery = string.Empty;
     private string statusFilter = "ALL";
     private string bookingTypeFilter = "ALL";
@@ -296,8 +296,8 @@
 
     private async Task ResetFilters()
     {
-        selectedDoctorDcode = 18;
-        selectedDate = new DateTime(2026, 6, 2);
+        selectedDoctorDcode = null;
+        selectedDate = DateTime.Today;
         statusFilter = "ALL";
         bookingTypeFilter = "ALL";
         searchQuery = string.Empty;
@@ -306,16 +306,51 @@
 
     private async Task LoadTodayBookingsAsync()
     {
-        if (!selectedDoctorDcode.HasValue || selectedDoctorDcode == 0)
-        {
-            todayBookings.Clear();
-            return;
-        }
-
         loading = true;
         try
         {
-            todayBookings = await BookingService.GetDoctorBookingsAsync(selectedDoctorDcode.Value, DateOnly.FromDateTime(selectedDate));
+            var dateOnly = DateOnly.FromDateTime(selectedDate);
+            var generalBookingsTask = BookingService.GetBookingsByDateAsync(dateOnly);
+
+            if (selectedDoctorDcode.HasValue && selectedDoctorDcode.Value != 0)
+            {
+                var bookingsTask = BookingService.GetDoctorBookingsAsync(selectedDoctorDcode.Value, dateOnly);
+                await Task.WhenAll(bookingsTask, generalBookingsTask);
+                todayBookings = bookingsTask.Result ?? new();
+            }
+            else
+            {
+                var bookingsTasks = doctors
+                    .Select(doc => BookingService.GetDoctorBookingsAsync(doc.dcode, dateOnly))
+                    .ToList();
+
+                await Task.WhenAll(bookingsTasks.Cast<Task>().Append(generalBookingsTask));
+
+                todayBookings = bookingsTasks
+                    .SelectMany(t => t.Result ?? new List<DoctorBookingListModel>())
+                    .ToList();
+            }
+
+            var generalBookings = generalBookingsTask.Result ?? new();
+
+            if (todayBookings.Any() && generalBookings.Any())
+            {
+                var generalBookingsDict = generalBookings
+                    .Where(gb => gb.booking_id != Guid.Empty)
+                    .GroupBy(gb => gb.booking_id)
+                    .ToDictionary(g => g.Key, g => g.First());
+
+                foreach (var b in todayBookings)
+                {
+                    if (generalBookingsDict.TryGetValue(b.booking_id, out var matchingBooking))
+                    {
+                        b.slot_start_time = matchingBooking.slot_start_time;
+                        b.slot_end_time = matchingBooking.slot_end_time;
+                        b.booking_type = matchingBooking.booking_type;
+                    }
+                }
+            }
+
             // Sort by start time then token number
             todayBookings = todayBookings.OrderBy(b => b.slot_start_time).ThenBy(b => b.token_no).ToList();
         }
