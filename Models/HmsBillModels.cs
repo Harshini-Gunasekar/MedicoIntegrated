@@ -61,5 +61,6 @@ namespace Booking.Models
         public decimal discount { get; set; } // value
         public decimal gst_per { get; set; }
         public int ttid { get; set; } = 1;
+        public string? requestdetailsid { get; set; }
     }
 }

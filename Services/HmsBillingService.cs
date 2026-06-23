@@ -20,8 +20,16 @@ namespace Booking.Services
         {
             try
             {
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(bill, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine("--- BILL JSON PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("-------------------------");
+
                 var response = await _http.PostAsJsonAsync("api/HmsBilling/save-bill", bill);
                 var rawResponse = await response.Content.ReadAsStringAsync();
+                
+                Console.WriteLine($"--- API RESPONSE: {rawResponse} ---");
+                
                 return rawResponse;
             }
             catch (Exception ex)
@@ -55,6 +63,108 @@ namespace Booking.Services
             {
                 Console.WriteLine($"Error fetching bill: {ex.Message}");
                 return null;
+            }
+        }
+
+        public async Task<HmsBillListResponse?> ListBillsAsync(HmsBillFilterRequest filter)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/list-bills", filter);
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadFromJsonAsync<HmsBillListResponse>();
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching bills list: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<HmsBillResponse?> GetBillByGuidAsync(string guid)
+        {
+            try
+            {
+                var response = await _http.GetAsync($"api/HmsBilling/get-bill/{guid}");
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadFromJsonAsync<HmsBillResponse>();
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching bill by guid: {ex.Message}");
+                return null;
+            }
+        }
+        public async Task<string> UpdateBillAsync(HmsBillModel model)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/update-bill", model);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                
+                Console.WriteLine($"--- API RESPONSE (UPDATE): {rawResponse} ---");
+                
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating bill: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
+        public async Task<string> CancelBillAsync(string requestguid, int usercode, string reason)
+        {
+            try
+            {
+                var payload = new { requestguid, usercode, reason };
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/cancel-bill", payload);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                
+                Console.WriteLine($"--- API RESPONSE (CANCEL): {rawResponse} ---");
+                
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error cancelling bill: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
+        public async Task<string> OpenShiftAsync(OpenShiftRequest request)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/counter/open-shift", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error opening shift: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
+        public async Task<string> CloseShiftAsync(CloseShiftRequest request)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/counter/close-shift", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error closing shift: {ex.Message}");
+                return $"Error|{ex.Message}";
             }
         }
     }
