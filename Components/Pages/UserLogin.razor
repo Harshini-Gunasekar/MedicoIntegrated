@@ -1,0 +1,261 @@
+@page "/user-login"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using System.Net.Http.Json
+@using System.Text.Json.Serialization
+@using Newtonsoft.Json
+@using Newtonsoft.Json.Linq
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager NavigationManager
+@inject Booking.Services.ToastService Toast
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+<div class="login-page-container">
+    <div class="login-card">
+        <div class="login-header">
+            <h2 class="brand-title">Medico <span class="brand-highlight">Portal</span></h2>
+            <h3 class="page-title">Sign In</h3>
+        </div>
+
+        @if (!string.IsNullOrEmpty(errorMessage))
+        {
+            <div class="alert alert-danger p-2 mb-3" style="font-size: 0.9rem;">@errorMessage</div>
+        }
+        @if (!string.IsNullOrEmpty(successMessage))
+        {
+            <div class="alert alert-success p-2 mb-3" style="font-size: 0.9rem;">
+                <strong>@successMessage</strong><br/>
+                Welcome @userName
+            </div>
+        }
+
+        <div class="form-group">
+            <label class="form-label">Email Address or Mobile Number</label>
+            <input type="text" class="form-control custom-input" @bind="loginModel.Input" placeholder="Email Address or Mobile Number" />
+        </div>
+
+        <div class="form-group password-group">
+            <div class="d-flex justify-content-between">
+                <label class="form-label">Password</label>
+                <a href="#" class="forgot-link">Forgot your password?</a>
+            </div>
+            <div class="password-input-wrapper">
+                <input type="@passwordInputType" class="form-control custom-input" @bind="loginModel.Password" placeholder="........" />
+                <button type="button" class="btn-eye" @onclick="TogglePasswordVisibility">
+                    @if (showPassword)
+                    {
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-eye"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+                    }
+                    else
+                    {
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="feather feather-eye-off"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path><line x1="1" y1="1" x2="23" y2="23"></line></svg>
+                    }
+                </button>
+            </div>
+        </div>
+
+        <div class="form-check stay-signed-in">
+            <input class="form-check-input custom-checkbox" type="checkbox" id="staySignedIn" checked>
+            <label class="form-check-label" for="staySignedIn">
+                Stay signed in
+            </label>
+        </div>
+
+        <button class="btn btn-continue" @onclick="HandleLogin" disabled="@isLoading">
+            @if (isLoading)
+            {
+                <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+            }
+            Continue
+        </button>
+
+        <div class="login-footer-links">
+            <a href="/login" class="staff-login-link">Use Admin Login instead</a>
+            <p class="register-text">New laboratory? <a href="#" class="register-link">Register Facility</a></p>
+        </div>
+    </div>
+    
+    <div class="page-footer">
+        <span>© LabCare</span>
+        <a href="#">Contact</a>
+        <a href="#">Privacy & terms</a>
+    </div>
+</div>
+
+@code {
+    private UserLoginModel loginModel = new UserLoginModel { Input = "", Password = "" };
+    private string? errorMessage;
+    private string? successMessage;
+    private string? userName;
+    private bool isLoading;
+    private bool showPassword = false;
+    private string passwordInputType => showPassword ? "text" : "password";
+
+    private void TogglePasswordVisibility()
+    {
+        showPassword = !showPassword;
+    }
+
+    private async Task HandleLogin()
+    {
+        isLoading = true;
+        errorMessage = null;
+        successMessage = null;
+
+        try
+        {
+            var client = HttpClientFactory.CreateClient("LabCareUrl");
+            
+            var payload = new 
+            {
+                input = loginModel.Input,
+                password = loginModel.Password
+            };
+
+            var response = await client.PostAsJsonAsync("api/User/login", payload);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var responseContent = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[UserLogin] Raw Response: {responseContent}");
+                
+                var json = JObject.Parse(responseContent);
+                string? token = json["token"]?.ToString() ?? json["Token"]?.ToString();
+                
+                var userDetailsJson = json["userdetails"] ?? json["UserDetails"] ?? json["user"] ?? json["User"];
+                string? name = userDetailsJson?["name"]?.ToString() ?? userDetailsJson?["Name"]?.ToString() ?? "Staff Member";
+                
+                // Extract tenant_code with fallbacks
+                string? tenantCode = userDetailsJson?["tenant_code"]?.ToString() 
+                    ?? userDetailsJson?["tenantCode"]?.ToString() 
+                    ?? userDetailsJson?["TenantCode"]?.ToString() 
+                    ?? userDetailsJson?["tenantcode"]?.ToString()
+                    ?? userDetailsJson?["tenant_id"]?.ToString()
+                    ?? userDetailsJson?["tenantId"]?.ToString()
+                    ?? userDetailsJson?["TenantId"]?.ToString();
+                
+                if (string.IsNullOrEmpty(tenantCode))
+                {
+                    var rightsArray = json["rights"] as JArray ?? json["Rights"] as JArray;
+                    if (rightsArray != null && rightsArray.Count > 0)
+                    {
+                        foreach (var right in rightsArray)
+                        {
+                            var tId = right["tenant_id"]?.ToString() ?? right["tenantId"]?.ToString() ?? right["TenantId"]?.ToString() ?? right["tenant_code"]?.ToString();
+                            if (!string.IsNullOrEmpty(tId))
+                            {
+                                tenantCode = tId;
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                if (string.IsNullOrEmpty(tenantCode))
+                {
+                    tenantCode = json["tenant_code"]?.ToString() ?? json["tenant_id"]?.ToString();
+                }
+
+                if (!string.IsNullOrEmpty(token))
+                {
+                    successMessage = "Login successful!";
+                    userName = name;
+                    
+                    await _sessionStorage.SetAsync("authToken", token);
+                    await _sessionStorage.SetAsync("tenant_code", tenantCode ?? "");
+                    
+                    Toast.ShowSuccess($"Login successful! Tenant: {tenantCode}");
+                    await Task.Delay(1000);
+                    NavigationManager.NavigateTo("/patientmaster");
+                }
+                else
+                {
+                    errorMessage = "Login succeeded but token was empty.";
+                }
+            }
+            else
+            {
+                errorMessage = $"Login failed. Status Code: {response.StatusCode}";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"An error occurred while attempting to log in: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    public class UserLoginModel
+    {
+        public string Input { get; set; } = "";
+        public string Password { get; set; } = "";
+    }
+
+    public class UserLoginResponse
+    {
+        [JsonPropertyName("token")]
+        public string Token { get; set; } = "";
+
+        [JsonPropertyName("userdetails")]
+        public UserDetails? UserDetails { get; set; }
+
+        [JsonPropertyName("rights")]
+        public List<UserRight>? Rights { get; set; }
+    }
+
+    public class UserDetails
+    {
+        [JsonPropertyName("usercode")]
+        public int UserCode { get; set; }
+        
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = "";
+        
+        [JsonPropertyName("shortname")]
+        public string? ShortName { get; set; }
+
+        [JsonPropertyName("description")]
+        public string? Description { get; set; }
+
+        [JsonPropertyName("email")]
+        public string? Email { get; set; }
+        
+        [JsonPropertyName("mobile")]
+        public string? Mobile { get; set; }
+        
+        [JsonPropertyName("poweruser")]
+        public bool PowerUser { get; set; }
+
+        [JsonPropertyName("tenant_code")]
+        public string? TenantCode { get; set; }
+    }
+
+    public class UserRight
+    {
+        [JsonPropertyName("id")]
+        public int Id { get; set; }
+
+        [JsonPropertyName("user_id")]
+        public int UserId { get; set; }
+
+        [JsonPropertyName("tenant_id")]
+        public string? TenantId { get; set; }
+
+        [JsonPropertyName("product_id")]
+        public string? ProductId { get; set; }
+
+        [JsonPropertyName("role_name")]
+        public string? RoleName { get; set; }
+
+        [JsonPropertyName("rights_json")]
+        public string? RightsJson { get; set; }
+
+        [JsonPropertyName("modified_date")]
+        public DateTime? ModifiedDate { get; set; }
+    }
+}
+
+
+
+

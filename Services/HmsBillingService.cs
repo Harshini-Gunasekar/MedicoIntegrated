@@ -167,5 +167,71 @@ namespace Booking.Services
                 return $"Error|{ex.Message}";
             }
         }
+
+        public async Task<BillNoListResponse?> ListBillNoConfigsAsync(BillNoListRequest request)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/list", request);
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadFromJsonAsync<BillNoListResponse>();
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching bill no configs list: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<BillNoConfig?> GetBillNoConfigAsync(int bncode)
+        {
+            try
+            {
+                var response = await _http.GetAsync($"api/HmsBilling/billno/{bncode}");
+                if (response.IsSuccessStatusCode)
+                {
+                    return await response.Content.ReadFromJsonAsync<BillNoConfig>();
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching bill no config: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<string> CreateBillNoConfigAsync(BillNoConfig model)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/create", model);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error creating bill no config: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
+        public async Task<string> UpdateBillNoConfigAsync(BillNoConfig model)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/update", model);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating bill no config: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
     }
 }

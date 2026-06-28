@@ -16,7 +16,7 @@ namespace Booking.Models
         [Required(ErrorMessage = "First Name is required")]
         public string? name { get; set; }
 
-        public int? qualification { get; set; }
+        public string? qualification { get; set; }
 
         public string? shortname { get; set; }
 
@@ -98,7 +98,7 @@ namespace Booking.Models
 
         public string? contactperson { get; set; }
 
-        public byte[]? doctorimage { get; set; }
+        public string? doctorimage { get; set; }
 
         public string? smslabname { get; set; }
 

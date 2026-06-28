@@ -1,268 +1,209 @@
 @page "/billing"
 @page "/billing/{OpIdStr}"
 @rendermode InteractiveServer
+@using Newtonsoft.Json
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
 @inject Booking.Services.DoctorService DoctorService
 @inject Booking.Services.AppointmentBookingService AppointmentBookingService
 @inject Booking.Services.CaseSheetService CaseSheetService
 @inject Booking.Services.HmsBillingService HmsBillingService
 @inject Booking.Services.ToastService ToastService
 @inject NavigationManager Navigation
+@inject IHttpClientFactory ClientFactory
+@inject ProtectedSessionStorage _sessionStorage
 
 <div class="billing-wrapper">
-    <!-- Top Bar -->
-    <div class="billing-top-bar">
-        <div class="top-bar-item">
-            <label>Branch</label>
-            <select @bind="billModel.enteredbhcode">
-                <option value="1">Erode Center</option>
-                <option value="2">Main Branch</option>
-                <option value="3">Salem Clinic</option>
-            </select>
-        </div>
-        <div class="top-bar-item">
-            <label>Counter</label>
-            <select @bind="billModel.cntcode">
-                <option value="2">Sample Counter</option>
-                <option value="1">Billing Counter 1</option>
-                <option value="3">Billing Counter 2</option>
-            </select>
-        </div>
-        <div class="top-bar-item">
-            <label>Billing Serial No.</label>
-            <span class="serial-no-badge">
-                @(string.IsNullOrEmpty(billModel.requestguid) ? "NEW BILL (AUTO-GENERATE)" : $"BILL ID: {billModel.requestguid.Substring(0, 8).ToUpper()}")
-            </span>
-        </div>
-        <div class="top-bar-item">
-            <label>Billing Time</label>
-            <input type="text" value="@billingTimeDisplay" disabled />
-        </div>
-        <div class="top-bar-item">
-            <label>Sample Collection Time</label>
-            <input type="text" value="@billingTimeDisplay" disabled />
-        </div>
-    </div>
-
-    <!-- Main Layout Grid -->
-    <div class="billing-layout-grid">
-        
-        <!-- Left Panel: Patient Identification -->
-        <div class="billing-card">
-            <div class="billing-card-header">
-                <span class="card-title-text"><i class="bi bi-person-bounding-box"></i> Patient Identification</span>
+    <!-- Patient Info Horizontal Card -->
+    <div class="billing-card patient-top-card" style="margin-bottom: 0.5rem;">
+        <div class="patient-top-search">
+            <div style="display: flex; gap: 1rem; align-items: center;">
+                <div class="billing-form-group" style="width: 220px;">
+                    <label>Branch</label>
+                    <select class="billing-select" @bind="billModel.enteredbhcode">
+                        <option value="0">Select Branch</option>
+                        @foreach (var bh in branchesList)
+                        {
+                            <option value="@bh.bh_code">@bh.name</option>
+                        }
+                    </select>
+                </div>
+                <div class="billing-form-group" style="width: 160px;">
+                    <label>Counter</label>
+                    <select class="billing-select" @bind="billModel.cntcode">
+                        <option value="2">Sample Counter</option>
+                        <option value="1">Billing Counter 1</option>
+                        <option value="3">Billing Counter 2</option>
+                    </select>
+                </div>
             </div>
 
-            
-            <div class="billing-form-group">
+            <div class="billing-form-group" style="margin-left: auto;">
                 <label>Search Mobile / UID</label>
                 <div class="autocomplete-search-wrapper">
                     <input type="text" class="billing-input" placeholder="Search Patient Name or Mobile..." 
                            @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" />
-                    @if (showPatientDropdown && filteredRegistrations.Count > 0)
+                    @if (showPatientDropdown && searchedPatients.Count > 0)
                     {
                         <div class="autocomplete-dropdown">
-                            @foreach (var reg in filteredRegistrations)
+                            @foreach (var pat in searchedPatients)
                             {
-                                var bk = bookingsCache.FirstOrDefault(b => b.custid == reg.custid);
-                                var patientName = bk?.patient_name ?? $"Patient ID {reg.custid}";
-                                var mobile = bk?.notes ?? reg.op_no; // notes or op_no for display
-                                <div class="autocomplete-item" @onclick="() => SelectPatient(reg, patientName, mobile)">
+                                <div class="autocomplete-item" @onclick="() => SelectCustomerPatient(pat)">
                                     <div>
-                                        <span>@patientName (CUST-@reg.custid)</span>
-                                        <div style="font-size: 0.8em; color: #64748b;">📞 @mobile</div>
+                                        <span style="font-weight: 600; color: #0f172a;">@pat.name (CUST-@pat.custid)</span>
+                                        <div style="font-size: 0.8em; color: #64748b;">📞 @pat.mobile | 📍 @(string.IsNullOrEmpty(pat.area) ? "No Area" : pat.area), @pat.city</div>
                                     </div>
-                                    <span class="autocomplete-code">@reg.op_no</span>
+                                    <span class="autocomplete-code">@pat.custcode</span>
                                 </div>
                             }
                         </div>
                     }
                 </div>
             </div>
-
-            @if (selectedPatientBadgeVisible)
-            {
-                <div class="patient-search-result-badge">
-                    <span>Selected: <b>@billModel.patient_name</b></span>
-                    <button type="button" class="close-btn" style="font-size:1.1rem; line-height:1;" @onclick="ClearSelectedPatient">×</button>
-                </div>
-            }
-
-            <div class="billing-form-group">
-                <label>Prefix</label>
-                <select class="billing-select" @bind="patientPrefix" @bind:after="OnPrefixChanged">
-                    <option value="Mr.">Mr.</option>
-                    <option value="Ms.">Ms.</option>
-                    <option value="Mrs.">Mrs.</option>
-                    <option value="Dr.">Dr.</option>
-                    <option value="Baby">Baby</option>
-                    <option value="Mast.">Mast.</option>
-                </select>
-            </div>
-
-            <div class="billing-form-group">
-                <label>Patient Name<span class="required">*</span></label>
-                <input type="text" class="billing-input" placeholder="Ankit Sharma" @bind="billModel.patient_name" />
-            </div>
-
-            <div class="careof-grid">
-                <div class="billing-form-group">
-                    <label>C/O Type</label>
-                    <select class="billing-select" @bind="careOfPrefix">
-                        <option value="S/O">S/O</option>
-                        <option value="D/O">D/O</option>
-                        <option value="W/O">W/O</option>
-                        <option value="C/O">C/O</option>
-                    </select>
-                </div>
-                <div class="billing-form-group">
-                    <label>Care Of Details</label>
-                    <input type="text" class="billing-input" placeholder="Father/Spouse Name..." @bind="careOfName" />
-                </div>
-            </div>
-
-            <div class="billing-form-group">
-                <label>Date of Birth</label>
-                <input type="date" class="billing-input" @bind="dobSelected" @bind:after="OnDobChanged" />
-            </div>
-
-            <div class="billing-form-group">
-                <label>Gender</label>
-                <select class="billing-select" @bind="billModel.gender">
-                    <option value="Male">Male</option>
-                    <option value="Female">Female</option>
-                    <option value="Other">Other</option>
-                </select>
-            </div>
-
-            <div class="billing-form-group">
-                <label>Age</label>
-                <div class="age-grid">
-                    <div class="age-input-wrapper">
-                        <input type="text" class="billing-input" placeholder="YY" @bind="billModel.ageyears" @bind:after="OnAgeFieldsInput" />
-                        <span class="age-unit-label">YY</span>
-                    </div>
-                    <div class="age-input-wrapper">
-                        <input type="text" class="billing-input" placeholder="MM" @bind="billModel.agemonths" @bind:after="OnAgeFieldsInput" />
-                        <span class="age-unit-label">MM</span>
-                    </div>
-                    <div class="age-input-wrapper">
-                        <input type="text" class="billing-input" placeholder="DD" @bind="billModel.agedays" @bind:after="OnAgeFieldsInput" />
-                        <span class="age-unit-label">DD</span>
-                    </div>
-                </div>
-            </div>
-
-            <div class="billing-form-group">
-                <label>Email ID</label>
-                <input type="text" class="billing-input" placeholder="patient@example.com" @bind="patientEmail" />
-            </div>
-
-            <div class="billing-form-group">
-                <label>Address</label>
-                <input type="text" class="billing-input" placeholder="17/19, Street Name..." @bind="billModel.address" />
-            </div>
-
-            <div class="billing-form-group">
-                <label>Area</label>
-                <input type="text" class="billing-input" placeholder="Search Area..." @bind="areaSearchQuery" />
-            </div>
-
-            <!-- More Info Section -->
-            <button type="button" class="more-info-toggle" @onclick="ToggleMoreInfo">
-                <span>More Info</span> <i class="bi @(showMoreInfo ? "bi-chevron-up" : "bi-chevron-down")"></i>
-            </button>
-
-            @if (showMoreInfo)
-            {
-                <div class="more-info-box">
-                    <div class="billing-form-group">
-                        <label>ID Type 1</label>
-                        <select class="billing-select">
-                            <option>Aadhaar Card</option>
-                            <option>PAN Card</option>
-                            <option>Driving License</option>
-                        </select>
-                        <input type="text" class="billing-input mt-1" placeholder="ID Number..." />
-                    </div>
-                    <div class="billing-form-group">
-                        <label>ID Type 2</label>
-                        <select class="billing-select">
-                            <option>Passport</option>
-                            <option>Voter ID</option>
-                            <option>Insurance ID</option>
-                        </select>
-                        <input type="text" class="billing-input mt-1" placeholder="ID Number..." />
-                    </div>
-                    <div class="billing-form-group">
-                        <label>Preferred Language</label>
-                        <select class="billing-select">
-                            <option>English</option>
-                            <option>Hindi</option>
-                            <option>Tamil</option>
-                            <option>Telugu</option>
-                        </select>
-                    </div>
-                    <div class="billing-form-group">
-                        <label>Occupation</label>
-                        <input type="text" class="billing-input" placeholder="e.g. Engineer, Teacher, Doctor" />
-                    </div>
-                    <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.25rem;">
-                        <input type="checkbox" id="vip_patient" @bind="isVipPatient" style="width:16px; height:16px; cursor:pointer;" />
-                        <label for="vip_patient" style="font-size:0.75rem; font-weight:700; color:#334155; cursor:pointer; margin:0;">VIP Patient</label>
-                    </div>
-                </div>
-            }
         </div>
 
-        <!-- Middle Column: Referral Details + Test Selection & Grid -->
-        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+        <div class="patient-details-horizontal">
+            <div class="patient-info-item">
+                <span class="info-label">Patient Name</span>
+                <span class="info-value">
+                    @(string.IsNullOrWhiteSpace(billModel.patient_name) 
+                        ? "-" 
+                        : ((!string.IsNullOrWhiteSpace(patientPrefix) && !billModel.patient_name.StartsWith(patientPrefix, StringComparison.OrdinalIgnoreCase)) 
+                            ? $"{patientPrefix} {billModel.patient_name}" 
+                            : billModel.patient_name))
+                </span>
+            </div>
+            <div class="patient-info-item">
+                <span class="info-label">Cust ID</span>
+                <span class="info-value">@(billModel.custid > 0 ? $"CUST-{billModel.custid}" : "-")</span>
+            </div>
+            <div class="patient-info-item">
+                <span class="info-label">OP ID</span>
+                <span class="info-value">
+                    @if (!string.IsNullOrEmpty(billModel.op_id))
+                    {
+                        var reg = allRegistrations.FirstOrDefault(r => r.op_id.ToString().Equals(billModel.op_id, StringComparison.OrdinalIgnoreCase));
+                        @(reg != null ? reg.op_no : billModel.op_id)
+                    }
+                    else
+                    {
+                        @("-")
+                    }
+                </span>
+            </div>
+           
+            <div class="patient-info-item">
+                <span class="info-label">Mobile number</span>
+                <span class="info-value">@(string.IsNullOrWhiteSpace(billModel.mobileno) ? "-" : billModel.mobileno)</span>
+            </div>
+            <div class="patient-info-item">
+                <span class="info-label">Date of Birth</span>
+                <span class="info-value">@(dobSelected?.ToString("MM/dd/yyyy") ?? "-")</span>
+            </div>
+            <div class="patient-info-item">
+                <span class="info-label">Gender</span>
+                <span class="info-value">@(string.IsNullOrWhiteSpace(billModel.gender) ? "-" : billModel.gender)</span>
+            </div>
+            <div class="patient-info-item">
+                <span class="info-label">Age</span>
+                <span class="info-value">@(billModel.ageyears ?? "0")Y @(billModel.agemonths ?? "0")M @(billModel.agedays ?? "0")D</span>
+            </div>
             
-            <!-- Referral Details -->
-            <div class="billing-card">
-                <div class="billing-card-header">
-                    <span class="card-title-text"><i class="bi bi-people-fill"></i> Referral Details</span>
-                </div>
+            <div style="margin-left: auto; display: flex; align-items: center; gap: 0.5rem;">
                 
-                <div class="billing-form-group">
-                    <label>Primary Referral (Doctor)</label>
-                    <select class="billing-select" @bind="billModel.consultantdcode">
-                        <option value="0">-- Direct / Walk-in --</option>
-                        @foreach (var doc in doctorsCache)
-                        {
-                            <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
-                        }
+                <button type="button" class="btn btn-sm" @onclick="ToggleMoreInfo" style="border: none; background: transparent; padding: 0.25rem 0.5rem; color: #64748b; font-size: 1.2rem;" title="More Info">
+                    <i class="bi bi-three-dots-vertical"></i>
+                </button>
+            </div>
+        </div>
+
+        @if (showMoreInfo)
+        {
+            <div class="more-info-box" style="flex-direction: row; flex-wrap: wrap;">
+                <div class="billing-form-group" style="flex: 1; min-width: 150px;">
+                    <label>ID Type 1</label>
+                    <select class="billing-select">
+                        <option>Aadhaar Card</option>
+                        <option>PAN Card</option>
+                        <option>Driving License</option>
+                    </select>
+                    <input type="text" class="billing-input mt-1" placeholder="ID Number..." />
+                </div>
+                <div class="billing-form-group" style="flex: 1; min-width: 150px;">
+                    <label>ID Type 2</label>
+                    <select class="billing-select">
+                        <option>Passport</option>
+                        <option>Voter ID</option>
+                        <option>Insurance ID</option>
+                    </select>
+                    <input type="text" class="billing-input mt-1" placeholder="ID Number..." />
+                </div>
+                <div class="billing-form-group" style="flex: 1; min-width: 150px;">
+                    <label>Preferred Language</label>
+                    <select class="billing-select">
+                        <option>English</option>
+                        <option>Hindi</option>
+                        <option>Tamil</option>
+                        <option>Telugu</option>
                     </select>
                 </div>
-
-                <div class="billing-form-group">
-                    <label>Secondary Referral</label>
-                    <input type="text" class="billing-input" placeholder="Enter secondary referral..." />
+                <div class="billing-form-group" style="flex: 1; min-width: 150px;">
+                    <label>Occupation</label>
+                    <input type="text" class="billing-input" placeholder="e.g. Engineer, Teacher, Doctor" />
                 </div>
-
-                <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0.75rem;">
-                    <div class="billing-form-group">
-                        <label>Room Number</label>
-                        <input type="text" class="billing-input" placeholder="e.g. 101" />
-                    </div>
-                    <div class="billing-form-group">
-                        <label>Hospital ID</label>
-                        <input type="text" class="billing-input" placeholder="HOSP-123" />
-                    </div>
-                    <div class="billing-form-group">
-                        <label>Hospital Patient ID</label>
-                        <input type="text" class="billing-input" placeholder="HPID-456" />
-                    </div>
+                <div style="display:flex; align-items:center; gap:0.5rem; margin-top:0.25rem; flex: 1; min-width: 150px;">
+                    <input type="checkbox" id="vip_patient" @bind="isVipPatient" style="width:16px; height:16px; cursor:pointer;" />
+                    <label for="vip_patient" style="font-size:0.75rem; font-weight:700; color:#334155; cursor:pointer; margin:0;">VIP Patient</label>
                 </div>
             </div>
+        }
+    </div>
 
+    <!-- Doctor & Billing Info Section -->
+    <div class="top-cards-grid" style="margin-bottom: 0.5rem;">
+        <!-- Doctor Details Card -->
+        <div class="billing-card" style="flex: 1; min-width: 300px; display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem; align-items: end;">
+            <div class="billing-form-group">
+                <label>Consultant Doctor</label>
+                <select class="billing-select" @bind="billModel.consultantdcode">
+                    <option value="0">-- Direct / Walk-in --</option>
+                    @foreach (var doc in doctorsCache)
+                    {
+                        <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                    }
+                </select>
+            </div>
+            <div class="billing-form-group">
+                <label>Referred Doctor</label>
+                <input type="text" class="billing-input" placeholder="Enter secondary referral..." />
+            </div>
+        </div>
+
+        <!-- Billing Info Card -->
+        <div class="billing-card" style="margin-bottom: 0; display: flex; flex-direction: column; gap: 0.85rem; justify-content: center;">
+            <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px dashed #e2e8f0; padding-bottom: 0.5rem;">
+                <span style="font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Billing Serial No.</span>
+                <span style="font-weight: 800; color: #0f172a; font-size: 0.95rem;">
+                    @(string.IsNullOrEmpty(billModel.requestguid) ? "NEW BILL" : $"BILL ID: {billModel.requestguid.Substring(0, 8).ToUpper()}")
+                </span>
+            </div>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="font-size: 0.75rem; font-weight: 700; color: #64748b; text-transform: uppercase;">Billing Time</span>
+                <span style="font-weight: 600; color: #475569; font-size: 0.85rem;">
+                    @billingTimeDisplay
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Layout Grid -->
+    <div class="billing-layout-grid">
+
+        <!-- Middle Column: Test Selection & Grid -->
+        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+            
             <!-- Test Selection & Services -->
             <div class="billing-card test-grid-card">
-                <div class="billing-card-header">
-                    <span class="card-title-text">
-                        <i class="bi bi-journal-plus"></i> Test Selection & Services
-                    </span>
-                    <span class="test-count-badge">COUNT: @billModel.items.Count</span>
-                </div>
+                
 
                 <div class="billing-form-group">
                     <label>Search by Test Name...</label>
@@ -332,96 +273,96 @@
                 </div>
 
                 <!-- Bottom grid remarks -->
-                <div style="display:grid; grid-template-columns: 140px 1fr; gap: 0.75rem; align-items: center; margin-top: 0.5rem;">
-                    <div class="billing-form-group">
-                        <label>Report Delivery Date</label>
-                        <input type="date" class="billing-input" value="@billingDateDisplay" disabled />
-                    </div>
-                    <div class="billing-form-group">
-                        <label>Internal Remarks</label>
-                        <input type="text" class="billing-input" placeholder="Add any billing notes..." @bind="billModel.concessionreason" />
-                    </div>
-                </div>
+               
             </div>
         </div>
 
         <!-- Right Column: Collection By, Financial Summary, Payment Box -->
-        <div style="display: flex; flex-direction: column; gap: 1.25rem;">
+        <div style="display: flex; flex-direction: column; gap: 0.5rem;">
           
 
-            <!-- Financial Summary -->
-            <div class="billing-card">
-                <div class="billing-card-header">
-                    <span class="card-title-text"><i class="bi bi-calculator"></i> Financial Summary</span>
+            <!-- Unified Financial Summary Card -->
+            <div style="background: #fdfdff; border: 1px solid #f1f5f9; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.02), 0 2px 4px -1px rgba(0, 0, 0, 0.02); display: flex; flex-direction: column;">
+                
+                <!-- Bill Amount -->
+                <div style="padding: 0.75rem 1rem 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 700; color: #1e293b; font-size: 0.85rem;">Bill Amount (@billModel.items.Count Tests)</span>
+                    <span style="font-weight: 700; color: #6366f1; font-size: 1rem;">₹ @totalBaseAmount.ToString("F2")</span>
                 </div>
 
-                <div class="concession-row" style="font-size:0.8rem; font-weight:700; border-bottom: 1px solid #f1f5f9; padding-bottom: 0.5rem;">
-                    <span>Bill Amount (@billModel.items.Count Tests)</span>
-                    <span></span>
-                    <span style="text-align:right;">₹ @totalBaseAmount.ToString("F2")</span>
-                </div>
-
-                <!-- Concessions Layout -->
-                <div class="concession-row">
-                    <span class="concession-label">General Concession</span>
-                    <div class="concession-input-group">
-                        <input type="number" class="charge-input" style="text-align:right;" @bind="billModel.discountper" @bind:after="OnGeneralConcessionPerChanged" />
-                        <span>%</span>
-                    </div>
-                    <div class="concession-input-group">
-                        <input type="number" class="charge-input" style="text-align:right;" @bind="billModel.discountamount" @bind:after="OnGeneralConcessionAmtChanged" />
-                        <span>VAL</span>
+                <!-- General Concession -->
+                <div style="padding: 0.5rem 1rem; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600; color: #64748b; font-size: 0.65rem; display: flex; align-items: center; gap: 0.5rem; text-transform: uppercase;">
+                        GENERAL CONCESSION <i class="bi bi-info-circle" style="color: #6366f1; font-size: 0.75rem;"></i>
+                    </span>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.65rem; font-weight: 600; color: #64748b;">
+                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" @bind="billModel.discountper" @bind:after="OnGeneralConcessionPerChanged" />
+                        %
+                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" @bind="billModel.discountamount" @bind:after="OnGeneralConcessionAmtChanged" />
+                        VAL
                     </div>
                 </div>
 
-                <div class="concession-row">
-                    <span class="concession-label">Referral Concession</span>
-                    <div class="concession-input-group">
-                        <input type="number" class="charge-input" style="text-align:right;" value="0" disabled />
-                        <span>%</span>
-                    </div>
-                    <div class="concession-input-group">
-                        <input type="number" class="charge-input" style="text-align:right;" @bind="billModel.specialdiscount" @bind:after="RecalculateTotals" />
-                        <span>VAL</span>
+                <!-- Dashed Separator -->
+                <div style="margin: 0 1rem; border-bottom: 1px dashed #cbd5e1;"></div>
+
+                <!-- Referral Concession -->
+                <div style="padding: 0.5rem 1rem; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 600; color: #64748b; font-size: 0.65rem; display: flex; align-items: center; gap: 0.5rem; text-transform: uppercase;">
+                        REFERRAL CONCESSION <i class="bi bi-info-circle" style="color: #6366f1; font-size: 0.75rem;"></i>
+                    </span>
+                    <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.65rem; font-weight: 600; color: #64748b;">
+                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" value="0" disabled />
+                        %
+                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" @bind="billModel.specialdiscount" @bind:after="RecalculateTotals" />
+                        VAL
                     </div>
                 </div>
+
+                <!-- Solid Separator -->
+                <div style="margin: 0 1rem; border-bottom: 2px solid #e2e8f0;"></div>
 
                 <!-- Net Payable -->
-                <div class="summary-net-payable">
-                    <span class="net-payable-label">Net Payable</span>
-                    <span class="net-payable-amount">₹ @netPayable.ToString("F2")</span>
-                </div>
-            </div>
-
-            <!-- Payment Interface -->
-            <div class="payment-interface-card">
-                <span class="payment-interface-title"><i class="bi bi-wallet2"></i> Payment Interface</span>
-                
-                <div class="payment-channel-row">
-                    <span>CASH</span>
-                    <input type="number" class="payment-channel-input" @bind="billModel.pmc1" @bind:after="RecalculateTotals" />
-                </div>
-                <div class="payment-channel-row">
-                    <span>CARD</span>
-                    <input type="number" class="payment-channel-input" @bind="billModel.pmc2" @bind:after="RecalculateTotals" />
-                </div>
-                <div class="payment-channel-row">
-                    <span>GPAY / UPI</span>
-                    <input type="number" class="payment-channel-input" @bind="billModel.pmc3" @bind:after="RecalculateTotals" />
+                <div style="padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 700; color: #1e293b; font-size: 0.85rem; text-transform: uppercase;">NET PAYABLE</span>
+                    <span style="font-weight: 700; color: #6366f1; font-size: 1rem;">₹ @netPayable.ToString("F2")</span>
                 </div>
 
-                <div class="payment-balance-due-row">
-                    <span style="font-weight:700;">BALANCE DUE</span>
+                <!-- Payment Box (Lavendar) -->
+                <div style="margin: 0 1rem 0.75rem; background: #f8faff; border-radius: 12px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-weight: 600; color: #1e293b; font-size: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="bi bi-cash" style="color: #10b981; font-size: 1rem;"></i> CASH
+                        </span>
+                        <input type="number" style="width: 90px; text-align: right; border: none; border-radius: 8px; padding: 0.3rem 0.5rem; height: 30px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="billModel.pmc1" @bind:after="RecalculateTotals" />
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-weight: 600; color: #1e293b; font-size: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="bi bi-credit-card" style="color: #0ea5e9; font-size: 1rem;"></i> CARD
+                        </span>
+                        <input type="number" style="width: 90px; text-align: right; border: none; border-radius: 8px; padding: 0.3rem 0.5rem; height: 30px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="billModel.pmc2" @bind:after="RecalculateTotals" />
+                    </div>
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <span style="font-weight: 600; color: #1e293b; font-size: 0.75rem; display: flex; align-items: center; gap: 0.5rem;">
+                            <i class="bi bi-google-play" style="color: #ea4335; font-size: 1rem;"></i> GPAY / UPI
+                        </span>
+                        <input type="number" style="width: 90px; text-align: right; border: none; border-radius: 8px; padding: 0.3rem 0.5rem; height: 30px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="billModel.pmc3" @bind:after="RecalculateTotals" />
+                    </div>
+                </div>
+
+                <!-- Balance Due Box -->
+                <div style="background: #4f46e5; padding: 0.75rem 1rem; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px; display: flex; justify-content: space-between; align-items: center;">
+                    <span style="font-weight: 700; color: #ffffff; font-size: 0.85rem; text-transform: uppercase;">BALANCE DUE</span>
                     @if (balanceDue <= 0)
                     {
-                        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.25rem;">
-                            <span class="balance-due-amount settled">₹ 0.00</span>
-                            <span class="fully-settled-badge">Fully Settled</span>
+                        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.15rem;">
+                            <span style="font-weight: 700; color: #f97316; font-size: 1.05rem;">₹ 0.00</span>
+                            <span style="font-size: 0.6rem; font-weight: 700; color: #10b981; background: #ffffff; padding: 0.1rem 0.3rem; border-radius: 4px; text-transform: uppercase;">Fully Settled</span>
                         </div>
                     }
                     else
                     {
-                        <span class="balance-due-amount">₹ @balanceDue.ToString("F2")</span>
+                        <span style="font-weight: 700; color: #f97316; font-size: 1.05rem;">₹ @balanceDue.ToString("F2")</span>
                     }
                 </div>
             </div>
@@ -497,6 +438,112 @@
     private List<OPRegistrationModel.OpRegistrationModel> allRegistrations = new();
     private List<OPRegistrationModel.OpRegistrationModel> filteredRegistrations = new();
     private List<DoctorBookingListModel> bookingsCache = new();
+    
+    private List<CustomerModel> searchedPatients = new();
+    private List<CustomerModel> allCustomersCache = new();
+    private bool isCustomersCacheLoaded = false;
+    private List<Booking.Models.BranchModel> branchesList = new();
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                await LoadBranchesAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error loading session: {ex.Message}");
+            }
+        }
+    }
+
+    private HttpClient CreateClient(bool isLabCare = false)
+    {
+        var clientName = isLabCare ? "LabCareUrl" : "DoctorApi";
+        var client = ClientFactory.CreateClient(clientName);
+        if (isLabCare)
+        {
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+        }
+        return client;
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            using var client = CreateClient(true);
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branchesList = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                if (branchesList.Any() && billModel.enteredbhcode == 1)
+                {
+                    billModel.enteredbhcode = branchesList.First().bh_code;
+                }
+            }
+            else
+            {
+                var err = await response.Content.ReadAsStringAsync();
+                Console.Error.WriteLine($"Error loading branches: {response.StatusCode} - {err}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private void SelectCustomerPatient(CustomerModel pat)
+    {
+        billModel.custid = pat.custid;
+        billModel.patient_name = pat.name;
+        billModel.mobileno = pat.mobile;
+        billModel.gender = pat.gender;
+        billModel.ageyears = pat.ageyears.ToString();
+        billModel.agemonths = pat.agemonths.ToString();
+        billModel.agedays = pat.agedays.ToString();
+        billModel.dateofbirth = pat.dateofbirth?.ToString("yyyy-MM-dd");
+        if (pat.dateofbirth.HasValue)
+        {
+            dobSelected = DateOnly.FromDateTime(pat.dateofbirth.Value);
+        }
+        
+        if (pat.bhcode > 0)
+        {
+            billModel.enteredbhcode = pat.bhcode;
+        }
+        if (pat.ftcode.HasValue && pat.ftcode.Value > 0)
+        {
+            billModel.ftcode = pat.ftcode.Value;
+        }
+
+        patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
+        selectedPatientBadgeVisible = true;
+        showPatientDropdown = false;
+
+        RecalculateTotals();
+    }
 
     private string testSearchQuery = string.Empty;
     private bool showTestDropdown = false;
@@ -810,30 +857,54 @@
     }
 
     // --- Autocomplete Searches ---
-    private void OnPatientSearchKeyUp(KeyboardEventArgs e)
+    private async Task LoadCustomersCacheAsync(bool forceReload = false)
+    {
+        if (isCustomersCacheLoaded && !forceReload) return;
+        try
+        {
+            using var client = CreateClient(true);
+            var response = await client.GetAsync("api/Customer/get");
+            if (response.IsSuccessStatusCode)
+            {
+                allCustomersCache = await response.Content.ReadFromJsonAsync<List<CustomerModel>>() ?? new();
+                isCustomersCacheLoaded = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error loading customers cache: {ex.Message}");
+        }
+    }
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
     {
         if (string.IsNullOrWhiteSpace(patientSearchQuery))
         {
-            filteredRegistrations.Clear();
+            searchedPatients.Clear();
             showPatientDropdown = false;
             return;
         }
 
-        filteredRegistrations = allRegistrations
-            .Where(r => 
+        try
+        {
+            using var client = CreateClient(true);
+            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}");
+            if (response.IsSuccessStatusCode)
             {
-                var bk = bookingsCache.FirstOrDefault(b => b.custid == r.custid);
-                var patientName = bk?.patient_name ?? "";
-                var mobile = bk?.notes ?? ""; // using notes placeholder for mobile lookup
-                return r.op_no.Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase) || 
-                       r.custid.ToString().Contains(patientSearchQuery) ||
-                       patientName.Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase) ||
-                       mobile.Contains(patientSearchQuery);
-            })
-            .Take(6)
-            .ToList();
-
-        showPatientDropdown = true;
+                var list = await response.Content.ReadFromJsonAsync<List<CustomerModel>>() ?? new();
+                searchedPatients = list.Take(10).ToList();
+                showPatientDropdown = true;
+            }
+            else
+            {
+                var err = await response.Content.ReadAsStringAsync();
+                Console.Error.WriteLine($"Error searching patients: {response.StatusCode} - {err}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error searching patients: {ex.Message}");
+        }
     }
 
     private bool selectedPatientBadgeVisible = false;
@@ -1118,7 +1189,7 @@
     {
         billModel = new HmsBillModel
         {
-            enteredbhcode = 1,
+            enteredbhcode = branchesList.FirstOrDefault()?.bh_code ?? 1,
             cntcode = 2,
             usercode = 10,
             computercode = 1,
@@ -1138,6 +1209,7 @@
         testSearchQuery = string.Empty;
         areaSearchQuery = string.Empty;
         selectedPatientBadgeVisible = false;
+        isCustomersCacheLoaded = false;
         
         RecalculateTotals();
     }

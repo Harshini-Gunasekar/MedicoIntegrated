@@ -14,10 +14,27 @@ builder.Services.AddHttpClient("DoctorApi", client =>
     client.DefaultRequestHeaders.Add("tenant_code", "TEN1011");
 });
 
+builder.Services.AddHttpClient("LabCareUrl", client => 
+{
+    var baseUrl = builder.Configuration["LabCareUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("LabCareUrl is not configured in appsettings.json");
+    client.BaseAddress = new Uri(baseUrl);
+
+});
+
 builder.Services.AddScoped(sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi"));
 builder.Services.AddScoped<Booking.Services.DoctorService>();
 builder.Services.AddScoped<Booking.Services.SlotService>();
 builder.Services.AddScoped<Booking.Services.DoctorAppointmentSlotTypeService>();
+builder.Services.AddScoped<Booking.Services.DoctorTypeMasterService>();
+builder.Services.AddScoped<Booking.Services.DoctorSpecialtyMasterService>();
+builder.Services.AddScoped<Booking.Services.ReimbursementCompanyMasterService>();
+builder.Services.AddScoped<Booking.Services.ReportMethodService>();
+builder.Services.AddScoped<Booking.Services.UomMasterService>();
+builder.Services.AddScoped<Booking.Services.GroupMasterService>();
+builder.Services.AddScoped<Booking.Services.SampleMasterService>();
+builder.Services.AddScoped<Booking.Services.TestTypeMasterService>();
+builder.Services.AddScoped<Booking.Services.TestMasterService>();
 builder.Services.AddScoped<Booking.Services.ToastService>();
 builder.Services.AddScoped<Booking.Services.AppointmentBookingService>();
 builder.Services.AddScoped<Booking.Services.CaseSheetService>();

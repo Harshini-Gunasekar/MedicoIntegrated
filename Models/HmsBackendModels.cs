@@ -108,4 +108,43 @@ namespace Booking.Models
         public string cnttid { get; set; }
         public int usercode { get; set; }
     }
+
+    public class BillNoConfig
+    {
+        public int? bncode { get; set; }
+        public string? name { get; set; }
+        public string? shortname { get; set; }
+        public int? orderno { get; set; }
+        public int? bhcode { get; set; }
+        public int? cntcode { get; set; }
+        public bool isdefault { get; set; }
+        public bool allbranch { get; set; }
+        public bool allcounter { get; set; }
+        public bool restartfinancialyear { get; set; }
+        public bool restartcalendaryear { get; set; }
+        public bool restartmonthly { get; set; }
+        public bool restartdaily { get; set; }
+        public bool issampleno { get; set; }
+        public bool isreceiptno { get; set; }
+        public bool deleted { get; set; }
+        public string? tenant_code { get; set; }
+        public DateTime? entereddate { get; set; }
+        public int? sequence_rows_in_use { get; set; }
+        public int usercode { get; set; } = 1;
+        public int computercode { get; set; } = 1;
+    }
+
+    public class BillNoListRequest
+    {
+        public int page { get; set; } = 1;
+        public int pagesize { get; set; } = 20;
+    }
+
+    public class BillNoListResponse
+    {
+        public int total { get; set; }
+        public int page { get; set; }
+        public int pageSize { get; set; }
+        public List<BillNoConfig> data { get; set; } = new();
+    }
 }
