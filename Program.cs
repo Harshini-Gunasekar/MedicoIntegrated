@@ -39,6 +39,14 @@ builder.Services.AddScoped<Booking.Services.ToastService>();
 builder.Services.AddScoped<Booking.Services.AppointmentBookingService>();
 builder.Services.AddScoped<Booking.Services.CaseSheetService>();
 builder.Services.AddScoped<Booking.Services.HmsBillingService>();
+builder.Services.AddScoped<Booking.Services.HmsDueCollectionService>();
+builder.Services.AddScoped<Booking.Services.CounterMasterService>();
+builder.Services.AddScoped<Booking.Services.FeetypeService>();
+builder.Services.AddScoped<Booking.Services.TestFeeService>();
+builder.Services.AddScoped<Booking.Services.AreaMasterService>();
+builder.Services.AddScoped<Booking.Services.CountryMasterService>();
+builder.Services.AddScoped<Booking.Services.StateMasterService>();
+builder.Services.AddScoped<Booking.Services.CityMasterService>();
 
 var app = builder.Build();
 
