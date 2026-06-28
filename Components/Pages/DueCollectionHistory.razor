@@ -1,0 +1,445 @@
+@page "/due-collection-history"
+@rendermode InteractiveServer
+@using medico_backend.Model
+@inject HmsDueCollectionService DueCollectionService
+@inject ToastService ToastService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<div class="due-collection-wrapper">
+    @if (!IsEmbedded)
+    {
+        <!-- Top Header Card -->
+        <div class="due-header-card">
+            <div class="header-left-section">
+                <div class="header-icon-container">
+                    <i class="bi bi-clock-history"></i>
+                </div>
+                <div class="header-text-container">
+                    <h1>Due Collection History</h1>
+                    <p><span class="header-status-dot"></span> VIEW AND MANAGE PAST COLLECTIONS</p>
+                </div>
+            </div>
+            <button class="btn-history-filter-trigger @(showHistoryFilter ? "active" : "")" @onclick="ToggleHistoryFilter">
+                <i class="bi bi-funnel"></i> Filter
+            </button>
+        </div>
+    }
+
+    @if (showHistoryFilter)
+    {
+        <div class="hist-filter-card">
+            <div class="hist-filter-body">
+                <!-- Row 1: FROM / TO / BRANCH -->
+                <div class="hist-filter-row-3">
+                    <div class="hist-fg">
+                        <label>FROM</label>
+                        <input type="date" class="hist-input" @bind="histFilter.fromdate" />
+                    </div>
+                    <div class="hist-fg">
+                        <label>TO</label>
+                        <input type="date" class="hist-input" @bind="histFilter.todate" />
+                    </div>
+                    <div class="hist-fg">
+                        <label>BRANCH</label>
+                        <select class="hist-select" @bind="histBranchStr">
+                            <option value="">Select the Branch</option>
+                            <option value="1">Sample / Lab Branch</option>
+                            <option value="2">Main Branch</option>
+                            <option value="3">South Wing</option>
+                            <option value="4">City Clinic</option>
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Row 2: CUSTOMER / SEARCH -->
+                <div class="hist-filter-row-2">
+                    <div class="hist-fg">
+                        <label>CUSTOMER / SEARCH</label>
+                        <input type="text" class="hist-input" placeholder="Search ID, Name, Mobile, Receipt No..."
+                               @bind="histFilter.search" />
+                    </div>
+                </div>
+
+                <!-- Action buttons -->
+                <div class="hist-filter-actions">
+                    <button class="btn-hist-reset" @onclick="ResetHistoryFilter">
+                        <i class="bi bi-x-circle"></i> Reset
+                    </button>
+                    <button class="btn-hist-search" @onclick="SearchHistory">
+                        <i class="bi bi-search"></i> Search
+                    </button>
+                    <button class="btn-hist-print" @onclick="PrintHistory">
+                        <i class="bi bi-printer-fill"></i> Print
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- Results Table -->
+    <div class="table-container shadow-sm mt-3">
+        <table class="due-table hist-report-table">
+            <thead>
+                <tr>
+                    <th>RECEIPT DATE</th>
+                    <th>RECEIPT NO</th>
+                    <th>PATIENT ID</th>
+                    <th>CUSTOMER</th>
+                    <th>DOCTOR</th>
+                    <th>BILL NO</th>
+                    <th class="text-end">RECEIVED</th>
+                    <th class="text-center">PAYMODE</th>
+                    <th class="text-center">PRINT</th>
+                    <th class="text-center">DELETE</th>
+                </tr>
+            </thead>
+            <tbody>
+                @if (loadingHistory)
+                {
+                    <tr>
+                        <td colspan="10" class="text-center py-5">
+                            <div class="spinner-border text-primary" role="status"></div>
+                            <div class="mt-2 text-muted">Loading collection history...</div>
+                        </td>
+                    </tr>
+                }
+                else if (historyReportRows.Count == 0)
+                {
+                    <tr>
+                        <td colspan="10" class="text-center py-5 text-muted">
+                            <i class="bi bi-receipt-cutoff font-xxl"></i>
+                            <div class="mt-2">No records found. Use the filter above to search.</div>
+                        </td>
+                    </tr>
+                }
+                else
+                {
+                    @foreach (var row in historyReportRows)
+                    {
+                        <tr>
+                            <td class="font-sm text-muted">@(row.receipt_date.ToString("dd-MMM-yyyy"))</td>
+                            <td class="font-mono font-bold text-primary">@row.receipt_no</td>
+                            <td class="font-mono font-sm text-muted">@(row.patient_id?.ToString() ?? row.custid?.ToString() ?? "-")</td>
+                            <td class="font-bold">@(string.IsNullOrWhiteSpace(row.patient_name) ? "-" : row.patient_name)</td>
+                            <td class="text-muted font-sm">@(string.IsNullOrWhiteSpace(row.doctor_name) ? "-" : row.doctor_name)</td>
+                            <td class="font-mono font-sm">@(string.IsNullOrWhiteSpace(row.bill_no) ? "-" : row.bill_no)</td>
+                            <td class="text-end font-bold text-success">
+                                @if (row.amount_paid == 0 && row.advance_used > 0)
+                                {
+                                    @(row.advance_used.ToString("N2"))
+                                }
+                                else
+                                {
+                                    @(row.amount_paid.ToString("N2"))
+                                }
+                            </td>
+                            <td class="text-center">
+                                @{
+                                    bool isAdvance = (row.amount_paid == 0 && row.advance_used > 0) || 
+                                                     (row.receipt_type != null && row.receipt_type.Contains("ADVANCE", StringComparison.OrdinalIgnoreCase));
+                                    string displayPaymode = isAdvance ? "ADVANCE" : (row.collection_type ?? "");
+                                }
+                                <span class="badge-paymode @(displayPaymode.ToLower())">
+                                    @displayPaymode
+                                </span>
+                            </td>
+                            <td class="text-center">
+                                <button class="btn-hist-action blue" title="Print Receipt" @onclick="() => PrintRow(row)">
+                                    <i class="bi bi-person-badge"></i>
+                                </button>
+                            </td>
+                            <td class="text-center">
+                                <button class="btn-hist-action red" title="Cancel / Delete" @onclick="() => PromptCancelFromHistory(row)">
+                                    <i class="bi bi-trash3"></i>
+                                </button>
+                            </td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+
+    <!-- History Bottom Grid (Pagination + Grand Total Collected Card) -->
+    <div class="history-bottom-container mt-3">
+        <!-- Left: Pagination -->
+        <div class="history-pagination-left">
+            @if (histTotalCount > 0)
+            {
+                <span class="pagination-info">Showing @(Math.Min((histCurrentPage - 1) * histPageSize + 1, histTotalCount)) to @(Math.Min(histCurrentPage * histPageSize, histTotalCount)) of @histTotalCount records</span>
+            }
+            @if (histTotalCount > histPageSize)
+            {
+                <div class="pagination-buttons ms-3">
+                    <button class="pag-btn" disabled="@(histCurrentPage == 1)" @onclick="() => ChangeHistPage(histCurrentPage - 1)">
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    @for (int i = 1; i <= HistTotalPages; i++)
+                    {
+                        var pn = i;
+                        <button class="pag-btn @(histCurrentPage == pn ? "active" : "")" @onclick="() => ChangeHistPage(pn)">@pn</button>
+                    }
+                    <button class="pag-btn" disabled="@(histCurrentPage == HistTotalPages || HistTotalPages == 0)" @onclick="() => ChangeHistPage(histCurrentPage + 1)">
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
+            }
+        </div>
+
+        <!-- Right: Collected Amt Card -->
+        <div class="collected-amt-card-right">
+            <div class="collected-amt-icon-bg">
+                <i class="bi bi-cash-stack"></i>
+            </div>
+            <div class="collected-amt-info">
+                <span class="collected-amt-label">COLLECTED AMT</span>
+                <span class="collected-amt-val">₹ @grandTotalCollected.ToString("N2")</span>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Cancellation dialog -->
+@if (showCancelModal && receiptToCancel != null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-card-custom shadow-lg">
+            <div class="modal-header-custom">
+                <h3>Cancel Due Collection Receipt</h3>
+                <button class="close-btn" @onclick="CloseCancelModal">&times;</button>
+            </div>
+            <div class="modal-body-custom">
+                <p>Are you sure you want to cancel the collection receipt <strong class="text-primary">@receiptToCancel.receipt_no</strong>?</p>
+                <div class="mt-3">
+                    <label class="font-bold font-sm">Reason for Cancellation</label>
+                    <textarea class="control-textarea mt-1" placeholder="Enter reason..." @bind="cancelReason"></textarea>
+                </div>
+            </div>
+            <div class="modal-footer-custom">
+                <button class="btn btn-secondary-custom" @onclick="CloseCancelModal">Close</button>
+                <button class="btn btn-danger-custom" @onclick="SubmitCancelReceipt" disabled="@(string.IsNullOrWhiteSpace(cancelReason) || cancelling)">
+                    @if (cancelling)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                    }
+                    Cancel Receipt
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public bool IsEmbedded { get; set; } = false;
+
+    private bool showHistoryFilter = false;
+    private HmsDueCollectionFilterRequest histFilter = new();
+    private string histBranchStr = "";
+    private List<HmsDueCollectionSummary> historyReportRows = new();
+    private int histCurrentPage = 1;
+    private int histPageSize = 15;
+    private int histTotalCount = 0;
+    private double grandTotalCollected = 0;
+    private int HistTotalPages => (int)Math.Ceiling((double)histTotalCount / histPageSize);
+    
+    // Cancel-from-history
+    private string? histCancelReceiptGuid;
+    private string? histCancelReceiptNo;
+    private bool showCancelModal = false;
+    private HmsDueCollectionSummary? receiptToCancel;
+    private int cancelUserCode = 10;
+    private string cancelReason = string.Empty;
+    private bool cancelling = false;
+    private bool loadingHistory = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RunHistoryFilter();
+    }
+
+    public bool IsFilterOpen => showHistoryFilter;
+
+    public void ToggleHistoryFilter()
+    {
+        showHistoryFilter = !showHistoryFilter;
+        StateHasChanged();
+    }
+
+    private async Task SearchHistory()
+    {
+        histCurrentPage = 1;
+        await RunHistoryFilter();
+    }
+
+    private async Task ChangeHistPage(int page)
+    {
+        if (page < 1 || page > HistTotalPages) return;
+        histCurrentPage = page;
+        await RunHistoryFilter();
+    }
+
+    private async Task RunHistoryFilter()
+    {
+        loadingHistory = true;
+        StateHasChanged();
+        string? originalSearch = histFilter.search?.Trim();
+
+        try
+        {
+            if (int.TryParse(histBranchStr, out var bh))
+                histFilter.bhcode = bh;
+            else
+                histFilter.bhcode = null;
+
+            // We always fetch up to 5000 records for the date and branch filter range
+            // to allow reliable local filtering & stable page size (so 1st page is fully filled).
+            var fetchFilter = new HmsDueCollectionFilterRequest
+            {
+                bhcode    = histFilter.bhcode,
+                fromdate  = histFilter.fromdate,
+                todate    = histFilter.todate,
+                custid    = null,
+                search    = null,
+                page      = 1,
+                pagesize  = 500
+            };
+
+            List<HmsDueCollectionSummary> allRows = new();
+            var res = await DueCollectionService.GetDueHistoryResponseAsync(fetchFilter);
+            if (res?.data != null)
+            {
+                allRows = res.data;
+                int totalPages = (int)Math.Ceiling((double)res.totalCount / 500);
+                for (int p = 2; p <= totalPages && p <= 10; p++)
+                {
+                    fetchFilter.page = p;
+                    var pageRes = await DueCollectionService.GetDueHistoryResponseAsync(fetchFilter);
+                    if (pageRes?.data != null)
+                        allRows.AddRange(pageRes.data);
+                }
+            }
+
+            // Exclude pure advance deposits and refunds — only show bill payments
+            var filteredRows = allRows.Where(r =>
+            {
+                bool hasBill = !string.IsNullOrWhiteSpace(r.bill_no);
+                if (hasBill) return true;
+
+                bool isPureAdvanceDeposit = r.receipt_type != null &&
+                    (r.receipt_type.Contains("DEPOSIT", StringComparison.OrdinalIgnoreCase) ||
+                     r.receipt_type.Contains("REFUND", StringComparison.OrdinalIgnoreCase) ||
+                     r.receipt_type.Equals("ADVANCE", StringComparison.OrdinalIgnoreCase));
+                return !isPureAdvanceDeposit;
+            }).ToList();
+
+            // Apply search filter locally if any search text is present
+            if (!string.IsNullOrEmpty(originalSearch))
+            {
+                filteredRows = filteredRows.Where(r => 
+                    (r.patient_name != null && r.patient_name.Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
+                    (r.receipt_no != null && r.receipt_no.Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
+                    (r.bill_no != null && r.bill_no.Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
+                    (r.patient_id != null && r.patient_id.Value.ToString().Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
+                    (r.collected_by != null && r.collected_by.Contains(originalSearch, StringComparison.OrdinalIgnoreCase))
+                ).ToList();
+            }
+
+            histTotalCount = filteredRows.Count;
+
+            // Make sure current page is valid
+            if (histCurrentPage > HistTotalPages)
+            {
+                histCurrentPage = Math.Max(1, HistTotalPages);
+            }
+
+            // Slice the rows for the current page
+            historyReportRows = filteredRows
+                .Skip((histCurrentPage - 1) * histPageSize)
+                .Take(histPageSize)
+                .ToList();
+
+            // Grand total collected over all filtered records
+            grandTotalCollected = filteredRows.Sum(r =>
+            {
+                double val = r.amount_paid > 0 ? r.amount_paid : r.advance_used;
+                bool isRefund = r.receipt_type != null && r.receipt_type.Contains("REFUND", StringComparison.OrdinalIgnoreCase);
+                return isRefund ? -val : val;
+            });
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load collection history: {ex.Message}");
+        }
+        finally
+        {
+            loadingHistory = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ResetHistoryFilter()
+    {
+        histFilter     = new HmsDueCollectionFilterRequest();
+        histBranchStr  = "";
+        histCurrentPage = 1;
+        await RunHistoryFilter();
+    }
+
+    private void PrintHistory()
+    {
+        ToastService.ShowSuccess("Print triggered — implement PDF/print export here.");
+    }
+
+    private void PrintRow(HmsDueCollectionSummary row)
+    {
+        ToastService.ShowSuccess($"Printing receipt {row.receipt_no}...");
+    }
+
+    private void PromptCancelFromHistory(HmsDueCollectionSummary row)
+    {
+        histCancelReceiptGuid = row.receipt_guid;
+        histCancelReceiptNo   = row.receipt_no;
+        receiptToCancel = row;
+        cancelReason   = string.Empty;
+        cancelUserCode = 10;
+        showCancelModal = true;
+    }
+
+    private void CloseCancelModal()
+    {
+        showCancelModal = false;
+        receiptToCancel = null;
+    }
+
+    private async Task SubmitCancelReceipt()
+    {
+        if (receiptToCancel == null || string.IsNullOrWhiteSpace(receiptToCancel.receipt_guid)) return;
+        cancelling = true;
+        StateHasChanged();
+
+        try
+        {
+            var result = await DueCollectionService.CancelReceiptAsync(receiptToCancel.receipt_guid, cancelUserCode, cancelReason);
+            if (result.Contains("success", StringComparison.OrdinalIgnoreCase) || result.Contains("cancelled", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(result))
+            {
+                ToastService.ShowSuccess($"Receipt {receiptToCancel.receipt_no} has been cancelled.");
+                showCancelModal = false;
+                await RunHistoryFilter();
+            }
+            else
+            {
+                ToastService.ShowError($"Cancellation response: {result}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to cancel receipt: {ex.Message}");
+        }
+        finally
+        {
+            cancelling = false;
+            StateHasChanged();
+        }
+    }
+}
