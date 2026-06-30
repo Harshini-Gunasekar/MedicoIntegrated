@@ -12,6 +12,13 @@ namespace Booking.Services
 
         public void ShowError(string message) => ShowToast(message, "error");
         public void ShowSuccess(string message) => ShowToast(message, "success");
+        public void ShowWarning(string message) => ShowToast(message, "warning");
+        public void ShowInfo(string message) => ShowToast(message, "info");
+
+        public void Success(string message) => ShowSuccess(message);
+        public void Error(string message) => ShowError(message);
+        public void Warning(string message) => ShowWarning(message);
+        public void Info(string message) => ShowInfo(message);
 
         private void ShowToast(string message, string type)
         {

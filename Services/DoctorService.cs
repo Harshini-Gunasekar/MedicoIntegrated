@@ -37,88 +37,54 @@ namespace Booking.Services
             }
         }
 
-        public async Task<bool> InsertDoctorAsync(DoctorMasterModel doctor, byte[]? imageBytes = null, string? imageName = null)
+        private MultipartFormDataContent BuildDoctorFormData(DoctorMasterModel doctor, byte[]? imageBytes, string? imageName)
         {
+            var content = new MultipartFormDataContent();
+            foreach (var prop in doctor.GetType().GetProperties())
+            {
+                if (prop.Name == "doctorimage") continue;
+                var value = prop.GetValue(doctor);
+                if (value != null)
+                {
+                    string stringValue = value is DateTime dt ? dt.ToString("yyyy-MM-ddTHH:mm:ss") : value.ToString() ?? "";
+                    content.Add(new StringContent(stringValue), prop.Name);
+                    content.Add(new StringContent(stringValue), $"DoctorMasterModel.{prop.Name}");
+                    content.Add(new StringContent(stringValue), $"doctor.{prop.Name}");
+                }
+            }
+
             if (imageBytes != null && imageBytes.Length > 0 && !string.IsNullOrEmpty(imageName))
             {
-                using var content = new MultipartFormDataContent();
-                foreach (var prop in doctor.GetType().GetProperties())
-                {
-                    if (prop.Name == "doctorimage") continue;
-                    var value = prop.GetValue(doctor);
-                    if (value != null)
-                    {
-                        string stringValue = value is DateTime dt ? dt.ToString("yyyy-MM-ddTHH:mm:ss") : value.ToString() ?? "";
-                        content.Add(new StringContent(stringValue), prop.Name);
-                        content.Add(new StringContent(stringValue), $"DoctorMasterModel.{prop.Name}");
-                        content.Add(new StringContent(stringValue), $"doctor.{prop.Name}");
-                    }
-                }
-
                 var fileContent = new ByteArrayContent(imageBytes);
                 fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(GetMimeType(imageName));
                 content.Add(fileContent, "doctorImageFile", imageName);
                 content.Add(fileContent, "file", imageName);
                 content.Add(fileContent, "doctorimage", imageName);
                 content.Add(fileContent, "doctor_image", imageName);
-
-                if (!string.IsNullOrEmpty(doctor.doctorimage))
-                {
-                    content.Add(new StringContent(doctor.doctorimage), "doctorimage");
-                    content.Add(new StringContent(doctor.doctorimage), "DoctorMasterModel.doctorimage");
-                    content.Add(new StringContent(doctor.doctorimage), "doctor.doctorimage");
-                }
-
-                var response = await _http.PostAsync("api/DoctorMaster/insert", content);
-                return response.IsSuccessStatusCode;
             }
-            else
+
+            if (!string.IsNullOrEmpty(doctor.doctorimage))
             {
-                var response = await _http.PostAsJsonAsync("api/DoctorMaster/insert", doctor);
-                return response.IsSuccessStatusCode;
+                content.Add(new StringContent(doctor.doctorimage), "doctorimage");
+                content.Add(new StringContent(doctor.doctorimage), "DoctorMasterModel.doctorimage");
+                content.Add(new StringContent(doctor.doctorimage), "doctor.doctorimage");
             }
+
+            return content;
+        }
+
+        public async Task<bool> InsertDoctorAsync(DoctorMasterModel doctor, byte[]? imageBytes = null, string? imageName = null)
+        {
+            using var content = BuildDoctorFormData(doctor, imageBytes, imageName);
+            var response = await _http.PostAsync("api/DoctorMaster/insert", content);
+            return response.IsSuccessStatusCode;
         }
 
         public async Task<bool> UpdateDoctorAsync(DoctorMasterModel doctor, byte[]? imageBytes = null, string? imageName = null)
         {
-            if (imageBytes != null && imageBytes.Length > 0 && !string.IsNullOrEmpty(imageName))
-            {
-                using var content = new MultipartFormDataContent();
-                foreach (var prop in doctor.GetType().GetProperties())
-                {
-                    if (prop.Name == "doctorimage") continue;
-                    var value = prop.GetValue(doctor);
-                    if (value != null)
-                    {
-                        string stringValue = value is DateTime dt ? dt.ToString("yyyy-MM-ddTHH:mm:ss") : value.ToString() ?? "";
-                        content.Add(new StringContent(stringValue), prop.Name);
-                        content.Add(new StringContent(stringValue), $"DoctorMasterModel.{prop.Name}");
-                        content.Add(new StringContent(stringValue), $"doctor.{prop.Name}");
-                    }
-                }
-
-                var fileContent = new ByteArrayContent(imageBytes);
-                fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(GetMimeType(imageName));
-                content.Add(fileContent, "doctorImageFile", imageName);
-                content.Add(fileContent, "file", imageName);
-                content.Add(fileContent, "doctorimage", imageName);
-                content.Add(fileContent, "doctor_image", imageName);
-
-                if (!string.IsNullOrEmpty(doctor.doctorimage))
-                {
-                    content.Add(new StringContent(doctor.doctorimage), "doctorimage");
-                    content.Add(new StringContent(doctor.doctorimage), "DoctorMasterModel.doctorimage");
-                    content.Add(new StringContent(doctor.doctorimage), "doctor.doctorimage");
-                }
-
-                var response = await _http.PostAsync($"api/DoctorMaster/update?dcode={doctor.dcode}", content);
-                return response.IsSuccessStatusCode;
-            }
-            else
-            {
-                var response = await _http.PostAsJsonAsync($"api/DoctorMaster/update?dcode={doctor.dcode}", doctor);
-                return response.IsSuccessStatusCode;
-            }
+            using var content = BuildDoctorFormData(doctor, imageBytes, imageName);
+            var response = await _http.PostAsync("api/DoctorMaster/update", content);
+            return response.IsSuccessStatusCode;
         }
 
         public async Task<bool> DeleteDoctorAsync(string dcode)

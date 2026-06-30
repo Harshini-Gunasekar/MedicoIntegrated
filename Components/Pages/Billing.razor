@@ -11,6 +11,12 @@
 @inject NavigationManager Navigation
 @inject IHttpClientFactory ClientFactory
 @inject ProtectedSessionStorage _sessionStorage
+@using Medico_Backend.Model
+@using LabCare.Models
+@inject Booking.Services.CounterMasterService CounterMasterService
+@inject LabCare.Services.TestService LabCareTestSvc
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+
 
 <div class="billing-wrapper">
     <!-- Patient Info Horizontal Card -->
@@ -30,9 +36,11 @@
                 <div class="billing-form-group" style="width: 160px;">
                     <label>Counter</label>
                     <select class="billing-select" @bind="billModel.cntcode">
-                        <option value="2">Sample Counter</option>
-                        <option value="1">Billing Counter 1</option>
-                        <option value="3">Billing Counter 2</option>
+                        <option value="0">Select Counter</option>
+                        @foreach (var c in countersList)
+                        {
+                            <option value="@((int)c.cntcode)">@c.name</option>
+                        }
                     </select>
                 </div>
             </div>
@@ -50,7 +58,13 @@
                                 <div class="autocomplete-item" @onclick="() => SelectCustomerPatient(pat)">
                                     <div>
                                         <span style="font-weight: 600; color: #0f172a;">@pat.name (CUST-@pat.custid)</span>
-                                        <div style="font-size: 0.8em; color: #64748b;">📞 @pat.mobile | 📍 @(string.IsNullOrEmpty(pat.area) ? "No Area" : pat.area), @pat.city</div>
+                                        <div style="font-size: 0.8em; color: #64748b;">
+                                            📞 @pat.mobile | 📍 @(string.IsNullOrEmpty(pat.area) ? "No Area" : pat.area), @pat.city
+                                            @if (!string.IsNullOrEmpty(pat.op_no))
+                                            {
+                                                <span> | 📄 OP No: @pat.op_no</span>
+                                            }
+                                        </div>
                                     </div>
                                     <span class="autocomplete-code">@pat.custcode</span>
                                 </div>
@@ -78,17 +92,7 @@
             </div>
             <div class="patient-info-item">
                 <span class="info-label">OP ID</span>
-                <span class="info-value">
-                    @if (!string.IsNullOrEmpty(billModel.op_id))
-                    {
-                        var reg = allRegistrations.FirstOrDefault(r => r.op_id.ToString().Equals(billModel.op_id, StringComparison.OrdinalIgnoreCase));
-                        @(reg != null ? reg.op_no : billModel.op_id)
-                    }
-                    else
-                    {
-                        @("-")
-                    }
-                </span>
+                <span class="info-value">@(string.IsNullOrEmpty(selectedOpNo) || selectedOpNo == "-" ? "-" : selectedOpNo)</span>
             </div>
            
             <div class="patient-info-item">
@@ -105,7 +109,16 @@
             </div>
             <div class="patient-info-item">
                 <span class="info-label">Age</span>
-                <span class="info-value">@(billModel.ageyears ?? "0")Y @(billModel.agemonths ?? "0")M @(billModel.agedays ?? "0")D</span>
+                <span class="info-value">
+                    @if (string.IsNullOrEmpty(billModel.ageyears))
+                    {
+                        @("-")
+                    }
+                    else
+                    {
+                        @($"{(string.IsNullOrEmpty(billModel.ageyears) ? "0" : billModel.ageyears)}")
+                    }
+                </span>
             </div>
             
             <div style="margin-left: auto; display: flex; align-items: center; gap: 0.5rem;">
@@ -206,18 +219,24 @@
                 
 
                 <div class="billing-form-group">
-                    <label>Search by Test Name...</label>
+                    <label>Search by Test Name / Short Code...</label>
                     <div class="autocomplete-search-wrapper">
-                        <input type="text" class="billing-input" placeholder="Type test name (e.g. CBC)..." 
+                        <input type="text" class="billing-input" placeholder="Type test name or short code (e.g. CBC)..."
                                @bind="testSearchQuery" @bind:event="oninput" @onkeyup="OnTestSearchKeyUp" />
-                        @if (showTestDropdown && filteredItems.Count > 0)
+                        @if (showTestDropdown && filteredTestMasters.Count > 0)
                         {
                             <div class="autocomplete-dropdown">
-                                @foreach (var item in filteredItems)
+                                @foreach (var tm in filteredTestMasters)
                                 {
-                                    <div class="autocomplete-item" @onclick="() => SelectTestItem(item)">
-                                        <span>@item.itemname</span>
-                                        <span class="autocomplete-code">₹ @item.salesrate</span>
+                                    <div class="autocomplete-item" @onclick="() => SelectTestMaster(tm)">
+                                        <div style="display:flex; flex-direction:column; gap:2px;">
+                                            <span style="font-weight:700; color:#0f172a;">@tm.name</span>
+                                            @if (!string.IsNullOrWhiteSpace(tm.shortname))
+                                            {
+                                                <span style="font-size:0.72rem; color:#64748b; font-family:monospace;">@tm.shortname</span>
+                                            }
+                                        </div>
+                                        <span class="autocomplete-code">₹ @tm.amount.ToString("F2")</span>
                                     </div>
                                 }
                             </div>
@@ -429,7 +448,7 @@
     private string careOfName = string.Empty;
 
     // Extra Patient Meta fields
-    private DateOnly? dobSelected = DateOnly.FromDateTime(DateTime.Today.AddYears(-30));
+    private DateOnly? dobSelected = null;
     private string patientEmail = string.Empty;
 
     // Search and Autocomplete cache lists
@@ -438,11 +457,13 @@
     private List<OPRegistrationModel.OpRegistrationModel> allRegistrations = new();
     private List<OPRegistrationModel.OpRegistrationModel> filteredRegistrations = new();
     private List<DoctorBookingListModel> bookingsCache = new();
+    private string? selectedOpNo = "-";
     
-    private List<CustomerModel> searchedPatients = new();
+    private List<Booking.Models.CustomerWithOpModel> searchedPatients = new();
     private List<CustomerModel> allCustomersCache = new();
     private bool isCustomersCacheLoaded = false;
     private List<Booking.Models.BranchModel> branchesList = new();
+    private List<CounterMasterModel> countersList = new();
     private string TenantCode = "";
     private string AuthToken = "";
 
@@ -458,7 +479,13 @@
                 var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
                 AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
 
+                // Initialise TenantState so LabCare services can attach auth headers
+                if (!string.IsNullOrEmpty(AuthToken))
+                    TenantState.SetSession(TenantCode, AuthToken, "");
+
                 await LoadBranchesAsync();
+                await LoadCountersAsync();
+                await LoadTestMastersAsync();
                 StateHasChanged();
             }
             catch (Exception ex)
@@ -472,17 +499,14 @@
     {
         var clientName = isLabCare ? "LabCareUrl" : "DoctorApi";
         var client = ClientFactory.CreateClient(clientName);
-        if (isLabCare)
+        if (!string.IsNullOrEmpty(TenantCode))
         {
-            if (!string.IsNullOrEmpty(TenantCode))
-            {
-                client.DefaultRequestHeaders.Remove("tenant_code");
-                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
-            }
-            if (!string.IsNullOrEmpty(AuthToken))
-            {
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
-            }
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+        }
+        if (!string.IsNullOrEmpty(AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
         }
         return client;
     }
@@ -514,9 +538,23 @@
         }
     }
 
-    private void SelectCustomerPatient(CustomerModel pat)
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            countersList = await CounterMasterService.GetCountersAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading counters: {ex.Message}");
+        }
+    }
+
+    private void SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
     {
         billModel.custid = pat.custid;
+        billModel.op_id = pat.op_id;
+        selectedOpNo = pat.op_no;
         billModel.patient_name = pat.name;
         billModel.mobileno = pat.mobile;
         billModel.gender = pat.gender;
@@ -542,13 +580,21 @@
         selectedPatientBadgeVisible = true;
         showPatientDropdown = false;
 
+        // Auto-load ordered tests from Case Sheet and lookup registration details
+        if (!string.IsNullOrEmpty(pat.op_id) && Guid.TryParse(pat.op_id, out var opId))
+        {
+            _ = LoadExistingBillOrRegistrationAsync(opId);
+        }
+
         RecalculateTotals();
     }
 
     private string testSearchQuery = string.Empty;
     private bool showTestDropdown = false;
-    private List<item_master> allItems = new();
+    private List<item_master> allItems = new();            // kept for case-sheet auto-load fallback
     private List<item_master> filteredItems = new();
+    private List<test_master> allTestMasters = new();      // live test_master data (primary source)
+    private List<test_master> filteredTestMasters = new();
     private string areaSearchQuery = string.Empty;
 
     // Doctors cache
@@ -605,6 +651,8 @@
             allItems ??= new();
         }
 
+        // test_master loaded separately after session is ready (see LoadTestMastersAsync)
+
         try
         {
             if (doctorsCache != null)
@@ -637,70 +685,10 @@
 
     private void EnsurePredefinedData()
     {
-        var predefinedPatients = new List<(decimal CustId, string Name, string Mobile, string OpNo, string OpId)>
-        {
-            (1001, "Ankit Sharma", "9876543210", "OP-1001", "e74e6f9d-5a82-4148-8dfa-97c9b0e25287"),
-            (1002, "Priya Patel", "8765432109", "OP-1002", "f74e6f9d-5a82-4148-8dfa-97c9b0e25288"),
-            (1003, "John Doe", "7654321098", "OP-1003", "074e6f9d-5a82-4148-8dfa-97c9b0e25289"),
-            (1004, "Sarah Connor", "6543210987", "OP-1004", "174e6f9d-5a82-4148-8dfa-97c9b0e25290"),
-            (1005, "Rajesh Kumar", "9988776655", "OP-1005", "274e6f9d-5a82-4148-8dfa-97c9b0e25291")
-        };
-
         if (allRegistrations == null) allRegistrations = new();
         if (bookingsCache == null) bookingsCache = new();
         if (doctorsCache == null) doctorsCache = new();
         if (allItems == null) allItems = new();
-
-        foreach (var p in predefinedPatients)
-        {
-            if (!allRegistrations.Any(r => r.custid == p.CustId))
-            {
-                allRegistrations.Add(new OPRegistrationModel.OpRegistrationModel
-                {
-                    op_id = Guid.Parse(p.OpId),
-                    op_no = p.OpNo,
-                    custid = p.CustId,
-                    visit_date = DateOnly.FromDateTime(DateTime.Today),
-                    visit_status = "WAITING",
-                    dcode = doctorsCache.FirstOrDefault()?.dcode ?? 1
-                });
-            }
-
-            if (!bookingsCache.Any(b => b.custid == p.CustId))
-            {
-                bookingsCache.Add(new DoctorBookingListModel
-                {
-                    custid = p.CustId,
-                    patient_name = p.Name,
-                    notes = p.Mobile,
-                    booking_status = "CONFIRMED",
-                    appointment_date = DateOnly.FromDateTime(DateTime.Today),
-                    dcode = doctorsCache.FirstOrDefault()?.dcode ?? 1
-                });
-            }
-        }
-
-        var predefinedTests = new List<item_master>
-        {
-            new item_master { itemcode = 201, itemname = "Complete Blood Count (CBC)", shortname = "CBC", description = "CBC Test", itemtype = "TEST", salesrate = 350, gstpercentage = 12, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 202, itemname = "Blood Sugar Fasting (FBS)", shortname = "FBS", description = "FBS Test", itemtype = "TEST", salesrate = 100, gstpercentage = 5, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 203, itemname = "Lipid Profile", shortname = "LIPID", description = "Lipid Profile Test", itemtype = "TEST", salesrate = 750, gstpercentage = 18, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 204, itemname = "Liver Function Test (LFT)", shortname = "LFT", description = "LFT Test", itemtype = "TEST", salesrate = 900, gstpercentage = 12, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 205, itemname = "Thyroid Profile (T3, T4, TSH)", shortname = "THYROID", description = "Thyroid Test", itemtype = "TEST", salesrate = 600, gstpercentage = 12, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 206, itemname = "Urine Routine & Microscopy", shortname = "URINE", description = "Urine Test", itemtype = "TEST", salesrate = 150, gstpercentage = 5, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 207, itemname = "Renal Function Test (RFT)", shortname = "RFT", description = "RFT Test", itemtype = "TEST", salesrate = 800, gstpercentage = 12, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 208, itemname = "HbA1c (Glycated Haemoglobin)", shortname = "HBA1C", description = "HbA1c Test", itemtype = "TEST", salesrate = 450, gstpercentage = 5, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 209, itemname = "Vitamin D (25-OH)", shortname = "VITD", description = "Vitamin D Test", itemtype = "TEST", salesrate = 1200, gstpercentage = 18, isactive = true, tenantcode = "TEN1011" },
-            new item_master { itemcode = 210, itemname = "Electrocardiogram (ECG)", shortname = "ECG", description = "ECG Test", itemtype = "TEST", salesrate = 250, gstpercentage = 12, isactive = true, tenantcode = "TEN1011" }
-        };
-
-        foreach (var t in predefinedTests)
-        {
-            if (!allItems.Any(i => i.itemcode == t.itemcode))
-            {
-                allItems.Add(t);
-            }
-        }
     }
 
     private async Task LoadExistingBillOrRegistrationAsync(Guid opId)
@@ -754,6 +742,8 @@
             if (existingBill != null)
             {
                 billModel = existingBill;
+                var regMatch = allRegistrations.FirstOrDefault(r => r.op_id == opId);
+                selectedOpNo = regMatch?.op_no ?? billModel.op_id;
                 
                 // Parse prefix out of name if possible
                 if (billModel.patient_name != null)
@@ -819,21 +809,29 @@
                     int rowSno = 1;
                     foreach (var test in caseSheet.investigation.tests)
                     {
-                        // Match with item master to get pricing
-                        var itemMatch = allItems.FirstOrDefault(i => i.itemname.Equals(test.test_name, StringComparison.OrdinalIgnoreCase));
-                        
+                        // Prefer test_master for accurate pricing; fall back to item_master
+                        var tmMatch = allTestMasters.FirstOrDefault(t =>
+                            t.name != null && t.name.Equals(test.test_name, StringComparison.OrdinalIgnoreCase));
+                        var itemMatch = allItems.FirstOrDefault(i =>
+                            i.itemname.Equals(test.test_name, StringComparison.OrdinalIgnoreCase));
+
+                        decimal unitRate = tmMatch != null
+                            ? (decimal)tmMatch.amount
+                            : (itemMatch?.salesrate ?? test.rate ?? 500);
+
                         billModel.items.Add(new HmsBillItemModel
                         {
-                            sno = rowSno++,
-                            charge_type = "INVESTIGATION",
-                            item_name = test.test_name,
-                            tcode = itemMatch?.itemcode ?? test.test_code ?? 101,
-                            item_ref_id = itemMatch?.shortname ?? "LAB001",
-                            unit_rate = itemMatch?.salesrate ?? test.rate ?? 500,
-                            qty = 1,
-                            discount = 0,
-                            gst_per = itemMatch?.gstpercentage ?? 0,
-                            amount = itemMatch?.salesrate ?? test.rate ?? 500
+                            sno           = rowSno++,
+                            charge_type   = "INVESTIGATION",
+                            item_name     = test.test_name,
+                            tcode         = tmMatch != null ? (decimal)tmMatch.tcode : (itemMatch?.itemcode ?? test.test_code ?? 101),
+                            item_ref_id   = tmMatch?.shortname ?? itemMatch?.shortname ?? "LAB001",
+                            unit_rate     = unitRate,
+                            qty           = 1,
+                            discount      = 0,
+                            gst_per       = tmMatch?.tax_rate != null ? (decimal)tmMatch.tax_rate.Value : (itemMatch?.gstpercentage ?? 0),
+                            ttid          = tmMatch?.ttid ?? 1,
+                            amount        = unitRate
                         });
                     }
                     RecalculateTotals();
@@ -887,18 +885,28 @@
 
         try
         {
-            using var client = CreateClient(true);
-            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}");
+            using var client = CreateClient(false);
+            var response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}");
+            var rawJson = await response.Content.ReadAsStringAsync();
+            
+            try
+            {
+                var logDir = @"d:\Iscan\Medico\scratch";
+                if (!Directory.Exists(logDir)) Directory.CreateDirectory(logDir);
+                var logPath = Path.Combine(logDir, "billing_search_log.txt");
+                File.WriteAllText(logPath, $"Query: {patientSearchQuery}\nStatus: {response.StatusCode}\nJSON: {rawJson}\n");
+            }
+            catch {}
+
             if (response.IsSuccessStatusCode)
             {
-                var list = await response.Content.ReadFromJsonAsync<List<CustomerModel>>() ?? new();
+                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson) ?? new();
                 searchedPatients = list.Take(10).ToList();
                 showPatientDropdown = true;
             }
             else
             {
-                var err = await response.Content.ReadAsStringAsync();
-                Console.Error.WriteLine($"Error searching patients: {response.StatusCode} - {err}");
+                Console.Error.WriteLine($"Error searching patients: {response.StatusCode} - {rawJson}");
             }
         }
         catch (Exception ex)
@@ -913,6 +921,7 @@
     {
         billModel.custid = reg.custid;
         billModel.op_id = reg.op_id.ToString();
+        selectedOpNo = reg.op_no;
         billModel.patient_name = name;
         billModel.mobileno = mobile;
         billModel.consultantdcode = reg.dcode;
@@ -933,6 +942,7 @@
     {
         billModel.custid = 0;
         billModel.op_id = null;
+        selectedOpNo = "-";
         billModel.patient_name = string.Empty;
         billModel.mobileno = string.Empty;
         patientSearchQuery = string.Empty;
@@ -956,51 +966,94 @@
     {
         if (string.IsNullOrWhiteSpace(testSearchQuery))
         {
-            filteredItems.Clear();
+            filteredTestMasters.Clear();
             showTestDropdown = false;
             return;
         }
 
-        filteredItems = allItems
-            .Where(i => (i.itemtype == "TEST" || i.itemtype == "INVESTIGATION") && 
-                       (i.itemname.Contains(testSearchQuery, StringComparison.OrdinalIgnoreCase) || 
-                        i.shortname.Contains(testSearchQuery, StringComparison.OrdinalIgnoreCase)))
-            .Take(8)
+        // Search test_master by name or short code
+        filteredTestMasters = allTestMasters
+            .Where(t => t.name != null &&
+                       (t.name.Contains(testSearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                        (!string.IsNullOrEmpty(t.shortname) &&
+                         t.shortname.Contains(testSearchQuery, StringComparison.OrdinalIgnoreCase))))
+            .Take(10)
             .ToList();
 
-        showTestDropdown = true;
+        showTestDropdown = filteredTestMasters.Count > 0;
     }
 
-    private void SelectTestItem(item_master item)
+    private void SelectTestMaster(test_master tm)
     {
-        var exists = billModel.items.Any(i => i.tcode == item.itemcode);
+        // Prevent duplicate entries
+        var exists = billModel.items.Any(i => i.tcode == (decimal)tm.tcode);
         if (exists)
         {
-            ToastService.ShowError($"{item.itemname} is already added to the billing table.");
+            ToastService.ShowError($"{tm.name} is already added to the billing table.");
             testSearchQuery = string.Empty;
             showTestDropdown = false;
             return;
         }
 
+        var unitRate = (decimal)tm.amount;
         var row = new HmsBillItemModel
         {
-            sno = billModel.items.Count + 1,
+            sno         = billModel.items.Count + 1,
             charge_type = "INVESTIGATION",
-            item_name = item.itemname,
-            tcode = item.itemcode,
-            item_ref_id = string.IsNullOrWhiteSpace(item.shortname) ? $"REF-{item.itemcode}" : item.shortname,
-            unit_rate = item.salesrate,
-            qty = 1,
-            discount = 0,
-            gst_per = item.gstpercentage,
-            amount = item.salesrate
+            item_name   = tm.name ?? string.Empty,
+            tcode       = (decimal)tm.tcode,
+            item_ref_id = string.IsNullOrWhiteSpace(tm.shortname) ? $"T-{tm.tcode}" : tm.shortname,
+            unit_rate   = unitRate,
+            qty         = 1,
+            discount    = 0,
+            gst_per     = tm.tax_rate.HasValue ? (decimal)tm.tax_rate.Value : 0m,
+            ttid        = tm.ttid,
+            amount      = unitRate
         };
 
         billModel.items.Add(row);
         testSearchQuery = string.Empty;
         showTestDropdown = false;
-        
+
         RecalculateTotals();
+    }
+
+    // Legacy method kept for case-sheet auto-population fallback
+    private void SelectTestItem(item_master item)
+    {
+        var exists = billModel.items.Any(i => i.tcode == item.itemcode);
+        if (exists) return;
+
+        var row = new HmsBillItemModel
+        {
+            sno         = billModel.items.Count + 1,
+            charge_type = "INVESTIGATION",
+            item_name   = item.itemname,
+            tcode       = item.itemcode,
+            item_ref_id = string.IsNullOrWhiteSpace(item.shortname) ? $"REF-{item.itemcode}" : item.shortname,
+            unit_rate   = item.salesrate,
+            qty         = 1,
+            discount    = 0,
+            gst_per     = item.gstpercentage,
+            amount      = item.salesrate
+        };
+
+        billModel.items.Add(row);
+        RecalculateTotals();
+    }
+
+    private async Task LoadTestMastersAsync()
+    {
+        try
+        {
+            var results = await LabCareTestSvc.GetAllTestsAsync();
+            allTestMasters = results.Where(t => !string.IsNullOrWhiteSpace(t.name)).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading test masters: {ex.Message}");
+            allTestMasters = new();
+        }
     }
 
     private void RemoveTestItem(HmsBillItemModel item)
@@ -1197,12 +1250,12 @@
             pmcode = 1,
             ctcode = 2
         };
-        dobSelected = DateOnly.FromDateTime(DateTime.Today.AddYears(-30));
-        billModel.dateofbirth = dobSelected.Value.ToString("yyyy-MM-dd");
-        billModel.gender = "Male";
-        billModel.ageyears = "30";
-        billModel.agemonths = "0";
-        billModel.agedays = "0";
+        dobSelected = null;
+        billModel.dateofbirth = null;
+        billModel.gender = null;
+        billModel.ageyears = null;
+        billModel.agemonths = null;
+        billModel.agedays = null;
         careOfName = string.Empty;
         patientEmail = string.Empty;
         patientSearchQuery = string.Empty;
@@ -1210,6 +1263,7 @@
         areaSearchQuery = string.Empty;
         selectedPatientBadgeVisible = false;
         isCustomersCacheLoaded = false;
+        selectedOpNo = "-";
         
         RecalculateTotals();
     }

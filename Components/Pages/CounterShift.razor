@@ -1,7 +1,14 @@
 @page "/counter-shift"
 @rendermode InteractiveServer
+@using Newtonsoft.Json
+@using Booking.Models
+@using Medico_Backend.Model
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
 @inject Booking.Services.HmsBillingService HmsBillingService
 @inject Booking.Services.ToastService ToastService
+@inject IHttpClientFactory ClientFactory
+@inject ProtectedSessionStorage _sessionStorage
+@inject Booking.Services.CounterMasterService CounterService
 
 <div class="shift-wrapper">
     <!-- Header -->
@@ -33,19 +40,35 @@
             <div class="shift-card-body">
                 <div class="shift-form-group">
                     <label>BRANCH CODE</label>
-                    <select class="shift-input" @bind="openRequest.bhcode">
-                        <option value="1">Erode Center (1)</option>
-                        <option value="2">Main Branch (2)</option>
-                        <option value="3">Salem Clinic (3)</option>
+                    <select class="shift-input" @bind="openRequest.bhcode" @bind:after="OnBranchChanged">
+                        @if (branches.Any())
+                        {
+                            @foreach (var b in branches)
+                            {
+                                <option value="@b.bh_code">@b.name (@b.bh_code)</option>
+                            }
+                        }
+                        else
+                        {
+                            <option value="0">Loading branches...</option>
+                        }
                     </select>
                 </div>
 
                 <div class="shift-form-group">
                     <label>COUNTER CODE</label>
                     <select class="shift-input" @bind="openRequest.cntcode">
-                        <option value="1">Billing Counter 1 (1)</option>
-                        <option value="2">Sample Counter (2)</option>
-                        <option value="3">Billing Counter 2 (3)</option>
+                        @if (filteredCounters.Any())
+                        {
+                            @foreach (var c in filteredCounters)
+                            {
+                                <option value="@((int)c.cntcode)">@c.name (@((int)c.cntcode))</option>
+                            }
+                        }
+                        else
+                        {
+                            <option value="0">No counters available</option>
+                        }
                     </select>
                 </div>
 
@@ -100,13 +123,14 @@
             </div>
         </div>
     </div>
+
 </div>
 
 @code {
     private Booking.Models.OpenShiftRequest openRequest = new Booking.Models.OpenShiftRequest
     {
-        bhcode = 1,
-        cntcode = 2,
+        bhcode = 0,
+        cntcode = 0,
         counterdate = DateTime.Today
     };
     
@@ -120,8 +144,160 @@
     private bool isOpening = false;
     private bool isClosing = false;
 
+    private List<Booking.Models.BranchModel> branches = new();
+    private List<CounterMasterModel> counters = new();
+    private List<CounterMasterModel> filteredCounters = new();
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                Console.WriteLine($"[CounterShift] TenantCode={TenantCode}, AuthToken length={AuthToken?.Length ?? 0}");
+                await LoadBranchesAsync();
+                await LoadCountersAsync();
+                
+                Console.WriteLine($"[CounterShift] Loaded {branches.Count} branches");
+                Console.WriteLine($"[CounterShift] Loaded {counters.Count} counters");
+
+                // Initialize default selections
+                if (branches.Any())
+                {
+                    openRequest.bhcode = branches.First().bh_code;
+                    UpdateFilteredCounters();
+                }
+
+                // Write diagnostics to file
+                try
+                {
+                    var sb = new System.Text.StringBuilder();
+                    sb.AppendLine($"Timestamp: {DateTime.Now}");
+                    sb.AppendLine($"TenantCode: {TenantCode}");
+                    sb.AppendLine($"AuthToken Length: {AuthToken?.Length ?? 0}");
+                    sb.AppendLine($"Loaded Branches Count: {branches.Count}");
+                    foreach (var b in branches)
+                    {
+                        sb.AppendLine($" - Branch: ID={b.bh_code}, Name={b.name}, Deleted={b.deleted}");
+                    }
+                    sb.AppendLine($"Loaded Counters Count: {counters.Count}");
+                    foreach (var c in counters)
+                    {
+                        sb.AppendLine($" - Counter: Code={c.cntcode}, Name={c.name}, BhCode={c.bhcode}, Deleted={c.deleted}");
+                    }
+                    sb.AppendLine($"openRequest.bhcode: {openRequest.bhcode}");
+                    sb.AppendLine($"Filtered Counters Count: {filteredCounters.Count}");
+                    foreach (var c in filteredCounters)
+                    {
+                        sb.AppendLine($" - Filtered Counter: Code={c.cntcode}, Name={c.name}, BhCode={c.bhcode}");
+                    }
+                    
+                    var logPath = @"d:\Iscan\Medico\scratch\diagnostics_log.txt";
+                    var dir = Path.GetDirectoryName(logPath);
+                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                    {
+                        Directory.CreateDirectory(dir);
+                    }
+                    System.IO.File.WriteAllText(logPath, sb.ToString());
+                }
+                catch (Exception logEx)
+                {
+                    Console.WriteLine($"Failed to write diagnostics file: {logEx.Message}");
+                }
+                
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                ToastService.ShowError($"Error initializing shift data: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branches = branches.Where(b => !b.deleted).ToList();
+            }
+            else
+            {
+                var err = await response.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Failed to load branches: {err}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            counters = await CounterService.GetCountersAsync();
+            counters = counters.Where(c => !c.deleted).ToList();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading counters: {ex.Message}");
+        }
+    }
+
+    private void OnBranchChanged()
+    {
+        UpdateFilteredCounters();
+    }
+
+    private void UpdateFilteredCounters()
+    {
+        filteredCounters = counters.Where(c => c.bhcode == openRequest.bhcode).ToList();
+        if (filteredCounters.Any())
+        {
+            if (!filteredCounters.Any(c => (int)c.cntcode == openRequest.cntcode))
+            {
+                openRequest.cntcode = (int)filteredCounters.First().cntcode;
+            }
+        }
+        else
+        {
+            openRequest.cntcode = 0;
+        }
+    }
+
     private async Task OpenShift()
     {
+        if (openRequest.bhcode == 0 || openRequest.cntcode == 0)
+        {
+            ToastService.ShowError("Please select a valid Branch and Counter.");
+            return;
+        }
+
         isOpening = true;
         try
         {

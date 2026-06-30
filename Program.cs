@@ -1,10 +1,16 @@
 using Booking.Components;
+using Microsoft.AspNetCore.Components.Authorization;
+using Booking.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+
+builder.Services.AddCascadingAuthenticationState();
+builder.Services.AddScoped<JwtAuthenticationStateProvider>();
+builder.Services.AddScoped<AuthenticationStateProvider>(sp => sp.GetRequiredService<JwtAuthenticationStateProvider>());
 
 builder.Services.AddHttpClient("DoctorApi", client => 
 {
@@ -18,6 +24,15 @@ builder.Services.AddHttpClient("LabCareUrl", client =>
 {
     var baseUrl = builder.Configuration["LabCareUrl"];
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("LabCareUrl is not configured in appsettings.json");
+    client.BaseAddress = new Uri(baseUrl);
+
+});
+
+
+builder.Services.AddHttpClient("RidoUrl", client => 
+{
+    var baseUrl = builder.Configuration["RidoUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("RidoUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
 
 });
@@ -47,6 +62,21 @@ builder.Services.AddScoped<Booking.Services.AreaMasterService>();
 builder.Services.AddScoped<Booking.Services.CountryMasterService>();
 builder.Services.AddScoped<Booking.Services.StateMasterService>();
 builder.Services.AddScoped<Booking.Services.CityMasterService>();
+builder.Services.AddScoped<Booking.Services.MasterTenantServices>();
+builder.Services.AddScoped<SharedComponents.Rcl.Services.NotificationService>();
+builder.Services.AddScoped<SharedComponents.Rcl.Services.TenantSessionState>();
+builder.Services.AddScoped<LabCare.Services.TestService>(sp =>
+{
+    var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi");
+    var session = sp.GetRequiredService<SharedComponents.Rcl.Services.TenantSessionState>();
+    return new LabCare.Services.TestService(client, session);
+});
+builder.Services.AddScoped<LabCare.Services.GroupService>(sp =>
+{
+    var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("LabCareUrl");
+    var session = sp.GetRequiredService<SharedComponents.Rcl.Services.TenantSessionState>();
+    return new LabCare.Services.GroupService(client, session);
+});
 
 var app = builder.Build();
 

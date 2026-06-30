@@ -2,8 +2,13 @@
 @rendermode InteractiveServer
 @using Medico_Backend.Model
 @using Booking.Services
+@using Newtonsoft.Json
+@using Booking.Models
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
 @inject CounterMasterService CounterService
 @inject ToastService ToastService
+@inject IHttpClientFactory ClientFactory
+@inject ProtectedSessionStorage _sessionStorage
 
 <div class="cm-page">
     <!-- Header Card -->
@@ -52,7 +57,9 @@
                                     <span class="counter-name-text">@item.name</span>
                                 </div>
                             </td>
-                            <td class="col-branch">@item.bhcode</td>
+                             <td class="col-branch">
+                                 @(branches.FirstOrDefault(b => b.bh_code == item.bhcode)?.name ?? item.bhcode?.ToString() ?? "N/A")
+                             </td>
                             <td class="col-narration">@GetPureDescription(item.description)</td>
                             <td class="col-date-entered">
                                 <span class="date-line">@item.entereddate.ToString("MM-dd-yyyy hh:mm")</span>
@@ -119,10 +126,10 @@
                         <label class="cm-label">Associated Branch</label>
                         <select class="cm-input cm-select" @bind="currentCounter.bhcode">
                             <option value="">Select Branch</option>
-                            <option value="1">Branch 1</option>
-                            <option value="55">Branch 55</option>
-                            <option value="56">Branch 56</option>
-                            <option value="57">Branch 57</option>
+                            @foreach (var b in branches)
+                            {
+                                <option value="@b.bh_code">@b.name (@b.bh_code)</option>
+                            }
                         </select>
                     </div>
                 </div>
@@ -227,7 +234,11 @@
 
     private void OpenNewCounterModal()
     {
-        currentCounter = new CounterMasterModel { orderno = 0, bhcode = 55 };
+        currentCounter = new CounterMasterModel 
+        { 
+            orderno = 0, 
+            bhcode = branches.FirstOrDefault()?.bh_code 
+        };
         isEditMode = false;
         showModal = true;
     }
@@ -332,5 +343,60 @@
             return rawDesc.Substring(idx + 1);
         }
         return "#4169E1";
+    }
+
+    private List<Booking.Models.BranchModel> branches = new();
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                await LoadBranchesAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                ToastService.ShowError($"Error loading session details: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branches = branches.Where(b => !b.deleted).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading branches: {ex.Message}");
+        }
     }
 }
