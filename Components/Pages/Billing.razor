@@ -331,9 +331,9 @@
                         REFERRAL CONCESSION <i class="bi bi-info-circle" style="color: #6366f1; font-size: 0.75rem;"></i>
                     </span>
                     <div style="display: flex; gap: 0.5rem; align-items: center; font-size: 0.65rem; font-weight: 600; color: #64748b;">
-                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" value="0" disabled />
+                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" @bind="billModel.ourdispercentage" @bind:after="OnReferralConcessionPerChanged" />
                         %
-                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" @bind="billModel.specialdiscount" @bind:after="RecalculateTotals" />
+                        <input type="number" style="width: 45px; text-align: center; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.15rem; height: 26px; font-weight: 600; color: #0f172a;" @bind="billModel.ourdiscount" @bind:after="OnReferralConcessionAmtChanged" />
                         VAL
                     </div>
                 </div>
@@ -550,7 +550,7 @@
         }
     }
 
-    private void SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
+    private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
     {
         billModel.custid = pat.custid;
         billModel.op_id = pat.op_id;
@@ -583,7 +583,7 @@
         // Auto-load ordered tests from Case Sheet and lookup registration details
         if (!string.IsNullOrEmpty(pat.op_id) && Guid.TryParse(pat.op_id, out var opId))
         {
-            _ = LoadExistingBillOrRegistrationAsync(opId);
+            await LoadExistingBillOrRegistrationAsync(opId);
         }
 
         RecalculateTotals();
@@ -712,7 +712,11 @@
                     enteredbhcode = billResp.enteredbhcode ?? 1,
                     cntcode = billResp.cntcode ?? 2,
                     paidamount = (decimal)(billResp.paid_amount ?? 0),
-                    discountamount = (decimal)(billResp.discount_amount ?? 0),
+                    discountper = (decimal)(billResp.general_concession_per ?? 0),
+                    discountamount = (decimal)(billResp.general_concession_amount ?? 0),
+                    ourdispercentage = (decimal)(billResp.referral_concession_per ?? 0),
+                    ourdiscount = (decimal)(billResp.referral_concession_amount ?? 0),
+                    specialdiscount = (decimal)(billResp.referral_concession_amount ?? 0),
                     pmc1 = (decimal)(billResp.pmc1 ?? 0),
                     pmc2 = (decimal)(billResp.pmc2 ?? 0),
                     pmc3 = (decimal)(billResp.pmc3 ?? 0),
@@ -764,6 +768,22 @@
                     dobSelected = parsedDob;
                 }
 
+                totalBaseAmount = 0;
+                foreach (var item in billModel.items)
+                {
+                    totalBaseAmount += item.amount;
+                }
+
+                if (billModel.ourdispercentage == 0 && billModel.ourdiscount > 0 && totalBaseAmount > 0)
+                {
+                    billModel.ourdispercentage = Math.Round((billModel.ourdiscount / totalBaseAmount) * 100m, 2);
+                }
+                else if (billModel.ourdispercentage == 0 && billModel.specialdiscount > 0 && totalBaseAmount > 0)
+                {
+                    billModel.ourdispercentage = Math.Round((billModel.specialdiscount / totalBaseAmount) * 100m, 2);
+                    billModel.ourdiscount = billModel.specialdiscount;
+                }
+
                 RecalculateTotals();
                 ToastService.ShowSuccess("Loaded existing bill.");
                 return;
@@ -791,7 +811,22 @@
 
                 if (string.IsNullOrEmpty(patientName))
                 {
-                    patientName = $"Patient ID {reg.custid}";
+                    if (!string.IsNullOrEmpty(billModel.patient_name) && !billModel.patient_name.StartsWith("Patient ID"))
+                    {
+                        patientName = billModel.patient_name;
+                    }
+                    else
+                    {
+                        patientName = $"Patient ID {reg.custid}";
+                    }
+                }
+                
+                if (string.IsNullOrEmpty(mobile) || mobile == reg.op_no)
+                {
+                    if (!string.IsNullOrEmpty(billModel.mobileno) && billModel.mobileno != "-")
+                    {
+                        mobile = billModel.mobileno;
+                    }
                 }
 
                 SelectPatient(reg, patientName, mobile, false);
@@ -1103,6 +1138,31 @@
         RecalculateTotals();
     }
 
+    private void OnReferralConcessionPerChanged()
+    {
+        if (billModel.ourdispercentage < 0) billModel.ourdispercentage = 0;
+        if (billModel.ourdispercentage > 100) billModel.ourdispercentage = 100;
+
+        billModel.ourdiscount = totalBaseAmount * (billModel.ourdispercentage / 100m);
+        RecalculateTotals();
+    }
+
+    private void OnReferralConcessionAmtChanged()
+    {
+        if (billModel.ourdiscount < 0) billModel.ourdiscount = 0;
+        if (billModel.ourdiscount > totalBaseAmount) billModel.ourdiscount = totalBaseAmount;
+
+        if (totalBaseAmount > 0)
+        {
+            billModel.ourdispercentage = Math.Round((billModel.ourdiscount / totalBaseAmount) * 100m, 2);
+        }
+        else
+        {
+            billModel.ourdispercentage = 0;
+        }
+        RecalculateTotals();
+    }
+
     private void RecalculateTotals()
     {
         totalBaseAmount = 0;
@@ -1117,7 +1177,14 @@
             billModel.discountamount = totalBaseAmount * (billModel.discountper / 100m);
         }
 
-        netPayable = totalBaseAmount - billModel.discountamount - billModel.specialdiscount;
+        if (billModel.ourdispercentage > 0)
+        {
+            billModel.ourdiscount = totalBaseAmount * (billModel.ourdispercentage / 100m);
+        }
+
+        billModel.specialdiscount = billModel.ourdiscount;
+
+        netPayable = totalBaseAmount - billModel.discountamount - billModel.ourdiscount;
         if (netPayable < 0) netPayable = 0;
 
         billModel.paidamount = billModel.pmc1 + billModel.pmc2 + billModel.pmc3;
@@ -1210,9 +1277,65 @@
                 billModel.requestguid = null;
                 result = await HmsBillingService.SaveBillAsync(billModel);
             }
-            if (!string.IsNullOrEmpty(result) && !result.Contains("Error", StringComparison.OrdinalIgnoreCase))
+            bool isSuccess = false;
+            string displayMessage = "";
+
+            if (!string.IsNullOrEmpty(result))
             {
-                ToastService.ShowSuccess("Bill Saved and Posted Successfully!");
+                if (result.Contains("Error", StringComparison.OrdinalIgnoreCase))
+                {
+                    isSuccess = false;
+                    displayMessage = result;
+                }
+                else if (result.Trim().StartsWith("{") && result.Trim().EndsWith("}"))
+                {
+                    try
+                    {
+                        var jsonObj = Newtonsoft.Json.Linq.JObject.Parse(result);
+                        if (jsonObj["message"] != null)
+                        {
+                            var msg = jsonObj["message"].ToString();
+                            if (msg.Contains("not open", StringComparison.OrdinalIgnoreCase) || 
+                                msg.Contains("error", StringComparison.OrdinalIgnoreCase) || 
+                                msg.Contains("fail", StringComparison.OrdinalIgnoreCase) ||
+                                msg.Contains("invalid", StringComparison.OrdinalIgnoreCase))
+                            {
+                                isSuccess = false;
+                                displayMessage = msg;
+                            }
+                            else
+                            {
+                                isSuccess = true;
+                                displayMessage = msg;
+                            }
+                        }
+                        else if (jsonObj["requestguid"] != null || jsonObj["bill_no"] != null)
+                        {
+                            isSuccess = true;
+                            displayMessage = "Bill Saved and Posted Successfully!";
+                        }
+                        else
+                        {
+                            isSuccess = false;
+                            displayMessage = result;
+                        }
+                    }
+                    catch
+                    {
+                        isSuccess = true;
+                        displayMessage = "Bill Saved and Posted Successfully!";
+                    }
+                }
+                else
+                {
+                    isSuccess = true;
+                    displayMessage = "Bill Saved and Posted Successfully!";
+                }
+            }
+
+            if (isSuccess)
+            {
+                ToastService.ShowSuccess(!string.IsNullOrEmpty(displayMessage) ? displayMessage : "Bill Saved and Posted Successfully!");
                 
                 // If it was loaded from outpatient flow, update the status to COMPLETED
                 if (!string.IsNullOrEmpty(billModel.op_id) && Guid.TryParse(billModel.op_id, out var opId))
@@ -1225,7 +1348,7 @@
             }
             else
             {
-                ToastService.ShowError($"Failed to save bill. API error: {result}");
+                ToastService.ShowError($"Failed to save bill. API error: {displayMessage}");
             }
         }
         catch (Exception ex)

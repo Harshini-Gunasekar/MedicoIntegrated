@@ -1,6 +1,7 @@
 using Booking.Components;
 using Microsoft.AspNetCore.Components.Authorization;
 using Booking.Services;
+using Booking.Handlers;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -12,12 +13,15 @@ builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<JwtAuthenticationStateProvider>();
 builder.Services.AddScoped<AuthenticationStateProvider>(sp => sp.GetRequiredService<JwtAuthenticationStateProvider>());
 
+builder.Services.AddScoped<TenantHeaderHandler>();
+builder.Services.AddScoped<UniIdentityRouteHandler>();
+builder.Services.AddHttpContextAccessor();
+
 builder.Services.AddHttpClient("DoctorApi", client => 
 {
     var baseUrl = builder.Configuration["ApiBaseUrl"];
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("ApiBaseUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
-    client.DefaultRequestHeaders.Add("tenant_code", "TEN1011");
 });
 
 builder.Services.AddHttpClient("LabCareUrl", client => 
@@ -25,19 +29,32 @@ builder.Services.AddHttpClient("LabCareUrl", client =>
     var baseUrl = builder.Configuration["LabCareUrl"];
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("LabCareUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
-
-});
-
+})
+.AddHttpMessageHandler<TenantHeaderHandler>()
+.AddHttpMessageHandler<UniIdentityRouteHandler>();
 
 builder.Services.AddHttpClient("RidoUrl", client => 
 {
     var baseUrl = builder.Configuration["RidoUrl"];
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("RidoUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
-
 });
 
-builder.Services.AddScoped(sp => sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi"));
+builder.Services.AddScoped(sp => 
+{
+    var tenantHandler = sp.GetRequiredService<TenantHeaderHandler>();
+    var routeHandler = sp.GetRequiredService<UniIdentityRouteHandler>();
+    
+    var httpClientHandler = new HttpClientHandler();
+    routeHandler.InnerHandler = httpClientHandler;
+    tenantHandler.InnerHandler = routeHandler;
+    
+    var client = new HttpClient(tenantHandler);
+    var baseUrl = builder.Configuration["ApiBaseUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("ApiBaseUrl is not configured in appsettings.json");
+    client.BaseAddress = new Uri(baseUrl);
+    return client;
+});
 builder.Services.AddScoped<Booking.Services.DoctorService>();
 builder.Services.AddScoped<Booking.Services.SlotService>();
 builder.Services.AddScoped<Booking.Services.DoctorAppointmentSlotTypeService>();
@@ -77,6 +94,19 @@ builder.Services.AddScoped<LabCare.Services.GroupService>(sp =>
     var session = sp.GetRequiredService<SharedComponents.Rcl.Services.TenantSessionState>();
     return new LabCare.Services.GroupService(client, session);
 });
+builder.Services.AddScoped<LabCare.Services.UserRightsService>(sp =>
+{
+    var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("LabCareUrl");
+    var session = sp.GetRequiredService<SharedComponents.Rcl.Services.TenantSessionState>();
+    return new LabCare.Services.UserRightsService(client, session);
+});
+builder.Services.AddScoped<LabCare.Services.UserService>(sp =>
+{
+    var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("LabCareUrl");
+    var session = sp.GetRequiredService<SharedComponents.Rcl.Services.TenantSessionState>();
+    return new LabCare.Services.UserService(client, session);
+});
+
 
 var app = builder.Build();
 

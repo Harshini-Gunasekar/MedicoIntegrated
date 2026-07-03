@@ -1,10 +1,13 @@
 @page "/booking/doctor"
 @using Booking.Models
 @using Booking.Services
+@using System.Net.Http.Json
 @inject AppointmentBookingService BookingService
 @inject DoctorService DoctorService
 @inject ToastService ToastService
 @inject CaseSheetService CaseSheetService
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 
 <PageTitle>Doctor Patient List</PageTitle>
 
@@ -131,6 +134,7 @@
                                 <!-- <th>Booking Ref</th> -->
                                 <th>Notes</th>
                                 <th style="width: 150px;">Status</th>
+                                <th style="width: 120px; text-align: center;">VIP</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -146,6 +150,10 @@
                                         <div class="patient-name-container" style="cursor: pointer;" @onclick="() => OpenCaseSheetForBooking(b)" title="Open Clinical Case Sheet">
                                             <i class="bi bi-person-fill patient-icon text-primary"></i>
                                             <span class="patient-name text-primary text-decoration-underline-hover">@(string.IsNullOrWhiteSpace(b.patient_name) ? "Walk-in Patient" : b.patient_name)</span>
+                                            @if (b.isvip == true)
+                                            {
+                                                <span style="font-size: 0.65rem; background: #fffbeb; color: #d97706; padding: 2px 6px; border-radius: 4px; font-weight: 700; border: 1px solid #fde68a; margin-left: 0.5rem;" title="@b.viprole">👑 VIP</span>
+                                            }
                                         </div>
                                     </td>
                                     <td>
@@ -172,6 +180,22 @@
                                         <span class="status-pill @b.booking_status?.ToLower()">
                                             @b.booking_status
                                         </span>
+                                    </td>
+                                    <td style="text-align: center; vertical-align: middle; padding: 0.75rem 1.2rem;">
+                                        <div style="display: flex; gap: 0.5rem; justify-content: center; align-items: center;">
+                                            @if (b.isvip == true)
+                                            {
+                                                <button type="button" title="Edit VIP: @b.viprole" @onclick="() => OpenVipModal(b)" style="background: #fffbeb; border: 1px solid #fde68a; color: #d97706; padding: 4px 10px; border-radius: 6px; font-weight: 700; font-size: 0.75rem; cursor: pointer; display: flex; align-items: center; gap: 4px; transition: all 0.2s;">
+                                                    👑 VIP
+                                                </button>
+                                            }
+                                            else
+                                            {
+                                                <button type="button" title="Mark as VIP" @onclick="() => OpenVipModal(b)" style="background: #f8fafc; border: 1px solid #e2e8f0; color: #64748b; padding: 4px 10px; border-radius: 6px; font-weight: 600; font-size: 0.75rem; cursor: pointer; display: flex; align-items: center; gap: 4px; transition: all 0.2s;">
+                                                    ☆ Mark VIP
+                                                </button>
+                                            }
+                                        </div>
                                     </td>
                                 </tr>
                             }
@@ -202,7 +226,64 @@
                     OpStatus="@selectedOpStatus"
                     OnSaved="LoadTodayBookingsAsync" />
 
+@if (showVipModal)
+{
+    <div class="modal-backdrop" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 1050;" @onclick="CloseVipModal"></div>
+    <div class="vip-modal-container" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 12px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); z-index: 1060; width: 400px; max-width: 90%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e2e8f0;">
+        <div style="background: #004c7a; color: white; padding: 1.2rem; display: flex; justify-content: space-between; align-items: center;">
+            <h3 style="margin: 0; font-size: 1.1rem; font-weight: 700; display: flex; align-items: center; gap: 8px;">
+                👑 Set VIP Status
+            </h3>
+            <button type="button" @onclick="CloseVipModal" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
+        </div>
+        <div style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem;">
+            <div style="font-size: 0.9rem; color: #334155; font-weight: 500;">
+                Patient Name: <strong style="color: #0f172a;">@vipPatientName</strong> (ID: @vipCustId)
+            </div>
+            
+            <div style="display: flex; flex-direction: column; gap: 0.5rem;">
+                <label style="font-size: 0.8rem; font-weight: 700; color: #64748b; text-transform: uppercase;">VIP Role / Description</label>
+                <input type="text" class="form-control" @bind="vipRoleText" placeholder="e.g. govt job, friend of MD" style="border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.6rem 0.8rem; font-size: 0.9rem; width: 100%; box-sizing: border-box;" />
+            </div>
+        </div>
+        <div style="background: #f8fafc; padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid #edf2f7;">
+            <button type="button" @onclick="CloseVipModal" style="background: white; border: 1px solid #cbd5e1; color: #64748b; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Cancel</button>
+            <button type="button" @onclick="SaveVipStatus" disabled="@isVipSaving" style="background: #d97706; border: none; color: white; padding: 0.5rem 1rem; border-radius: 6px; font-weight: 600; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px;">
+                @if (isVipSaving)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status" style="margin: 0;"></span>
+                }
+                Save VIP Status
+            </button>
+        </div>
+    </div>
+}
+
 @code {
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+                
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error loading session in DoctorPatientList: {ex.Message}");
+            }
+        }
+    }
+
     private List<DoctorMasterModel> doctors = new();
     private List<DoctorBookingListModel> todayBookings = new();
     private int? selectedDoctorDcode = null; // Defaulting to all specialists
@@ -221,6 +302,13 @@
     private string selectedPatientName = string.Empty;
     private DateTime? selectedVisitDate = null;
     private string selectedOpStatus = "WAITING";
+
+    // VIP modal fields
+    private bool showVipModal = false;
+    private decimal vipCustId = 0;
+    private string vipRoleText = string.Empty;
+    private string vipPatientName = string.Empty;
+    private bool isVipSaving = false;
 
     protected override async Task OnInitializedAsync()
     {
@@ -396,5 +484,71 @@
     private string FormatTime(TimeOnly time)
     {
         return time.ToString("hh:mm tt");
+    }
+
+    private void OpenVipModal(DoctorBookingListModel booking)
+    {
+        vipCustId = booking.custid;
+        vipPatientName = booking.patient_name ?? "Walk-in Patient";
+        vipRoleText = booking.viprole ?? string.Empty;
+        showVipModal = true;
+        StateHasChanged();
+    }
+
+    private void CloseVipModal()
+    {
+        showVipModal = false;
+        vipRoleText = string.Empty;
+    }
+
+    private async Task SaveVipStatus()
+    {
+        if (string.IsNullOrWhiteSpace(vipRoleText))
+        {
+            ToastService.ShowError("Please enter a VIP Role (e.g. 'govt job').");
+            return;
+        }
+
+        isVipSaving = true;
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            var payload = new 
+            { 
+                custid = (long)vipCustId, 
+                viprole = vipRoleText 
+            };
+            
+            var response = await client.PostAsJsonAsync("api/Customer/mark-as-vip", payload);
+            if (response.IsSuccessStatusCode)
+            {
+                ToastService.ShowSuccess($"Successfully marked {vipPatientName} as VIP.");
+                showVipModal = false;
+                await LoadTodayBookingsAsync();
+            }
+            else
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Failed to save VIP status: {error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error saving VIP status: {ex.Message}");
+        }
+        finally
+        {
+            isVipSaving = false;
+        }
     }
 }

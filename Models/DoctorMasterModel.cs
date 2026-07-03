@@ -115,5 +115,10 @@ namespace Booking.Models
         public double? opcharge { get; set; }
 
         public string? tenant_code { get; set; }
+        
+        public bool showmobile { get; set; } = true;
+        public bool? isregular { get; set; } = false;                    
+        public double? normalconsultationfee { get; set; }              
+        public double? offhoursconsultationfee { get; set; }
     }
 }

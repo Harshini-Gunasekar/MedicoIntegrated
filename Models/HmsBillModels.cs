@@ -31,6 +31,8 @@ namespace Booking.Models
         public decimal discountper { get; set; }
         public decimal discountamount { get; set; }
         public decimal specialdiscount { get; set; }
+        public decimal ourdispercentage { get; set; }
+        public decimal ourdiscount { get; set; }
         public decimal paidamount { get; set; }
         public decimal pmc1 { get; set; } // Cash payment
         public decimal pmc2 { get; set; } // Card payment

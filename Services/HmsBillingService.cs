@@ -142,8 +142,14 @@ namespace Booking.Services
         {
             try
             {
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine("--- OPEN SHIFT JSON PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+
                 var response = await _http.PostAsJsonAsync("api/HmsBilling/counter/open-shift", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
+                Console.WriteLine("--- OPEN SHIFT API RESPONSE ---");
+                Console.WriteLine(rawResponse);
                 return rawResponse;
             }
             catch (Exception ex)
@@ -157,6 +163,10 @@ namespace Booking.Services
         {
             try
             {
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine("--- CLOSE SHIFT JSON PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+
                 var response = await _http.PostAsJsonAsync("api/HmsBilling/counter/close-shift", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 return rawResponse;
@@ -231,6 +241,25 @@ namespace Booking.Services
             {
                 Console.WriteLine($"Error updating bill no config: {ex.Message}");
                 return $"Error|{ex.Message}";
+            }
+        }
+
+        public async Task<List<CounterTimingDto>> GetOpenCountersAsync()
+        {
+            try
+            {
+                var response = await _http.GetFromJsonAsync<List<CounterTimingDto>>("api/CounterTiming/get");
+                if (response != null)
+                {
+                    // Filter to only include open shifts (todate is null)
+                    return response.Where(x => x.todate == null).ToList();
+                }
+                return new List<CounterTimingDto>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching open counters: {ex.Message}");
+                return new List<CounterTimingDto>();
             }
         }
     }

@@ -154,5 +154,7 @@ namespace Booking.Models
         public string? booking_status { get; set; }
         public string? booking_type { get; set; }
         public string? notes { get; set; }
+        public bool? isvip { get; set; }
+        public string? viprole { get; set; }
     }
 }

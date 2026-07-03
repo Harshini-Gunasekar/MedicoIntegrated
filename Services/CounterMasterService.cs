@@ -60,17 +60,22 @@ namespace Booking.Services
             }
         }
 
-        public async Task<bool> DeleteCounterAsync(decimal cntcode)
+        public async Task<string> DeleteCounterAsync(decimal cntcode)
         {
             try
             {
                 var response = await _http.GetAsync($"api/CounterMaster/delete?cntcode={cntcode}");
-                return response.IsSuccessStatusCode;
+                if (response.IsSuccessStatusCode)
+                {
+                    var content = await response.Content.ReadAsStringAsync();
+                    return content.Trim();
+                }
+                return "Error: Request failed";
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error deleting counter: {ex.Message}");
-                return false;
+                return $"Error: {ex.Message}";
             }
         }
 

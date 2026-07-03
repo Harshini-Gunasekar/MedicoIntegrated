@@ -25,11 +25,28 @@ namespace Booking.Services
             {
                 var result = await _sessionStorage.GetAsync<UserSession>("UserSession");
                 var userSession = result.Success ? result.Value : null;
-
+                SharedComponents.Rcl.Models.UserDetailsModel? userDetails = null;
                 if (userSession == null || string.IsNullOrWhiteSpace(userSession.Token))
-                    return await Task.FromResult(new AuthenticationState(_anonymous));
+                {
+                    var detailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    userDetails = detailsResult.Success ? detailsResult.Value : null;
+                }
 
-                var claims = ParseClaimsFromJwt(userSession.Token);
+                string? token = userSession?.Token ?? userDetails?.AuthToken;
+
+                if (string.IsNullOrEmpty(token))
+                {
+                    var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                    token = tokenResult.Success ? tokenResult.Value : null;
+                }
+
+                if (string.IsNullOrWhiteSpace(token))
+                {
+                    return await Task.FromResult(new AuthenticationState(_anonymous));
+                }
+
+                var claims = new List<Claim>();
+                claims.AddRange(ParseClaimsFromJwt(token));
 
                 // Validate expiration
                 var expClaim = claims.FirstOrDefault(c => c.Type == "exp");
@@ -43,10 +60,52 @@ namespace Booking.Services
                     }
                 }
 
+                
+                // Synthesize role and IsAdmin claims for compatibility between SSO and standard login
+                if (!claims.Any(c => c.Type == ClaimTypes.Role))
+                {
+                    var roleClaim = claims.FirstOrDefault(c => c.Type == "role")?.Value ?? userDetails?.Role;
+                    if (!string.IsNullOrEmpty(roleClaim))
+                    {
+                        claims.Add(new Claim(ClaimTypes.Role, roleClaim));
+                    }
+                }
+                
+                if (!claims.Any(c => c.Type == "role"))
+                {
+                    var roleClaim = claims.FirstOrDefault(c => c.Type == ClaimTypes.Role)?.Value ?? userDetails?.Role;
+                    if (!string.IsNullOrEmpty(roleClaim))
+                    {
+                        claims.Add(new Claim("role", roleClaim));
+                    }
+                }
+
+                // Ensure IsAdmin claim exists if user is Admin, Administrator, or Tenant
+                var finalRole = claims.FirstOrDefault(c => c.Type == ClaimTypes.Role || c.Type == "role")?.Value;
+                if (string.Equals(finalRole, "Administrator", StringComparison.OrdinalIgnoreCase) || 
+                    string.Equals(finalRole, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(finalRole, "Tenant", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!claims.Any(c => c.Type == "IsAdmin"))
+                    {
+                        claims.Add(new Claim("IsAdmin", "true"));
+                    }
+                    // Map Tenant to Administrator role for downstream RCL components
+                    if (!claims.Any(c => c.Type == ClaimTypes.Role && (c.Value == "Administrator" || c.Value == "Admin")))
+                    {
+                        claims.Add(new Claim(ClaimTypes.Role, "Administrator"));
+                    }
+                    if (!claims.Any(c => c.Type == "role" && (c.Value == "Administrator" || c.Value == "Admin")))
+                    {
+                        claims.Add(new Claim("role", "Administrator"));
+                    }
+                }
+
                 var claimsPrincipal = new ClaimsPrincipal(new ClaimsIdentity(claims, "JwtAuth"));
                 return await Task.FromResult(new AuthenticationState(claimsPrincipal));
 
             }
+            
             catch
             {
                 return await Task.FromResult(new AuthenticationState(_anonymous));

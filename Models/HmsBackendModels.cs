@@ -58,6 +58,10 @@ namespace Booking.Models
         public decimal? tmcode { get; set; }
         public double? gross_amount { get; set; }
         public double? discount_amount { get; set; }
+        public double? general_concession_per { get; set; }
+        public double? general_concession_amount { get; set; }
+        public double? referral_concession_per { get; set; }
+        public double? referral_concession_amount { get; set; }
         public double? tax_amount { get; set; }
         public double? net_amount { get; set; }
         public double? paid_amount { get; set; }
@@ -146,5 +150,19 @@ namespace Booking.Models
         public int page { get; set; }
         public int pageSize { get; set; }
         public List<BillNoConfig> data { get; set; } = new();
+    }
+
+    public class CounterTimingDto
+    {
+        public Guid cnttid { get; set; }
+        public int? cntcode { get; set; }
+        public int? bhcode { get; set; }
+        public int? shiftsno { get; set; }
+        public DateTime? counterdate { get; set; }
+        public DateTime? fromdate { get; set; }
+        public DateTime? todate { get; set; }
+        public string? tenant_code { get; set; }
+        public int? usercode { get; set; }
+        public int? computercode { get; set; }
     }
 }
