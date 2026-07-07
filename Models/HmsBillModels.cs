@@ -46,6 +46,7 @@ namespace Booking.Models
         public string? concessionreason { get; set; }
         public string? card_refno { get; set; }
         public string? bank_app { get; set; }
+        public List<string>? unbilled_charge_ids { get; set; } = new();
 
         public List<HmsBillItemModel> items { get; set; } = new();
     }
@@ -64,5 +65,28 @@ namespace Booking.Models
         public decimal gst_per { get; set; }
         public int ttid { get; set; } = 1;
         public string? requestdetailsid { get; set; }
+    }
+
+    public class UnbilledChargeSummary
+    {
+        public string? unbilledid { get; set; }
+        public string? entrytype { get; set; }
+        public string? entryid { get; set; }
+        public DateTime? chargedate { get; set; }
+        public int? tcode { get; set; }
+        public double? quantity { get; set; }
+        public double? rate { get; set; }
+        public double? amount { get; set; }
+        public string? item_name { get; set; }
+    }
+
+    public class AddUnbilledConsultationRequest
+    {
+        public string op_id { get; set; } = string.Empty;
+        public decimal custid { get; set; }
+        public int? tcode { get; set; }
+        public double rate { get; set; }
+        public double amount { get; set; }
+        public double quantity { get; set; } = 1;
     }
 }

@@ -56,6 +56,7 @@ builder.Services.AddScoped(sp =>
     return client;
 });
 builder.Services.AddScoped<Booking.Services.DoctorService>();
+builder.Services.AddScoped<Booking.Services.DoctorProfileService>();
 builder.Services.AddScoped<Booking.Services.SlotService>();
 builder.Services.AddScoped<Booking.Services.DoctorAppointmentSlotTypeService>();
 builder.Services.AddScoped<Booking.Services.DoctorTypeMasterService>();

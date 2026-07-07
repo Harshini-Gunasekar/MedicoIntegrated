@@ -262,5 +262,34 @@ namespace Booking.Services
                 return new List<CounterTimingDto>();
             }
         }
+
+        public async Task<List<UnbilledChargeSummary>> GetUnbilledChargesByVisitAsync(string opvisitid)
+        {
+            try
+            {
+                var response = await _http.GetFromJsonAsync<List<UnbilledChargeSummary>>($"api/UnbilledCharges/by-visit?opvisitid={Uri.EscapeDataString(opvisitid)}");
+                return response ?? new List<UnbilledChargeSummary>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching unbilled charges: {ex.Message}");
+                return new List<UnbilledChargeSummary>();
+            }
+        }
+
+        public async Task<string> AddUnbilledConsultationAsync(AddUnbilledConsultationRequest request)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/UnbilledCharges/add-consultation", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error adding unbilled consultation: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
     }
 }

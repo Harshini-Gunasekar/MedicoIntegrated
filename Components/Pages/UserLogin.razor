@@ -159,11 +159,64 @@
                     successMessage = "Login successful!";
                     userName = name;
                     string safeToken = token ?? "";
+
+                    List<UserRight> userRightsRaw = new List<UserRight>();
+                    bool isUserAdmin = false;
+                    string userRoleName = "";
+                    var rightsArray = json["rights"] as JArray ?? json["Rights"] as JArray;
+                    if (rightsArray != null)
+                    {
+                        userRightsRaw = rightsArray.ToObject<List<UserRight>>() ?? new List<UserRight>();
+                        var firstRight = userRightsRaw.FirstOrDefault();
+                        if (firstRight != null)
+                        {
+                            userRoleName = firstRight.RoleName ?? "";
+                            if (!string.IsNullOrEmpty(firstRight.RightsJson))
+                            {
+                                try
+                                {
+                                    var rObj = Newtonsoft.Json.Linq.JObject.Parse(firstRight.RightsJson);
+                                    if (rObj["IsAdmin"]?.ToObject<bool>() == true)
+                                    {
+                                        isUserAdmin = true;
+                                    }
+                                }
+                                catch {}
+                            }
+                        }
+                    }
+                    var resolvedUserRights = ConvertPermissionsToUserRights(userRightsRaw);
+
+                    int? bhCodeVal = userDetailsJson?["bhcode"]?.ToObject<int?>() ?? userDetailsJson?["bh_code"]?.ToObject<int?>();
+                    int? counterCodeVal = userDetailsJson?["cntcode"]?.ToObject<int?>() ?? userDetailsJson?["cnt_code"]?.ToObject<int?>();
+                    int resolvedUserCode = userDetailsJson?["usercode"]?.ToObject<int?>() ?? userDetailsJson?["user_code"]?.ToObject<int?>() ?? 0;
+
+                    bool finalIsAdmin = isUserAdmin || 
+                                       string.Equals(userRoleName, "Admin", StringComparison.OrdinalIgnoreCase) || 
+                                       string.Equals(userRoleName, "Administrator", StringComparison.OrdinalIgnoreCase);
+
+                    var userDetails = new SharedComponents.Rcl.Models.UserDetailsModel
+                    {
+                        UserName = name,
+                        Role = finalIsAdmin ? "Administrator" : (!string.IsNullOrEmpty(userRoleName) ? userRoleName : (userDetailsJson?["role"]?.ToString() ?? "0")),
+                        TenantCode = tenantCode,
+                        TenantName = name,
+                        AuthToken = safeToken,
+                        UserCode = resolvedUserCode,
+                        BranchCode = bhCodeVal,
+                        CounterCode = counterCodeVal,
+                        Claim = null
+                    };
                     
                     await _sessionStorage.SetAsync("authToken", safeToken);
                     await _sessionStorage.SetAsync("tenant_code", tenantCode);
+                    await _sessionStorage.SetAsync("tenant_name", name);
+                    if (bhCodeVal.HasValue) await _sessionStorage.SetAsync("bhcode", bhCodeVal.Value.ToString());
+                    if (counterCodeVal.HasValue) await _sessionStorage.SetAsync("cntcode", counterCodeVal.Value.ToString());
+                    await _sessionStorage.SetAsync("UserDetails", userDetails);
+                    await _sessionStorage.SetAsync("UserRights", resolvedUserRights);
                     
-                    TenantState.SetSession(tenantCode, safeToken, name);
+                    TenantState.SetSession(tenantCode, safeToken, name, resolvedUserCode, bhCodeVal, counterCodeVal, userDetails, resolvedUserRights);
                     
                     Toast.ShowSuccess($"Login successful! Tenant: {tenantCode}");
                     await Task.Delay(1000);
@@ -187,6 +240,212 @@
         {
             isLoading = false;
         }
+    }
+
+    private List<SharedComponents.Rcl.Models.User_Rights> ConvertPermissionsToUserRights(List<UserRight>? permissions)
+    {
+        var list = new List<SharedComponents.Rcl.Models.User_Rights>();
+        if (permissions == null) return list;
+
+        foreach (var p in permissions)
+        {
+            if (string.IsNullOrEmpty(p.RightsJson)) continue;
+
+            try
+            {
+                var jObj = Newtonsoft.Json.Linq.JObject.Parse(p.RightsJson);
+                var features = jObj["Features"] as Newtonsoft.Json.Linq.JObject;
+                if (features == null) continue;
+
+                foreach (var prop in features.Properties())
+                {
+                    var featureKey = prop.Name;
+                    var access = prop.Value as Newtonsoft.Json.Linq.JObject;
+                    if (access == null) continue;
+
+                    bool view = access["View"]?.ToObject<bool>() ?? false;
+                    bool create = access["Create"]?.ToObject<bool>() ?? false;
+                    bool edit = access["Edit"]?.ToObject<bool>() ?? false;
+                    bool delete = access["Delete"]?.ToObject<bool>() ?? false;
+
+                    var r = new SharedComponents.Rcl.Models.User_Rights
+                    {
+                        Department = "",
+                        ModuleName = "",
+                        ToAdd = create,
+                        ToView = view,
+                        ToEdit = edit,
+                        ToDelete = delete
+                    };
+
+                    string normKey = featureKey.Trim().ToLower();
+
+                    if (normKey.Contains("bill_no_sequence") || normKey.Contains("bill_list") || normKey.Contains("billlist"))
+                    {
+                        r.Department = "Lab";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("billnoconfiguration") || normKey.Contains("sequence"))
+                    {
+                        r.Department = "Configuration";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("billing") || normKey.Contains("bill"))
+                    {
+                        r.Department = "Reception";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("due collection") || normKey.Contains("due-collection") || normKey.Contains("due_collection"))
+                    {
+                        r.Department = "Reception";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("doctor_patient_list") || normKey.Contains("patient_list") || normKey.Contains("sample collection"))
+                    {
+                        r.Department = "Lab";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("patient registration") || normKey.Contains("patientmaster") || normKey.Contains("patient"))
+                    {
+                        r.Department = "OP";
+                        r.ModuleName = featureKey;
+
+                        var existingIp = list.FirstOrDefault(x => x.Department == "IP" && x.ModuleName == "Patient Registration IP");
+                        if (existingIp != null)
+                        {
+                            existingIp.ToView = existingIp.ToView || view;
+                            existingIp.ToAdd = existingIp.ToAdd || create;
+                            existingIp.ToEdit = existingIp.ToEdit || edit;
+                            existingIp.ToDelete = existingIp.ToDelete || delete;
+                        }
+                        else
+                        {
+                            var rIp = new SharedComponents.Rcl.Models.User_Rights
+                            {
+                                Department = "IP",
+                                ModuleName = "Patient Registration IP",
+                                ToAdd = create,
+                                ToView = view,
+                                ToEdit = edit,
+                                ToDelete = delete
+                            };
+                            list.Add(rIp);
+                        }
+                    }
+                    else if (normKey.Contains("refferal master") || normKey.Contains("reception") || normKey.Contains("customer") || normKey.Contains("outpatient"))
+                    {
+                        r.Department = "Reception";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("result entry"))
+                    {
+                        r.Department = "Lab";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("print lab result") || normKey.Contains("finished reports") || normKey.Contains("report result") || normKey.Contains("bills") || normKey.Contains("billno"))
+                    {
+                        r.Department = "Lab";
+                        r.ModuleName = featureKey;
+                    }
+                    else if (normKey.Contains("cash entry") || normKey.Contains("petty cash") || normKey.Contains("cash-advise") || normKey.Contains("cash advise"))
+                    {
+                        r.Department = "Accounts";
+                        r.ModuleName = featureKey;
+
+                        var existingPetty = list.FirstOrDefault(x => x.Department == "Accounts" && x.ModuleName == "Petty Cash");
+                        if (existingPetty != null)
+                        {
+                            existingPetty.ToView = existingPetty.ToView || view;
+                            existingPetty.ToAdd = existingPetty.ToAdd || create;
+                            existingPetty.ToEdit = existingPetty.ToEdit || edit;
+                            existingPetty.ToDelete = existingPetty.ToDelete || delete;
+                        }
+                        else
+                        {
+                            var rPetty = new SharedComponents.Rcl.Models.User_Rights
+                            {
+                                Department = "Accounts",
+                                ModuleName = "Petty Cash",
+                                ToAdd = create,
+                                ToView = view,
+                                ToEdit = edit,
+                                ToDelete = delete
+                            };
+                            list.Add(rPetty);
+                        }
+                    }
+                    else
+                    {
+                        r.Department = "Configuration";
+                        r.ModuleName = featureKey;
+                    }
+
+                    if (!string.IsNullOrEmpty(r.Department) && !string.IsNullOrEmpty(r.ModuleName))
+                    {
+                        var existing = list.FirstOrDefault(x => x.Department == r.Department && x.ModuleName == r.ModuleName);
+                        if (existing != null)
+                        {
+                            existing.ToView = existing.ToView || r.ToView;
+                            existing.ToAdd = existing.ToAdd || r.ToAdd;
+                            existing.ToEdit = existing.ToEdit || r.ToEdit;
+                            existing.ToDelete = existing.ToDelete || r.ToDelete;
+                        }
+                        else
+                        {
+                            list.Add(r);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing rights_json JObject: {ex.Message}");
+            }
+        }
+
+        // Sync layout category view permissions for sidebar section headers
+        if (list.Any(x => x.Department == "Configuration" && x.ToView))
+        {
+            if (!list.Any(x => x.Department == "Configuration" && x.ModuleName == "General"))
+            {
+                list.Add(new SharedComponents.Rcl.Models.User_Rights { Department = "Configuration", ModuleName = "General", ToView = true });
+            }
+        }
+        if (list.Any(x => x.Department == "Reception" && x.ToView))
+        {
+            if (!list.Any(x => x.Department == "Reception" && x.ModuleName == "Refferal Case & Collection"))
+            {
+                list.Add(new SharedComponents.Rcl.Models.User_Rights { Department = "Reception", ModuleName = "Refferal Case & Collection", ToView = true });
+            }
+            if (!list.Any(x => x.Department == "Reception" && x.ModuleName == "Billing"))
+            {
+                list.Add(new SharedComponents.Rcl.Models.User_Rights { Department = "Reception", ModuleName = "Billing", ToView = true });
+            }
+            if (!list.Any(x => x.Department == "Reception" && x.ModuleName == "Due Collection"))
+            {
+                list.Add(new SharedComponents.Rcl.Models.User_Rights { Department = "Reception", ModuleName = "Due Collection", ToView = true });
+            }
+        }
+        if (list.Any(x => x.Department == "Lab" && x.ToView))
+        {
+            if (!list.Any(x => x.Department == "Lab" && x.ModuleName == "Print Lab Result"))
+            {
+                list.Add(new SharedComponents.Rcl.Models.User_Rights { Department = "Lab", ModuleName = "Print Lab Result", ToView = true });
+            }
+            if (!list.Any(x => x.Department == "Lab" && x.ModuleName == "Lab Study"))
+            {
+                list.Add(new SharedComponents.Rcl.Models.User_Rights { Department = "Lab", ModuleName = "Lab Study", ToView = true });
+            }
+        }
+        if (list.Any(x => x.Department == "OP" && x.ToView))
+        {
+            if (!list.Any(x => x.Department == "OP" && x.ModuleName == "Patient Registration OP"))
+            {
+                list.Add(new SharedComponents.Rcl.Models.User_Rights { Department = "OP", ModuleName = "Patient Registration OP", ToView = true });
+            }
+        }
+
+        return list;
     }
 
     public class UserLoginModel
@@ -236,24 +495,31 @@
 
     public class UserRight
     {
+        [JsonProperty("id")]
         [JsonPropertyName("id")]
         public int Id { get; set; }
 
+        [JsonProperty("user_id")]
         [JsonPropertyName("user_id")]
         public int UserId { get; set; }
 
+        [JsonProperty("tenant_id")]
         [JsonPropertyName("tenant_id")]
         public string? TenantId { get; set; }
 
+        [JsonProperty("product_id")]
         [JsonPropertyName("product_id")]
         public string? ProductId { get; set; }
 
+        [JsonProperty("role_name")]
         [JsonPropertyName("role_name")]
         public string? RoleName { get; set; }
 
+        [JsonProperty("rights_json")]
         [JsonPropertyName("rights_json")]
         public string? RightsJson { get; set; }
 
+        [JsonProperty("modified_date")]
         [JsonPropertyName("modified_date")]
         public DateTime? ModifiedDate { get; set; }
     }

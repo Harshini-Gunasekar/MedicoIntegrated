@@ -82,6 +82,18 @@ namespace LIMS_Backend.Model
         
         [Write(false)]
         public string? role { get; set; }
+
+        [Newtonsoft.Json.JsonProperty("edit_bill")]
+        [JsonPropertyName("edit_bill")]
+        public bool? edit_bill { get; set; }
+
+        [Newtonsoft.Json.JsonProperty("print_bill")]
+        [JsonPropertyName("print_bill")]
+        public bool? print_bill { get; set; }
+        
+        [Newtonsoft.Json.JsonProperty("centralized_sample")]
+        [JsonPropertyName("centralized_sample")]
+        public bool? centralized_sample { get; set; }
     }
 
     [Table("mastertenant.user_branch_master")]
@@ -104,6 +116,9 @@ namespace LIMS_Backend.Model
         [Key]
         public long udid { get; set; }
         public int? user_code { get; set; }
+        
+        [Newtonsoft.Json.JsonProperty("gcode")]
+        [JsonPropertyName("gcode")]
         public int? dcode { get; set; }
         public DateTimeOffset entereddate { get; set; }
         public DateTimeOffset? ibsdate { get; set; }

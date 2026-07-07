@@ -40,6 +40,7 @@ namespace Booking.Models
     public class HmsBillResponse
     {
         public string? requestguid { get; set; }
+        public string? op_id { get; set; }
         public string? bill_no { get; set; }
         public string? barcode { get; set; }
         public DateTime? bill_date { get; set; }
@@ -47,7 +48,9 @@ namespace Booking.Models
         public string? patient_name { get; set; }
         public string? gender { get; set; }
         public string? mobileno { get; set; }
+        public string? dateofbirth { get; set; }
         public string? ageyears { get; set; }
+        public int? dcode { get; set; }
         public string? doctor_name { get; set; }
         public string? fee_type { get; set; }
         public string? pay_mode { get; set; }

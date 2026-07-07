@@ -49,6 +49,11 @@ namespace LabCare.Services
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonStr = await response.Content.ReadAsStringAsync();
+                    if (jsonStr.TrimStart().StartsWith("["))
+                    {
+                        var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<GetUser>>(jsonStr, _userJsonSettings);
+                        return list?.FirstOrDefault();
+                    }
                     return Newtonsoft.Json.JsonConvert.DeserializeObject<GetUser>(jsonStr, _userJsonSettings);
                 }
             }
@@ -59,7 +64,7 @@ namespace LabCare.Services
             return null;
         }
 
-        public async Task<List<UserResponseWrapper>> GetAllAsync()
+        public async Task<List<GetUser>> GetAllAsync()
         {
             ConfigureHeaders();
             try
@@ -68,7 +73,7 @@ namespace LabCare.Services
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonStr = await response.Content.ReadAsStringAsync();
-                    return Newtonsoft.Json.JsonConvert.DeserializeObject<List<UserResponseWrapper>>(jsonStr, _userJsonSettings) ?? new();
+                    return Newtonsoft.Json.JsonConvert.DeserializeObject<List<GetUser>>(jsonStr, _userJsonSettings) ?? new();
                 }
             }
             catch (Exception ex)
@@ -109,6 +114,7 @@ namespace LabCare.Services
         public async Task<HttpResponseMessage> InsertAsync(
             user_master model, 
             IList<UserBranchMaster>? branchModel = null, 
+            IList<UserDepartmentMaster>? departmentModel = null,
             byte[]? userImageFile = null, 
             string? userImageFileName = null, 
             byte[]? signatureImageFile = null, 
@@ -116,13 +122,14 @@ namespace LabCare.Services
         {
             ConfigureHeaders();
             LogPayloadToTerminal("Insert", model, branchModel, userImageFileName, signatureImageFileName);
-            using var content = BuildUserFormData(model, branchModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, "model");
+            using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
             return await _http.PostAsync("api/user/insert", content);
         }
 
         public async Task<HttpResponseMessage> RegisterAsync(
             user_master model, 
             IList<UserBranchMaster>? branchModel = null, 
+            IList<UserDepartmentMaster>? departmentModel = null,
             byte[]? userImageFile = null, 
             string? userImageFileName = null, 
             byte[]? signatureImageFile = null, 
@@ -130,13 +137,14 @@ namespace LabCare.Services
         {
             ConfigureHeaders();
             LogPayloadToTerminal("Register", model, branchModel, userImageFileName, signatureImageFileName);
-            using var content = BuildUserFormData(model, branchModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, "model");
+            using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
             return await _http.PostAsync("api/user/register", content);
         }
 
         public async Task<HttpResponseMessage> UpdateAsync(
             user_master user, 
             IList<UserBranchMaster>? branchModel = null, 
+            IList<UserDepartmentMaster>? departmentModel = null,
             byte[]? userImageFile = null, 
             string? userImageFileName = null, 
             byte[]? signatureImageFile = null, 
@@ -144,7 +152,7 @@ namespace LabCare.Services
         {
             ConfigureHeaders();
             LogPayloadToTerminal("Update", user, branchModel, userImageFileName, signatureImageFileName);
-            using var content = BuildUserFormData(user, branchModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, "user");
+            using var content = BuildUserFormData(user, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: true);
             return await _http.PostAsync("api/user/update", content);
         }
 
@@ -189,26 +197,25 @@ namespace LabCare.Services
         private MultipartFormDataContent BuildUserFormData(
             user_master user, 
             IList<UserBranchMaster>? branchModel, 
+            IList<UserDepartmentMaster>? departmentModel,
             byte[]? userImageBytes, 
             string? userImageName, 
             byte[]? signatureImageBytes, 
             string? signatureImageName,
-            string modelPrefix)
+            bool isUpdate)
         {
             var content = new MultipartFormDataContent();
 
             Action<string, string> addField = (name, value) => {
+                // Add the exact explicit prefix requested for the backend API
+                content.Add(new StringContent(value), $"Profile.User.{name}");
+                
+                // Fallback aliases for model binding safety
                 content.Add(new StringContent(value), name);
                 content.Add(new StringContent(value), $"user.{name}");
-                content.Add(new StringContent(value), $"model.{name}");
                 if (name == "user_code")
                 {
                     content.Add(new StringContent(value), "usercode");
-                    content.Add(new StringContent(value), "userCode");
-                    content.Add(new StringContent(value), "user.usercode");
-                    content.Add(new StringContent(value), "user.userCode");
-                    content.Add(new StringContent(value), "model.usercode");
-                    content.Add(new StringContent(value), "model.userCode");
                 }
             };
 
@@ -219,7 +226,9 @@ namespace LabCare.Services
                 var value = prop.GetValue(user);
                 if (value != null)
                 {
-                    string stringValue = value is DateTime dt ? dt.ToString("yyyy-MM-ddTHH:mm:ss") : value.ToString() ?? "";
+                    string stringValue = value is DateTime dt ? dt.ToString("yyyy-MM-ddTHH:mm:ss") 
+                                       : value is bool b ? b.ToString().ToLower()
+                                       : value.ToString() ?? "";
                     addField(prop.Name, stringValue);
                 }
             }
@@ -242,30 +251,48 @@ namespace LabCare.Services
                     var branch = branchModel[i];
                     if (branch.bhcode.HasValue)
                     {
-                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"branch[{i}].bhcode");
-                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"branchModel[{i}].bhcode");
+                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"Profile.Branches[{i}].bhcode");
+                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"branches[{i}].bhcode");
                     }
                     if (branch.cntcode.HasValue)
                     {
-                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"branch[{i}].cntcode");
-                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"branchModel[{i}].cntcode");
+                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"Profile.Branches[{i}].cntcode");
+                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"branches[{i}].cntcode");
                     }
                     if (branch.user_code.HasValue)
                     {
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branch[{i}].user_code");
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branch[{i}].usercode");
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branch[{i}].userCode");
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branchModel[{i}].user_code");
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branchModel[{i}].usercode");
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branchModel[{i}].userCode");
+                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"Profile.Branches[{i}].user_code");
+                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branches[{i}].user_code");
                     }
                     if (!string.IsNullOrEmpty(branch.tenant_code))
                     {
-                        content.Add(new StringContent(branch.tenant_code), $"branch[{i}].tenant_code");
-                        content.Add(new StringContent(branch.tenant_code), $"branchModel[{i}].tenant_code");
+                        content.Add(new StringContent(branch.tenant_code), $"Profile.Branches[{i}].tenant_code");
+                        content.Add(new StringContent(branch.tenant_code), $"branches[{i}].tenant_code");
                     }
-                    content.Add(new StringContent(branch.deleted.ToString().ToLower()), $"branch[{i}].deleted");
-                    content.Add(new StringContent(branch.deleted.ToString().ToLower()), $"branchModel[{i}].deleted");
+                    content.Add(new StringContent(branch.deleted.ToString().ToLower()), $"Profile.Branches[{i}].deleted");
+                    content.Add(new StringContent(branch.deleted.ToString().ToLower()), $"branches[{i}].deleted");
+                }
+            }
+
+            // Departments (Groups)
+            if (departmentModel != null && departmentModel.Count > 0)
+            {
+                for (int i = 0; i < departmentModel.Count; i++)
+                {
+                    var dept = departmentModel[i];
+                    if (dept.dcode.HasValue)
+                    {
+                        content.Add(new StringContent(dept.dcode.Value.ToString()), $"Profile.Departments[{i}].gcode"); // Map dcode -> gcode
+                    }
+                    if (dept.user_code.HasValue)
+                    {
+                        content.Add(new StringContent(dept.user_code.Value.ToString()), $"Profile.Departments[{i}].user_code");
+                    }
+                    if (!string.IsNullOrEmpty(dept.tenant_code))
+                    {
+                        content.Add(new StringContent(dept.tenant_code), $"Profile.Departments[{i}].tenant_code");
+                    }
+                    content.Add(new StringContent(dept.deleted.ToString().ToLower()), $"Profile.Departments[{i}].deleted");
                 }
             }
 
@@ -274,7 +301,9 @@ namespace LabCare.Services
             {
                 var fileContent = new ByteArrayContent(userImageBytes);
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue(GetMimeType(userImageName));
-                content.Add(fileContent, "userImageFile", userImageName);
+                
+                string fileKey = isUpdate ? "userImageFile" : "customerImageFile";
+                content.Add(fileContent, fileKey, userImageName);
             }
             if (signatureImageBytes != null && signatureImageBytes.Length > 0 && !string.IsNullOrEmpty(signatureImageName))
             {
@@ -282,6 +311,25 @@ namespace LabCare.Services
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue(GetMimeType(signatureImageName));
                 content.Add(fileContent, "signatureImageFile", signatureImageName);
             }
+            Console.WriteLine("=== EXACT MULTIPART FORM DATA PAYLOAD ===");
+            foreach (var p in content)
+            {
+                if (p.Headers.ContentDisposition != null)
+                {
+                    var name = p.Headers.ContentDisposition.Name?.Trim('"');
+                    if (p is StringContent stringContent)
+                    {
+                        var val = stringContent.ReadAsStringAsync().Result;
+                        Console.WriteLine($"{name}: {val}");
+                    }
+                    else if (p is ByteArrayContent byteContent)
+                    {
+                        var fileName = p.Headers.ContentDisposition.FileName?.Trim('"');
+                        Console.WriteLine($"{name}: [FILE] {fileName} ({byteContent.Headers.ContentLength} bytes)");
+                    }
+                }
+            }
+            Console.WriteLine("=========================================");
 
             return content;
         }
