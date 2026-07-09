@@ -4,6 +4,10 @@
 @inject NavigationManager Navigation
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @using Booking.Models
+@inject Booking.Services.DoctorService DoctorService
+@using Newtonsoft.Json
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject IHttpClientFactory ClientFactory
 
 <div class="bills-wrapper">
     <!-- Header -->
@@ -21,9 +25,12 @@
             <button class="btn btn-outline" @onclick="LoadBillsAsync" disabled="@isLoading">
                 <i class="bi bi-search"></i> Search
             </button>
-            <button class="btn btn-outline">
-                <i class="bi bi-printer"></i> Print List
-            </button>
+            @if (canPrintBill)
+            {
+                <button class="btn btn-outline">
+                    <i class="bi bi-printer"></i> Print List
+                </button>
+            }
             <button class="btn btn-outline" @onclick="ResetFiltersAsync" disabled="@isLoading">
                 <i class="bi bi-arrow-clockwise"></i> Refresh
             </button>
@@ -42,18 +49,26 @@
         </div>
         <div class="filter-group">
             <label>BRANCH</label>
-            <select @bind="filter.bhcode" class="form-select">
+            <select class="form-select" value="@filter.bhcode" @onchange="OnBranchChanged">
                 <option value="">All Branches</option>
-                <option value="1">Erode Center</option>
-                <option value="2">Main Branch</option>
-                <option value="3">Salem Clinic</option>
+                @foreach (var b in branches)
+                {
+                    <option value="@b.bh_code">@b.name</option>
+                }
             </select>
         </div>
         <div class="filter-group">
             <label>REPORT TYPE</label>
-            <select class="form-select">
-                <option>All Reports</option>
-            </select>
+            <div class="checkbox-container">
+                <label class="checkbox-label">
+                    <input type="checkbox" checked="@showPending" @onchange="OnPendingToggled" />
+                    Pending Bills
+                </label>
+                <label class="checkbox-label">
+                    <input type="checkbox" checked="@showSettled" @onchange="OnSettledToggled" />
+                    Settled Bills
+                </label>
+            </div>
         </div>
         <div class="filter-group filter-group-large">
             <label>PATIENT SEARCH</label>
@@ -115,15 +130,15 @@
                                 <td>@(bill.bill_date?.ToString("dd-MMM-yyyy HH:mm") ?? "-")</td>
                                 <td class="fw-bold">@bill.patient_name</td>
                                 <td>@bill.mobileno</td>
-                                <td>@(string.IsNullOrEmpty(bill.doctor_name) ? "Self" : bill.doctor_name)</td>
+                                <td>@GetDoctorName(bill.dcode, bill.doctor_name)</td>
                                 <td>₹@string.Format("{0:0.00}", bill.discount_amount ?? 0)</td>
                                 <td>₹@string.Format("{0:0.00}", bill.net_amount ?? 0)</td>
                                 <td class="text-success fw-bold">₹@string.Format("{0:0.00}", bill.paid_amount ?? 0)</td>
                                 <td class="text-danger fw-bold">₹@string.Format("{0:0.00}", bill.balance_amount ?? 0)</td>
                                 <td>System</td>
                                 <td class="action-cell">
-                                    <button class="action-btn text-primary" @onclick="() => ViewBillDetails(bill.requestguid)" title="View/Print">
-                                        <i class="bi bi-printer"></i>
+                                    <button class="action-btn text-primary" @onclick="() => ViewBillDetails(bill.requestguid)" title="@(canPrintBill ? "View/Print" : "View")">
+                                        <i class="bi @(canPrintBill ? "bi-printer" : "bi-eye")"></i>
                                     </button>
                                     @if (TenantState.HasActionRight("Lab", "Print Lab Result", "Edit"))
                                     {
@@ -293,9 +308,12 @@
             </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" @onclick="CloseDetailsModal">Close</button>
-                <button type="button" class="btn btn-primary" onclick="window.print()">
-                    <i class="bi bi-printer"></i> Print Receipt
-                </button>
+                @if (canPrintBill)
+                {
+                    <button type="button" class="btn btn-primary" onclick="window.print()">
+                        <i class="bi bi-printer"></i> Print Receipt
+                    </button>
+                }
             </div>
         </div>
     </div>
@@ -312,19 +330,216 @@
 
     private HmsBillListResponse? billsList;
     private bool isLoading = false;
+    private bool canPrintBill = true;
 
     // Totals logic
     private double TotalNet => billsList?.data.Sum(b => b.net_amount ?? 0) ?? 0;
     private double TotalPaid => billsList?.data.Sum(b => b.paid_amount ?? 0) ?? 0;
     private double TotalBalance => billsList?.data.Sum(b => b.balance_amount ?? 0) ?? 0;
 
-    // Modal logic
     private bool showDetailsModal = false;
     private HmsBillResponse? selectedBill;
+    private List<Booking.Models.BranchModel> branches = new();
+    private bool showPending = true;
+    private bool showSettled = true;
+
+    private List<DoctorMasterModel> doctorsList = new();
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadUserPermissionsAsync();
+        await LoadDoctorsAsync();
         await LoadBillsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadBranchesAsync();
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branches = branches.Where(b => !b.deleted).ToList();
+
+                await FilterBranchesByUserAccessAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task FilterBranchesByUserAccessAsync()
+    {
+        try
+        {
+            var isTenantAdminResult = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+            if (isTenantAdminResult.Success && isTenantAdminResult.Value == true)
+            {
+                return;
+            }
+
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null && userDetailsResult.Value.UserCode == 0)
+            {
+                return;
+            }
+
+            if (userDetailsResult.Success && userDetailsResult.Value?.Branches != null && userDetailsResult.Value.Branches.Any())
+            {
+                var allowedCodes = userDetailsResult.Value.Branches
+                    .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                    .Where(code => code > 0)
+                    .ToHashSet();
+
+                if (allowedCodes.Any())
+                {
+                    branches = branches.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                    return;
+                }
+            }
+
+            var branchCodesResult = await _sessionStorage.GetAsync<List<int>>("UserBranchCodes");
+            if (branchCodesResult.Success && branchCodesResult.Value != null && branchCodesResult.Value.Any())
+            {
+                var allowedCodes = branchCodesResult.Value.ToHashSet();
+                branches = branches.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error filtering branches by user access: {ex.Message}");
+        }
+    }
+
+    private async Task OnBranchChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int bhcode))
+        {
+            filter.bhcode = bhcode;
+        }
+        else
+        {
+            filter.bhcode = null;
+        }
+        await LoadBillsAsync();
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            doctorsList = await DoctorService.GetDoctorsAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading doctors: {ex.Message}");
+        }
+    }
+
+    private string GetDoctorName(int? dcode, string? fallbackName)
+    {
+        if (dcode.HasValue && dcode.Value > 0)
+        {
+            var doc = doctorsList.FirstOrDefault(d => d.dcode == dcode.Value);
+            if (doc != null)
+            {
+                return doc.name ?? fallbackName ?? "Self";
+            }
+        }
+        return string.IsNullOrEmpty(fallbackName) ? "Self" : fallbackName;
+    }
+
+    private async Task OnPendingToggled(ChangeEventArgs e)
+    {
+        showPending = (bool)(e.Value ?? false);
+        UpdatePendingFilter();
+        await LoadBillsAsync();
+    }
+
+    private async Task OnSettledToggled(ChangeEventArgs e)
+    {
+        showSettled = (bool)(e.Value ?? false);
+        UpdatePendingFilter();
+        await LoadBillsAsync();
+    }
+
+    private void UpdatePendingFilter()
+    {
+        if (showPending && !showSettled)
+        {
+            filter.pendingonly = true;
+        }
+        else if (!showPending && showSettled)
+        {
+            filter.pendingonly = false;
+        }
+        else
+        {
+            filter.pendingonly = null;
+        }
+    }
+
+    private async Task LoadUserPermissionsAsync()
+    {
+        try
+        {
+            var userCode = TenantState.UserCode;
+            if (userCode <= 0) return;
+
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync($"api/user/get?user_code={userCode}");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var settings = new Newtonsoft.Json.JsonSerializerSettings 
+                { 
+                    NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
+                };
+                var userDetails = Newtonsoft.Json.JsonConvert.DeserializeObject<LIMS_Backend.Model.user_master>(json, settings);
+                if (userDetails != null)
+                {
+                    canPrintBill = userDetails.print_bill ?? true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[BillsList] LoadUserPermissionsAsync error: {ex.Message}");
+        }
     }
 
     private async Task LoadBillsAsync()
@@ -333,6 +548,21 @@
         StateHasChanged();
         
         billsList = await HmsBillingService.ListBillsAsync(filter);
+        if (billsList?.data != null)
+        {
+            if (showPending && !showSettled)
+            {
+                billsList.data = billsList.data.Where(b => (b.balance_amount ?? 0) > 0).ToList();
+            }
+            else if (!showPending && showSettled)
+            {
+                billsList.data = billsList.data.Where(b => (b.balance_amount ?? 0) <= 0).ToList();
+            }
+            else if (!showPending && !showSettled)
+            {
+                billsList.data = new List<HmsBillSummary>();
+            }
+        }
         
         isLoading = false;
         StateHasChanged();
@@ -340,12 +570,15 @@
 
     private async Task ResetFiltersAsync()
     {
+        showPending = true;
+        showSettled = true;
         filter = new HmsBillFilterRequest
         {
             page = 1,
             pagesize = 10,
             fromdate = DateTime.Today.AddDays(-30),
-            todate = DateTime.Today
+            todate = DateTime.Today,
+            pendingonly = null
         };
         await LoadBillsAsync();
     }

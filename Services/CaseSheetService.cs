@@ -20,8 +20,24 @@ namespace Booking.Services
         {
             try
             {
+                // ── DEBUG: Print draft payload to terminal ──
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never
+                };
+                var payloadJson = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("========== [SaveCaseSheetAsync] PAYLOAD ==========");
+                Console.WriteLine(payloadJson);
+                Console.WriteLine("==================================================");
+
                 var response = await _http.PostAsJsonAsync("api/CaseSheet/save", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine($"[SaveCaseSheetAsync] API URL  : {_http.BaseAddress}api/CaseSheet/save");
+                Console.WriteLine($"[SaveCaseSheetAsync] HTTP Status: {(int)response.StatusCode} {response.StatusCode}");
+                Console.WriteLine($"[SaveCaseSheetAsync] Response : {rawResponse}");
+
                 return rawResponse;
             }
             catch (Exception ex)

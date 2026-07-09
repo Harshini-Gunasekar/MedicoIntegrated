@@ -35,6 +35,7 @@ namespace Booking.Models
         public bool is_settled { get; set; }
         public int? enteredbhcode { get; set; }
         public int? cntcode { get; set; }
+        public int? dcode { get; set; }
     }
 
     public class HmsBillResponse

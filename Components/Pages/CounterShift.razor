@@ -194,10 +194,11 @@
     private string AuthToken = "";
 
     private List<Booking.Models.CounterTimingDto> FilteredShifts => openCounters.Where(shift => 
-        string.IsNullOrEmpty(searchQuery) ||
-        (branches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
-        (counters.FirstOrDefault(c => c.cntcode == shift.cntcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
-        (shift.shiftsno?.ToString() ?? "").Contains(searchQuery)
+        (!branches.Any() || branches.Any(b => b.bh_code == shift.bhcode)) &&
+        (string.IsNullOrEmpty(searchQuery) ||
+         (branches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
+         (counters.FirstOrDefault(c => c.cntcode == shift.cntcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
+         (shift.shiftsno?.ToString() ?? "").Contains(searchQuery))
     ).ToList();
 
     private void OpenOpenModal()
@@ -267,6 +268,7 @@
                 var json = await response.Content.ReadAsStringAsync();
                 branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
                 branches = branches.Where(b => !b.deleted).ToList();
+                await FilterBranchesByUserAccessAsync();
             }
             else
             {
@@ -277,6 +279,49 @@
         catch (Exception ex)
         {
             ToastService.ShowError($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task FilterBranchesByUserAccessAsync()
+    {
+        try
+        {
+            var isTenantAdminResult = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+            if (isTenantAdminResult.Success && isTenantAdminResult.Value == true)
+            {
+                return;
+            }
+
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null && userDetailsResult.Value.UserCode == 0)
+            {
+                return;
+            }
+
+            if (userDetailsResult.Success && userDetailsResult.Value?.Branches != null && userDetailsResult.Value.Branches.Any())
+            {
+                var allowedCodes = userDetailsResult.Value.Branches
+                    .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                    .Where(code => code > 0)
+                    .ToHashSet();
+
+                if (allowedCodes.Any())
+                {
+                    branches = branches.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                    return;
+                }
+            }
+
+            var branchCodesResult = await _sessionStorage.GetAsync<List<int>>("UserBranchCodes");
+            if (branchCodesResult.Success && branchCodesResult.Value != null && branchCodesResult.Value.Any())
+            {
+                var allowedCodes = branchCodesResult.Value.ToHashSet();
+                branches = branches.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error filtering branches by user access: {ex.Message}");
         }
     }
 

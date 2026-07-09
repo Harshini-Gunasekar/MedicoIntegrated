@@ -1,10 +1,15 @@
 @page "/due-collection"
 @rendermode InteractiveServer
 @using medico_backend.Model
+@using Newtonsoft.Json
+@using Booking.Models
 @inject HmsDueCollectionService DueCollectionService
 @inject ToastService ToastService
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject IHttpClientFactory ClientFactory
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 
 <div class="due-collection-wrapper">
     <style>
@@ -241,10 +246,10 @@
                                 <label>BRANCH</label>
                                 <select class="filter-select" @bind="filterBranch" style="width: 100%;">
                                     <option value="">Select the branch</option>
-                                    <option value="2">Main Branch</option>
-                                    <option value="1">Sample / Lab Branch</option>
-                                    <option value="3">South Wing</option>
-                                    <option value="4">City Clinic</option>
+                                    @foreach (var b in branchesList)
+                                    {
+                                        <option value="@b.bh_code">@b.name</option>
+                                    }
                                 </select>
                             </div>
                             <div class="form-group-filter" style="flex: 1; min-width: 180px;">
@@ -982,9 +987,94 @@
     private double TotalConcessionsEntered => concessionAmounts.Values.Sum(v => v ?? 0);
     private int TotalPages => (int)Math.Ceiling((double)totalBillsCount / pageSize);
 
+    private List<Booking.Models.BranchModel> branchesList = new();
+
     protected override async Task OnInitializedAsync()
     {
         await LoadDueBills();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadBranchesAsync();
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branchesList = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branchesList = branchesList.Where(b => !b.deleted).ToList();
+
+                await FilterBranchesByUserAccessAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task FilterBranchesByUserAccessAsync()
+    {
+        try
+        {
+            var isTenantAdminResult = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+            if (isTenantAdminResult.Success && isTenantAdminResult.Value == true)
+            {
+                return;
+            }
+
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null && userDetailsResult.Value.UserCode == 0)
+            {
+                return;
+            }
+
+            if (userDetailsResult.Success && userDetailsResult.Value?.Branches != null && userDetailsResult.Value.Branches.Any())
+            {
+                var allowedCodes = userDetailsResult.Value.Branches
+                    .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                    .Where(code => code > 0)
+                    .ToHashSet();
+
+                if (allowedCodes.Any())
+                {
+                    branchesList = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                    return;
+                }
+            }
+
+            var branchCodesResult = await _sessionStorage.GetAsync<List<int>>("UserBranchCodes");
+            if (branchCodesResult.Success && branchCodesResult.Value != null && branchCodesResult.Value.Any())
+            {
+                var allowedCodes = branchCodesResult.Value.ToHashSet();
+                branchesList = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error filtering branches by user access: {ex.Message}");
+        }
     }
 
     private async Task SetActiveTab(string tab)

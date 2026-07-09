@@ -176,7 +176,7 @@
                         </div>
                         <div class="form-group">
                             <label>BRANCH</label>
-                            <select class="lab-input" value="@currentConfig.bhcode" @onchange="OnBranchChanged" disabled="@currentConfig.allbranch">
+                            <select class="lab-input" value="@currentConfig.bhcode" @onchange="OnBranchChanged">
                                 <option value="">-- Select Branch --</option>
                                 @foreach (var b in branches)
                                 {
@@ -186,7 +186,7 @@
                         </div>
                         <div class="form-group">
                             <label>COUNTER</label>
-                            <select class="lab-input" @bind="currentConfig.cntcode" disabled="@(currentConfig.allcounter || currentConfig.allbranch)">
+                            <select class="lab-input" @bind="currentConfig.cntcode">
                                 <option value="">-- Select Counter --</option>
                                 @foreach (var c in filteredCounters)
                                 {
@@ -197,31 +197,7 @@
                     </div>
                 </div>
                 
-                @* --- Checkbox Pills --- *@
-                <div class="checkbox-box-container">
-                    <div class="checkbox-pills-grid">
-                        <label class="checkbox-pill @(currentConfig.isdefault ? "checked" : "")">
-                            <input type="checkbox" @bind="currentConfig.isdefault" />
-                            <span>Is Default</span>
-                        </label>
-                        <label class="checkbox-pill @(currentConfig.allbranch ? "checked" : "")">
-                            <input type="checkbox" checked="@currentConfig.allbranch" @onchange="OnAllBranchChanged" />
-                            <span>All Branches</span>
-                        </label>
-                        <label class="checkbox-pill @(currentConfig.allcounter ? "checked" : "")">
-                            <input type="checkbox" checked="@currentConfig.allcounter" @onchange="OnAllCounterChanged" disabled="@currentConfig.allbranch" />
-                            <span>All Counters</span>
-                        </label>
-                        <label class="checkbox-pill @(currentConfig.issampleno ? "checked" : "")">
-                            <input type="checkbox" @bind="currentConfig.issampleno" />
-                            <span>Is Sample No</span>
-                        </label>
-                        <label class="checkbox-pill @(currentConfig.isreceiptno ? "checked" : "")">
-                            <input type="checkbox" @bind="currentConfig.isreceiptno" />
-                            <span>Is Receipt No</span>
-                        </label>
-                    </div>
-                </div>
+
 
                 @if (isEditMode)
                 {
@@ -303,6 +279,13 @@
         StateHasChanged();
         
         sequenceList = await HmsBillingService.ListBillNoConfigsAsync(listRequest);
+        if (sequenceList?.data != null && branches.Any() && !await IsTenantAdminLoginAsync())
+        {
+            var allowedCodes = branches.Select(b => b.bh_code).ToHashSet();
+            sequenceList.data = sequenceList.data
+                .Where(seq => seq.allbranch == true || !seq.bhcode.HasValue || allowedCodes.Contains(seq.bhcode.Value))
+                .ToList();
+        }
         
         isLoadingList = false;
         StateHasChanged();
@@ -328,6 +311,7 @@
                 var json = await response.Content.ReadAsStringAsync();
                 branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
                 branches = branches.Where(b => !b.deleted).ToList();
+                await FilterBranchesByUserAccessAsync();
             }
         }
         catch (Exception ex)
@@ -336,12 +320,68 @@
         }
     }
 
+    private async Task<bool> IsTenantAdminLoginAsync()
+    {
+        try
+        {
+            var isTenantAdminResult = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+            if (isTenantAdminResult.Success && isTenantAdminResult.Value == true)
+            {
+                return true;
+            }
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null && userDetailsResult.Value.UserCode == 0)
+            {
+                return true;
+            }
+        }
+        catch {}
+        return false;
+    }
+
+    private async Task FilterBranchesByUserAccessAsync()
+    {
+        try
+        {
+            if (await IsTenantAdminLoginAsync())
+            {
+                return;
+            }
+
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value?.Branches != null && userDetailsResult.Value.Branches.Any())
+            {
+                var allowedCodes = userDetailsResult.Value.Branches
+                    .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                    .Where(code => code > 0)
+                    .ToHashSet();
+
+                if (allowedCodes.Any())
+                {
+                    branches = branches.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                    return;
+                }
+            }
+
+            var branchCodesResult = await _sessionStorage.GetAsync<List<int>>("UserBranchCodes");
+            if (branchCodesResult.Success && branchCodesResult.Value != null && branchCodesResult.Value.Any())
+            {
+                var allowedCodes = branchCodesResult.Value.ToHashSet();
+                branches = branches.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error filtering branches by user access: {ex.Message}");
+        }
+    }
+
     private async Task LoadCountersAsync()
     {
         try
         {
             counters = await CounterService.GetCountersAsync();
-            filteredCounters = counters;
+            FilterCounters();
         }
         catch (Exception ex)
         {
@@ -366,12 +406,16 @@
             restartcalendaryear = false,
             restartmonthly = true,
             restartdaily = false,
-            issampleno = false,
-            isreceiptno = false,
+            issampleno = true,
+            isreceiptno = true,
             usercode = 1,
             computercode = 1
         };
-        filteredCounters = counters;
+        if (branches.Any())
+        {
+            currentConfig.bhcode = branches.First().bh_code;
+        }
+        FilterCounters();
         showModal = true;
     }
 
@@ -453,7 +497,7 @@
         else
         {
             currentConfig.bhcode = null;
-            filteredCounters = counters;
+            filteredCounters = new List<Medico_Backend.Model.CounterMasterModel>();
         }
         currentConfig.cntcode = null;
     }
@@ -466,7 +510,7 @@
         }
         else
         {
-            filteredCounters = counters;
+            filteredCounters = new List<Medico_Backend.Model.CounterMasterModel>();
         }
     }
 
@@ -499,6 +543,13 @@
             ToastService.ShowError("Name and Shortname are required.");
             return;
         }
+
+        currentConfig.issampleno = true;
+        currentConfig.isreceiptno = true;
+
+        // Auto-set allbranch and allcounter based on selections
+        currentConfig.allbranch = !currentConfig.bhcode.HasValue;
+        currentConfig.allcounter = !currentConfig.cntcode.HasValue;
 
         isSaving = true;
         try
