@@ -74,6 +74,9 @@ namespace Booking.Models
         public double? pmc1 { get; set; }
         public double? pmc2 { get; set; }
         public double? pmc3 { get; set; }
+        public double? pmc1_amount { get; set; }
+        public double? pmc2_amount { get; set; }
+        public double? pmc3_amount { get; set; }
         public string? receiptguid { get; set; }
         public string? receipt_no { get; set; }
         public string? receipt_barcode { get; set; }

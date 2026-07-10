@@ -319,6 +319,13 @@ namespace medico_backend.Model
         public bool? pending_only { get; set; }
         public int page { get; set; } = 1;
         public int pagesize { get; set; } = 20;
+
+        // history/filter endpoint search fields
+        public string? customer_search { get; set; }
+        public string? doctor_search { get; set; }
+        public int? dcode { get; set; }
+        public string? ismonthly { get; set; }
+        public string? report_type { get; set; }
     }
 
 

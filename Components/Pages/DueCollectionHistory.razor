@@ -1,10 +1,17 @@
 @page "/due-collection-history"
 @rendermode InteractiveServer
 @using medico_backend.Model
+@using Medico_Backend.Model
+@using Booking.Models
 @inject HmsDueCollectionService DueCollectionService
+@inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.ReimbursementCompanyMasterService CompanyService
 @inject ToastService ToastService
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject IHttpClientFactory ClientFactory
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 
 <div class="due-collection-wrapper">
     @if (!IsEmbedded)
@@ -30,8 +37,8 @@
     {
         <div class="hist-filter-card">
             <div class="hist-filter-body">
-                <!-- Row 1: FROM / TO / BRANCH -->
-                <div class="hist-filter-row-3">
+                <!-- Row 1: FROM / TO / PERIOD PRESET / BRANCH -->
+                <div class="hist-filter-row-4">
                     <div class="hist-fg">
                         <label>FROM</label>
                         <input type="date" class="hist-input" @bind="histFilter.fromdate" />
@@ -41,31 +48,85 @@
                         <input type="date" class="hist-input" @bind="histFilter.todate" />
                     </div>
                     <div class="hist-fg">
+                        <label>PERIOD PRESET</label>
+                        <select class="hist-select" value="@selectedPeriodPreset" @onchange='(e) => OnPeriodPresetChanged(e.Value?.ToString() ?? "Custom")'>
+                            <option value="This Month">This Month</option>
+                            <option value="Today">Today</option>
+                            <option value="Yesterday">Yesterday</option>
+                            <option value="This Week">This Week</option>
+                            <option value="Last Month">Last Month</option>
+                            <option value="Custom">Custom</option>
+                        </select>
+                    </div>
+                    <div class="hist-fg">
                         <label>BRANCH</label>
                         <select class="hist-select" @bind="histBranchStr">
                             <option value="">Select the Branch</option>
-                            <option value="1">Sample / Lab Branch</option>
-                            <option value="2">Main Branch</option>
-                            <option value="3">South Wing</option>
-                            <option value="4">City Clinic</option>
+                            @foreach (var b in branchesList)
+                            {
+                                <option value="@b.bh_code">@b.name</option>
+                            }
                         </select>
                     </div>
                 </div>
 
-                <!-- Row 2: CUSTOMER / SEARCH -->
-                <div class="hist-filter-row-2">
+                <!-- Row 2: CUSTOMER / REIMBURSEMENT COMPANY (MONTHLY) -->
+                <div class="hist-filter-row-2-cols">
                     <div class="hist-fg">
-                        <label>CUSTOMER / SEARCH</label>
-                        <input type="text" class="hist-input" placeholder="Search ID, Name, Mobile, Receipt No..."
-                               @bind="histFilter.search" />
+                        <label>CUSTOMER</label>
+                        <div class="autocomplete-search-wrapper">
+                            <input type="text" class="hist-input" placeholder="Search ID, Name, Mobile..."
+                                   @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="width: 100%;" />
+                            @if (showPatientDropdown && searchedPatients.Count > 0)
+                            {
+                                <div class="autocomplete-dropdown">
+                                    @foreach (var pat in searchedPatients)
+                                    {
+                                        <div class="autocomplete-item" @onclick="() => SelectCustomerPatient(pat)">
+                                            <div>
+                                                <span style="font-weight: 600; color: #0f172a;">@pat.name (CUST-@pat.custid)</span>
+                                                <div style="font-size: 0.8em; color: #64748b;">
+                                                    📞 @pat.mobile | 📍 @(string.IsNullOrEmpty(pat.area) ? "No Area" : pat.area), @pat.city
+                                                </div>
+                                            </div>
+                                            <span class="autocomplete-code">@pat.custcode</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    <div class="hist-fg">
+                        <label>REIMBURSEMENT COMPANY (MONTHLY)</label>
+                        <select class="hist-select" @bind="selectedCompanyName">
+                            <option value="">Select Company</option>
+                            @foreach (var comp in companiesList)
+                            {
+                                <option value="@comp.name">@comp.name</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+
+                <!-- Row 3: DOCTOR / SELECT REPORT -->
+                <div class="hist-filter-row-2-cols">
+                    <div class="hist-fg">
+                        <label>DOCTOR</label>
+                        <input type="text" class="hist-input" placeholder="Search ID, Name, Mobile..."
+                               @bind="doctorSearchText" />
+                    </div>
+                    <div class="hist-fg">
+                        <label>SELECT REPORT</label>
+                        <select class="hist-select" @bind="selectedReportType">
+                            <option value="ALL">Select the Report</option>
+                            <option value="DUE">Due Collection</option>
+                            <option value="ADVANCE">Advance Receipt</option>
+                        </select>
                     </div>
                 </div>
 
                 <!-- Action buttons -->
                 <div class="hist-filter-actions">
-                    <button class="btn-hist-reset" @onclick="ResetHistoryFilter">
-                        <i class="bi bi-x-circle"></i> Reset
-                    </button>
                     <button class="btn-hist-search" @onclick="SearchHistory">
                         <i class="bi bi-search"></i> Search
                     </button>
@@ -255,6 +316,9 @@
 
     protected override async Task OnInitializedAsync()
     {
+        var today = DateTime.Today;
+        histFilter.fromdate = new DateTime(today.Year, today.Month, 1);
+        histFilter.todate = today;
         await RunHistoryFilter();
     }
 
@@ -283,7 +347,6 @@
     {
         loadingHistory = true;
         StateHasChanged();
-        string? originalSearch = histFilter.search?.Trim();
 
         try
         {
@@ -292,6 +355,35 @@
             else
                 histFilter.bhcode = null;
 
+            string? customerSearch = null;
+            string? doctorSearch = null;
+            int? docCode = null;
+            string? isMonthly = null;
+            decimal? fetchCustId = null;
+
+            // 1. Customer autocomplete
+            if (!string.IsNullOrEmpty(patientSearchQuery))
+            {
+                customerSearch = patientSearchQuery.Trim();
+                if (decimal.TryParse(filterPatient, out var cId))
+                {
+                    fetchCustId = cId;
+                }
+            }
+
+            // 2. Monthly Reimbursement Company dropdown
+            if (!string.IsNullOrEmpty(selectedCompanyName))
+            {
+                isMonthly = "true";
+                customerSearch = selectedCompanyName;
+            }
+
+            // 3. Doctor free text search
+            if (!string.IsNullOrEmpty(doctorSearchText))
+            {
+                doctorSearch = doctorSearchText.Trim();
+            }
+
             // We always fetch up to 5000 records for the date and branch filter range
             // to allow reliable local filtering & stable page size (so 1st page is fully filled).
             var fetchFilter = new HmsDueCollectionFilterRequest
@@ -299,10 +391,16 @@
                 bhcode    = histFilter.bhcode,
                 fromdate  = histFilter.fromdate,
                 todate    = histFilter.todate,
-                custid    = null,
+                custid    = fetchCustId,
                 search    = null,
                 page      = 1,
-                pagesize  = 500
+                pagesize  = 500,
+
+                customer_search = customerSearch,
+                doctor_search   = doctorSearch,
+                dcode           = docCode,
+                ismonthly       = isMonthly,
+                report_type     = selectedReportType
             };
 
             List<HmsDueCollectionSummary> allRows = new();
@@ -333,16 +431,56 @@
                 return !isPureAdvanceDeposit;
             }).ToList();
 
-            // Apply search filter locally if any search text is present
-            if (!string.IsNullOrEmpty(originalSearch))
+            // Local filter by Patient/Customer
+            if (!string.IsNullOrEmpty(patientSearchQuery))
             {
+                string searchValForLocal = patientSearchQuery;
+                int idx = patientSearchQuery.IndexOf(" (CUST-");
+                if (idx > 0)
+                {
+                    searchValForLocal = patientSearchQuery.Substring(0, idx);
+                }
+
                 filteredRows = filteredRows.Where(r => 
-                    (r.patient_name != null && r.patient_name.Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
-                    (r.receipt_no != null && r.receipt_no.Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
-                    (r.bill_no != null && r.bill_no.Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
-                    (r.patient_id != null && r.patient_id.Value.ToString().Contains(originalSearch, StringComparison.OrdinalIgnoreCase)) ||
-                    (r.collected_by != null && r.collected_by.Contains(originalSearch, StringComparison.OrdinalIgnoreCase))
+                    (r.patient_name != null && r.patient_name.Contains(searchValForLocal, StringComparison.OrdinalIgnoreCase)) ||
+                    (r.receipt_no != null && r.receipt_no.Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase)) ||
+                    (r.bill_no != null && r.bill_no.Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase)) ||
+                    (r.patient_id != null && r.patient_id.Value.ToString().Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase))
                 ).ToList();
+            }
+
+            // Local filter by Doctor
+            if (!string.IsNullOrEmpty(doctorSearchText))
+            {
+                filteredRows = filteredRows.Where(r =>
+                    r.doctor_name != null && r.doctor_name.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)
+                ).ToList();
+            }
+
+            // Local filter by Company
+            if (!string.IsNullOrEmpty(selectedCompanyName))
+            {
+                filteredRows = filteredRows.Where(r =>
+                    r.patient_name != null && r.patient_name.Contains(selectedCompanyName, StringComparison.OrdinalIgnoreCase)
+                ).ToList();
+            }
+
+            // Local filter by Report Type
+            if (selectedReportType != "ALL")
+            {
+                filteredRows = filteredRows.Where(r =>
+                {
+                    bool isAdvance = r.receipt_type != null && r.receipt_type.Contains("ADVANCE", StringComparison.OrdinalIgnoreCase);
+                    if (selectedReportType == "DUE")
+                    {
+                        return !isAdvance;
+                    }
+                    else if (selectedReportType == "ADVANCE")
+                    {
+                        return isAdvance;
+                    }
+                    return true;
+                }).ToList();
             }
 
             histTotalCount = filteredRows.Count;
@@ -382,6 +520,15 @@
     {
         histFilter     = new HmsDueCollectionFilterRequest();
         histBranchStr  = "";
+        selectedPeriodPreset = "This Month";
+        selectedReportType = "ALL";
+        doctorSearchText = "";
+        selectedDoctorCode = null;
+        selectedCompanyName = "";
+        patientSearchQuery = "";
+        filterPatient = "";
+        showPatientDropdown = false;
+        searchedPatients.Clear();
         histCurrentPage = 1;
         await RunHistoryFilter();
     }
@@ -441,5 +588,218 @@
             cancelling = false;
             StateHasChanged();
         }
+    }
+
+    private string selectedPeriodPreset = "This Month";
+    private string selectedReportType = "ALL";
+    private string doctorSearchText = "";
+    private int? selectedDoctorCode;
+    private string selectedCompanyName = "";
+    private List<DoctorMasterModel> doctorsList = new();
+    private List<ReimbursementCompanyMasterModel> companiesList = new();
+    private List<Booking.Models.BranchModel> branchesList = new();
+
+    private string patientSearchQuery = string.Empty;
+    private string filterPatient = "";
+    private List<Booking.Models.CustomerWithOpModel> searchedPatients = new();
+    private bool showPatientDropdown = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadBranchesAsync();
+            await LoadDoctorsAsync();
+            await LoadCompaniesAsync();
+            StateHasChanged();
+        }
+    }
+
+    private void OnPeriodPresetChanged(string val)
+    {
+        selectedPeriodPreset = val;
+        var today = DateTime.Today;
+        if (val == "Today")
+        {
+            histFilter.fromdate = today;
+            histFilter.todate = today;
+        }
+        else if (val == "Yesterday")
+        {
+            histFilter.fromdate = today.AddDays(-1);
+            histFilter.todate = today.AddDays(-1);
+        }
+        else if (val == "This Week")
+        {
+            int diff = (7 + (today.DayOfWeek - DayOfWeek.Monday)) % 7;
+            histFilter.fromdate = today.AddDays(-1 * diff);
+            histFilter.todate = today;
+        }
+        else if (val == "This Month")
+        {
+            histFilter.fromdate = new DateTime(today.Year, today.Month, 1);
+            histFilter.todate = today;
+        }
+        else if (val == "Last Month")
+        {
+            var lastMonth = today.AddMonths(-1);
+            histFilter.fromdate = new DateTime(lastMonth.Year, lastMonth.Month, 1);
+            histFilter.todate = new DateTime(lastMonth.Year, lastMonth.Month, DateTime.DaysInMonth(lastMonth.Year, lastMonth.Month));
+        }
+        StateHasChanged();
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = CreateClient(true);
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branchesList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branchesList = branchesList.Where(b => !b.deleted).ToList();
+
+                await FilterBranchesByUserAccessAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task FilterBranchesByUserAccessAsync()
+    {
+        try
+        {
+            var isTenantAdminResult = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+            if (isTenantAdminResult.Success && isTenantAdminResult.Value == true)
+            {
+                return;
+            }
+
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null && userDetailsResult.Value.UserCode == 0)
+            {
+                return;
+            }
+
+            if (userDetailsResult.Success && userDetailsResult.Value?.Branches != null && userDetailsResult.Value.Branches.Any())
+            {
+                var allowedCodes = userDetailsResult.Value.Branches
+                    .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                    .Where(code => code > 0)
+                    .ToHashSet();
+
+                if (allowedCodes.Any())
+                {
+                    branchesList = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                    return;
+                }
+            }
+
+            var branchCodesResult = await _sessionStorage.GetAsync<List<int>>("UserBranchCodes");
+            if (branchCodesResult.Success && branchCodesResult.Value != null && branchCodesResult.Value.Any())
+            {
+                var allowedCodes = branchCodesResult.Value.ToHashSet();
+                branchesList = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error filtering branches by user access: {ex.Message}");
+        }
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            doctorsList = await DoctorService.GetDoctorsAsync();
+            doctorsList = doctorsList.Where(d => !d.deleted).OrderBy(d => d.name).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading doctors: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCompaniesAsync()
+    {
+        try
+        {
+            companiesList = await CompanyService.GetReimbursementCompaniesAsync();
+            companiesList = companiesList.Where(c => !c.deleted).OrderBy(c => c.name).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading companies: {ex.Message}");
+        }
+    }
+
+    private HttpClient CreateClient(bool isLabCare = false)
+    {
+        var clientName = isLabCare ? "LabCareUrl" : "DoctorApi";
+        var client = ClientFactory.CreateClient(clientName);
+        if (!string.IsNullOrEmpty(TenantState.TenantCode))
+        {
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+        }
+        if (!string.IsNullOrEmpty(TenantState.AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+        }
+        return client;
+    }
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(patientSearchQuery))
+        {
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+            filterPatient = "";
+            await RunHistoryFilter();
+            return;
+        }
+
+        try
+        {
+            using var client = CreateClient(false);
+            var response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}");
+            if (response.IsSuccessStatusCode)
+            {
+                var rawJson = await response.Content.ReadAsStringAsync();
+                var settings = new Newtonsoft.Json.JsonSerializerSettings 
+                { 
+                    NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
+                };
+                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings) ?? new();
+                searchedPatients = list.Take(10).ToList();
+                showPatientDropdown = searchedPatients.Count > 0;
+            }
+            else
+            {
+                searchedPatients.Clear();
+                showPatientDropdown = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error searching patients: {ex.Message}");
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+        }
+    }
+
+    private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
+    {
+        filterPatient = pat.custid.ToString();
+        patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
+        showPatientDropdown = false;
+        await RunHistoryFilter();
     }
 }

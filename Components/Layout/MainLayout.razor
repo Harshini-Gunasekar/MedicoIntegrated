@@ -1,7 +1,9 @@
 @inherits LayoutComponentBase
+@using Newtonsoft.Json
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
 @implements IDisposable
 
 <div class="app-container">
@@ -219,6 +221,9 @@
                             <NavLink href="/reimbursementcompanymaster" class="nav-submenu-item" @onclick="CloseSidebar" title="Configure insurance and reimbursement sponsor companies">
                                 <span>Reimbursement Co</span>
                             </NavLink>
+                            <NavLink href="/paymode-master" class="nav-submenu-item" @onclick="CloseSidebar" title="Configure payment options and methods">
+                                <span>Paymode Master</span>
+                            </NavLink>
                             <NavLink href="/country-master" class="nav-submenu-item" @onclick="CloseSidebar" title="Configure country records">
                                 <span>Country Master</span>
                             </NavLink>
@@ -244,6 +249,20 @@
                     }
                 </nav>
             }
+        </div>
+
+        <div class="sidebar-footer">
+            <div class="sidebar-profile">
+                <div class="profile-pic-initials">@GetUserInitials()</div>
+                <div class="profile-info">
+                    <span class="profile-name">@(TenantState.UserData?.UserName ?? "PREM KRISHNA")</span>
+                    <span class="profile-role">@(TenantState.UserData?.Role ?? "Administrator")</span>
+                </div>
+            </div>
+            <button type="button" class="logout-item" @onclick="HandleLogout" title="Sign out of your Medico Portal session">
+                <i class="bi bi-box-arrow-right"></i>
+                <span>Logout</span>
+            </button>
         </div>
     </aside>
 
@@ -302,6 +321,34 @@
     <Booking.Components.Shared.ToastContainer />
 </div>
 
+@if (showBranchModal)
+{
+    <div class="operating-branch-modal-overlay">
+        <div class="operating-branch-card">
+            <div class="operating-branch-icon-container">
+                <i class="bi bi-shop"></i>
+            </div>
+            
+            <h2 class="operating-branch-title">Select Operating Branch</h2>
+            <p class="operating-branch-subtitle">Please confirm the branch you will be working in for this session.</p>
+
+            <div class="operating-branch-form-group">
+                <label class="operating-branch-label">ACTIVE BRANCH</label>
+                <select class="operating-branch-select" @bind="selectedBranchId">
+                    @foreach (var br in sessionBranches)
+                    {
+                        <option value="@br.bh_code">@br.name.ToUpper()</option>
+                    }
+                </select>
+            </div>
+
+            <button type="button" class="operating-branch-btn" @onclick="ConfirmBranchAsync">
+                Confirm Branch
+            </button>
+        </div>
+    </div>
+}
+
 @code {
     [Inject] private IJSRuntime JS { get; set; } = default!;
 
@@ -317,6 +364,10 @@
     private bool isDoctorMastersOpen = false;
     private bool isLabMastersOpen = false;
     private bool isOrgMastersOpen = false;
+
+    private List<SharedComponents.Rcl.Models.BranchModel> sessionBranches = new();
+    private int selectedBranchId = 0;
+    private bool showBranchModal = false;
 
     private void ToggleDueDropdown() => isDueDropdownOpen = !isDueDropdownOpen;
     private void ToggleProfile() => showProfile = !showProfile;
@@ -344,17 +395,23 @@
 
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
     {
-        ExpandSubmenuForCurrentUri();
-        EvaluateAccess();
-        StateHasChanged();
+        _ = InvokeAsync(async () =>
+        {
+            if (isDisposed) return;
+            ExpandSubmenuForCurrentUri();
+            EvaluateAccess();
+            await CheckBranchSelectionAsync();
+            StateHasChanged();
+        });
     }
 
     private void HandleSessionChanged()
     {
-        _ = InvokeAsync(() =>
+        _ = InvokeAsync(async () =>
         {
             if (isDisposed) return;
             EvaluateAccess();
+            await CheckBranchSelectionAsync();
             StateHasChanged();
         });
     }
@@ -402,6 +459,10 @@
             case "group-master":
             case "groups":
                 targetModule = "Group Master";
+                break;
+            case "paymode-master":
+            case "paymodes":
+                targetModule = "General";
                 break;
             case "state-master":
                 targetModule = "State_Master";
@@ -665,6 +726,9 @@
             case "group-master":
             case "groups":
                 return HasRight("Configuration", "Group Master");
+            case "paymode-master":
+            case "paymodes":
+                return HasRight("Configuration", "General");
             case "reportmethodmaster":
             case "report-methods":
                 return HasRight("Configuration", "Report_Methods");
@@ -838,6 +902,9 @@
             await _sessionStorage.DeleteAsync("tenant_name");
             await _sessionStorage.DeleteAsync("UserDetails");
             await _sessionStorage.DeleteAsync("UserRights");
+            await _sessionStorage.DeleteAsync("bhcode");
+            await _sessionStorage.DeleteAsync("UserBranches");
+            await _sessionStorage.DeleteAsync("UserBranchCodes");
         }
         catch { }
         TenantState.Clear();
@@ -897,6 +964,7 @@
                 }
 
                 TenantState.SetSession(user.TenantCode ?? "", user.AuthToken ?? "", user.TenantName ?? "", user.UserCode ?? 0, user.BranchCode, user.CounterCode, user, rights);
+                await CheckBranchSelectionAsync();
             }
             else
             {
@@ -967,6 +1035,7 @@
                     };
 
                     TenantState.SetSession(tenantCode, authToken, tenantName, resolvedUserCode, null, null, user, new List<SharedComponents.Rcl.Models.User_Rights>());
+                    await CheckBranchSelectionAsync();
                 }
                 else
                 {
@@ -981,5 +1050,117 @@
 
         EvaluateAccess();
         StateHasChanged();
+    }
+
+    private string GetUserInitials()
+    {
+        var name = TenantState.UserData?.UserName ?? "PREM KRISHNA";
+        if (string.IsNullOrWhiteSpace(name)) return "M";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
+        return (parts[0][0].ToString() + parts[parts.Length - 1][0].ToString()).ToUpper();
+    }
+
+    private async Task CheckBranchSelectionAsync()
+    {
+        var relativePath = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        if (!TenantState.IsAuthenticated || IsAnonymousPath(relativePath))
+        {
+            showBranchModal = false;
+            return;
+        }
+
+        var bhCodeResult = await _sessionStorage.GetAsync<string>("bhcode");
+        if (bhCodeResult.Success && !string.IsNullOrEmpty(bhCodeResult.Value) && int.TryParse(bhCodeResult.Value, out int savedBranchCode) && savedBranchCode > 0)
+        {
+            showBranchModal = false;
+            return;
+        }
+
+        // Branch code not selected yet, load branches and show modal
+        await LoadBranchesForSelectionAsync();
+        showBranchModal = true;
+        StateHasChanged();
+    }
+
+    private async Task LoadBranchesForSelectionAsync()
+    {
+        try
+        {
+            sessionBranches.Clear();
+
+            // 1. If staff user and has branches assigned, use them
+            if (TenantState.UserData?.Branches != null && TenantState.UserData.Branches.Any())
+            {
+                foreach (var b in TenantState.UserData.Branches)
+                {
+                    sessionBranches.Add(new SharedComponents.Rcl.Models.BranchModel
+                    {
+                        bh_code = b.bh_code,
+                        name = b.name
+                    });
+                }
+            }
+
+            // 2. If no branches are present (e.g. Administrator), fetch all branches from DB
+            if (!sessionBranches.Any())
+            {
+                var client = ClientFactory.CreateClient("LabCareUrl");
+                if (!string.IsNullOrEmpty(TenantState.TenantCode))
+                {
+                    client.DefaultRequestHeaders.Remove("tenant_code");
+                    client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+                }
+                if (!string.IsNullOrEmpty(TenantState.AuthToken))
+                {
+                    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+                }
+
+                var response = await client.GetAsync("api/Branch/get");
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var list = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                    foreach (var b in list.Where(b => !b.deleted))
+                    {
+                        sessionBranches.Add(new SharedComponents.Rcl.Models.BranchModel
+                        {
+                            bh_code = b.bh_code,
+                            name = b.name
+                        });
+                    }
+                }
+            }
+
+            if (sessionBranches.Any())
+            {
+                selectedBranchId = sessionBranches.First().bh_code;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading session branches: {ex.Message}");
+        }
+    }
+
+    private async Task ConfirmBranchAsync()
+    {
+        if (selectedBranchId <= 0) return;
+
+        await _sessionStorage.SetAsync("bhcode", selectedBranchId.ToString());
+        
+        // Update TenantState session with the branch code
+        var user = TenantState.UserData;
+        if (user != null)
+        {
+            user.BranchCode = selectedBranchId;
+            TenantState.SetSession(TenantState.TenantCode, TenantState.AuthToken, TenantState.TenantName, TenantState.UserCode, selectedBranchId, TenantState.CounterCode, user, TenantState.UserRightsList.ToList());
+        }
+
+        showBranchModal = false;
+        StateHasChanged();
+        
+        // Notify navigation or reload current page to apply default branch
+        NavigationManager.NavigateTo(NavigationManager.Uri, forceLoad: true);
     }
 }

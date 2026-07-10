@@ -1,9 +1,13 @@
 @page "/due-collection"
 @rendermode InteractiveServer
 @using medico_backend.Model
+@using Medico_Backend.Model
 @using Newtonsoft.Json
 @using Booking.Models
 @inject HmsDueCollectionService DueCollectionService
+@inject Booking.Services.CounterMasterService CounterService
+@inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.ReimbursementCompanyMasterService CompanyService
 @inject ToastService ToastService
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -175,6 +179,51 @@
         .text-warning, .text-danger {
             color: #ef4444 !important;
         }
+        /* Autocomplete/Search Results list */
+        .autocomplete-search-wrapper {
+            position: relative;
+            width: 100%;
+        }
+
+        .autocomplete-dropdown {
+            position: absolute;
+            top: 100%;
+            left: 0;
+            width: 100%;
+            background: #ffffff;
+            border: 1.5px solid #cbd5e1;
+            border-radius: 8px;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.1);
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 100;
+            margin-top: 4px;
+        }
+
+        .autocomplete-item {
+            padding: 0.5rem 0.85rem;
+            font-size: 0.8rem;
+            color: #334155;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #f1f5f9;
+        }
+
+        .autocomplete-item:hover {
+            background-color: #f0f9ff;
+            color: #026aa7;
+        }
+
+        .autocomplete-code {
+            font-weight: 700;
+            color: #64748b;
+            font-size: 0.72rem;
+            background: #f1f5f9;
+            padding: 0.15rem 0.35rem;
+            border-radius: 4px;
+        }
     </style>
     <!-- Top Header Card -->
     <div class="due-header-card">
@@ -244,7 +293,7 @@
                         <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap; width: 100%;">
                             <div class="form-group-filter" style="flex: 1; min-width: 180px;">
                                 <label>BRANCH</label>
-                                <select class="filter-select" @bind="filterBranch" style="width: 100%;">
+                                <select class="filter-select" @bind="filterBranch" @bind:after="OnBranchChanged" style="width: 100%;">
                                     <option value="">Select the branch</option>
                                     @foreach (var b in branchesList)
                                     {
@@ -256,15 +305,60 @@
                                 <label>COUNTER</label>
                                 <select class="filter-select" @bind="filterCounter" style="width: 100%;">
                                     <option value="">Select Counter</option>
-                                    <option value="2">Sample Counter</option>
-                                    <option value="1">Billing Counter 1</option>
-                                    <option value="3">Billing Counter 2</option>
-                                    <option value="4">Express Counter</option>
+                                    @foreach (var c in filteredCountersList)
+                                    {
+                                        <option value="@c.cntcode">@c.name</option>
+                                    }
                                 </select>
                             </div>
                             <div class="form-group-filter" style="flex: 1.5; min-width: 250px;">
-                                <label>PATIENT</label>
-                                <input type="text" class="filter-input" placeholder="Search ID, Name, Mobile..." @bind="filterPatient" style="width: 100%;" />
+                                @if (filterType == "referral")
+                                {
+                                    <label>DOCTOR</label>
+                                    <select class="filter-select" @bind="filterDoctor" style="width: 100%;">
+                                        <option value="">Select Doctor</option>
+                                        @foreach (var doc in doctorsList)
+                                        {
+                                            <option value="@doc.dcode">@doc.name</option>
+                                        }
+                                    </select>
+                                }
+                                else if (filterType == "monthly")
+                                {
+                                    <label>COMPANY</label>
+                                    <select class="filter-select" @bind="filterCompany" style="width: 100%;">
+                                        <option value="">Select Company</option>
+                                        @foreach (var comp in companiesList)
+                                        {
+                                            <option value="@comp.name">@comp.name</option>
+                                        }
+                                    </select>
+                                }
+                                else
+                                {
+                                    <label>PATIENT</label>
+                                    <div class="autocomplete-search-wrapper">
+                                        <input type="text" class="filter-input" placeholder="Search Patient Name or Mobile..." 
+                                               @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="width: 100%;" />
+                                        @if (showPatientDropdown && searchedPatients.Count > 0)
+                                        {
+                                            <div class="autocomplete-dropdown">
+                                                @foreach (var pat in searchedPatients)
+                                                {
+                                                    <div class="autocomplete-item" @onclick="() => SelectCustomerPatient(pat)">
+                                                        <div>
+                                                            <span style="font-weight: 600; color: #0f172a;">@pat.name (CUST-@pat.custid)</span>
+                                                            <div style="font-size: 0.8em; color: #64748b;">
+                                                                📞 @pat.mobile | 📍 @(string.IsNullOrEmpty(pat.area) ? "No Area" : pat.area), @pat.city
+                                                            </div>
+                                                        </div>
+                                                        <span class="autocomplete-code">@pat.custcode</span>
+                                                    </div>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                }
                             </div>
                         </div>
 
@@ -987,7 +1081,36 @@
     private double TotalConcessionsEntered => concessionAmounts.Values.Sum(v => v ?? 0);
     private int TotalPages => (int)Math.Ceiling((double)totalBillsCount / pageSize);
 
+    private int UserCode => TenantState.UserCode != 0 ? TenantState.UserCode : 10;
+
+    private int CounterCodeVal
+    {
+        get
+        {
+            if (int.TryParse(filterCounter, out var c)) return c;
+            if (TenantState.CounterCode.HasValue && TenantState.CounterCode.Value != 0) return TenantState.CounterCode.Value;
+            return 1;
+        }
+    }
+
+    private int BranchCodeVal
+    {
+        get
+        {
+            if (int.TryParse(filterBranch, out var b)) return b;
+            if (TenantState.BranchCode.HasValue && TenantState.BranchCode.Value != 0) return TenantState.BranchCode.Value;
+            return 1;
+        }
+    }
+
     private List<Booking.Models.BranchModel> branchesList = new();
+    private List<Medico_Backend.Model.CounterMasterModel> allCounters = new();
+    private List<Medico_Backend.Model.CounterMasterModel> filteredCountersList = new();
+    private List<Booking.Models.DoctorMasterModel> doctorsList = new();
+    private List<Booking.Models.ReimbursementCompanyMasterModel> companiesList = new();
+
+    private string filterDoctor = "";
+    private string filterCompany = "";
 
     protected override async Task OnInitializedAsync()
     {
@@ -998,7 +1121,30 @@
     {
         if (firstRender)
         {
+            try
+            {
+                var bhCodeResult = await _sessionStorage.GetAsync<string>("bhcode");
+                if (bhCodeResult.Success && !string.IsNullOrEmpty(bhCodeResult.Value))
+                {
+                    filterBranch = bhCodeResult.Value;
+                }
+
+                var cntCodeResult = await _sessionStorage.GetAsync<string>("cntcode");
+                if (cntCodeResult.Success && !string.IsNullOrEmpty(cntCodeResult.Value))
+                {
+                    filterCounter = cntCodeResult.Value;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error retrieving branch/counter defaults: {ex.Message}");
+            }
+
             await LoadBranchesAsync();
+            await LoadCountersAsync();
+            await LoadDoctorsAsync();
+            await LoadCompaniesAsync();
+            await LoadDueBills();
             StateHasChanged();
         }
     }
@@ -1077,6 +1223,141 @@
         }
     }
 
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            var res = await CounterService.GetCountersAsync();
+            if (res != null)
+            {
+                allCounters = res.OrderBy(c => c.orderno).ToList();
+                ApplyCounterFilter();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading counters: {ex.Message}");
+        }
+    }
+
+    private void ApplyCounterFilter()
+    {
+        if (int.TryParse(filterBranch, out var bCode))
+        {
+            filteredCountersList = allCounters.Where(c => c.bhcode == bCode && !c.deleted).ToList();
+        }
+        else
+        {
+            filteredCountersList = allCounters.Where(c => !c.deleted).ToList();
+        }
+    }
+
+    private void OnBranchChanged()
+    {
+        ApplyCounterFilter();
+        if (!string.IsNullOrEmpty(filterCounter) && !filteredCountersList.Any(c => c.cntcode.ToString() == filterCounter))
+        {
+            filterCounter = "";
+        }
+        StateHasChanged();
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            doctorsList = await DoctorService.GetDoctorsAsync();
+            doctorsList = doctorsList.Where(d => !d.deleted).OrderBy(d => d.name).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading doctors: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCompaniesAsync()
+    {
+        try
+        {
+            companiesList = await CompanyService.GetReimbursementCompaniesAsync();
+            companiesList = companiesList.Where(c => !c.deleted).OrderBy(c => c.name).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading companies: {ex.Message}");
+        }
+    }
+
+    private string patientSearchQuery = string.Empty;
+    private List<Booking.Models.CustomerWithOpModel> searchedPatients = new();
+    private bool showPatientDropdown = false;
+
+    private HttpClient CreateClient(bool isLabCare = false)
+    {
+        var clientName = isLabCare ? "LabCareUrl" : "DoctorApi";
+        var client = ClientFactory.CreateClient(clientName);
+        if (!string.IsNullOrEmpty(TenantState.TenantCode))
+        {
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+        }
+        if (!string.IsNullOrEmpty(TenantState.AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+        }
+        return client;
+    }
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(patientSearchQuery))
+        {
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+            filterPatient = "";
+            isPatientSearched = false;
+            await LoadDueBills();
+            return;
+        }
+
+        try
+        {
+            using var client = CreateClient(false);
+            var response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}");
+            if (response.IsSuccessStatusCode)
+            {
+                var rawJson = await response.Content.ReadAsStringAsync();
+                var settings = new Newtonsoft.Json.JsonSerializerSettings 
+                { 
+                    NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
+                };
+                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings) ?? new();
+                searchedPatients = list.Take(10).ToList();
+                showPatientDropdown = searchedPatients.Count > 0;
+            }
+            else
+            {
+                searchedPatients.Clear();
+                showPatientDropdown = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error searching patients: {ex.Message}");
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+        }
+    }
+
+    private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
+    {
+        filterPatient = pat.custid.ToString();
+        patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
+        showPatientDropdown = false;
+        isPatientSearched = true;
+        await LoadDueBills();
+    }
+
     private async Task SetActiveTab(string tab)
     {
         activeTab = tab;
@@ -1121,14 +1402,34 @@
             if (int.TryParse(filterCounter, out var c)) parsedCounter = c;
 
             decimal? parsedCustId = null;
-            if (decimal.TryParse(filterPatient, out var cust)) parsedCustId = cust;
+            if (filterType != "referral" && filterType != "monthly")
+            {
+                if (decimal.TryParse(filterPatient, out var cust)) parsedCustId = cust;
+            }
+
+            int? parsedDcode = null;
+            string? searchVal = searchQuery;
+
+            if (filterType == "referral")
+            {
+                if (int.TryParse(filterDoctor, out var dc)) parsedDcode = dc;
+            }
+            else if (filterType == "monthly")
+            {
+                searchVal = filterCompany;
+            }
+            else
+            {
+                searchVal = string.IsNullOrEmpty(filterPatient) ? searchQuery : filterPatient;
+            }
 
             var filter = new HmsAllDueFilterRequest
             {
-                search = string.IsNullOrEmpty(filterPatient) ? searchQuery : filterPatient,
+                search = searchVal,
                 bhcode = parsedBranch,
                 cntcode = parsedCounter,
                 custid = parsedCustId,
+                dcode = parsedDcode,
                 fromdate = filterFromDate,
                 todate = filterToDate,
                 min_due = 1,
@@ -1391,6 +1692,11 @@
         filterType = "patient";
         filterBranch = "";
         filterPatient = "";
+        filterDoctor = "";
+        filterCompany = "";
+        patientSearchQuery = "";
+        showPatientDropdown = false;
+        searchedPatients.Clear();
         filterFromDate = null;
         filterToDate = null;
         filterCounter = "";
@@ -1400,6 +1706,7 @@
         searchQuery = string.Empty;
         currentPage = 1;
         isPatientSearched = false;
+        ApplyCounterFilter();
         await LoadDueBills();
     }
 
@@ -1487,9 +1794,9 @@
             collection_type = payMode,
             cash_collected  = bill.due_amount,
             advance_to_use  = 0,
-            usercode        = 10,
-            cntcode         = 1,
-            enteredbhcode   = bill.enteredbhcode ?? 1
+            usercode        = UserCode,
+            cntcode         = CounterCodeVal,
+            enteredbhcode   = bill.enteredbhcode ?? BranchCodeVal
         };
         selectedBills[guid] = req;
         // NOTE: do NOT write collectedAmounts here.
@@ -2227,9 +2534,9 @@
                 amount = depositAmount,
                 collection_type = depositPayMode,
                 remarks = depositRemarks,
-                usercode = 10,
-                cntcode = 1,
-                enteredbhcode = 1
+                usercode = UserCode,
+                cntcode = CounterCodeVal,
+                enteredbhcode = BranchCodeVal
             };
             
             var res = await DueCollectionService.DepositAdvanceAsync(req);
@@ -2269,9 +2576,9 @@
                 custid = advanceSummary.custid,
                 refund_amount = refundAmount,
                 remarks = refundRemarks,
-                usercode = 10,
-                cntcode = 1,
-                enteredbhcode = 1
+                usercode = UserCode,
+                cntcode = CounterCodeVal,
+                enteredbhcode = BranchCodeVal
             };
 
             var res = await DueCollectionService.RefundAdvanceAsync(req);

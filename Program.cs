@@ -65,6 +65,7 @@ builder.Services.AddScoped<Booking.Services.ReimbursementCompanyMasterService>()
 builder.Services.AddScoped<Booking.Services.ReportMethodService>();
 builder.Services.AddScoped<Booking.Services.UomMasterService>();
 builder.Services.AddScoped<Booking.Services.GroupMasterService>();
+builder.Services.AddScoped<Booking.Services.PaymodeMasterService>();
 builder.Services.AddScoped<Booking.Services.SampleMasterService>();
 builder.Services.AddScoped<Booking.Services.TestTypeMasterService>();
 builder.Services.AddScoped<Booking.Services.TestMasterService>();

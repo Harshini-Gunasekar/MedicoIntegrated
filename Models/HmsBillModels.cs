@@ -34,9 +34,12 @@ namespace Booking.Models
         public decimal ourdispercentage { get; set; }
         public decimal ourdiscount { get; set; }
         public decimal paidamount { get; set; }
-        public decimal pmc1 { get; set; } // Cash payment
-        public decimal pmc2 { get; set; } // Card payment
-        public decimal pmc3 { get; set; } // Online payment (GPay/UPI)
+        public double? pmc1 { get; set; } // Paymode code 1
+        public double? pmc2 { get; set; } // Paymode code 2
+        public double? pmc3 { get; set; } // Paymode code 3
+        public double? pmc1_amount { get; set; } // Paymode amount 1
+        public double? pmc2_amount { get; set; } // Paymode amount 2
+        public double? pmc3_amount { get; set; } // Paymode amount 3
         public string? collection_type { get; set; } = "CASH"; // CASH, CARD, GPAY, MULTI
         public bool iscashbill { get; set; } = true;
         public bool iscreditbill { get; set; } = false;
