@@ -49,7 +49,7 @@ builder.Services.AddScoped(sp =>
     routeHandler.InnerHandler = httpClientHandler;
     tenantHandler.InnerHandler = routeHandler;
     
-    var client = new HttpClient(tenantHandler);
+    var client = new HttpClient(tenantHandler, disposeHandler: false);
     var baseUrl = builder.Configuration["ApiBaseUrl"];
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("ApiBaseUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
@@ -84,6 +84,15 @@ builder.Services.AddScoped<Booking.Services.CityMasterService>();
 builder.Services.AddScoped<Booking.Services.MasterTenantServices>();
 builder.Services.AddScoped<SharedComponents.Rcl.Services.NotificationService>();
 builder.Services.AddScoped<SharedComponents.Rcl.Services.TenantSessionState>();
+builder.Services.AddScoped<Booking.Services.RoomTypeMasterService>();
+builder.Services.AddScoped<Booking.Services.WardMasterService>();
+builder.Services.AddScoped<Booking.Services.BedMasterService>();
+builder.Services.AddScoped<Booking.Services.BedTransferService>();
+builder.Services.AddScoped<Booking.Services.BedStatusService>();
+builder.Services.AddScoped<Booking.Services.NurseMasterService>();
+builder.Services.AddScoped<Booking.Services.BlockMasterService>();
+builder.Services.AddScoped<Booking.Services.IpRegistrationService>();
+builder.Services.AddScoped<Booking.Services.FloorMasterService>();
 builder.Services.AddScoped<LabCare.Services.TestService>(sp =>
 {
     var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi");

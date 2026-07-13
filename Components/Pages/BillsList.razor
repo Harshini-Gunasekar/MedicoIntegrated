@@ -2,6 +2,8 @@
 @rendermode InteractiveServer
 @inject Booking.Services.HmsBillingService HmsBillingService
 @inject NavigationManager Navigation
+@inject HttpClient Http
+@inject IJSRuntime JS
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @using Booking.Models
 @inject Booking.Services.DoctorService DoctorService
@@ -20,20 +22,6 @@
                 <h1 class="header-title">View Bills</h1>
                 <span class="header-subtitle">Comprehensive billing management</span>
             </div>
-        </div>
-        <div class="header-actions">
-            <button class="btn btn-outline" @onclick="LoadBillsAsync" disabled="@isLoading">
-                <i class="bi bi-search"></i> Search
-            </button>
-            @if (canPrintBill)
-            {
-                <button class="btn btn-outline">
-                    <i class="bi bi-printer"></i> Print List
-                </button>
-            }
-            <button class="btn btn-outline" @onclick="ResetFiltersAsync" disabled="@isLoading">
-                <i class="bi bi-arrow-clockwise"></i> Refresh
-            </button>
         </div>
     </div>
 
@@ -77,6 +65,37 @@
         <div class="filter-group filter-group-large">
             <label>DOCTOR SEARCH</label>
             <input type="text" placeholder="Name or Specialty" class="form-control" />
+        </div>
+        <div class="filter-actions-inline">
+            <button class="btn btn-outline" @onclick="LoadBillsAsync" disabled="@isLoading">
+                <i class="bi bi-search"></i> Search
+            </button>
+            @if (canPrintBill)
+            {
+                <button class="btn btn-outline" @onclick='() => PrintStatementReport("getstatement")' disabled="@isPrintingReport">
+                    @if (isPrintingReport)
+                    {
+                        <span class="spinner-border spinner-border-sm text-success" role="status" style="width: 14px; height: 14px; border-width: 2px;"></span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-printer text-success"></i>
+                    }
+                    <span>Print List</span>
+                </button>
+            }
+            <button class="btn btn-outline" @onclick='() => PrintSummaryReport("getpaymodesummary")' disabled="@isPrintingReport">
+                <i class="bi bi-wallet2 text-primary"></i> Paymode Summary
+            </button>
+            <button class="btn btn-outline" @onclick='() => PrintStatementReport("getpaymodestatement")' disabled="@isPrintingReport">
+                <i class="bi bi-bank text-info"></i> Paymode Statement
+            </button>
+            <button class="btn btn-outline" @onclick="ToggleReportsModal" disabled="@isPrintingReport">
+                <i class="bi bi-file-earmark-bar-graph text-warning"></i> Reports & Statements
+            </button>
+            <button class="btn btn-outline" @onclick="ResetFiltersAsync" disabled="@isLoading">
+                <i class="bi bi-arrow-clockwise text-muted"></i> Refresh
+            </button>
         </div>
     </div>
 
@@ -137,9 +156,22 @@
                                 <td class="text-danger fw-bold">₹@string.Format("{0:0.00}", bill.balance_amount ?? 0)</td>
                                 <td>System</td>
                                 <td class="action-cell">
-                                    <button class="action-btn text-primary" @onclick="() => ViewBillDetails(bill.requestguid)" title="@(canPrintBill ? "View/Print" : "View")">
-                                        <i class="bi @(canPrintBill ? "bi-printer" : "bi-eye")"></i>
+                                    <button class="action-btn text-primary" @onclick="() => ViewBillDetails(bill.requestguid)" title="View Details">
+                                        <i class="bi bi-eye"></i>
                                     </button>
+                                    @if (canPrintBill)
+                                    {
+                                        <button class="action-btn text-success" @onclick="() => PrintBillAsync(bill.requestguid)" title="Print Bill" disabled="@(printingGuid == bill.requestguid)">
+                                            @if (printingGuid == bill.requestguid)
+                                            {
+                                                <span class="spinner-border spinner-border-sm text-success" role="status" style="width: 14px; height: 14px; border-width: 2px;"></span>
+                                            }
+                                            else
+                                            {
+                                                <i class="bi bi-printer"></i>
+                                            }
+                                        </button>
+                                    }
                                     @if (TenantState.HasActionRight("Lab", "Print Lab Result", "Edit"))
                                     {
                                         <button class="action-btn text-primary" @onclick="() => EditBill(bill.requestguid)" title="Edit">
@@ -310,10 +342,132 @@
                 <button type="button" class="btn btn-secondary" @onclick="CloseDetailsModal">Close</button>
                 @if (canPrintBill)
                 {
-                    <button type="button" class="btn btn-primary" onclick="window.print()">
-                        <i class="bi bi-printer"></i> Print Receipt
+                    <button type="button" class="btn btn-primary" @onclick="() => PrintBillAsync(selectedBill.requestguid)" disabled="@isPrintingBill">
+                        @if (isPrintingBill)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                            <span>Printing...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-printer"></i>
+                            <span>Print Receipt</span>
+                        }
                     </button>
                 }
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Date-wise Reports & Statements Modal -->
+@if (showReportsModal)
+{
+    <div class="modal-backdrop" @onclick="ToggleReportsModal">
+        <div class="reports-modal-content" @onclick:stopPropagation>
+            <div class="reports-modal-header">
+                <div class="reports-modal-title-area">
+                    <i class="bi bi-file-earmark-bar-graph-fill reports-header-icon"></i>
+                    <div>
+                        <h2 class="reports-modal-title">Date-wise Reports & Statements</h2>
+                        <p class="reports-modal-subtitle">Generate and print date-wise summaries and statements</p>
+                    </div>
+                </div>
+                <button type="button" class="btn-close-custom" @onclick="ToggleReportsModal">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="reports-modal-body">
+                @if (isPrintingReport)
+                {
+                    <div class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Generating PDF...</span>
+                        </div>
+                        <p class="mt-2 text-muted">Generating PDF Report, please wait...</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="reports-grid">
+                        <!-- Summaries Column -->
+                        <div class="reports-column">
+                            <h3 class="column-title">
+                                <i class="bi bi-journal-text icon-summary"></i> Summaries (Date-wise)
+                            </h3>
+                            <div class="reports-list">
+                                <button type="button" class="report-item-btn" @onclick='() => PrintSummaryReport("gettestsummary")'>
+                                    <i class="bi bi-clipboard2-pulse icon-report text-primary"></i>
+                                    <span>Test Summary</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintSummaryReport("getgroupsummary")'>
+                                    <i class="bi bi-people icon-report text-primary"></i>
+                                    <span>Group Summary</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintSummaryReport("getreferralsummary")'>
+                                    <i class="bi bi-prescription2 icon-report text-primary"></i>
+                                    <span>Referral Summary</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintSummaryReport("getsummary")'>
+                                    <i class="bi bi-file-earmark-text icon-report text-primary"></i>
+                                    <span>General Summary</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintSummaryReport("getdiscountsummary")'>
+                                    <i class="bi bi-percent icon-report text-primary"></i>
+                                    <span>Discount Summary</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintSummaryReport("getduesummary")'>
+                                    <i class="bi bi-arrow-down-right-circle icon-report text-primary"></i>
+                                    <span>Due Summary</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintSummaryReport("getpaymodesummary")'>
+                                    <i class="bi bi-wallet2 icon-report text-primary"></i>
+                                    <span>Paymode Summary</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Statements Column -->
+                        <div class="reports-column">
+                            <h3 class="column-title">
+                                <i class="bi bi-file-earmark-spreadsheet icon-statement"></i> Statements
+                            </h3>
+                            <div class="reports-list">
+                                <button type="button" class="report-item-btn" @onclick='() => PrintStatementReport("getteststatement")'>
+                                    <i class="bi bi-clipboard-data icon-report text-success"></i>
+                                    <span>Test Statement</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintStatementReport("getstatement")'>
+                                    <i class="bi bi-list-ul icon-report text-success"></i>
+                                    <span>General Statement</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintStatementReport("getgroupstatement")'>
+                                    <i class="bi bi-grid-3x2-gap icon-report text-success"></i>
+                                    <span>Group Statement</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintStatementReport("getduestatement")'>
+                                    <i class="bi bi-cash-stack icon-report text-success"></i>
+                                    <span>Due Statement</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintStatementReport("getdiscountstatement")'>
+                                    <i class="bi bi-percent icon-report text-success"></i>
+                                    <span>Discount Statement</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintStatementReport("getreferralstatement")'>
+                                    <i class="bi bi-hospital icon-report text-success"></i>
+                                    <span>Referral Statement</span>
+                                </button>
+                                <button type="button" class="report-item-btn" @onclick='() => PrintStatementReport("getpaymodestatement")'>
+                                    <i class="bi bi-bank icon-report text-success"></i>
+                                    <span>Paymode Statement</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                }
+            </div>
+            <div class="reports-modal-footer">
+                <button type="button" class="btn btn-secondary" @onclick="ToggleReportsModal">Close</button>
             </div>
         </div>
     </div>
@@ -338,6 +492,11 @@
     private double TotalBalance => billsList?.data.Sum(b => b.balance_amount ?? 0) ?? 0;
 
     private bool showDetailsModal = false;
+    private bool showReportsModal = false;
+    private bool isPrintingReport = false;
+    private string errorMessage = "";
+    private bool isPrintingBill = false;
+    private string? printingGuid = null;
     private HmsBillResponse? selectedBill;
     private List<Booking.Models.BranchModel> branches = new();
     private bool showPending = true;
@@ -655,5 +814,113 @@
         
         var result = await HmsBillingService.CancelBillAsync(guid, 10, "Cancelled from view bills page");
         await LoadBillsAsync();
+    }
+
+    private void ToggleReportsModal()
+    {
+        showReportsModal = !showReportsModal;
+    }
+
+    private async Task PrintSummaryReport(string endpoint)
+    {
+        string fromStr = filter.fromdate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string toStr = filter.todate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string dateParamName = (endpoint.Contains("due") || endpoint.Contains("discount")) ? "fromddate" : "fromdate";
+        string url = $"api/Report/{endpoint}?{dateParamName}={fromStr}&periodtype=Day&todate={toStr}";
+        if (filter.bhcode.HasValue && filter.bhcode.Value > 0)
+        {
+            url += $"&bhcode={filter.bhcode.Value}";
+        }
+        if (filter.pendingonly.HasValue)
+        {
+            url += $"&pendingonly={filter.pendingonly.Value.ToString().ToLower()}";
+        }
+        await PrintReportBase64(url);
+    }
+
+    private async Task PrintStatementReport(string endpoint)
+    {
+        string fromStr = filter.fromdate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string toStr = filter.todate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string dateParamName = (endpoint.Contains("due") || endpoint.Contains("discount")) ? "fromddate" : "fromdate";
+        string url = $"api/Report/{endpoint}?{dateParamName}={fromStr}&todate={toStr}";
+        if (filter.bhcode.HasValue && filter.bhcode.Value > 0)
+        {
+            url += $"&bhcode={filter.bhcode.Value}";
+        }
+        if (filter.pendingonly.HasValue)
+        {
+            url += $"&pendingonly={filter.pendingonly.Value.ToString().ToLower()}";
+        }
+        await PrintReportBase64(url);
+    }
+
+    private async Task PrintReportBase64(string endpointWithParams)
+    {
+        try
+        {
+            isPrintingReport = true;
+            StateHasChanged();
+
+            // Client created using default client, which targets ApiBaseUrl and runs through TenantHeaderHandler
+            var resp = await Http.GetAsync(endpointWithParams);
+            if (!resp.IsSuccessStatusCode)
+            {
+                var err = await resp.Content.ReadAsStringAsync();
+                errorMessage = $"Print failed: {err}";
+                await JS.InvokeVoidAsync("alert", errorMessage);
+                return;
+            }
+
+            var raw = await resp.Content.ReadAsStringAsync();
+            var base64 = raw.Trim().Trim('"');
+            await JS.InvokeVoidAsync("openBase64Pdf", base64);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Print error: {ex.Message}";
+            await JS.InvokeVoidAsync("alert", errorMessage);
+        }
+        finally
+        {
+            isPrintingReport = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PrintBillAsync(string? guid)
+    {
+        if (string.IsNullOrEmpty(guid)) return;
+        try
+        {
+            printingGuid = guid;
+            isPrintingBill = true;
+            StateHasChanged();
+
+            // Call api/Report/getbill?isletterhead=true&requestguid={guid}
+            string url = $"api/Report/getbill?isletterhead=true&requestguid={guid}";
+            var resp = await Http.GetAsync(url);
+            if (resp.IsSuccessStatusCode)
+            {
+                var raw = await resp.Content.ReadAsStringAsync();
+                var base64 = raw.Trim().Trim('"');
+                await JS.InvokeVoidAsync("openBase64Pdf", base64);
+            }
+            else
+            {
+                var err = await resp.Content.ReadAsStringAsync();
+                await JS.InvokeVoidAsync("alert", $"Print failed: {err}");
+            }
+        }
+        catch (Exception ex)
+        {
+            await JS.InvokeVoidAsync("alert", $"Print error: {ex.Message}");
+        }
+        finally
+        {
+            printingGuid = null;
+            isPrintingBill = false;
+            StateHasChanged();
+        }
     }
 }

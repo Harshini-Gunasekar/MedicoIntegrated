@@ -10,6 +10,7 @@
 @inject Booking.Services.ToastService ToastService
 @inject NavigationManager Navigation
 @inject IHttpClientFactory ClientFactory
+@inject HttpClient Http
 @inject ProtectedSessionStorage _sessionStorage
 @using Medico_Backend.Model
 @using LabCare.Models
@@ -18,6 +19,7 @@
 @inject LabCare.Services.UserService UserService
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Booking.Services.PaymodeMasterService PaymodeService
+@inject IJSRuntime JS
 
 
 <div class="billing-wrapper">
@@ -539,25 +541,52 @@
         </div>
 
         <div class="footer-right-actions">
-            <button type="button" class="btn-billing-footer clear" @onclick="ClearForm">
-                <i class="bi bi-arrow-counterclockwise"></i> Clear
-            </button>
-            <button type="button" class="btn-billing-footer preview" @onclick="MockPreview">
-                <i class="bi bi-eye"></i> Preview
-            </button>
-            @if (canPrintBill)
+            @if (!string.IsNullOrEmpty(savedRequestGuid))
             {
-                <button type="button" class="btn-billing-footer print" @onclick="MockPrintInvoice">
-                    <i class="bi bi-printer"></i> Print Invoice
+                <div class="saved-bill-footer-options" style="display: flex; align-items: center; gap: 0.75rem; margin-right: 0.5rem;">
+                    <label class="letterhead-toggle-label" style="display: flex; align-items: center; gap: 0.4rem; font-weight: 700; font-size: 0.85rem; color: #334155; cursor: pointer; user-select: none;">
+                        <input type="checkbox" @bind="printWithLetterhead" style="width: 16px; height: 16px; cursor: pointer;" />
+                        Letterhead
+                    </label>
+                    <button type="button" class="btn-billing-footer print" @onclick="PrintSavedBillAsync" disabled="@isPrintingSavedBill" style="background: linear-gradient(135deg, #10b981, #059669); color: white; border: none; display: flex; align-items: center; gap: 0.35rem; padding: 0 1rem; height: 36px; border-radius: 6px; font-weight: 600;">
+                        @if (isPrintingSavedBill)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" style="width: 12px; height: 12px; border-width: 1.5px;"></span>
+                            <span>Printing...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-printer"></i>
+                            <span>Print Bill</span>
+                        }
+                    </button>
+                    <button type="button" class="btn-billing-footer clear" @onclick="CloseSavedBillView" style="display: flex; align-items: center; gap: 0.35rem; padding: 0 1rem; height: 36px; border-radius: 6px; font-weight: 600;">
+                        <i class="bi bi-plus-circle"></i> New Bill
+                    </button>
+                </div>
+            }
+            else
+            {
+                <button type="button" class="btn-billing-footer clear" @onclick="ClearForm">
+                    <i class="bi bi-arrow-counterclockwise"></i> Clear
+                </button>
+                <button type="button" class="btn-billing-footer preview" @onclick="MockPreview">
+                    <i class="bi bi-eye"></i> Preview
+                </button>
+                @if (canPrintBill)
+                {
+                    <button type="button" class="btn-billing-footer print" @onclick="MockPrintInvoice">
+                        <i class="bi bi-printer"></i> Print Invoice
+                    </button>
+                }
+                <button type="button" class="btn-billing-footer save" @onclick="SaveBillAsync" disabled="@savingInProgress">
+                    @if (savingInProgress)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                    }
+                    <i class="bi bi-save"></i> Save Bill
                 </button>
             }
-            <button type="button" class="btn-billing-footer save" @onclick="SaveBillAsync" disabled="@savingInProgress">
-                @if (savingInProgress)
-                {
-                    <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
-                }
-                <i class="bi bi-save"></i> Save Bill
-            </button>
         </div>
     </div>
 </div>
@@ -565,6 +594,10 @@
 @code {
     [Parameter]
     public string? OpIdStr { get; set; }
+
+    private string? savedRequestGuid = null;
+    private bool printWithLetterhead = true;
+    private bool isPrintingSavedBill = false;
 
     private void OnBranchChanged(ChangeEventArgs e)
     {
@@ -1813,7 +1846,29 @@
                     await AppointmentBookingService.UpdateOpStatusAsync(opId, "COMPLETED");
                 }
                 
-                // Stay on page but refresh serial
+                // Extract saved request GUID to display preview
+                string? savedGuid = null;
+                if (!string.IsNullOrEmpty(billModel.requestguid))
+                {
+                    savedGuid = billModel.requestguid;
+                }
+                else if (!string.IsNullOrEmpty(result) && result.Trim().StartsWith("{") && result.Trim().EndsWith("}"))
+                {
+                    try
+                    {
+                        var jsonObj = Newtonsoft.Json.Linq.JObject.Parse(result);
+                        if (jsonObj["requestguid"] != null)
+                        {
+                            savedGuid = jsonObj["requestguid"].ToString();
+                        }
+                    }
+                    catch { }
+                }
+
+                if (!string.IsNullOrEmpty(savedGuid))
+                {
+                    savedRequestGuid = savedGuid;
+                }
                 StateHasChanged();
             }
             else
@@ -1904,4 +1959,46 @@
     private void MockPrintSerum() => ToastService.ShowSuccess("Serum collections labels queued for printing.");
     private void MockPreview() => ToastService.ShowSuccess("Loading PDF invoice preview page...");
     private void MockPrintInvoice() => ToastService.ShowSuccess("Invoice receipt document printed successfully.");
+
+    private async Task PrintSavedBillAsync()
+    {
+        if (string.IsNullOrEmpty(savedRequestGuid)) return;
+        try
+        {
+            isPrintingSavedBill = true;
+            StateHasChanged();
+
+            // Fetch the bill PDF with the selected letterhead option and directly print it
+            string url = $"api/Report/getbill?isletterhead={printWithLetterhead.ToString().ToLower()}&requestguid={savedRequestGuid}";
+            var resp = await Http.GetAsync(url);
+            if (resp.IsSuccessStatusCode)
+            {
+                var raw = await resp.Content.ReadAsStringAsync();
+                var base64 = raw.Trim().Trim('"');
+                await JS.InvokeVoidAsync("openBase64Pdf", base64);
+            }
+            else
+            {
+                var err = await resp.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Failed to fetch bill PDF: {err}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Print error: {ex.Message}");
+        }
+        finally
+        {
+            isPrintingSavedBill = false;
+            StateHasChanged();
+        }
+    }
+
+    private void CloseSavedBillView()
+    {
+        savedRequestGuid = null;
+        printWithLetterhead = true;
+        ClearForm();
+        StateHasChanged();
+    }
 }
