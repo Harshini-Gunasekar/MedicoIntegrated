@@ -84,7 +84,7 @@
                                         @if (showCustomerDropdown && !string.IsNullOrWhiteSpace(current.name) && !isEditMode)
                                         {
                                             var matchedCustomers = customers
-                                                .Where(c => c.name != null && c.name.Contains(current.name, StringComparison.OrdinalIgnoreCase))
+                                                .Where(c => (c.name != null && c.name.Contains(current.name, StringComparison.OrdinalIgnoreCase)) || (c.namewithinitials != null && c.namewithinitials.Contains(current.name, StringComparison.OrdinalIgnoreCase)))
                                                 .ToList();
 
                                             if (matchedCustomers.Any())
@@ -93,7 +93,7 @@
                                                     @foreach (var c in matchedCustomers)
                                                     {
                                                         <button type="button" class="master-search-item" @onmousedown="() => SelectExistingCustomer(c)">
-                                                            @c.name
+                                                            @(string.IsNullOrEmpty(c.namewithinitials) ? c.name : c.namewithinitials)
                                                         </button>
                                                     }
                                                 </div>
@@ -395,7 +395,7 @@
                         {
                             <tr>
                                 <td><span class="td-order-no">@(sno++)</span></td>
-                                <td><span class="td-name">@co.name</span></td>
+                                <td><span class="td-name">@(string.IsNullOrEmpty(co.namewithinitials) ? co.name : co.namewithinitials)</span></td>
                                 <td><span class="td-narration">@co.description</span></td>
                                 <td>@(FormatToIst(co.entereddate))</td>
                                 <td>@(FormatToIst(co.ibsdate))</td>
@@ -683,6 +683,7 @@
         FilteredCustomers.Where(c =>
             string.IsNullOrWhiteSpace(SearchQuery) ||
             (c.name != null && c.name.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)) ||
+            (c.namewithinitials != null && c.namewithinitials.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)) ||
             (c.mobile != null && c.mobile.Contains(SearchQuery)) ||
             (c.custcode != null && c.custcode.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)) ||
             (c.custid.ToString() == SearchQuery));
@@ -893,9 +894,11 @@
             // Using partition API as specified for better performance
             var url = $"{BaseUrl}Customer/partition?pagenumber={CurrentPage}&pagesize={PageSize}";
             var response = await client.GetAsync(url);
+            var jsonStr = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"[PatientMaster Load] Partition Response: {jsonStr}");
             if (response.IsSuccessStatusCode)
             {
-                var list = await response.Content.ReadFromJsonAsync<List<CustomerModel>>() ?? new List<CustomerModel>();
+                var list = JsonConvert.DeserializeObject<List<CustomerModel>>(jsonStr) ?? new List<CustomerModel>();
                 customers = list;
                 HasNextPage = list.Count == PageSize;
             }
@@ -936,9 +939,11 @@
         {
             using var client = CreateClient(true);
             var response = await client.GetAsync($"{BaseUrl}Customer/search?key={Uri.EscapeDataString(SearchQuery)}");
+            var jsonStr = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"[PatientMaster Search] Query: {SearchQuery}, Response: {jsonStr}");
             if (response.IsSuccessStatusCode)
             {
-                customers = await response.Content.ReadFromJsonAsync<List<CustomerModel>>() ?? new List<CustomerModel>();
+                customers = JsonConvert.DeserializeObject<List<CustomerModel>>(jsonStr) ?? new List<CustomerModel>();
             }
             else
             {
@@ -1202,6 +1207,7 @@
 
         try
         {
+            current.namewithinitials = $"{current.nametitile}. {current.initial}{current.name}".Trim();
             current.tenant_code = TenantCode;
             using var client = CreateClient(true);
 
@@ -1221,11 +1227,13 @@
                     string stringValue;
                     if (value is DateTime dt)
                     {
-                        stringValue = dt.ToString("yyyy-MM-ddTHH:mm:ss");
+                        // Specify Kind as UTC so PostgreSQL does not throw Unspecified Kind exception
+                        var utcDt = DateTime.SpecifyKind(dt, DateTimeKind.Utc);
+                        stringValue = utcDt.ToString("yyyy-MM-ddTHH:mm:ssZ");
                     }
                     else if (value is DateTimeOffset dto)
                     {
-                        stringValue = dto.ToString("yyyy-MM-ddTHH:mm:sszzz");
+                        stringValue = dto.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");
                     }
                     else
                     {
@@ -1275,6 +1283,8 @@
             // 4. Send the Request
             string endpoint = isEditMode ? "Customer/update" : "Customer/insert";
             var response = await client.PostAsync($"{BaseUrl}{endpoint}", content);
+            var responseString = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"[PatientMaster Save/Update] Endpoint: {endpoint}, Response: {responseString}");
 
             if (response.IsSuccessStatusCode)
             {
