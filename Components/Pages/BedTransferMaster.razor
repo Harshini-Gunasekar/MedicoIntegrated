@@ -1,0 +1,629 @@
+@page "/bed-transfers"
+@page "/bed-transfer-master"
+@rendermode InteractiveServer
+
+@using Medico_Backend.Model
+@using medico_backend.Model
+@using Booking.Services
+@using Newtonsoft.Json
+@using Booking.Models
+@inject BedTransferService BedTransferService
+@inject FloorMasterService FloorService
+@inject RoomTypeMasterService RoomTypeService
+@inject BedMasterService BedService
+@inject NurseMasterService NurseService
+@inject IpRegistrationService IpService
+@inject ToastService ToastService
+@inject IJSRuntime JSRuntime
+@inject NavigationManager Navigation
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+
+<div class="referral-page lc-fadeInUp">
+    @* --- HEADER CONSOLE --- *@
+    <div class="lab-header-card flex-between">
+        <div class="display-flex align-center gap-16">
+            <div class="bg-indigo-50 p-2 rounded-lg shadow-sm flex-center icon-box-container">
+                <span class="material-symbols-outlined text-indigo-600 icon-lg">sync_alt</span>
+            </div>
+            <div>
+                <h2 class="lab-title-text m-0">Bed Transfer Master</h2>
+                <div class="flex-start gap-8 mt-2px">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Patient Bed Transfer Logs</span>
+                </div>
+            </div>
+        </div>
+        <div class="display-flex align-center gap-12">
+            <div class="relative-positioned">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#94a3b8" viewBox="0 0 16 16" class="search-icon">
+                    <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+                </svg>
+                <input type="text" placeholder="Search transfers..." @bind="SearchQuery" @bind:event="oninput" class="lc-rounded-pill-input lc-w-220" />
+            </div>
+            <div class="search-controls">
+                <button class="btn-new-entry" @onclick="NewTransfer">+ Add Transfer</button>
+            </div>
+        </div>
+    </div>
+
+    @* --- directory list --- *@
+    <div class="directory-section">
+        <div class="lc-table-container">
+            <table class="lc-table">
+                <thead>
+                    <tr>
+                        <th style="width: 140px;">IP NUMBER</th>
+                        <th style="width: 180px;">PATIENT NAME</th>
+                        <th style="width: 130px;">FROM BED</th>
+                        <th style="width: 130px;">TO BED</th>
+                        <th style="width: 180px;">TRANSFER DATE</th>
+                        <th style="width: 180px;">TRANSFERRED BY</th>
+                        <th style="width: 110px;">CHECKOUT</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (transfers != null && transfers.Any())
+                    {
+                        @foreach (var t in FilteredTransfersBySearch)
+                        {
+                            <tr class="lc-table-row">
+                                <td class="font-bold text-indigo-600">
+                                    @{
+                                        var ip = ipRegistrations.FirstOrDefault(ip => ip.ip_id.ToString().Equals(t.lastvisitid, StringComparison.OrdinalIgnoreCase)) 
+                                                 ?? ipRegistrations.FirstOrDefault(ip => ip.custid.ToString() == t.custid.ToString());
+                                    }
+                                    @(ip?.ip_no ?? "-")
+                                </td>
+                                <td class="font-bold text-slate-800">@(customers.FirstOrDefault(c => c.custid.ToString() == t.custid.ToString())?.name ?? "-")</td>
+                                <td class="text-slate-600">
+                                    @(beds.FirstOrDefault(b => b.bedcode == t.currentbed)?.bedname ?? t.currentbed?.ToString() ?? "-")
+                                </td>
+                                <td class="font-bold text-slate-800">
+                                    @(beds.FirstOrDefault(b => b.bedcode == t.transbed)?.bedname ?? t.transbed?.ToString() ?? "-")
+                                </td>
+                                <td class="text-slate-700">@(t.transferdate.HasValue ? t.transferdate.Value.ToString("dd-MM-yyyy hh:mm tt") : "-")</td>
+                                <td class="text-slate-600">@t.transferedby</td>
+                                <td>
+                                    <span class="font-bold @(t.ischeckout == true ? "text-danger" : "text-slate-400")">
+                                        @(t.ischeckout == true ? "Yes" : "No")
+                                    </span>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="7" class="text-center p-48 text-slate-400 italic">No transfer records found.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+@* --- FORM SECTION (Modal) --- *@
+@if (showForm)
+{
+    <div class="modal-overlay">
+        <div class="modal-form-card">
+            <div class="modal-header-bar">
+                <h3>New Bed Transfer</h3>
+                <button type="button" class="modal-close-btn" @onclick="CloseForm" aria-label="Close">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z" />
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-0 form-section">
+                    <div class="mt-0">
+                        @* Line 1: Active Admissions Selector *@
+                        <div class="um-grid-row" style="margin-bottom: 12px;">
+                             <div class="form-group" style="position: relative;">
+                                <label>Select Active Admission *</label>
+                                <div style="position: relative;">
+                                    <input type="text" class="lab-input" placeholder="-- Choose Admitted Patient --" 
+                                           value="@selectedAdmissionSearchName" 
+                                           @oninput="OnAdmissionSearchInput" 
+                                           @focus="ShowAdmissionDropdown" 
+                                           @onblur="HideAdmissionDropdownWithDelay" 
+                                           @onkeydown="OnAdmissionSearchKeyDown" />
+                                    
+                                    @if (showAdmissionDropdown)
+                                    {
+                                        <div style="position: absolute; top: 100%; left: 0; right: 0; z-index: 1050; max-height: 200px; overflow-y: auto; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-top: 2px;">
+                                            @if (filteredAdmissionsForDropdown.Any())
+                                            {
+                                                @for (int idx = 0; idx < filteredAdmissionsForDropdown.Count; idx++)
+                                                {
+                                                    var pIndex = idx;
+                                                    var a = filteredAdmissionsForDropdown[idx];
+                                                    var patientName = customers.FirstOrDefault(c => c.custid.ToString() == a.custid.ToString())?.name ?? a.custid.ToString();
+                                                    var bedName = beds.FirstOrDefault(b => b.bedcode == a.bedcode)?.bedname ?? a.bedcode?.ToString() ?? "No Bed";
+                                                    <div @onmousedown="() => SelectAdmissionFromDropdown(a)" 
+                                                         style="padding: 6px 12px; cursor: pointer; font-size: 0.8rem; color: #1e293b; background-color: @(idx == activeDropdownIndex ? "#f1f5f9" : "transparent");">
+                                                        @patientName - @(a.ip_no ?? "No IP No") (Bed: @bedName)
+                                                    </div>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                <div style="padding: 8px 12px; font-size: 0.8rem; color: #64748b; font-style: italic;">No active admissions found</div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+
+                        @if (current.custid.HasValue && current.custid > 0)
+                        {
+                            @* Line 2: Patient Read-only Metadata *@
+                            <div class="um-grid-cols-3" style="background: #f8fafc; padding: 8px; border-radius: 8px; margin-bottom: 12px; border: 1px solid #e2e8f0;">
+                                <div class="form-group mb-0">
+                                    <label>Patient Name</label>
+                                    <span class="font-bold text-indigo-600 font-13">@(customers.FirstOrDefault(c => c.custid.ToString() == current.custid.ToString())?.name ?? "-")</span>
+                                </div>
+                                <div class="form-group mb-0">
+                                    <label>IP Number</label>
+                                    <span class="font-bold text-slate-800 font-13">@(ipRegistrations.FirstOrDefault(ip => ip.ip_id.ToString().Equals(current.lastvisitid, StringComparison.OrdinalIgnoreCase))?.ip_no ?? "-")</span>
+                                </div>
+                                <div class="form-group mb-0">
+                                    <label>Admitted Date</label>
+                                    <span class="font-bold text-slate-800 font-13">@(current.admitteddate.HasValue ? current.admitteddate.Value.ToString("dd-MM-yyyy hh:mm tt") : "-")</span>
+                                </div>
+                            </div>
+
+                            @* Line 3: Current Bed Info (Read-only) *@
+                            <div class="um-grid-cols-3" style="background: #eef2ff; padding: 8px; border-radius: 8px; margin-bottom: 12px; border: 1px solid #e0e7ff;">
+                                <div class="form-group mb-0">
+                                    <label class="text-indigo-600">Current Floor</label>
+                                    <span class="font-bold text-indigo-950 font-13">@(floorsList.FirstOrDefault(f => f.flrcode == current.currentfloor)?.name ?? current.currentfloor?.ToString() ?? "-")</span>
+                                </div>
+                                <div class="form-group mb-0">
+                                    <label class="text-indigo-600">Current Room Type</label>
+                                    <span class="font-bold text-indigo-950 font-13">@(roomTypes.FirstOrDefault(r => r.rmtcode == current.currentroom)?.name ?? current.currentroom?.ToString() ?? "-")</span>
+                                </div>
+                                <div class="form-group mb-0">
+                                    <label class="text-indigo-600">Current Bed</label>
+                                    <span class="font-bold text-indigo-950 font-13">@(beds.FirstOrDefault(b => b.bedcode == current.currentbed)?.bedname ?? current.currentbed?.ToString() ?? "-")</span>
+                                </div>
+                            </div>
+
+                            @* Line 4: Target Bed, Transfer Date & Time, Transferred By *@
+                            <div class="um-grid-cols-3">
+                                <div class="form-group">
+                                    <label>Target Bed *</label>
+                                    <select class="lab-input" @bind="selectedTargetBedCode">
+                                        <option value="">-- Select Target Bed --</option>
+                                        @foreach (var b in GetTargetBeds())
+                                        {
+                                            <option value="@b.bedcode">
+                                                @b.bedname (F:@(floorsList.FirstOrDefault(f => f.flrcode == b.flrcode)?.name ?? "-"), R:@(roomTypes.FirstOrDefault(r => r.rmtcode == b.rmtcode)?.name ?? "-"))
+                                            </option>
+                                        }
+                                    </select>
+                                </div>
+                                <div class="form-group">
+                                    <label>Transfer Date & Time *</label>
+                                    <input type="datetime-local" class="lab-input" @bind="current.transferdate" />
+                                </div>
+                                <div class="form-group">
+                                    <label>Transferred By</label>
+                                    <select class="lab-input" @bind="current.transferedby">
+                                        <option value="">-- Select Nurse --</option>
+                                        @foreach (var n in nursesList)
+                                        {
+                                            <option value="@n.nursename">@n.nursename</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+
+                            @* Line 5: Reason & Checkout Option *@
+                            <div class="um-grid-row" style="display: flex; gap: 20px; align-items: center; margin-bottom: 20px;">
+                                <div class="form-group" style="flex-grow: 1; margin-bottom: 0;">
+                                    <label>Reason / Comments</label>
+                                    <input type="text" class="lab-input" @bind="current.reason" placeholder="e.g. Patient requested private room" />
+                                </div>
+                                <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 24px; margin-bottom: 0; min-width: 120px;">
+                                    <input type="checkbox" id="ischeckout" @bind="current.ischeckout" style="width: 16px; height: 16px; cursor: pointer;" />
+                                    <label for="ischeckout" style="margin-bottom: 0; cursor: pointer; text-transform: none; font-size: 13px; color: #475569; font-weight: 600;">Is Checkout</label>
+                                </div>
+                            </div>
+                        }
+
+                    </div>
+                </div>
+            </div>
+            
+            <div class="modal-footer-bar">
+                <button type="button" class="btn-save" @onclick="SaveTransfer" disabled="@(!current.custid.HasValue)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 8px;">
+                        <path d="M15.854.146a.5.5 0 0 1 .11.54l-5.819 14.547a.75.75 0 0 1-1.329.124l-3.178-4.995L.643 7.184a.75.75 0 0 1 .124-1.33L15.314.037a.5.5 0 0 1 .54.11ZM6.636 10.07l2.761 4.338L14.13 2.576 6.636 10.07Zm6.787-8.201L1.591 6.602l4.339 2.76 7.494-7.493Z"/>
+                    </svg>
+                    Save Transfer
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<BedTransferModel> transfers = new();
+    private List<IPRegistrationModel.IpRegistrationModel> activeAdmissions = new();
+    private List<FloorMasterModel> floorsList = new();
+    private List<RoomTypeMasterModel> roomTypes = new();
+    private List<BedMasterModel> beds = new();
+    private List<BedMasterModel> availableBeds = new();
+    private List<SharedComponents.Rcl.Models.CustomerModel> customers = new();
+    private List<NurseMasterModel> nursesList = new();
+    private List<IPRegistrationModel.IpRegistrationModel> ipRegistrations = new();
+    private BedTransferModel current = new();
+    private bool showForm = false;
+    private bool isSubmitted = false;
+    private string SearchQuery = "";
+
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    private string _selectedLastVisitId = "";
+    private string selectedLastVisitId
+    {
+        get => _selectedLastVisitId;
+        set
+        {
+            _selectedLastVisitId = value;
+            OnAdmissionSelected(value);
+        }
+    }
+
+    private string _selectedTargetBedCode = "";
+    private string selectedTargetBedCode
+    {
+        get => _selectedTargetBedCode;
+        set
+        {
+            _selectedTargetBedCode = value;
+            OnTargetBedSelected(value);
+        }
+    }
+
+    private IEnumerable<BedTransferModel> FilteredTransfersBySearch =>
+        transfers
+            .Where(t => {
+                var patientName = customers.FirstOrDefault(c => c.custid.ToString() == t.custid.ToString())?.name ?? "";
+                var ip = ipRegistrations.FirstOrDefault(ip => ip.ip_id.ToString().Equals(t.lastvisitid, StringComparison.OrdinalIgnoreCase)) 
+                          ?? ipRegistrations.FirstOrDefault(ip => ip.custid.ToString() == t.custid.ToString());
+                var ipNo = ip?.ip_no ?? "";
+                var fromBed = beds.FirstOrDefault(b => b.bedcode == t.currentbed)?.bedname ?? t.currentbed?.ToString() ?? "";
+                var toBed = beds.FirstOrDefault(b => b.bedcode == t.transbed)?.bedname ?? t.transbed?.ToString() ?? "";
+                var transferredBy = t.transferedby ?? "";
+
+                return string.IsNullOrWhiteSpace(SearchQuery) || 
+                    patientName.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    ipNo.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    fromBed.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    toBed.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    transferredBy.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase);
+            });
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadTransfers();
+        await LoadMetadata();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                await LoadCustomersAsync();
+                await LoadTransfers();
+                await LoadMetadata();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                ToastService.ShowError($"Error loading session details: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            // Fetching active/partitioned customers (page size 1000 for local reference lookup)
+            var response = await client.GetAsync("api/Customer/partition?pagenumber=1&pagesize=1000");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                customers = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading customers: {ex.Message}");
+        }
+    }
+
+    private async Task LoadTransfers()
+    {
+        try
+        {
+            transfers = await BedTransferService.GetBedTransfersAsync();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading transfers: {ex.Message}");
+        }
+    }
+
+    private async Task LoadMetadata()
+    {
+        try
+        {
+            floorsList = await FloorService.GetFloorMastersAsync();
+            roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
+            beds = await BedService.GetBedMastersAsync();
+            availableBeds = await BedService.GetAvailableBedsAsync();
+            activeAdmissions = await IpService.GetIpRegistrationsAsync("ADMITTED");
+
+            nursesList = await NurseService.GetNurseMastersAsync();
+            nursesList = nursesList.Where(n => n.deleted != true).ToList();
+
+            var active = await IpService.GetIpRegistrationsAsync("ADMITTED");
+            var discharged = await IpService.GetIpRegistrationsAsync("DISCHARGED");
+            var cancelled = await IpService.GetIpRegistrationsAsync("CANCELLED");
+            ipRegistrations = active.Concat(discharged).Concat(cancelled).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading metadata: {ex.Message}");
+        }
+    }
+
+    private IEnumerable<BedMasterModel> GetTargetBeds()
+    {
+        return availableBeds.Where(b => b.bedcode != current.currentbed).ToList();
+    }
+
+    private void NewTransfer()
+    {
+        selectedAdmissionSearchName = "";
+        current = new BedTransferModel
+        {
+            transferdate = DateTime.Now,
+            ischeckout = false,
+            usercode = 1,
+            computercode = 1,
+            tenant_code = string.IsNullOrEmpty(TenantCode) ? "TEN007" : TenantCode
+        };
+        _selectedLastVisitId = "";
+        _selectedTargetBedCode = "";
+        showForm = true;
+        isSubmitted = false;
+    }
+
+    private void OnAdmissionSelected(string val)
+    {
+        if (string.IsNullOrEmpty(val))
+        {
+            current.custid = null;
+            current.custcode = null;
+            current.lastvisitid = null;
+            current.admitteddate = null;
+            current.currentfloor = null;
+            current.currentroom = null;
+            current.currentbed = null;
+            _selectedTargetBedCode = "";
+            return;
+        }
+
+        var adm = activeAdmissions.FirstOrDefault(a => a.ip_id.ToString().Equals(val, StringComparison.OrdinalIgnoreCase));
+        if (adm != null)
+        {
+            current.custid = adm.custid;
+            current.custcode = customers.FirstOrDefault(c => c.custid.ToString() == adm.custid.ToString())?.custcode;
+            current.lastvisitid = adm.ip_id.ToString();
+            current.admitteddate = adm.admitdate;
+            current.currentfloor = adm.flrcode;
+            current.currentroom = adm.rmtcode;
+            current.currentbed = adm.bedcode;
+
+            // Default target selection to current location (except target bed, which defaults to null)
+            current.transfloor = adm.flrcode;
+            current.transroom = adm.rmtcode;
+            current.transbed = null;
+            _selectedTargetBedCode = "";
+        }
+    }
+
+    private void OnTargetBedSelected(string val)
+    {
+        if (int.TryParse(val, out int bedcode))
+        {
+            current.transbed = bedcode;
+            var selectedBed = beds.FirstOrDefault(b => b.bedcode == bedcode);
+            if (selectedBed != null)
+            {
+                current.transfloor = selectedBed.flrcode;
+                current.transroom = selectedBed.rmtcode;
+            }
+        }
+        else
+        {
+            current.transbed = null;
+            current.transfloor = null;
+            current.transroom = null;
+        }
+    }
+
+    private async Task SaveTransfer()
+    {
+        isSubmitted = true;
+        if (!current.custid.HasValue)
+        {
+            ToastService.ShowError("Active Admission is required.");
+            return;
+        }
+        if (!current.transfloor.HasValue || !current.transroom.HasValue || !current.transbed.HasValue)
+        {
+            ToastService.ShowError("Target Floor, Room, and Bed are required.");
+            return;
+        }
+
+        try
+        {
+            current.entereddate = DateTime.Now;
+            current.tenant_code = string.IsNullOrEmpty(TenantCode) ? "TEN007" : TenantCode;
+            current.usercode = 1;
+            current.computercode = 1;
+
+            var payloadJson = Newtonsoft.Json.JsonConvert.SerializeObject(current, Newtonsoft.Json.Formatting.Indented);
+            Console.WriteLine("--- BedTransfer Request Payload JSON ---");
+            Console.WriteLine(payloadJson);
+            Console.WriteLine("----------------------------------------");
+            try
+            {
+                await JSRuntime.InvokeVoidAsync("console.log", "BedTransfer Request Payload JSON:", payloadJson);
+            }
+            catch { }
+
+            bool success = await BedTransferService.InsertBedTransferAsync(current);
+            if (success)
+            {
+                await LoadTransfers();
+                // Refresh active admissions and available beds
+                activeAdmissions = await IpService.GetIpRegistrationsAsync("ADMITTED");
+                availableBeds = await BedService.GetAvailableBedsAsync();
+                ToastService.ShowSuccess("Bed transfer completed successfully!");
+                showForm = false;
+                StateHasChanged();
+            }
+            else
+            {
+                ToastService.ShowError("Save failed on backend.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error saving transfer: {ex.Message}");
+        }
+    }
+
+    private void CloseForm()
+    {
+        current = new BedTransferModel();
+        _selectedLastVisitId = "";
+        _selectedTargetBedCode = "";
+        selectedAdmissionSearchName = "";
+        showForm = false;
+        isSubmitted = false;
+    }
+
+    private string selectedAdmissionSearchName = "";
+    private bool showAdmissionDropdown = false;
+    private int activeDropdownIndex = 0;
+    private List<IPRegistrationModel.IpRegistrationModel> filteredAdmissionsForDropdown = new();
+
+    private void OnAdmissionSearchInput(ChangeEventArgs e)
+    {
+        selectedAdmissionSearchName = e.Value?.ToString() ?? "";
+        UpdateFilteredAdmissions();
+        showAdmissionDropdown = true;
+        activeDropdownIndex = 0;
+    }
+
+    private void UpdateFilteredAdmissions()
+    {
+        if (string.IsNullOrWhiteSpace(selectedAdmissionSearchName))
+        {
+            filteredAdmissionsForDropdown = activeAdmissions;
+        }
+        else
+        {
+            filteredAdmissionsForDropdown = activeAdmissions
+                .Where(a => {
+                    var patientName = customers.FirstOrDefault(c => c.custid.ToString() == a.custid.ToString())?.name ?? "";
+                    var ipNo = a.ip_no ?? "";
+                    var bedName = beds.FirstOrDefault(b => b.bedcode == a.bedcode)?.bedname ?? a.bedcode?.ToString() ?? "";
+
+                    return patientName.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase) ||
+                           ipNo.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase) ||
+                           bedName.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase);
+                })
+                .ToList();
+        }
+    }
+
+    private void ShowAdmissionDropdown()
+    {
+        UpdateFilteredAdmissions();
+        showAdmissionDropdown = true;
+    }
+
+    private async Task HideAdmissionDropdownWithDelay()
+    {
+        await Task.Delay(250);
+        showAdmissionDropdown = false;
+    }
+
+    private void SelectAdmissionFromDropdown(IPRegistrationModel.IpRegistrationModel a)
+    {
+        var patientName = customers.FirstOrDefault(c => c.custid.ToString() == a.custid.ToString())?.name ?? a.custid.ToString();
+        var bedName = beds.FirstOrDefault(b => b.bedcode == a.bedcode)?.bedname ?? a.bedcode?.ToString() ?? "No Bed";
+        selectedAdmissionSearchName = $"{patientName} - {a.ip_no} (Bed: {bedName})";
+        selectedLastVisitId = a.ip_id.ToString();
+        showAdmissionDropdown = false;
+        StateHasChanged();
+    }
+
+    private void OnAdmissionSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            if (filteredAdmissionsForDropdown.Any())
+            {
+                activeDropdownIndex = (activeDropdownIndex + 1) % filteredAdmissionsForDropdown.Count;
+            }
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            if (filteredAdmissionsForDropdown.Any())
+            {
+                activeDropdownIndex = (activeDropdownIndex - 1 + filteredAdmissionsForDropdown.Count) % filteredAdmissionsForDropdown.Count;
+            }
+        }
+        else if (e.Key == "Enter")
+        {
+            if (filteredAdmissionsForDropdown.Any() && activeDropdownIndex >= 0 && activeDropdownIndex < filteredAdmissionsForDropdown.Count)
+            {
+                SelectAdmissionFromDropdown(filteredAdmissionsForDropdown[activeDropdownIndex]);
+            }
+        }
+    }
+}

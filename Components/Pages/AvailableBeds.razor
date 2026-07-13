@@ -1,0 +1,908 @@
+@page "/booking/available-beds"
+@rendermode InteractiveServer
+
+@using Medico_Backend.Model
+@using medico_backend.Model
+@using Booking.Services
+@using Newtonsoft.Json
+@using Booking.Models
+@inject BedMasterService BedService
+@inject BlockMasterService BlockService
+@inject FloorMasterService FloorService
+@inject WardMasterService WardService
+@inject DoctorService DoctorService
+@inject ToastService ToastService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject IpRegistrationService IpService
+@inject RoomTypeMasterService RoomTypeService
+@inject IHttpClientFactory ClientFactory
+@inject NavigationManager Navigation
+@inject BedTransferService BedTransferService
+@inject BedStatusService BedStatusService
+@inject NurseMasterService NurseService
+
+<PageTitle>Available Beds Visualizer</PageTitle>
+
+<div class="animated-background">
+    <div class="floating-blob blob-1"></div>
+    <div class="floating-blob blob-2"></div>
+</div>
+
+<div class="dashboard-container">
+    @* --- HEADER --- *@
+    <div class="dashboard-header">
+        <div class="dashboard-title">
+            <h1>Available Beds</h1>
+            <p>Search and select the available beds.</p>
+        </div>
+        <div style="display: flex; gap: 0.5rem; align-items: center;">
+            @if (draftAdmission != null)
+            {
+                <span class="selection-badge" style="background-color: #eff6ff; border-color: #3b82f6; color: #1e40af; font-weight: 700;">
+                    Admitting Patient: @(customersList.FirstOrDefault(c => c.custid.ToString() == draftAdmission.custid.ToString())?.name ?? draftAdmission.custid.ToString())
+                </span>
+            }
+            <button class="btn-header-action" @onclick="RefreshDataAsync" disabled="@loading">
+                @if (loading)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                }
+                <i class="bi bi-arrow-clockwise"></i> Refresh 
+            </button>
+        </div>
+    </div>
+
+    @* --- FILTERS & LEGEND --- *@
+    <div class="filters-card">
+        <div class="filters-row" style="display: flex; justify-content: space-between; align-items: center; width: 100%; flex-wrap: wrap; gap: 1rem;">
+            <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap;">
+                <div class="filter-group" style="max-width: 160px; min-width: 140px;">
+                    <label>Block</label>
+                    <select class="filter-control" @bind="selectedBlock" @bind:after="OnFiltersChanged">
+                        <option value="0">All Blocks</option>
+                        @foreach (var blk in blocksList)
+                        {
+                            <option value="@blk.blockcode">@blk.name</option>
+                        }
+                    </select>
+                </div>
+                <div class="filter-group" style="max-width: 160px; min-width: 140px;">
+                    <label>Floor</label>
+                    <select class="filter-control" @bind="selectedFloor" @bind:after="OnFiltersChanged">
+                        <option value="0">All Floors</option>
+                        @foreach (var flr in floorsList)
+                        {
+                            <option value="@flr.flrcode">@flr.name</option>
+                        }
+                    </select>
+                </div>
+                <div class="filter-group" style="max-width: 160px; min-width: 140px;">
+                    <label>Ward</label>
+                    <select class="filter-control" @bind="selectedWard" @bind:after="OnFiltersChanged">
+                        <option value="0">All Wards</option>
+                        @foreach (var wrd in wardsList)
+                        {
+                            <option value="@wrd.wrdcode">@wrd.name</option>
+                        }
+                    </select>
+                </div>
+            </div>
+            
+            @* --- TOP LEGEND --- *@
+            <div class="top-legend" style="display: flex; gap: 1.5rem; align-items: center; background: #ffffff; padding: 0.5rem 1rem; border-radius: 8px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.02); height: fit-content; margin-top: 8px;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <div class="legend-box available" style="width: 16px; height: 16px; border-radius: 4px;"></div>
+                    <span style="font-size: 0.85rem; font-weight: 600; color: #475569;">Available</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <div class="legend-box occupied" style="width: 16px; height: 16px; border-radius: 4px;"></div>
+                    <span style="font-size: 0.85rem; font-weight: 600; color: #475569;">Booked</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <div class="legend-box dirty" style="width: 16px; height: 16px; border-radius: 4px;"></div>
+                    <span style="font-size: 0.85rem; font-weight: 600; color: #475569;">Pending Cleaning</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <div class="legend-box selected" style="width: 16px; height: 16px; border-radius: 4px;"></div>
+                    <span style="font-size: 0.85rem; font-weight: 600; color: #475569;">Selected</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* --- LAYOUT MAIN --- *@
+    <div class="layout-main">
+        @* --- BEDS GRID --- *@
+        <div class="beds-view-card">
+            @if (selectedBed != null)
+            {
+                <div class="view-header" style="margin-bottom: 0.75rem; padding-bottom: 0.5rem; border-bottom: 1px solid #e2e8f0; display: flex; align-items: center;">
+                    <div class="selection-badge">
+                        Selected Bed: <strong>@selectedBed.bedname</strong>
+                    </div>
+                </div>
+            }
+
+            @if (loading)
+            {
+                <div class="loading-state">
+                    <span class="spinner-border text-primary" role="status"></span>
+                    <p>Loading layout map...</p>
+                </div>
+            }
+            else if (!filteredAllBeds.Any())
+            {
+                <div class="empty-state">
+                    <i class="bi bi-grid-3x3-gap"></i>
+                    <h4>No beds found</h4>
+                    <p>Try adjusting your block, floor, or ward filters.</p>
+                </div>
+            }
+            else
+            {
+                <div class="beds-grid">
+                    @foreach (var bed in filteredAllBeds)
+                    {
+                        var isAvailable = bed.bed_status == "AVAILABLE";
+                        var isDirty = bed.bed_status == "DIRTY";
+                        var isSelected = selectedBed != null && selectedBed.bedcode == bed.bedcode;
+ 
+                        <button type="button" 
+                                class="bed-box @(isSelected ? "selected" : (isDirty ? "dirty" : (isAvailable ? "available" : "occupied")))"
+                                @onclick="() => OnBedClicked(bed)">
+                            <div class="bed-icon">
+                                @if (isSelected)
+                                {
+                                    <i class="bi bi-check-circle-fill"></i>
+                                }
+                                else if (isDirty)
+                                {
+                                    <i class="bi bi-door-open"></i>
+                                }
+                                else if (isAvailable)
+                                {
+                                    <i class="bi bi-door-open"></i>
+                                }
+                                else
+                                {
+                                    <i class="bi bi-person-workspace"></i>
+                                }
+                            </div>
+                            <div class="bed-number">@bed.bedname</div>
+                            <div class="bed-info">
+                                @(wardsList.FirstOrDefault(w => w.wrdcode == bed.wrdcode)?.name ?? "Ward")
+                            </div>
+                        </button>
+                    }
+                </div>
+            }
+        </div>
+
+        @* Details Column was removed to stretch the bed layout, details are now shown as a popup modal *@
+    </div>
+</div>
+
+@* --- ADMIT PATIENT MODAL --- *@
+@if (showAdmitModal)
+{
+    <div class="modal-backdrop"></div>
+    <div class="glass-modal large-modal-custom">
+        <div class="modal-header">
+            <h3>New Inpatient Admission @(selectedBed?.bedname)</h3>
+            <button class="close-btn" @onclick="CloseAdmitModal">&times;</button>
+        </div>
+        <div class="modal-body">
+            @* Row 1: Patient, Doctor, Type, Reason *@
+            <div class="um-grid-cols-4">
+                <div class="form-group" style="position: relative;">
+                    <label>Select Patient *</label>
+                    <div style="position: relative;">
+                        <input type="text" class="filter-control" placeholder="-- Choose Patient --" 
+                               value="@selectedPatientSearchName" 
+                               @oninput="OnPatientSearchInput" 
+                               @focus="ShowPatientDropdown" 
+                               @onblur="HidePatientDropdownWithDelay" 
+                               @onkeydown="OnPatientSearchKeyDown" />
+                        
+                        @if (showPatientDropdown)
+                        {
+                            <div style="position: absolute; top: 100%; left: 0; right: 0; z-index: 1050; max-height: 200px; overflow-y: auto; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-top: 2px;">
+                                @if (filteredPatientsForDropdown.Any())
+                                {
+                                    @for (int idx = 0; idx < filteredPatientsForDropdown.Count; idx++)
+                                    {
+                                        var pIndex = idx;
+                                        var p = filteredPatientsForDropdown[idx];
+                                        <div @onmousedown="() => SelectPatientFromDropdown(p)" 
+                                             style="padding: 6px 12px; cursor: pointer; font-size: 0.8rem; color: #1e293b; background-color: @(idx == activeDropdownIndex ? "#f1f5f9" : "transparent");">
+                                            @p.custcode @p.name
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <div style="padding: 8px 12px; font-size: 0.8rem; color: #64748b; font-style: italic;">No patients found</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Assigned Doctor *</label>
+                    <select class="filter-control" @bind="admitRequest.dcode">
+                        <option value="0">-- Choose Doctor --</option>
+                        @foreach (var d in doctorsList)
+                        {
+                            <option value="@d.dcode">Dr. @d.name</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Admission Type</label>
+                    <select class="filter-control" @bind="admitRequest.admission_type">
+                        <option value="PLANNED">PLANNED</option>
+                        <option value="EMERGENCY">EMERGENCY</option>
+                        <option value="REFERRAL">REFERRAL</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Admission Reason</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.admission_reason" placeholder="e.g. Appendectomy" />
+                </div>
+            </div>
+
+            @* Row 2: Expected Discharge Date & Guardian Info *@
+            <div class="um-grid-cols-4">
+                <div class="form-group">
+                    <label>Expected Discharge Date</label>
+                    <input type="date" class="filter-control" @bind="admitRequest.expected_dischargedate" />
+                </div>
+                <div class="form-group">
+                    <label>Guardian Name</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.guardian_name" placeholder="Name" />
+                </div>
+                <div class="form-group">
+                    <label>Relation</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.guardian_relation" placeholder="Relation" />
+                </div>
+                <div class="form-group">
+                    <label>Contact No</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.guardian_contact" placeholder="Contact" />
+                </div>
+            </div>
+
+            @* Row 3: Notes & Is Insurance Patient *@
+            <div class="um-grid-cols-4">
+                <div class="form-group" style="grid-column: span 3;">
+                    <label>Admission Notes</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.notes" placeholder="Notes" />
+                </div>
+                <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 28px;">
+                    <input type="checkbox" id="isinsurance" @bind="admitRequest.isinsurancepatient" style="width: 16px; height: 16px; cursor: pointer;" />
+                    <label for="isinsurance" style="margin-bottom: 0; cursor: pointer; text-transform: none;">Is Insurance Patient</label>
+                </div>
+            </div>
+
+            @if (admitRequest.isinsurancepatient)
+            {
+                @* Row 4: Insurance details (Insurance, Policy No, Auth No, TPA) *@
+                <div class="um-grid-cols-4">
+                    <div class="form-group">
+                        <label>Insurance Company</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.insurance_company" placeholder="e.g. Star Health" />
+                    </div>
+                    <div class="form-group">
+                        <label>Policy No</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.policyno" placeholder="Policy No" />
+                    </div>
+                    <div class="form-group">
+                        <label>Authorization No</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.authorizationno" placeholder="Auth No" />
+                    </div>
+                    <div class="form-group">
+                        <label>TPA Name</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.tpa_name" placeholder="TPA" />
+                    </div>
+                </div>
+                
+                @* Row 5: Approved Amount *@
+                <div class="um-grid-cols-4">
+                    <div class="form-group">
+                        <label>Approved Amount</label>
+                        <input type="number" step="any" class="filter-control" @bind="admitRequest.insurance_approved_amount" placeholder="0.00" />
+                    </div>
+                </div>
+            }
+
+        </div>
+        <div class="modal-footer">
+            <button class="btn-modal cancel" @onclick="CloseAdmitModal">Cancel</button>
+            <button class="btn-modal confirm" @onclick="ExecuteAdmit">Admit Patient</button>
+        </div>
+    </div>
+}
+
+@* --- BED DETAILS POPUP MODAL --- *@
+@if (selectedBed != null && !showAdmitModal)
+{
+    <div class="modal-backdrop" @onclick="CloseDetails"></div>
+    <div class="glass-modal" style="max-width: 400px; width: 95%; border-radius: 16px;">
+        <div class="modal-header" style="background: #f8fafc; border-radius: 16px 16px 0 0; padding: 0.65rem 1rem;">
+            <h3 style="margin: 0; color: #1e293b; font-size: 1rem;">Bed Details: @selectedBed.bedname</h3>
+            <button class="close-btn" @onclick="CloseDetails">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 1rem;">
+            @if (selectedBed.bed_status == "AVAILABLE")
+            {
+                <div style="display: flex; flex-direction: column; gap: 1rem;">
+                    <div style="background: rgba(240, 253, 244, 0.7); border: 1px solid #bbf7d0; border-radius: 12px; padding: 1rem;">
+                        <h4 style="margin: 0 0 0.75rem 0; color: #15803d; font-size: 0.95rem; font-weight: 700;">Available Bed</h4>
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-size: 0.85rem; color: #475569;">
+                            <div><strong>Bed No:</strong> @selectedBed.bedname</div>
+                            <div><strong>Room Type:</strong> @(roomTypes.FirstOrDefault(r => r.rmtcode == selectedBed.rmtcode)?.name ?? selectedBed.rmtcode?.ToString() ?? "-")</div>
+                            <div><strong>Ward:</strong> @(wardsList.FirstOrDefault(w => w.wrdcode == selectedBed.wrdcode)?.name ?? selectedBed.wrdcode?.ToString() ?? "-")</div>
+                            <div><strong>Floor:</strong> @(floorsList.FirstOrDefault(f => f.flrcode == selectedBed.flrcode)?.name ?? selectedBed.flrcode.ToString())</div>
+                        </div>
+                    </div>
+                    
+                    <p style="font-size: 0.85rem; color: #64748b; margin: 0;">Do you want to allocate this bed to the patient?</p>
+
+                    <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 0.5rem;">
+                        <button class="btn-modal cancel" style="padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="CloseDetails">Cancel</button>
+                        @if (draftAdmission != null)
+                        {
+                            <button class="btn-modal confirm" style="background-color: #10b981; padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="ConfirmBedAllocation">
+                                Confirm Bed
+                            </button>
+                        }
+                        else
+                        {
+                            <button class="btn-modal confirm" style="background-color: #3b82f6; padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="OpenAdmitModal">
+                                Admit Patient
+                            </button>
+                        }
+                    </div>
+                </div>
+            }
+            else if (selectedBed.bed_status == "DIRTY")
+            {
+                <div style="display: flex; flex-direction: column; gap: 0.85rem;">
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                        <div class="form-group" style="margin-bottom: 0;">
+                            <label style="font-weight: 600; color: #475569; font-size: 0.8rem; text-transform: uppercase;">Status</label>
+                            <select class="filter-control" style="padding: 8px 12px; font-size: 0.8rem;" @bind="cleaningStatusToggle">
+                                <option value="DIRTY">Pending Cleaning</option>
+                                <option value="CLEANED">Cleaned</option>
+                            </select>
+                        </div>
+
+                        @if (cleaningStatusToggle == "CLEANED")
+                        {
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-weight: 600; color: #475569; font-size: 0.8rem; text-transform: uppercase;">Cleaned By *</label>
+                                <input type="text" class="filter-control" style="padding: 8px 12px; font-size: 0.8rem;" @bind="cleanedBy" placeholder="Housekeeping name" />
+                            </div>
+                            <div class="form-group" style="margin-bottom: 0;">
+                                <label style="font-weight: 600; color: #475569; font-size: 0.8rem; text-transform: uppercase;">Notes</label>
+                                <input type="text" class="filter-control" style="padding: 8px 12px; font-size: 0.8rem;" @bind="cleaningNotes" placeholder="" />
+                            </div>
+                        }
+                    </div>
+
+                    <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 0.5rem;">
+                        <button class="btn-modal cancel" style="padding: 0.5rem 1rem; font-size: 0.8rem;" @onclick="CloseDetails">Cancel</button>
+                        <button class="btn-modal confirm" style="background-color: @(cleaningStatusToggle == "CLEANED" ? "#10b981" : "#f59e0b"); padding: 0.5rem 1rem; font-size: 0.8rem; border: none; color: #ffffff;" @onclick="MarkBedAsCleaned">
+                            <i class="bi bi-stars" style="margin-right: 5px;"></i> Save Status
+                        </button>
+                    </div>
+                </div>
+            }
+            else
+            {
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    @if (occupiedPatientDetails != null)
+                    {
+                        <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 0.65rem;">
+                            <div style="display: grid; grid-template-columns: 1fr; gap: 0.5rem; font-size: 0.76rem; color: #475569;">
+                              
+                                <div><strong>Patient ID:</strong> <span style="color: #64748b; font-weight: 700;">@(occupiedCustomerDetails?.custcode ?? occupiedPatientDetails.custid.ToString())</span></div>
+                                <div><strong>Patient Name:</strong> <span style="color: #4f46e5; font-weight: 700;">@(occupiedCustomerDetails?.name ?? "Unknown Patient")</span></div>
+                                <div><strong>Contact Number:</strong> <span style="color: #0d9488; font-weight: 700;">@(occupiedCustomerDetails?.mobile ?? occupiedPatientDetails.guardian_contact ?? "N/A")</span></div>
+                                <div><strong>Admission Type:</strong> <span class="badge-type @(occupiedPatientDetails.admission_type == "EMERGENCY" ? "walkin" : "online")" style="padding: 0.1rem 0.4rem; font-size: 0.68rem; display: inline-block;">@occupiedPatientDetails.admission_type</span></div>
+                                <div><strong>Admitted On:</strong> <span style="color: #d97706; font-weight: 700;">@occupiedPatientDetails.admitdate.ToString("dd-MM-yyyy hh:mm tt")</span></div>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div style="text-align: center; padding: 1.25rem; color: #64748b; font-style: italic; font-size: 0.8rem;">
+                            <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                            Loading occupant details...
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private List<BlockMasterModel> blocksList = new();
+    private List<FloorMasterModel> floorsList = new();
+    private List<WardMasterModel> wardsList = new();
+    private List<RoomTypeMasterModel> roomTypes = new();
+    
+    private List<BedMasterModel> allBeds = new();
+    private List<BedMasterModel> availableBeds = new();
+    private List<BedMasterModel> filteredAllBeds = new();
+    private List<IPRegistrationModel.IpRegistrationModel> activeAdmissions = new();
+    private List<SharedComponents.Rcl.Models.CustomerModel> customersList = new();
+    private List<DoctorMasterModel> doctorsList = new();
+    private List<BedTransferModel> bedTransfers = new();
+    private List<medico_backend.Model.BedStatusModel> bedStatuses = new();
+    private List<NurseMasterModel> nursesList = new();
+    private string cleanedBy = "";
+    private string cleaningNotes = "";
+    private List<BedMasterModel> pendingCleaningBeds = new();
+    private string cleaningStatusToggle = "DIRTY";
+
+    private int selectedBlock = 0;
+    private int selectedFloor = 0;
+    private int selectedWard = 0;
+    
+    private bool loading = false;
+    private BedMasterModel? selectedBed;
+
+    private IPRegistrationModel.CreateIpRegistrationRequest? draftAdmission;
+    private IPRegistrationModel.CreateIpRegistrationRequest admitRequest = new();
+    private IPRegistrationModel.IpRegistrationModel? occupiedPatientDetails;
+    private SharedComponents.Rcl.Models.CustomerModel? occupiedCustomerDetails;
+
+    private string TenantCode = "";
+    private string AuthToken = "";
+    private bool showAdmitModal = false;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDropdownDataAsync();
+        await RefreshDataAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                var draftResult = await _sessionStorage.GetAsync<IPRegistrationModel.CreateIpRegistrationRequest>("DraftAdmission");
+                if (draftResult.Success)
+                {
+                    draftAdmission = draftResult.Value;
+                }
+
+                await LoadCustomersAsync();
+                await RefreshDataAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                ToastService.ShowError($"Error loading session details: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Customer/partition?pagenumber=1&pagesize=1000");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                customersList = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading customers: {ex.Message}");
+        }
+    }
+
+    private async Task LoadDropdownDataAsync()
+    {
+        try
+        {
+            blocksList = await BlockService.GetBlockMastersAsync();
+            floorsList = await FloorService.GetFloorMastersAsync();
+            wardsList = await WardService.GetWardMastersAsync();
+            roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
+            doctorsList = await DoctorService.GetDoctorsAsync();
+            nursesList = await NurseService.GetNurseMastersAsync();
+            nursesList = nursesList.Where(n => n.deleted != true).ToList();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading master filters: {ex.Message}");
+        }
+    }
+
+    private async Task RefreshDataAsync()
+    {
+        loading = true;
+        try
+        {
+            allBeds = await BedService.GetBedMastersAsync();
+            
+            int? blockParam = selectedBlock > 0 ? selectedBlock : null;
+            int? floorParam = selectedFloor > 0 ? selectedFloor : null;
+            int? wardParam = selectedWard > 0 ? selectedWard : null;
+            
+            availableBeds = await BedService.GetAvailableBedsAsync(blockParam, floorParam, wardParam);
+            activeAdmissions = await IpService.GetIpRegistrationsAsync("ADMITTED");
+            bedTransfers = await BedTransferService.GetBedTransfersAsync();
+            bedStatuses = await BedStatusService.GetBedStatusesAsync();
+            pendingCleaningBeds = await BedService.GetPendingCleaningBedsAsync();
+            
+            FilterAllBeds();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading beds data: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void FilterAllBeds()
+    {
+        filteredAllBeds = allBeds.Where(b => 
+            (selectedFloor == 0 || b.flrcode == selectedFloor) && 
+            (selectedWard == 0 || b.wrdcode == selectedWard)
+        )
+        .OrderBy(b => b.bedname)
+        .ToList();
+
+        var occupiedBedCodes = new HashSet<int>();
+        foreach (var a in activeAdmissions)
+        {
+            var latestTransfer = bedTransfers
+                .Where(t => t.lastvisitid == a.ip_id.ToString())
+                .OrderByDescending(t => t.transferdate)
+                .FirstOrDefault();
+            var currentBedCode = latestTransfer != null ? latestTransfer.transbed : a.bedcode;
+            if (currentBedCode.HasValue)
+            {
+                occupiedBedCodes.Add(currentBedCode.Value);
+            }
+        }
+
+        foreach (var bed in filteredAllBeds)
+        {
+            var isPC = pendingCleaningBeds.Any(pc => pc.bedcode == bed.bedcode);
+            var isOccupied = occupiedBedCodes.Contains(bed.bedcode);
+            var av = availableBeds.FirstOrDefault(ab => ab.bedcode == bed.bedcode);
+
+            if (isPC || (!isOccupied && av == null))
+            {
+                bed.bed_status = "DIRTY";
+                bed.is_cleaned = false;
+            }
+            else if (isOccupied)
+            {
+                bed.bed_status = "OCCUPIED";
+            }
+            else if (av != null)
+            {
+                bed.bed_status = av.bed_status ?? "AVAILABLE";
+                bed.is_cleaned = av.is_cleaned;
+                bed.admitted_at = av.admitted_at;
+                bed.discharged_at = av.discharged_at;
+                bed.cleaned_at = av.cleaned_at;
+                bed.cleaned_by = av.cleaned_by;
+            }
+        }
+
+        if (selectedBed != null)
+        {
+            if (!filteredAllBeds.Any(b => b.bedcode == selectedBed.bedcode))
+            {
+                selectedBed = null;
+                occupiedPatientDetails = null;
+                occupiedCustomerDetails = null;
+            }
+        }
+    }
+
+    private async Task OnFiltersChanged()
+    {
+        await RefreshDataAsync();
+    }
+
+    private void OnBedClicked(BedMasterModel bed)
+    {
+        if (selectedBed != null && selectedBed.bedcode == bed.bedcode)
+        {
+            selectedBed = null;
+            occupiedPatientDetails = null;
+            occupiedCustomerDetails = null;
+        }
+        else
+        {
+            selectedBed = bed;
+            cleaningStatusToggle = "DIRTY";
+            cleanedBy = "";
+            cleaningNotes = "";
+            var isAvailable = bed.bed_status == "AVAILABLE";
+            if (isAvailable)
+            {
+                occupiedPatientDetails = null;
+                occupiedCustomerDetails = null;
+                ToastService.ShowSuccess($"Selected Available Bed: {bed.bedname}");
+            }
+            else
+            {
+                // Find patient details for occupied bed
+                occupiedPatientDetails = activeAdmissions.FirstOrDefault(a => 
+                {
+                    var latestTransfer = bedTransfers.Where(t => t.lastvisitid == a.ip_id.ToString()).OrderByDescending(t => t.transferdate).FirstOrDefault();
+                    var currentBedCode = latestTransfer != null ? latestTransfer.transbed : a.bedcode;
+                    return currentBedCode == bed.bedcode;
+                });
+                if (occupiedPatientDetails != null)
+                {
+                    occupiedCustomerDetails = customersList.FirstOrDefault(c => c.custid.ToString() == occupiedPatientDetails.custid.ToString());
+                }
+                else
+                {
+                    occupiedCustomerDetails = null;
+                }
+            }
+        }
+    }
+
+    private async Task ConfirmBedAllocation()
+    {
+        if (draftAdmission == null)
+        {
+            ToastService.ShowError("No registration in progress. Please start from the Admissions dashboard.");
+            return;
+        }
+
+        if (selectedBed == null)
+        {
+            ToastService.ShowError("Please select a bed.");
+            return;
+        }
+
+        try
+        {
+            draftAdmission.bedcode = selectedBed.bedcode;
+            draftAdmission.blockcode = floorsList.FirstOrDefault(f => f.flrcode == selectedBed.flrcode)?.blockcode;
+            draftAdmission.flrcode = selectedBed.flrcode;
+            draftAdmission.wrdcode = selectedBed.wrdcode;
+            draftAdmission.rmtcode = selectedBed.rmtcode;
+
+            bool success = await IpService.AdmitPatientAsync(draftAdmission);
+            if (success)
+            {
+                ToastService.ShowSuccess("Bed allocated and patient admitted successfully!");
+                await _sessionStorage.DeleteAsync("DraftAdmission");
+                Navigation.NavigateTo("/booking/ip-registration");
+            }
+            else
+            {
+                ToastService.ShowError("Failed to allocate bed and admit patient.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error confirming admission: {ex.Message}");
+        }
+    }
+
+    private void OpenAdmitModal()
+    {
+        if (selectedBed == null) return;
+        selectedPatientSearchName = "";
+        admitRequest = new IPRegistrationModel.CreateIpRegistrationRequest
+        {
+            admission_type = "PLANNED",
+            admitdate = DateTime.Now,
+            branchcode = 101,
+            bedcode = selectedBed.bedcode,
+            blockcode = floorsList.FirstOrDefault(f => f.flrcode == selectedBed.flrcode)?.blockcode,
+            flrcode = selectedBed.flrcode,
+            wrdcode = selectedBed.wrdcode,
+            rmtcode = selectedBed.rmtcode,
+            isinsurancepatient = false
+        };
+        showAdmitModal = true;
+    }
+
+    private void CloseAdmitModal()
+    {
+        showAdmitModal = false;
+    }
+
+    private async Task ExecuteAdmit()
+    {
+        if (admitRequest.custid <= 0)
+        {
+            ToastService.ShowError("Please select a patient.");
+            return;
+        }
+        if (admitRequest.dcode <= 0)
+        {
+            ToastService.ShowError("Please select a doctor.");
+            return;
+        }
+        if (admitRequest.bedcode <= 0)
+        {
+            ToastService.ShowError("Please allocate a bed.");
+            return;
+        }
+
+        try
+        {
+            bool success = await IpService.AdmitPatientAsync(admitRequest);
+            if (success)
+            {
+                ToastService.ShowSuccess("Patient admitted successfully!");
+                showAdmitModal = false;
+                selectedBed = null;
+                await RefreshDataAsync();
+                StateHasChanged();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to admit patient.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error admitting patient: {ex.Message}");
+        }
+    }
+
+    private async Task MarkBedAsCleaned()
+    {
+        if (selectedBed == null) return;
+
+        if (cleaningStatusToggle == "DIRTY")
+        {
+            selectedBed = null;
+            return;
+        }
+
+        if (string.IsNullOrEmpty(cleanedBy))
+        {
+            ToastService.ShowError("Please mention the member who cleaned the bed.");
+            return;
+        }
+        
+        try
+        {
+            var req = new medico_backend.Model.MarkBedCleanedRequest
+            {
+                bedcode = selectedBed.bedcode,
+                cleaned_by = cleanedBy,
+                notes = string.IsNullOrEmpty(cleaningNotes) ? "Sanitized and linen changed" : cleaningNotes
+            };
+
+            bool success = await BedStatusService.MarkBedCleanedAsync(req);
+            if (success)
+            {
+                ToastService.ShowSuccess($"{selectedBed.bedname} marked as cleaned and is now available!");
+                selectedBed = null;
+                await RefreshDataAsync();
+                StateHasChanged();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to update bed status on backend.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error marking bed cleaned: {ex.Message}");
+        }
+    }
+    private void CloseDetails()
+    {
+        selectedBed = null;
+        occupiedPatientDetails = null;
+        occupiedCustomerDetails = null;
+    }
+
+    private string selectedPatientSearchName = "";
+    private bool showPatientDropdown = false;
+    private int activeDropdownIndex = 0;
+    private List<SharedComponents.Rcl.Models.CustomerModel> filteredPatientsForDropdown = new();
+
+    private void OnPatientSearchInput(ChangeEventArgs e)
+    {
+        selectedPatientSearchName = e.Value?.ToString() ?? "";
+        UpdateFilteredPatients();
+        showPatientDropdown = true;
+        activeDropdownIndex = 0;
+    }
+
+    private void UpdateFilteredPatients()
+    {
+        if (string.IsNullOrWhiteSpace(selectedPatientSearchName))
+        {
+            filteredPatientsForDropdown = customersList.Take(50).ToList();
+        }
+        else
+        {
+            filteredPatientsForDropdown = customersList
+                .Where(c => (c.name != null && c.name.Contains(selectedPatientSearchName, StringComparison.OrdinalIgnoreCase)) ||
+                            (c.custcode != null && c.custcode.Contains(selectedPatientSearchName, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+    }
+
+    private void ShowPatientDropdown()
+    {
+        UpdateFilteredPatients();
+        showPatientDropdown = true;
+    }
+
+    private async Task HidePatientDropdownWithDelay()
+    {
+        await Task.Delay(250);
+        showPatientDropdown = false;
+    }
+
+    private void SelectPatientFromDropdown(SharedComponents.Rcl.Models.CustomerModel p)
+    {
+        admitRequest.custid = p.custid;
+        selectedPatientSearchName = $"{p.custcode} {p.name}";
+        showPatientDropdown = false;
+        StateHasChanged();
+    }
+
+    private void OnPatientSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            if (filteredPatientsForDropdown.Any())
+            {
+                activeDropdownIndex = (activeDropdownIndex + 1) % filteredPatientsForDropdown.Count;
+            }
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            if (filteredPatientsForDropdown.Any())
+            {
+                activeDropdownIndex = (activeDropdownIndex - 1 + filteredPatientsForDropdown.Count) % filteredPatientsForDropdown.Count;
+            }
+        }
+        else if (e.Key == "Enter")
+        {
+            if (filteredPatientsForDropdown.Any() && activeDropdownIndex >= 0 && activeDropdownIndex < filteredPatientsForDropdown.Count)
+            {
+                SelectPatientFromDropdown(filteredPatientsForDropdown[activeDropdownIndex]);
+            }
+        }
+    }
+}
