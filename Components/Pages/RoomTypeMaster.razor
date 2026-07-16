@@ -6,6 +6,7 @@
 @using Booking.Services
 @using Newtonsoft.Json
 @using Booking.Models
+@using LabCare.Models
 @inject RoomTypeMasterService RoomTypeService
 @inject FloorMasterService FloorService
 @inject ToastService ToastService
@@ -13,6 +14,7 @@
 @inject NavigationManager Navigation
 @inject IHttpClientFactory ClientFactory
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject LabCare.Services.TestService TestSvc
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -174,6 +176,79 @@
                             </div>
                         </div>
 
+                        @* Breakup Charges Section *@
+                        <div class="mt-4 pt-3" style="border-top: 1px solid #f1f5f9;">
+                            <h4 class="font-bold text-slate-700 mb-3" style="font-size: 14px; margin-bottom: 12px; font-weight: 600;">Breakup Charges</h4>
+                            <div style="display: grid; grid-template-columns: 2fr 1fr auto; gap: 1rem; align-items: end; margin-bottom: 12px;">
+                                <div class="form-group" style="margin-bottom: 0; position: relative;">
+                                    <label>Breakup Charges Head</label>
+                                    <input type="text" class="lab-input" 
+                                           placeholder="Type to search..." 
+                                           @bind-value="chargeHeadSearchText" 
+                                           @bind-value:event="oninput"
+                                           @onfocus="OnSearchFocus" 
+                                           @onblur="OnSearchBlur"
+                                           @onkeydown="OnSearchKeyDown" />
+                                    
+                                    @if (showSearchDropdown && FilteredTests.Any())
+                                    {
+                                        <div class="search-dropdown-panel" style="position: absolute; top: 100%; left: 0; right: 0; z-index: 1000; background: white; border: 1px solid #e2e8f0; border-radius: 6px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); max-height: 200px; overflow-y: auto; margin-top: 4px;">
+                                            @for (int i = 0; i < FilteredTests.Count; i++)
+                                            {
+                                                var index = i;
+                                                var t = FilteredTests[i];
+                                                var isHighlighted = index == highlightedIndex;
+                                                <div class="search-dropdown-item @(isHighlighted ? "bg-indigo-50 text-indigo-900" : "text-slate-700")" 
+                                                     style="padding: 8px 12px; cursor: pointer; font-size: 13px; font-weight: @(isHighlighted ? "600" : "normal");"
+                                                     @onmousedown="() => SelectTest(t)">
+                                                    @t.name
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                                <div class="form-group" style="margin-bottom: 0;">
+                                    <label>Amount</label>
+                                    <input type="number" class="lab-input" @bind="newRateAmount" placeholder="0" />
+                                </div>
+                                <div style="display: flex; gap: 12px; padding-bottom: 4px;">
+                                    <button type="button" class="lc-btn font-bold text-indigo-600 hover:text-indigo-800" style="background: none; border: none; cursor: pointer; font-weight: 600;" @onclick="AddBreakupRate">Add</button>
+                                    <button type="button" class="lc-btn font-bold text-rose-600 hover:text-rose-800" style="background: none; border: none; cursor: pointer; font-weight: 600;" @onclick="RemoveBreakupRate">Remove</button>
+                                </div>
+                            </div>
+
+                            @* Grid *@
+                            <div class="lc-table-container mt-3" style="max-height: 200px; overflow-y: auto; border: 1px solid #e2e8f0; border-radius: 6px;">
+                                <table class="lc-table" style="margin: 0; width: 100%;">
+                                    <thead>
+                                        <tr>
+                                            <th>Charge Head</th>
+                                            <th style="text-align: right; width: 150px;">Charges</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @if (currentRates != null && currentRates.Any())
+                                        {
+                                            @foreach (var rate in currentRates)
+                                            {
+                                                var isSelected = selectedRateRow == rate;
+                                                <tr class="lc-table-row @(isSelected ? "bg-indigo-50" : "")" @onclick="() => selectedRateRow = rate" style="cursor: pointer;">
+                                                    <td style="padding: 8px 12px;">@(tests.FirstOrDefault(t => t.tcode == rate.subtestcode)?.name ?? rate.subtestcode?.ToString() ?? "-")</td>
+                                                    <td style="padding: 8px 12px; text-align: right; font-weight: bold;">@rate.testrate</td>
+                                                </tr>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            <tr>
+                                                <td colspan="2" class="text-center p-3 text-slate-400 italic" style="font-size: 12px; padding: 12px;">No breakup charges configured.</td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
                     </div>
                 </div>
             </div>
@@ -222,6 +297,143 @@
     private bool showDeleteConfirm = false;
     private int deleteRmtCode = 0;
 
+    private List<TestGroupRateModel> currentRates = new();
+    private TestGroupRateModel? selectedRateRow;
+    private decimal selectedSubTestCode = 0;
+    private int? newRateAmount;
+
+    private string _chargeHeadSearchText = "";
+    private string chargeHeadSearchText
+    {
+        get => _chargeHeadSearchText;
+        set
+        {
+            if (_chargeHeadSearchText != value)
+            {
+                _chargeHeadSearchText = value;
+                var currentSelectedTest = tests.FirstOrDefault(t => t.tcode == (long)selectedSubTestCode);
+                if (currentSelectedTest == null || !string.Equals(currentSelectedTest.name, value, StringComparison.OrdinalIgnoreCase))
+                {
+                    selectedSubTestCode = 0;
+                }
+            }
+        }
+    }
+    private bool showSearchDropdown = false;
+    private int highlightedIndex = -1;
+
+    private List<test_master> FilteredTests => string.IsNullOrWhiteSpace(chargeHeadSearchText)
+        ? tests
+        : tests.Where(t => t.name.Contains(chargeHeadSearchText, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private void OnSearchFocus()
+    {
+        showSearchDropdown = true;
+        highlightedIndex = -1;
+    }
+
+    private async Task OnSearchBlur()
+    {
+        await Task.Delay(200);
+        showSearchDropdown = false;
+        highlightedIndex = -1;
+        StateHasChanged();
+    }
+
+    private void OnSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (!showSearchDropdown)
+        {
+            showSearchDropdown = true;
+        }
+
+        var list = FilteredTests;
+        if (!list.Any()) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            highlightedIndex = (highlightedIndex + 1) % list.Count;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            highlightedIndex = (highlightedIndex - 1 + list.Count) % list.Count;
+        }
+        else if (e.Key == "Enter")
+        {
+            if (highlightedIndex >= 0 && highlightedIndex < list.Count)
+            {
+                SelectTest(list[highlightedIndex]);
+            }
+            else if (list.Count > 0)
+            {
+                SelectTest(list[0]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showSearchDropdown = false;
+            highlightedIndex = -1;
+        }
+    }
+
+    private void SelectTest(test_master t)
+    {
+        selectedSubTestCode = t.tcode;
+        _chargeHeadSearchText = t.name;
+        showSearchDropdown = false;
+        highlightedIndex = -1;
+    }
+
+    private void AddBreakupRate()
+    {
+        if (selectedSubTestCode == 0)
+        {
+            ToastService.ShowError("Please select a Breakup Charge Head.");
+            return;
+        }
+        if (newRateAmount == null || newRateAmount <= 0)
+        {
+            ToastService.ShowError("Please enter a valid amount.");
+            return;
+        }
+
+        if (currentRates.Any(r => r.subtestcode == (int)selectedSubTestCode))
+        {
+            ToastService.ShowError("This charge head is already added.");
+            return;
+        }
+
+        currentRates.Add(new TestGroupRateModel
+        {
+            subtestcode = (int)selectedSubTestCode,
+            testrate = newRateAmount,
+            roomchargehead = currentRates.Count + 1
+        });
+
+        selectedSubTestCode = 0;
+        _chargeHeadSearchText = "";
+        newRateAmount = null;
+        StateHasChanged();
+    }
+
+    private void RemoveBreakupRate()
+    {
+        if (selectedRateRow == null)
+        {
+            ToastService.ShowError("Please select a row from the list to remove.");
+            return;
+        }
+        currentRates.Remove(selectedRateRow);
+        selectedRateRow = null;
+
+        // Re-index roomchargehead
+        for (int i = 0; i < currentRates.Count; i++)
+        {
+            currentRates[i].roomchargehead = i + 1;
+        }
+        StateHasChanged();
+    }
+
     private IEnumerable<RoomTypeMasterModel> FilteredRoomTypes =>
         roomTypes.Where(r => !r.deleted);
 
@@ -252,6 +464,7 @@
 
     private void NewRoomType()
     {
+        var activeTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : "TEN007";
         current = new RoomTypeMasterModel { 
             deleted = false,
             computercode = 1,
@@ -259,17 +472,24 @@
             entereddate = DateTime.Now,
             ibsdate = DateTime.Now,
             orderno = roomTypes.Count + 1,
-            tenant_code = "TEN007",
+            tenant_code = activeTenant,
             roomrate = null,
             flrcode = null,
             branchcode = null
         };
+        currentRates = new();
+        selectedRateRow = null;
+        selectedSubTestCode = 0;
+        _chargeHeadSearchText = "";
+        showSearchDropdown = false;
+        highlightedIndex = -1;
+        newRateAmount = null;
         isEditMode = false;
         showForm = true;
         isSubmitted = false;
     }
 
-    private void EditRoomType(RoomTypeMasterModel r)
+    private async Task EditRoomType(RoomTypeMasterModel r)
     {
         if (r == null) return;
         current = new RoomTypeMasterModel
@@ -289,6 +509,13 @@
             flrcode = r.flrcode,
             branchcode = r.branchcode
         };
+        currentRates = await RoomTypeService.GetTestGroupRatesByRmtCodeAsync(r.rmtcode);
+        selectedRateRow = null;
+        selectedSubTestCode = 0;
+        _chargeHeadSearchText = "";
+        showSearchDropdown = false;
+        highlightedIndex = -1;
+        newRateAmount = null;
         isEditMode = true;
         showForm = true;
         isSubmitted = false;
@@ -306,7 +533,8 @@
 
         try
         {
-            current.tenant_code = "TEN007";
+            var activeTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : "TEN007";
+            current.tenant_code = activeTenant;
             current.computercode = 1;
             current.usercode = 1;
             current.ibsdate = DateTime.Now;
@@ -325,6 +553,30 @@
             if (success)
             {
                 await LoadRoomTypes();
+
+                // Save breakup rates
+                int rmtcode = current.rmtcode;
+                if (!isEditMode)
+                {
+                    var saved = roomTypes.FirstOrDefault(r => r.name == current.name && (r.tenant_code == activeTenant || r.tenant_code == "TEN007" || r.tenant_code == TenantCode));
+                    rmtcode = saved?.rmtcode ?? 0;
+                }
+
+                if (rmtcode > 0)
+                {
+                    var saveRequest = new SaveRoomTypeRatesRequest
+                    {
+                        rmtcode = rmtcode,
+                        rates = currentRates.Select(r => new TestGroupRateEntry
+                        {
+                            roomchargehead = r.roomchargehead ?? 0,
+                            subtestcode = r.subtestcode,
+                            testrate = r.testrate ?? 0
+                        }).ToList()
+                    };
+                    await RoomTypeService.SaveTestGroupRatesForRoomTypeAsync(saveRequest);
+                }
+
                 ToastService.ShowSuccess(isEditMode ? "Room Type updated successfully!" : "Room Type added successfully!");
                 if (isEditMode)
                 {
@@ -419,6 +671,7 @@
 
                 await LoadBranchesAsync();
                 await LoadFloorsAsync();
+                await LoadTestsAsync();
                 StateHasChanged();
             }
             catch (Exception ex)
@@ -468,6 +721,20 @@
         catch (Exception ex)
         {
             Console.WriteLine($"Error loading floors: {ex.Message}");
+        }
+    }
+
+    private List<test_master> tests = new();
+
+    private async Task LoadTestsAsync()
+    {
+        try
+        {
+            tests = await TestSvc.GetAllTestsAsync() ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading tests: {ex.Message}");
         }
     }
 }

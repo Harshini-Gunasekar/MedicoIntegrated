@@ -42,5 +42,46 @@ namespace Booking.Services
             var response = await _http.GetAsync($"api/RoomTypeMaster/delete?rmtcode={rmtcode}");
             return response.IsSuccessStatusCode;
         }
+
+        public async Task<List<TestGroupRateModel>> GetTestGroupRatesByRmtCodeAsync(int rmtcode)
+        {
+            try
+            {
+                var response = await _http.GetFromJsonAsync<List<TestGroupRateModel>>($"api/TestGroupRate/get-by-rmtcode?rmtcode={rmtcode}");
+                return response ?? new List<TestGroupRateModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RoomTypeMasterService] Error in GetTestGroupRatesByRmtCodeAsync: {ex.Message}");
+                Console.WriteLine(ex.StackTrace);
+                return new List<TestGroupRateModel>();
+            }
+        }
+
+        public async Task<bool> SaveTestGroupRatesForRoomTypeAsync(SaveRoomTypeRatesRequest request)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/TestGroupRate/save-for-roomtype", request);
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public async Task<bool> DeleteTestGroupRateAsync(int id)
+        {
+            try
+            {
+                var response = await _http.GetAsync($"api/TestGroupRate/delete?id={id}");
+                return response.IsSuccessStatusCode;
+            }
+            catch
+            {
+                return false;
+            }
+        }
     }
 }
