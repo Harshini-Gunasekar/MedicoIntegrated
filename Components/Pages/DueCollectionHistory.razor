@@ -205,9 +205,12 @@
                                     @displayPaymode
                                 </span>
                             </td>
-                            <td class="text-center">
-                                <button class="btn-hist-action blue" title="Print Receipt" @onclick="() => PrintRow(row)">
+                            <td class="text-center" style="white-space: nowrap;">
+                                <button class="btn-hist-action blue" title="Print Patient Receipt" @onclick="() => PrintPatientReceipt(row)">
                                     <i class="bi bi-person-badge"></i>
+                                </button>
+                                <button class="btn-hist-action green" title="Print Referral Receipt" @onclick="() => PrintReferralReceipt(row)" style="margin-left: 4px;">
+                                    <i class="bi bi-person-lines-fill"></i>
                                 </button>
                             </td>
                             <td class="text-center">
@@ -538,9 +541,107 @@
         ToastService.ShowSuccess("Print triggered — implement PDF/print export here.");
     }
 
-    private void PrintRow(HmsDueCollectionSummary row)
+    private async Task FetchAndPrintReceipt(string url)
     {
-        ToastService.ShowSuccess($"Printing receipt {row.receipt_no}...");
+        try
+        {
+            Console.WriteLine($"[PrintReceipt] Requesting URL: {url}");
+            
+            using var client = ClientFactory.CreateClient();
+            
+            // Add tenant_code header
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+                Console.WriteLine($"[PrintReceipt] Header - tenant_code: {TenantState.TenantCode}");
+            }
+            
+            // Add Authorization token header
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+                Console.WriteLine($"[PrintReceipt] Header - Authorization: Bearer {(TenantState.AuthToken.Length > 10 ? TenantState.AuthToken.Substring(0, 10) : TenantState.AuthToken)}...");
+            }
+
+            var resp = await client.GetAsync(url);
+            Console.WriteLine($"[PrintReceipt] Response Status: {resp.StatusCode} ({(int)resp.StatusCode})");
+            
+            if (resp.IsSuccessStatusCode)
+            {
+                var bytes = await resp.Content.ReadAsByteArrayAsync();
+                if (bytes == null || bytes.Length == 0)
+                {
+                    Console.WriteLine("[PrintReceipt] Error: Response body is empty");
+                    ToastService.ShowError("Received empty response from print API.");
+                    return;
+                }
+
+                Console.WriteLine($"[PrintReceipt] Response Length: {bytes.Length} bytes");
+
+                string base64;
+                // Check if it is a raw PDF (starts with %PDF- / 0x25, 0x50, 0x44, 0x46, 0x2D)
+                if (bytes.Length >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
+                {
+                    Console.WriteLine("[PrintReceipt] Detected content format: RAW PDF binary");
+                    base64 = Convert.ToBase64String(bytes);
+                }
+                else
+                {
+                    Console.WriteLine("[PrintReceipt] Detected content format: Base64 string");
+                    // It's a Base64 string returned as text/JSON
+                    var raw = System.Text.Encoding.UTF8.GetString(bytes);
+                    Console.WriteLine($"[PrintReceipt] Raw Response Body: {raw}");
+                    base64 = raw.Trim().Trim('"').Trim();
+                }
+
+                Console.WriteLine($"[PrintReceipt] Base64 String length: {base64.Length}");
+                Console.WriteLine($"[PrintReceipt] Base64 prefix (first 100 chars): {(base64.Length > 100 ? base64.Substring(0, 100) : base64)}");
+
+                await JS.InvokeVoidAsync("openBase64Pdf", base64);
+            }
+            else
+            {
+                var err = await resp.Content.ReadAsStringAsync();
+                Console.WriteLine($"[PrintReceipt] Error: Fetch failed. Response content: {err}");
+                ToastService.ShowError($"Failed to fetch receipt: {err}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PrintReceipt] Exception occurred: {ex}");
+            ToastService.ShowError($"Print error: {ex.Message}");
+        }
+    }
+
+    private async Task PrintPatientReceipt(HmsDueCollectionSummary row)
+    {
+        if (string.IsNullOrEmpty(row.receipt_guid))
+        {
+            ToastService.ShowError("Receipt GUID is missing.");
+            return;
+        }
+        string url = $"https://medicoapi.iscansoft.com/api/report/getpatientreceipt?isletterhead=true&receiptguid={row.receipt_guid}";
+        if (!string.IsNullOrEmpty(TenantState.TenantCode))
+        {
+            url += $"&tenant_code={TenantState.TenantCode}";
+        }
+        await FetchAndPrintReceipt(url);
+    }
+
+    private async Task PrintReferralReceipt(HmsDueCollectionSummary row)
+    {
+        if (string.IsNullOrEmpty(row.receipt_guid))
+        {
+            ToastService.ShowError("Receipt GUID is missing.");
+            return;
+        }
+        string url = $"https://medicoapi.iscansoft.com/api/report/getreferralreceipt?isletterhead=true&receiptguid={row.receipt_guid}";
+        if (!string.IsNullOrEmpty(TenantState.TenantCode))
+        {
+            url += $"&tenant_code={TenantState.TenantCode}";
+        }
+        await FetchAndPrintReceipt(url);
     }
 
     private void PromptCancelFromHistory(HmsDueCollectionSummary row)

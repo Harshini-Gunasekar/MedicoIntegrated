@@ -5,6 +5,7 @@
 @inject Booking.Services.ToastService ToastService
 @inject NavigationManager Navigation
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject IHttpClientFactory ClientFactory
 
 <div class="animated-background">
     <div class="floating-blob blob-1"></div>
@@ -136,7 +137,7 @@
                         <thead>
                             <tr>
                                 <th>Booking No</th>
-                                <th>Patient ID</th>
+                                <th>Patient Name</th>
                                 <th>Specialist</th>
                                 <th>Appt Date</th>
                                 <th>Time Slot</th>
@@ -159,7 +160,7 @@
                                 }
                                 <tr>
                                     <td style="font-weight: 800; color: #026aa7;">#@book.booking_no</td>
-                                    <td><span style="font-family: monospace; font-weight: 700;">@book.custid</span></td>
+                                    <td><span style="font-weight: 700; color: #334155;">@GetPatientName(book.custid)</span></td>
                                     <td style="font-weight: 700; color: #334155;">Dr. @GetDoctorName(book.dcode)</td>
                                     <td>@book.appointment_date.ToString("dd MMM yyyy")</td>
                                     <td><i class="bi bi-clock" style="color:#94a3b8; margin-right:4px;"></i>@FormatTime(book.slot_start_time) - @FormatTime(book.slot_end_time)</td>
@@ -271,9 +272,29 @@
                         <input type="date" class="filter-control" @bind="walkinDate" @bind:after="OnWalkinDoctorOrDateChanged" style="height: 42px; border-radius: 8px;" />
                     </div>
 
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label>Patient ID / Customer Code <span style="color:#ef4444;">*</span></label>
-                        <input type="number" class="filter-control" style="height: 42px; border-radius: 8px;" @bind="walkinCustid" />
+                    <div class="form-group" style="margin-bottom: 0; position: relative;">
+                        <label>Search Patient MobileNo <span style="color:#ef4444;">*</span></label>
+                        <div class="autocomplete-search-wrapper">
+                            <input type="text" class="filter-control" placeholder="Search Patient MobileNo..."
+                                   @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="height: 42px; border-radius: 8px; width: 100%;" />
+                            @if (showPatientDropdown && searchedPatients.Count > 0)
+                            {
+                                <div class="autocomplete-dropdown">
+                                    @foreach (var pat in searchedPatients)
+                                    {
+                                        <div class="autocomplete-item" @onclick="() => SelectCustomerPatient(pat)">
+                                            <div>
+                                                <span style="font-weight: 600; color: #0f172a;">@pat.name (CUST-@pat.custid)</span>
+                                                <div style="font-size: 0.8em; color: #64748b;">
+                                                    📞 @pat.mobile
+                                                </div>
+                                            </div>
+                                            <span class="autocomplete-code">@pat.custcode</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
                     </div>
                     
                     <div class="form-group" style="margin-bottom: 0;">
@@ -677,6 +698,7 @@
     private bool bookingInProgress = false;
 
     private List<DoctorMasterModel> doctors = new();
+    private List<SharedComponents.Rcl.Models.CustomerModel> allCustomers = new();
     private List<AppointmentBookingModel> allBookings = new();
     private List<AppointmentBookingModel> filteredBookings = new();
 
@@ -702,6 +724,71 @@
     private decimal walkinCustid = 1003;
     private string walkinNotes = string.Empty;
     private bool loadingWalkinSlots = false;
+
+    private string patientSearchQuery = "";
+    private bool showPatientDropdown = false;
+    private List<SharedComponents.Rcl.Models.CustomerModel> searchedPatients = new();
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        Console.WriteLine($"[ReceptionBooking] OnPatientSearchKeyUp query: '{patientSearchQuery}'");
+        if (string.IsNullOrWhiteSpace(patientSearchQuery))
+        {
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+            walkinCustid = 0;
+            return;
+        }
+
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            Console.WriteLine($"[ReceptionBooking] TenantCode: '{TenantState.TenantCode}', AuthToken length: {TenantState.AuthToken?.Length ?? 0}");
+
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var requestUrl = $"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}";
+            Console.WriteLine($"[ReceptionBooking] Fetching URL: {requestUrl}");
+
+            var response = await client.GetAsync(requestUrl);
+            var rawJson = await response.Content.ReadAsStringAsync();
+            
+
+            if (response.IsSuccessStatusCode)
+            {
+                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson) ?? new();
+                searchedPatients = list.Take(10).ToList();
+                showPatientDropdown = searchedPatients.Count > 0;
+                Console.WriteLine($"[ReceptionBooking] Found {searchedPatients.Count} patients");
+            }
+            else
+            {
+                searchedPatients.Clear();
+                showPatientDropdown = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error searching patients in ReceptionBooking: {ex.Message}");
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+        }
+    }
+
+    private void SelectCustomerPatient(SharedComponents.Rcl.Models.CustomerModel pat)
+    {
+        walkinCustid = pat.custid;
+        patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
+        showPatientDropdown = false;
+    }
 
     // Cancellation state
     private bool showCancelModal = false;
@@ -744,7 +831,43 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadDoctorsAsync();
+        await LoadCustomersAsync();
         await LoadBookingsAsync();
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Customer/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                allCustomers = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error loading customers in ReceptionBooking: {ex.Message}");
+        }
+    }
+
+    private string GetPatientName(decimal custid)
+    {
+        var pat = allCustomers.FirstOrDefault(c => c.custid == custid);
+        if (pat == null) return $"CUST-{custid}";
+        return string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials;
     }
 
     private async Task LoadDoctorsAsync()
@@ -903,11 +1026,15 @@
     {
         walkinDcode = 0;
         walkinDate = DateTime.Today;
-        walkinCustid = 1003;
+        walkinCustid = 0;
         walkinNotes = string.Empty;
         selectedWalkinSlot = null;
         walkinSlots.Clear();
         showWalkinModal = true;
+        
+        patientSearchQuery = "";
+        showPatientDropdown = false;
+        searchedPatients.Clear();
     }
 
     private void CloseWalkinModal()

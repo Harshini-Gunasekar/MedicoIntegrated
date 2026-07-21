@@ -21,9 +21,16 @@ namespace Booking.Services
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
             var requestPath = request.RequestUri?.AbsolutePath ?? "";
+            bool isAnonymousRegister = request.Headers.Contains("X-Anonymous-Register");
+            if (isAnonymousRegister)
+            {
+                request.Headers.Remove("X-Anonymous-Register");
+            }
+
             bool isAnonymous = requestPath.Contains("/login", StringComparison.OrdinalIgnoreCase) || 
                                requestPath.Contains("/forgot-password", StringComparison.OrdinalIgnoreCase) ||
-                               requestPath.Contains("/Tenant/login", StringComparison.OrdinalIgnoreCase);
+                               requestPath.Contains("/Tenant/login", StringComparison.OrdinalIgnoreCase) ||
+                               isAnonymousRegister;
 
             bool isPrerendering = false;
             if (string.IsNullOrEmpty(_session.TenantCode) && !isAnonymous)
@@ -50,7 +57,7 @@ namespace Booking.Services
                 }
             }
 
-            if (!string.IsNullOrEmpty(_session.TenantCode))
+            if (!string.IsNullOrEmpty(_session.TenantCode) && !isAnonymousRegister)
             {
                 if (request.Headers.Contains("tenant_code"))
                     request.Headers.Remove("tenant_code");
@@ -61,7 +68,11 @@ namespace Booking.Services
                 throw new System.InvalidOperationException("Tenant context is not initialized. Please log in again.");
             }
 
-            if (!string.IsNullOrEmpty(_session.AuthToken) && !request.Headers.Contains("Authorization"))
+            if (isAnonymousRegister)
+            {
+                request.Headers.Remove("Authorization");
+            }
+            else if (!string.IsNullOrEmpty(_session.AuthToken) && !request.Headers.Contains("Authorization"))
             {
                 request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
             }

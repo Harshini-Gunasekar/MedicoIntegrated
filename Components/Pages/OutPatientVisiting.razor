@@ -5,6 +5,8 @@
 @inject DoctorService DoctorService
 @inject ToastService ToastService
 @inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 
 <PageTitle>Outpatient Visiting</PageTitle>
 
@@ -146,10 +148,10 @@
                         <thead>
                             <tr>
                                 <th>Token No</th>
-                                <th>Time</th>
+                                <th>Patient Name</th>
                                 <th>OP No</th>
                                 <th>Reg Type</th>
-                                <th>Patient ID</th>
+                                <th>Time</th>
                                 <th>Doctor</th>
                                 <th>Status</th>
                                 <th style="text-align: center;">Actions</th>
@@ -178,15 +180,15 @@
                                             <span class="text-muted" style="margin-left: 14px; font-weight: 700;">-</span>
                                         }
                                     </td>
-                                    <td>
-                                        <div class="time-badge">@booking.slot_start_time.ToString("hh:mm tt") - @booking.slot_end_time.ToString("hh:mm tt")</div>
-                                    </td>
+                                    <td><span style="font-weight: 700; color: #334155;">@GetPatientName(booking.custid)</span></td>
                                     <td><span class="fw-bold text-primary">@(isRegistered && opData != null ? opData.op_no : "-")</span></td>
                                    
                                     <td>
                                         <span class="badge-type @displayType.ToLower()">@displayType</span>
                                     </td>
-                                    <td><span style="font-family: monospace; font-weight: 700;">CUST-@booking.custid</span></td>
+                                    <td>
+                                        <div class="time-badge">@booking.slot_start_time.ToString("hh:mm tt") - @booking.slot_end_time.ToString("hh:mm tt")</div>
+                                    </td>
                                     <td style="font-weight: 700; color: #334155;">Dr. @GetDoctorName(booking.dcode)</td>
                                     <td>
                                         @if (isRegistered && opData != null)
@@ -465,9 +467,29 @@
         <div class="modal-body modal-grid-2">
             <!-- Left: Form inputs -->
             <div class="modal-form-left">
-                <div class="form-group">
-                    <label class="walkin-label-bold">PATIENT ID (CUSTOMER CODE)</label>
-                    <input type="number" class="walkin-input" @bind="directWalkinRequest.custid" />
+                <div class="form-group" style="position: relative;">
+                    <label class="walkin-label-bold">Search Patient MobileNo</label>
+                    <div class="autocomplete-search-wrapper">
+                        <input type="text" class="walkin-input" placeholder="Search Patient MobileNo..."
+                               @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="width: 100%;" />
+                        @if (showPatientDropdown && searchedPatients.Count > 0)
+                        {
+                            <div class="autocomplete-dropdown">
+                                @foreach (var pat in searchedPatients)
+                                {
+                                    <div class="autocomplete-item" @onclick="() => SelectCustomerPatient(pat)">
+                                        <div>
+                                            <span style="font-weight: 600; color: #0f172a;">@pat.name (CUST-@pat.custid)</span>
+                                            <div style="font-size: 0.8em; color: #64748b;">
+                                                📞 @pat.mobile
+                                            </div>
+                                        </div>
+                                        <span class="autocomplete-code">@pat.custcode</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -594,6 +616,7 @@
     private List<AppointmentBookingModel> allBookings = new();
     private Dictionary<Guid, OPRegistrationModel.OpRegistrationModel> opRegistrations = new();
     private List<DoctorMasterModel> doctors = new();
+    private List<SharedComponents.Rcl.Models.CustomerModel> allCustomers = new();
 
     // Filter states
     private DateTime? filterDate = DateTime.Today;
@@ -614,6 +637,71 @@
     private int directWalkinSelectedDcode = 0;
     private int directWalkinDutyDcode = 0;
     private DateTime directWalkinDate = DateTime.Today;
+
+    private string patientSearchQuery = "";
+    private bool showPatientDropdown = false;
+    private List<SharedComponents.Rcl.Models.CustomerModel> searchedPatients = new();
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        Console.WriteLine($"[OutPatientVisiting] OnPatientSearchKeyUp query: '{patientSearchQuery}'");
+        if (string.IsNullOrWhiteSpace(patientSearchQuery))
+        {
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+            directWalkinRequest.custid = 0;
+            return;
+        }
+
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            Console.WriteLine($"[OutPatientVisiting] TenantCode: '{TenantState.TenantCode}', AuthToken length: {TenantState.AuthToken?.Length ?? 0}");
+
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var requestUrl = $"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}";
+            Console.WriteLine($"[OutPatientVisiting] Fetching URL: {requestUrl}");
+
+            var response = await client.GetAsync(requestUrl);
+            var rawJson = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"[OutPatientVisiting] Response Code: {response.StatusCode}, Content: {rawJson}");
+
+            if (response.IsSuccessStatusCode)
+            {
+                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson) ?? new();
+                searchedPatients = list.Take(10).ToList();
+                showPatientDropdown = searchedPatients.Count > 0;
+                Console.WriteLine($"[OutPatientVisiting] Found {searchedPatients.Count} patients");
+            }
+            else
+            {
+                searchedPatients.Clear();
+                showPatientDropdown = false;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error searching patients in OutPatientVisiting: {ex.Message}");
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+        }
+    }
+
+    private void SelectCustomerPatient(SharedComponents.Rcl.Models.CustomerModel pat)
+    {
+        directWalkinRequest.custid = pat.custid;
+        patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
+        showPatientDropdown = false;
+    }
 
     private void ClearFilters()
     {
@@ -638,7 +726,43 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadDoctorsAsync();
+        await LoadCustomersAsync();
         await LoadDataAsync();
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Customer/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                allCustomers = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error loading customers in OutPatientVisiting: {ex.Message}");
+        }
+    }
+
+    private string GetPatientName(decimal custid)
+    {
+        var pat = allCustomers.FirstOrDefault(c => c.custid == custid);
+        if (pat == null) return $"CUST-{custid}";
+        return string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials;
     }
 
     private async Task LoadDoctorsAsync()
@@ -1035,7 +1159,7 @@
     {
         directWalkinRequest = new OPRegistrationModel.DirectWalkinRequest
         {
-            custid = 1001,
+            custid = 0,
             department_code = 5,
             visit_type = "NEWVISIT",
             notes = "General consultation"
@@ -1046,6 +1170,10 @@
         selectedDirectWalkinSlot = null;
         directWalkinSlots.Clear();
         showDirectWalkinModal = true;
+        
+        patientSearchQuery = "";
+        showPatientDropdown = false;
+        searchedPatients.Clear();
     }
 
     private void SelectKnowsSpecialist()

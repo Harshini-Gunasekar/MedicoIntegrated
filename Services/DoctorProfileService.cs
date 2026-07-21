@@ -21,9 +21,8 @@ namespace Booking.Services
         {
             try
             {
-                // Assuming it expects dcode to find the profile
-                var response = await _http.GetFromJsonAsync<DoctorProfileModel>($"api/DoctorProfile/get?dcode={dcode}");
-                return response;
+                var response = await _http.GetFromJsonAsync<System.Collections.Generic.List<DoctorProfileModel>>($"api/DoctorProfile/get?dcode={dcode}");
+                return response != null && response.Count > 0 ? response[0] : null;
             }
             catch (Exception ex)
             {

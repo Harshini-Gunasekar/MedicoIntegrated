@@ -133,12 +133,35 @@ namespace LabCare.Services
             byte[]? userImageFile = null, 
             string? userImageFileName = null, 
             byte[]? signatureImageFile = null, 
-            string? signatureImageFileName = null)
+            string? signatureImageFileName = null,
+            bool isAnonymousRegister = false)
         {
-            ConfigureHeaders();
-            LogPayloadToTerminal("Register", model, branchModel, userImageFileName, signatureImageFileName);
-            using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
-            return await _http.PostAsync("api/user/register", content);
+            if (isAnonymousRegister)
+            {
+                LogPayloadToTerminal("Register", model, branchModel, userImageFileName, signatureImageFileName);
+                var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
+                
+                var request = new HttpRequestMessage(HttpMethod.Post, "api/user/register")
+                {
+                    Content = content
+                };
+
+                if (!string.IsNullOrEmpty(model.tenant_code))
+                {
+                    request.Headers.Add("tenant_code", model.tenant_code);
+                }
+
+                request.Headers.Add("X-Anonymous-Register", "true");
+
+                return await _http.SendAsync(request);
+            }
+            else
+            {
+                ConfigureHeaders();
+                LogPayloadToTerminal("Register", model, branchModel, userImageFileName, signatureImageFileName);
+                using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
+                return await _http.PostAsync("api/user/register", content);
+            }
         }
 
         public async Task<HttpResponseMessage> UpdateAsync(
