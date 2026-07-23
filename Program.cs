@@ -95,6 +95,8 @@ builder.Services.AddScoped<Booking.Services.NurseMasterService>();
 builder.Services.AddScoped<Booking.Services.BlockMasterService>();
 builder.Services.AddScoped<Booking.Services.IpRegistrationService>();
 builder.Services.AddScoped<Booking.Services.FloorMasterService>();
+builder.Services.AddScoped<Booking.Services.OGScreenService>();
+builder.Services.AddScoped<Booking.Services.AppointmentPreBookingService>();
 builder.Services.AddScoped<LabCare.Services.TestService>(sp =>
 {
     var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi");
