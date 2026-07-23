@@ -1,0 +1,673 @@
+@page "/nishant/appointment-pre-booking"
+@using SharedComponents.Rcl.Models
+@using Newtonsoft.Json
+@using Medico_Backend.Model
+@inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
+@inject Booking.Services.ToastService Toast
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.AppointmentPreBookingService PreBookingService
+@inject Booking.Services.DoctorService DoctorService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<div class="prebooking-page">
+    <!-- Header Card -->
+    <div class="lab-header-card flex-between">
+        <div class="display-flex align-center gap-12">
+            <div class="icon-box-container flex-center bg-indigo-50 rounded-lg shadow-sm">
+                <i class="bi bi-calendar-event icon-lg text-indigo-600"></i>
+            </div>
+            <div>
+                <h1 class="lab-title-text">Appointment Pre-Booking</h1>
+                <div class="display-flex align-center gap-6" style="margin-top: 2px;">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Manage advance clinical bookings and schedule queues.</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-action-group" style="display: flex; gap: 12px; align-items: center;">
+            <div class="search-input-wrapper" style="margin-bottom: 0;">
+                <i class="bi bi-search search-icon-left"></i>
+                <input type="text" class="search-input" 
+                       placeholder="Search by Cust Code or Caretaker..." 
+                       @bind="searchQuery" 
+                       @bind:event="oninput" />
+            </div>
+            <button type="button" class="btn-new-patient-primary" @onclick="OpenAddModal">
+                <i class="bi bi-plus-lg"></i>
+                <span>Add Pre-Booking</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Main List Card -->
+    <div class="reception-card">
+
+        <div class="recent-table-wrapper">
+            <table class="recent-checkins-table">
+                <thead>
+                    <tr>
+                        <th style="width: 80px;">S.No</th>
+                        <th>Patient</th>
+                        <th>Caretaker (Care Of Name)</th>
+                        <th>Doctor</th>
+                        <th>Service Type</th>
+                        <th>Appointment Date</th>
+                        <th>Remarks</th>
+                        <th>Status</th>
+                        <th style="width: 150px; text-align: center !important;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (isLoading)
+                    {
+                        <tr>
+                            <td colspan="9" class="text-center py-5">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading bookings...</span>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                    else if (filteredBookings.Any())
+                    {
+                        int index = (currentPage - 1) * pageSize;
+                        @foreach (var b in filteredBookings.Skip(index).Take(pageSize))
+                        {
+                            index++;
+                            <tr>
+                                <td class="col-sno">@(index.ToString("D2"))</td>
+                                <td>
+                                    <div style="font-weight: 700; color: #3730a3;">@GetPatientName(b.custcode)</div>
+                                    <div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">@(b.custcode ?? "-")</div>
+                                </td>
+                                <td>@(b.husband_name ?? "-")</td>
+                                <td>@(GetDoctorName(b.dcode) ?? "-")</td>
+                                <td>
+                                    <div>@(b.service_type ?? "-")</div>
+                                    @if (!string.IsNullOrEmpty(b.test_name))
+                                    {
+                                        <div style="font-size: 0.75rem; color: #64748b; font-weight: 600;">@b.test_name</div>
+                                    }
+                                </td>
+                                <td class="col-time">@(b.appointment_date?.ToString("dd MMM yyyy hh:mm tt") ?? "-")</td>
+                                <td>@(b.remarks ?? "-")</td>
+                                <td>
+                                    <div class="status-dropdown-wrapper">
+                                        <select class="status-dropdown-select @(b.status == "visited" ? "status-visited" : "status-booked")" 
+                                                value="@b.status"
+                                                disabled="@(b.status == "visited")"
+                                                @onchange="(e) => OnStatusChanged(b, e.Value?.ToString())">
+                                             <option value="booked">Booked</option>
+                                             <option value="visited">Visited</option>
+                                        </select>
+                                        @if (b.status != "visited")
+                                        {
+                                            <i class="bi bi-chevron-down select-arrow-icon"></i>
+                                        }
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="col-actions justify-content-center">
+                                        <button class="btn-action-edit" @onclick="() => OpenEditModal(b)" title="Edit">
+                                            <i class="bi bi-pencil-fill"></i>
+                                        </button>
+                                        <button class="btn-action-delete" @onclick="() => DeleteBooking(b.preferenceid)" title="Delete">
+                                            <i class="bi bi-trash-fill"></i>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="9" class="text-center py-5 text-muted">
+                                No pre-bookings found.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (filteredBookings.Count > pageSize)
+        {
+            <div class="table-footer">
+                <span class="footer-info-text">
+                    Showing @(((currentPage - 1) * pageSize) + 1) to @(Math.Min(currentPage * pageSize, filteredBookings.Count)) of @filteredBookings.Count entries
+                </span>
+                <div class="pagination-group">
+                    <button class="pagination-btn" @onclick="() => currentPage--" disabled="@(currentPage == 1)">
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    <button class="pagination-btn active">@currentPage</button>
+                    <button class="pagination-btn" @onclick="() => currentPage++" disabled="@(currentPage >= Math.Ceiling((double)filteredBookings.Count / pageSize))">
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+<!-- Modal Dialog (Add / Edit) -->
+@if (showBookingModal)
+{
+    <div class="modal-overlay">
+        <div class="modal-container">
+            <div class="modal-header">
+                <h3 class="modal-title">@(isEditMode ? "Edit Pre-Booking" : "New Pre-Booking")</h3>
+                <button type="button" class="btn-close-modal" @onclick="CloseModal" title="Close">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="form-grid">
+                    <!-- Patient Select / Autocomplete Search -->
+                    <div class="form-group">
+                        <label class="field-uppercase-label">PATIENT NAME</label>
+                        <div class="autocomplete-wrapper">
+                            <input @ref="refPatientInput" type="text" class="form-control-input" 
+                                   placeholder="Search patient by MRN code, Name..." 
+                                   @bind="patientSearchText" 
+                                   @bind:event="oninput"
+                                   @onfocus="() => showPatientDropdown = true"
+                                   @onkeydown="HandlePatientKeyDown" />
+                            @if (showPatientDropdown && matchingCustomers.Any())
+                            {
+                                <div class="autocomplete-dropdown">
+                                    @foreach (var c in matchingCustomers)
+                                    {
+                                        <div class="autocomplete-item" @onclick="() => SelectCustomer(c)">
+                                            <strong>@c.name</strong> (@(c.custcode ?? c.tenantcustcode ?? c.custid.ToString())) - @c.mobile
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label class="field-uppercase-label">MRN No</label>
+                        <input type="text" class="form-control-input" value="@selectedCustCode" readonly style="background-color: #f1f5f9; color: #475569; font-weight: 600;" tabindex="-1" />
+                    </div>
+
+                    <!-- Husband Name (Caretaker) -->
+                    <div class="form-group">
+                        <label class="field-uppercase-label">Caretaker (Care Of Name)</label>
+                        <input @ref="refCaretakerInput" type="text" class="form-control-input" @bind="formHusbandName" placeholder="Enter father / husband / guardian name..." @onkeydown="(e) => HandleEnterKey(e, refDoctorSelect)" />
+                    </div>
+
+                    <!-- Doctor Selection -->
+                    <div class="form-group">
+                        <label class="field-uppercase-label">DOCTOR</label>
+                        <select @ref="refDoctorSelect" class="form-control-select" @bind="formDoctorCode" @onkeydown="(e) => HandleEnterKey(e, refServiceTypeSelect)">
+                            <option value="">Select Doctor...</option>
+                            @foreach (var doc in doctors)
+                            {
+                                <option value="@doc.dcode">@doc.name</option>
+                            }
+                        </select>
+                    </div>
+
+                    <!-- Service Type -->
+                    <div class="form-group">
+                        <label class="field-uppercase-label">SERVICE TYPE</label>
+                        <select @ref="refServiceTypeSelect" class="form-control-select" @bind="formServiceType" @onkeydown="HandleServiceTypeKeyDown">
+                            <option value="consultation">Consultation</option>
+                            <option value="lab">Lab</option>
+                            <option value="scan">Scan</option>
+                        </select>
+                    </div>
+
+                    @if (formServiceType == "lab")
+                    {
+                        <!-- Test Name -->
+                        <div class="form-group">
+                            <label class="field-uppercase-label">TEST NAME</label>
+                            <input @ref="refTestNameInput" type="text" class="form-control-input" @bind="formTestName" placeholder="e.g. CBC Blood Test..." @onkeydown="(e) => HandleEnterKey(e, refAppointmentDateInput)" />
+                        </div>
+                    }
+                    else if (formServiceType == "scan")
+                    {
+                        <!-- Test Name -->
+                        <div class="form-group">
+                            <label class="field-uppercase-label">TEST NAME</label>
+                            <select @ref="refTestNameSelect" class="form-control-select" @bind="formTestName" @onkeydown="(e) => HandleEnterKey(e, refAppointmentDateInput)">
+                                <option value="">Select Scan Test</option>
+                                <option value="ANC Scan (Antenatal Check-up Ultrasound)">ANC Scan (Antenatal Check-up Ultrasound)</option>
+                                <option value="NT + FT Scan (Nuchal Translucency + First Trimester)">NT + FT Scan (Nuchal Translucency + First Trimester)</option>
+                                <option value="Anomaly Scan (Level II / TIFFA)">Anomaly Scan (Level II / TIFFA)</option>
+                                <option value="Growth Scan (Fetal Growth Ultrasound)">Growth Scan (Fetal Growth Ultrasound)</option>
+                                <option value="USG Abd Scan (Abdominal Ultrasound)">USG Abd Scan (Abdominal Ultrasound)</option>
+                            </select>
+                        </div>
+                    }
+                    else
+                    {
+                        <div></div> <!-- Grid Spacer -->
+                    }
+
+                    <!-- Appointment Date -->
+                    <div class="form-group">
+                        <label class="field-uppercase-label">APPOINTMENT DATE & TIME</label>
+                        <input @ref="refAppointmentDateInput" type="datetime-local" class="form-control-input" @bind="formAppointmentDate" @onkeydown="(e) => HandleEnterKey(e, refRemarksInput)" />
+                    </div>
+
+                    <!-- Remarks -->
+                    <div class="form-group form-group-span-2">
+                        <label class="field-uppercase-label">REMARKS</label>
+                        <textarea @ref="refRemarksInput" class="textarea-control" @bind="formRemarks" placeholder="Add remarks..." style="height: 38px; min-height: 38px; padding: 8px 12px; resize: none;" @onkeydown="(e) => HandleEnterKey(e, refSaveBtn)"></textarea>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" @onclick="CloseModal">Cancel</button>
+                <button @ref="refSaveBtn" type="button" class="btn-primary-indigo" @onclick="SavePreBooking">Save Changes</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<AppointmentPreBookingModel> bookings = new();
+    private List<NewPatientRegistration.DoctorModel> doctors = new();
+    private List<CustomerModel> allCustomers = new();
+    private bool isLoading = true;
+    private string searchQuery = "";
+    private string patientSearchText = "";
+    private bool showPatientDropdown = false;
+    private bool showBookingModal = false;
+    private bool isEditMode = false;
+    private int currentPage = 1;
+    private const int pageSize = 12;
+
+    // Form fields mapping
+    private string selectedCustCode = "";
+    private string selectedPatientName = "";
+    private string formHusbandName = "";
+    private int? formDoctorCode;
+    private string formServiceType = "consultation";
+    private string formTestName = "";
+    private DateTime? formAppointmentDate = null;
+    private string formRemarks = "";
+    private long editingPreferenceId = 0;
+
+    private string TenantCode = "";
+    private string AuthToken = "";
+    private int ResolvedUserCode = 1;
+
+    private List<AppointmentPreBookingModel> filteredBookings
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(searchQuery))
+            {
+                return bookings;
+            }
+            var query = searchQuery.Trim().ToLowerInvariant();
+            return bookings.Where(x => 
+                (x.custcode != null && x.custcode.ToLowerInvariant().Contains(query)) ||
+                (GetPatientName(x.custcode).ToLowerInvariant().Contains(query)) ||
+                (x.husband_name != null && x.husband_name.ToLowerInvariant().Contains(query))
+            ).ToList();
+        }
+    }
+
+    private List<CustomerModel> matchingCustomers
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(patientSearchText)) return new();
+            var q = patientSearchText.Trim().ToLowerInvariant();
+            return allCustomers.Where(x => 
+                (x.name != null && x.name.ToLowerInvariant().Contains(q)) ||
+                (x.custcode != null && x.custcode.ToLowerInvariant().Contains(q))
+            ).Take(8).ToList();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : TenantState.TenantCode ?? "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : TenantState.AuthToken ?? "";
+
+                var userCodeResult = await _sessionStorage.GetAsync<string>("usercode");
+                if (userCodeResult.Success && int.TryParse(userCodeResult.Value, out int code))
+                {
+                    ResolvedUserCode = code;
+                }
+
+                // Load basic info
+                var rawDocs = await DoctorService.GetDoctorsAsync();
+                doctors = rawDocs.Select(d => new NewPatientRegistration.DoctorModel
+                {
+                    dcode = d.dcode,
+                    name = string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name
+                }).ToList();
+
+                await LoadCustomersAsync();
+                await LoadBookingsAsync();
+                isLoading = false;
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[AppointPreBooking] Init error: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            HttpResponseMessage? response = null;
+            try
+            {
+                response = await client.GetAsync("customer/getcus");
+                if (!response.IsSuccessStatusCode)
+                {
+                    response = await client.GetAsync("api/Customer/getcus");
+                }
+            }
+            catch { }
+
+            if (response != null && response.IsSuccessStatusCode)
+            {
+                var jsonStr = await response.Content.ReadAsStringAsync();
+                var list = JsonConvert.DeserializeObject<List<CustomerModel>>(jsonStr);
+                if (list != null)
+                {
+                    allCustomers = list;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AppointPreBooking] Load Customers error: {ex.Message}");
+        }
+    }
+
+    private async Task LoadBookingsAsync()
+    {
+        try
+        {
+            bookings = await PreBookingService.GetPreBookingsAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[AppointPreBooking] Load Bookings error: {ex.Message}");
+        }
+    }
+
+    private string? GetDoctorName(int? code)
+    {
+        if (!code.HasValue) return null;
+        return doctors.FirstOrDefault(x => x.dcode == code.Value)?.name;
+    }
+
+    private string GetPatientName(string? custcode)
+    {
+        if (string.IsNullOrWhiteSpace(custcode)) return "Unknown Patient";
+        var cust = allCustomers.FirstOrDefault(x => x.custcode == custcode || x.tenantcustcode == custcode || x.custid.ToString() == custcode);
+        return cust?.name ?? custcode;
+    }
+
+    private ElementReference refPatientInput;
+    private ElementReference refCaretakerInput;
+    private ElementReference refDoctorSelect;
+    private ElementReference refServiceTypeSelect;
+    private ElementReference refTestNameInput;
+    private ElementReference refTestNameSelect;
+    private ElementReference refAppointmentDateInput;
+    private ElementReference refRemarksInput;
+    private ElementReference refSaveBtn;
+
+    private async Task SelectCustomer(CustomerModel c)
+    {
+        selectedCustCode = c.custcode ?? c.tenantcustcode ?? c.custid.ToString();
+        selectedPatientName = c.name ?? "";
+        patientSearchText = c.name ?? "";
+        showPatientDropdown = false;
+        try { await refCaretakerInput.FocusAsync(); } catch {}
+    }
+
+    private async Task HandlePatientKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            if (showPatientDropdown && matchingCustomers.Any())
+            {
+                await SelectCustomer(matchingCustomers.First());
+            }
+            else
+            {
+                try { await refCaretakerInput.FocusAsync(); } catch {}
+            }
+        }
+    }
+
+    private async Task HandleServiceTypeKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            if (formServiceType == "lab")
+            {
+                try { await refTestNameInput.FocusAsync(); } catch {}
+            }
+            else if (formServiceType == "scan")
+            {
+                try { await refTestNameSelect.FocusAsync(); } catch {}
+            }
+            else
+            {
+                try { await refAppointmentDateInput.FocusAsync(); } catch {}
+            }
+        }
+    }
+
+    private async Task HandleEnterKey(KeyboardEventArgs e, ElementReference targetRef)
+    {
+        if (e.Key == "Enter")
+        {
+            try { await targetRef.FocusAsync(); } catch {}
+        }
+    }
+
+    private async Task OpenAddModal()
+    {
+        isEditMode = false;
+        selectedCustCode = "";
+        selectedPatientName = "";
+        patientSearchText = "";
+        formHusbandName = "";
+        formDoctorCode = null;
+        formServiceType = "consultation";
+        formTestName = "";
+        formAppointmentDate = null;
+        formRemarks = "";
+        showBookingModal = true;
+        StateHasChanged();
+        await Task.Delay(100);
+        try { await refPatientInput.FocusAsync(); } catch {}
+    }
+
+    private async Task OpenEditModal(AppointmentPreBookingModel b)
+    {
+        isEditMode = true;
+        editingPreferenceId = b.preferenceid;
+        selectedCustCode = b.custcode ?? "";
+        
+        var cust = allCustomers.FirstOrDefault(x => x.custcode == b.custcode);
+        selectedPatientName = cust?.name ?? b.custcode ?? "";
+        patientSearchText = selectedPatientName;
+
+        formHusbandName = b.husband_name ?? "";
+        formDoctorCode = b.dcode;
+        formServiceType = b.service_type?.ToLower() ?? "consultation";
+        formTestName = b.test_name ?? "";
+        formAppointmentDate = b.appointment_date;
+        formRemarks = b.remarks ?? "";
+        showBookingModal = true;
+        StateHasChanged();
+        await Task.Delay(100);
+        try { await refPatientInput.FocusAsync(); } catch {}
+    }
+
+    private void CloseModal()
+    {
+        showBookingModal = false;
+    }
+
+    private async Task SavePreBooking()
+    {
+        if (string.IsNullOrEmpty(selectedCustCode))
+        {
+            Toast.ShowError("Please select a patient.");
+            return;
+        }
+
+        bool success = false;
+
+        if (isEditMode)
+        {
+            var req = new UpdateAppointmentPreBookingRequest
+            {
+                preferenceid = editingPreferenceId,
+                custcode = selectedCustCode,
+                dcode = formDoctorCode,
+                husband_name = formHusbandName,
+                service_type = formServiceType,
+                test_name = formTestName,
+                appointment_date = formAppointmentDate,
+                remarks = formRemarks,
+                usercode = ResolvedUserCode,
+                computercode = 1
+            };
+            success = await PreBookingService.UpdatePreBookingAsync(req);
+        }
+        else
+        {
+            var req = new AddAppointmentPreBookingRequest
+            {
+                custcode = selectedCustCode,
+                dcode = formDoctorCode,
+                husband_name = formHusbandName,
+                service_type = formServiceType,
+                test_name = formTestName,
+                appointment_date = formAppointmentDate,
+                remarks = formRemarks,
+                usercode = ResolvedUserCode,
+                computercode = 1
+            };
+            success = await PreBookingService.AddPreBookingAsync(req);
+        }
+
+        if (success)
+        {
+            Toast.ShowSuccess(isEditMode ? "Booking updated successfully." : "Booking added successfully.");
+            showBookingModal = false;
+            isLoading = true;
+            await LoadBookingsAsync();
+            isLoading = false;
+        }
+        else
+        {
+            Toast.ShowError("Failed to save pre-booking.");
+        }
+    }
+
+    private async Task DeleteBooking(long preferenceid)
+    {
+        if (await PreBookingService.DeletePreBookingAsync(preferenceid))
+        {
+            Toast.ShowSuccess("Booking deleted successfully.");
+            isLoading = true;
+            await LoadBookingsAsync();
+            isLoading = false;
+        }
+        else
+        {
+            Toast.ShowError("Failed to delete booking.");
+        }
+    }
+
+    private async Task OnStatusChanged(AppointmentPreBookingModel b, string? newStatus)
+    {
+        if (newStatus == "visited")
+        {
+            await TriggerMarkVisited(b);
+        }
+    }
+
+    private async Task TriggerMarkVisited(AppointmentPreBookingModel b)
+    {
+        string? in1 = null;
+        string? in2 = null;
+        string? in3 = null;
+
+        var serviceTypeLower = b.service_type?.ToLower();
+        if (serviceTypeLower == "lab")
+        {
+            in2 = "lab";
+        }
+        else if (serviceTypeLower == "scan")
+        {
+            in3 = "scan";
+        }
+        else
+        {
+            in1 = "doctor";
+        }
+
+        var req = new MarkVisitedRequest
+        {
+            preferenceid = b.preferenceid,
+            in1 = in1,
+            in2 = in2,
+            in3 = in3,
+            test_name = b.test_name,
+            arrival_time = TimeOnly.FromDateTime(DateTime.Now),
+            usercode = ResolvedUserCode,
+            computercode = 1
+        };
+
+        isLoading = true;
+        bool success = await PreBookingService.MarkVisitedAsync(req);
+        if (success)
+        {
+            Toast.ShowSuccess("Patient marked as visited successfully.");
+            await LoadBookingsAsync();
+        }
+        else
+        {
+            Toast.ShowError("Failed to mark patient as visited.");
+        }
+        isLoading = false;
+    }
+}

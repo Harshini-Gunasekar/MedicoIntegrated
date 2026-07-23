@@ -1,0 +1,569 @@
+@page "/nishant/og-screen"
+@using SharedComponents.Rcl.Models
+@using Newtonsoft.Json
+@using Medico_Backend.Model
+@using Booking.Models
+@inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
+@inject Booking.Services.ToastService Toast
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.OGScreenService OGService
+@inject Booking.Services.DoctorService DoctorService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<div class="og-page">
+    <!-- Header Card -->
+    <div class="lab-header-card flex-between">
+        <div class="display-flex align-center gap-12">
+            <div class="icon-box-container flex-center bg-indigo-50 rounded-lg shadow-sm">
+                <i class="bi bi-hospital icon-lg text-indigo-600"></i>
+            </div>
+            <div>
+                <h1 class="lab-title-text">Patient Tracking Master</h1>
+                <div class="display-flex align-center gap-6" style="margin-top: 2px;">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Monitoring real-time clinical progress and lab workflows.</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-action-group">
+            <div class="search-input-wrapper">
+                <i class="bi bi-search search-icon-left"></i>
+                <input type="text" class="search-input" 
+                       placeholder="Search by Name or Token..." 
+                       @bind="searchQuery" 
+                       @bind:event="oninput" />
+            </div>
+
+            <div class="doctor-filter-wrapper">
+                <i class="bi bi-funnel filter-icon-left"></i>
+                <select class="doctor-filter-select" @bind="selectedDoctorCode" @bind:after="OnDoctorChanged">
+                    <option value="">All Doctors</option>
+                    @foreach (var doc in doctors)
+                    {
+                        <option value="@doc.dcode">@(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                    }
+                </select>
+                <i class="bi bi-chevron-down select-arrow-icon-right"></i>
+            </div>
+            
+            <button type="button" class="btn-new-patient-primary" @onclick="RefreshQueue">
+                <i class="bi bi-arrow-clockwise"></i>
+                <span>Refresh</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Stats Dashboard Grid -->
+    <div class="stats-grid">
+        <!-- Card 1: Total Patients -->
+        <div class="stat-card">
+            <div class="stat-info">
+                <span class="stat-label">Total Patients</span>
+                <span class="stat-value">@FormatNumber(totalCount)</span>
+            </div>
+            <div class="stat-icon-wrapper bg-blue-light">
+                <i class="bi bi-people-fill"></i>
+            </div>
+        </div>
+
+        <!-- Card 2: Ongoing Tests -->
+        <div class="stat-card">
+            <div class="stat-info">
+                <span class="stat-label">Ongoing / Active</span>
+                <span class="stat-value">@FormatNumber(activeCount)</span>
+            </div>
+            <div class="stat-icon-wrapper bg-purple-light">
+                <i class="bi bi-hospital"></i>
+            </div>
+        </div>
+
+        <!-- Card 3: Waiting Patients -->
+        <div class="stat-card">
+            <div class="stat-info">
+                <span class="stat-label">Waiting</span>
+                <span class="stat-value">@FormatNumber(waitingCount)</span>
+            </div>
+            <div class="stat-icon-wrapper bg-red-light">
+                <i class="bi bi-clock-history"></i>
+            </div>
+        </div>
+
+        <!-- Card 4: Completed Today -->
+        <div class="stat-card">
+            <div class="stat-info">
+                <span class="stat-label">@(selectedDate.Date == DateTime.Today ? "Completed Today" : "Completed")</span>
+                <span class="stat-value">@FormatNumber(completedCount)</span>
+            </div>
+            <div class="stat-icon-wrapper bg-green-light">
+                <i class="bi bi-check2-all"></i>
+            </div>
+        </div>
+
+        <!-- Card 5: Select Date Filter -->
+        <div class="stat-card date-picker-card">
+            <div class="stat-info">
+                <span class="stat-label">Select Date</span>
+                <div class="date-picker-input-wrapper">
+                    <input type="date" class="date-picker-input" 
+                           value="@selectedDate.ToString("yyyy-MM-dd")" 
+                           @onchange="OnDateChanged" />
+                </div>
+            </div>
+            <div class="stat-icon-wrapper bg-indigo-light">
+                <i class="bi bi-calendar3"></i>
+            </div>
+        </div>
+    </div>
+
+    <!-- Double Column Queues Grid -->
+    <div class="queues-container">
+        
+        <!-- LEFT: Consultation Queue -->
+        <div class="reception-card">
+            <div class="card-header-flex">
+                <h2 class="card-section-title">
+                    <span class="bi bi-clock-history icon-indigo-badge"></span> Consultation Queue
+                </h2>
+            </div>
+
+            <div class="recent-table-wrapper">
+                <table class="recent-checkins-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 50px;">S.No</th>
+                            <th style="width: 80px;">Token</th>
+                            <th>MRN No</th>
+                            <th>InTime</th>
+                            <th>OutTime</th>
+                            <th style="width: 140px;">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (isLoading)
+                        {
+                            <tr>
+                                <td colspan="6" class="text-center py-4">
+                                    <div class="spinner-border text-primary" role="status"></div>
+                                </td>
+                            </tr>
+                        }
+                        else if (filteredConsultItems.Any())
+                        {
+                            int index = (consultPage - 1) * pageSize;
+                            @foreach (var item in filteredConsultItems.Skip(index).Take(pageSize))
+                            {
+                                index++;
+                                var currentItem = item;
+                                <tr>
+                                    <td class="col-sno">@(index.ToString("D2"))</td>
+                                    <td class="col-token">@((string.IsNullOrWhiteSpace(currentItem.token_no) ? currentItem.og_token_no : currentItem.token_no) ?? "-")</td>
+                                    <td class="col-name">@(currentItem.custcode ?? "-")</td>
+                                    <td class="col-time">@(currentItem.arrival_time?.ToString("hh:mm tt") ?? "-")</td>
+                                    <td class="col-time">
+                                        <input type="time" class="notes-input-cell" 
+                                               value="@(currentItem.out_time?.ToString("HH:mm"))" 
+                                               @onchange="(e) => SaveOutTime(currentItem, e.Value?.ToString())" />
+                                    </td>
+                                    <td>
+                                        <div class="status-dropdown-wrapper">
+                                            <select class="status-dropdown-select @GetStatusClass(currentItem.status)" 
+                                                    value="@currentItem.status"
+                                                    @onchange="(e) => OnStatusChanged(currentItem, e.Value?.ToString())">
+                                                 <option value="waiting">Waiting</option>
+                                                 <option value="in_consultation">Ongoing</option>
+                                                 <option value="completed">Completed</option>
+                                                 <option value="report_received">Report Received</option>
+                                                 @if (!string.IsNullOrEmpty(currentItem.status) && 
+                                                      currentItem.status != "waiting" && 
+                                                      currentItem.status != "in_consultation" && 
+                                                      currentItem.status != "completed" && 
+                                                      currentItem.status != "report_received")
+                                                 {
+                                                     <option value="@currentItem.status">@currentItem.status</option>
+                                                 }
+                                            </select>
+                                            <i class="bi bi-chevron-down select-arrow-icon"></i>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                        else
+                        {
+                            <tr>
+                                <td colspan="6" class="text-center py-4 text-muted">No entries.</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Consultation Pagination -->
+            @if (filteredConsultItems.Count > pageSize)
+            {
+                var totalPages = (int)Math.Ceiling((double)filteredConsultItems.Count / pageSize);
+                <div class="table-footer">
+                    <div class="footer-info-text">
+                        Showing @(Math.Min(filteredConsultItems.Count, (consultPage - 1) * pageSize + 1)) to @(Math.Min(filteredConsultItems.Count, consultPage * pageSize)) of @(filteredConsultItems.Count)
+                    </div>
+                    <div class="pagination-group">
+                        <button type="button" class="pagination-btn" disabled="@(consultPage == 1)" @onclick="() => consultPage--">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        <button type="button" class="pagination-btn active">@consultPage</button>
+                        <button type="button" class="pagination-btn" disabled="@(consultPage == totalPages)" @onclick="() => consultPage++">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+
+        <!-- RIGHT: Lab Scan Queue -->
+        <div class="reception-card">
+            <div class="card-header-flex">
+                <h2 class="card-section-title">
+                    <span class="bi bi-clock-history icon-indigo-badge"></span> Lab / Scan Queue
+                </h2>
+            </div>
+
+            <div class="recent-table-wrapper">
+                <table class="recent-checkins-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 50px;">S.No</th>
+                            <th style="width: 80px;">Token</th>
+                            <th>MRN No</th>
+                            <th>InTime</th>
+                            <th>OutTime</th>
+                            <th style="width: 140px;">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (isLoading)
+                        {
+                            <tr>
+                                <td colspan="6" class="text-center py-4">
+                                    <div class="spinner-border text-primary" role="status"></div>
+                                </td>
+                            </tr>
+                        }
+                        else if (filteredLabScanItems.Any())
+                        {
+                            int index = (labScanPage - 1) * pageSize;
+                            @foreach (var item in filteredLabScanItems.Skip(index).Take(pageSize))
+                            {
+                                index++;
+                                var currentItem = item;
+                                <tr>
+                                    <td class="col-sno">@(index.ToString("D2"))</td>
+                                    <td class="col-token">@((string.IsNullOrWhiteSpace(currentItem.token_no) ? currentItem.og_token_no : currentItem.token_no) ?? "-")</td>
+                                    <td class="col-name">@(currentItem.custcode ?? "-")</td>
+                                    <td class="col-time">@(currentItem.arrival_time?.ToString("hh:mm tt") ?? "-")</td>
+                                    <td class="col-time">
+                                        <input type="time" class="notes-input-cell" 
+                                               value="@(currentItem.out_time?.ToString("HH:mm"))" 
+                                               @onchange="(e) => SaveOutTime(currentItem, e.Value?.ToString())" />
+                                    </td>
+                                    <td>
+                                        <div class="status-dropdown-wrapper">
+                                            <select class="status-dropdown-select @GetStatusClass(currentItem.status)" 
+                                                    value="@currentItem.status"
+                                                    @onchange="(e) => OnStatusChanged(currentItem, e.Value?.ToString())">
+                                                 <option value="waiting">Waiting</option>
+                                                 <option value="in_consultation">Ongoing</option>
+                                                 <option value="completed">Completed</option>
+                                                 <option value="report_received">Report Received</option>
+                                                 @if (!string.IsNullOrEmpty(currentItem.status) && 
+                                                      currentItem.status != "waiting" && 
+                                                      currentItem.status != "in_consultation" && 
+                                                      currentItem.status != "completed" && 
+                                                      currentItem.status != "report_received")
+                                                 {
+                                                     <option value="@currentItem.status">@currentItem.status</option>
+                                                 }
+                                            </select>
+                                            <i class="bi bi-chevron-down select-arrow-icon"></i>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                        else
+                        {
+                            <tr>
+                                <td colspan="6" class="text-center py-4 text-muted">No entries.</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- Lab Scan Pagination -->
+            @if (filteredLabScanItems.Count > pageSize)
+            {
+                var totalPages = (int)Math.Ceiling((double)filteredLabScanItems.Count / pageSize);
+                <div class="table-footer">
+                    <div class="footer-info-text">
+                        Showing @(Math.Min(filteredLabScanItems.Count, (labScanPage - 1) * pageSize + 1)) to @(Math.Min(filteredLabScanItems.Count, labScanPage * pageSize)) of @(filteredLabScanItems.Count)
+                    </div>
+                    <div class="pagination-group">
+                        <button type="button" class="pagination-btn" disabled="@(labScanPage == 1)" @onclick="() => labScanPage--">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        <button type="button" class="pagination-btn active">@labScanPage</button>
+                        <button type="button" class="pagination-btn" disabled="@(labScanPage == totalPages)" @onclick="() => labScanPage++">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            }
+        </div>
+
+    </div>
+</div>
+
+@code {
+    private bool isLoading = true;
+    private string searchQuery = "";
+    
+    private int consultPage = 1;
+    private int labScanPage = 1;
+    private const int pageSize = 5; // Slightly smaller to fit side-by-side beautifully
+
+    private List<OgQueueFrontendDto> consultationItems = new();
+    private List<OgQueueFrontendDto> labScanItems = new();
+    private List<DoctorMasterModel> doctors = new();
+    private int? selectedDoctorCode;
+    private DateTime selectedDate = DateTime.Today;
+
+    private string TenantCode = "";
+    private string AuthToken = "";
+    private int ResolvedUserCode = 1;
+
+    // Stat Dashboard metrics
+    private int totalCount => FilterByDoctor(consultationItems).Count + FilterByDoctor(labScanItems).Count;
+    private int activeCount => FilterByDoctor(consultationItems).Count(x => x.status == "in_consultation") + FilterByDoctor(labScanItems).Count(x => x.status == "in_consultation");
+    private int waitingCount => FilterByDoctor(consultationItems).Count(x => x.status == "waiting") + FilterByDoctor(labScanItems).Count(x => x.status == "waiting");
+    private int completedCount => FilterByDoctor(consultationItems).Count(x => x.status == "completed") + FilterByDoctor(labScanItems).Count(x => x.status == "completed");
+
+    private List<OgQueueFrontendDto> filteredConsultItems => ApplyFilter(consultationItems);
+    private List<OgQueueFrontendDto> filteredLabScanItems => ApplyFilter(labScanItems);
+
+    private List<OgQueueFrontendDto> FilterByDoctor(List<OgQueueFrontendDto> sourceList)
+    {
+        if (selectedDoctorCode.HasValue && selectedDoctorCode.Value != 0)
+        {
+            return sourceList.Where(x => x.dcode == selectedDoctorCode.Value).ToList();
+        }
+        return sourceList;
+    }
+
+    private void OnDoctorChanged()
+    {
+        consultPage = 1;
+        labScanPage = 1;
+    }
+
+    private List<OgQueueFrontendDto> ApplyFilter(List<OgQueueFrontendDto> sourceList)
+    {
+        var resultList = FilterByDoctor(sourceList);
+        if (string.IsNullOrWhiteSpace(searchQuery))
+        {
+            return resultList;
+        }
+        var query = searchQuery.Trim().ToLowerInvariant();
+        return resultList.Where(x => 
+            (x.og_token_no != null && x.og_token_no.ToLowerInvariant().Contains(query)) ||
+            (x.token_no != null && x.token_no.ToLowerInvariant().Contains(query)) ||
+            (x.custcode != null && x.custcode.ToLowerInvariant().Contains(query))
+        ).ToList();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : TenantState.TenantCode ?? "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : TenantState.AuthToken ?? "";
+
+                var userCodeResult = await _sessionStorage.GetAsync<string>("usercode");
+                if (userCodeResult.Success && int.TryParse(userCodeResult.Value, out int code))
+                {
+                    ResolvedUserCode = code;
+                }
+                else
+                {
+                    ResolvedUserCode = TenantState.UserCode;
+                }
+
+                // Load doctors list
+                doctors = await DoctorService.GetDoctorsAsync() ?? new();
+
+                await LoadQueueAsync();
+                isLoading = false;
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[OGScreen] Init error: {ex.Message}");
+                isLoading = false;
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task OnDateChanged(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var parsedDate))
+        {
+            selectedDate = parsedDate;
+            consultPage = 1;
+            labScanPage = 1;
+            isLoading = true;
+            await LoadQueueAsync();
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadQueueAsync()
+    {
+        try
+        {
+            var dateStr = selectedDate.ToString("yyyy-MM-dd");
+            var consultTask = OGService.GetConsultationListAsync(dateStr);
+            var labScanTask = OGService.GetLabScanListAsync(dateStr);
+
+            await Task.WhenAll(consultTask, labScanTask);
+
+            consultationItems = await consultTask ?? new();
+            labScanItems = await labScanTask ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[OGScreen] Error loading queue: {ex.Message}");
+            Toast.ShowError("Error loading queue data");
+        }
+    }
+
+    private async Task RefreshQueue()
+    {
+        isLoading = true;
+        await LoadQueueAsync();
+        isLoading = false;
+    }
+
+    private string GetStatusClass(string? status)
+    {
+        return status switch
+        {
+            "in_consultation" => "status-consultation",
+            "completed" => "status-completed",
+            "report_received" => "status-completed",
+            _ => "status-waiting"
+        };
+    }
+
+    private string FormatNumber(int number)
+    {
+        return number.ToString("N0");
+    }
+
+    private async Task SaveNotes(OgQueueFrontendDto item, string? newNotes)
+    {
+        item.notes = newNotes;
+        await TriggerUpdate(item);
+    }
+
+    private async Task SaveOutTime(OgQueueFrontendDto item, string? newOutTimeStr)
+    {
+        if (TimeOnly.TryParse(newOutTimeStr, out var time))
+        {
+            item.out_time = time;
+            await TriggerUpdate(item);
+        }
+        else if (string.IsNullOrEmpty(newOutTimeStr))
+        {
+            item.out_time = null;
+            await TriggerUpdate(item);
+        }
+        else
+        {
+            Toast.ShowError("Invalid time format");
+        }
+    }
+
+    private async Task OnStatusChanged(OgQueueFrontendDto item, string? newStatus)
+    {
+        if (string.IsNullOrEmpty(newStatus)) return;
+        item.status = newStatus;
+
+        if (newStatus == "completed" && !item.out_time.HasValue)
+        {
+            item.out_time = TimeOnly.FromDateTime(DateTime.Now);
+        }
+
+        await TriggerUpdate(item);
+    }
+
+    private async Task TriggerUpdate(OgQueueFrontendDto item)
+    {
+        try
+        {
+            bool success = false;
+
+            if (item.out_time.HasValue || item.status == "completed")
+            {
+                var req = new UpdateOgOutTimeRequest
+                {
+                    ogentryid = item.ogentryid,
+                    vitalentryid = item.vitalentryid,
+                    out_time = item.out_time ?? TimeOnly.FromDateTime(DateTime.Now),
+                    status = item.status,
+                    notes = item.notes,
+                    usercode = ResolvedUserCode,
+                    computercode = 1
+                };
+
+                success = await OGService.UpdateOutTimeAsync(req);
+            }
+            else
+            {
+                var req = new UpdateOgStatusRequest
+                {
+                    ogentryid = item.ogentryid,
+                    vitalentryid = item.vitalentryid,
+                    status = item.status ?? "waiting",
+                    usercode = ResolvedUserCode,
+                    computercode = 1
+                };
+
+                success = await OGService.UpdateStatusAsync(req);
+            }
+
+            if (success)
+            {
+                Toast.ShowSuccess("Details updated successfully");
+            }
+            else
+            {
+                Toast.ShowError("Failed to update details");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[OGScreen] Error updating details: {ex.Message}");
+            Toast.ShowError("An error occurred while updating details");
+        }
+
+        await LoadQueueAsync(); // Refresh stats and list
+    }
+}

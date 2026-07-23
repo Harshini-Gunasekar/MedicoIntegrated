@@ -1,0 +1,570 @@
+@page "/nishant/reception-portal"
+@using SharedComponents.Rcl.Models
+@using Newtonsoft.Json
+@inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
+@inject Booking.Services.ToastService Toast
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+<div class="reception-page">
+    <!-- Patient Master Style Header Card -->
+    <div class="lab-header-card flex-between">
+        <div class="display-flex align-center gap-12">
+            <div class="icon-box-container flex-center bg-indigo-50 rounded-lg shadow-sm">
+                <i class="bi bi-hospital icon-lg text-indigo-600"></i>
+            </div>
+            <div>
+                <h1 class="lab-title-text">Reception Portal</h1>
+                <div class="display-flex align-center gap-6" style="margin-top: 2px;">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Patient Check-in Desk</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-action-group">
+            <button type="button" class="btn-new-patient-primary" @onclick="OpenNewPatientModal">
+                <i class="bi bi-plus-lg"></i>
+                <span>New Patient</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Patient Check-in Main Section Card -->
+    <div class="reception-card check-in-card">
+        <div class="card-header-flex">
+            <h2 class="card-section-title">
+                <span class="material-symbols-outlined icon-indigo-badge">how_to_reg</span> Patient Check-in
+            </h2>
+            <div class="queue-status-badge">
+                QUEUE: @(recentCheckIns.Count) ACTIVE
+            </div>
+        </div>
+
+        <div class="card-body-content">
+            <label class="field-uppercase-label">SEARCH BY MRN NO, NAME, MOBILE NO</label>
+            <div class="input-validate-row" style="position: relative;">
+                <div class="patient-id-input-box">
+                    <input type="text" class="patient-id-control" 
+                           @bind="checkInSearchQuery" 
+                           @bind:event="oninput" 
+                           @onkeyup="HandleCheckInKeyUp" 
+                           @onfocus="OnInputFocus" 
+                           placeholder="Type MRN No (ID), Name, or Mobile No..." />
+                    <i class="bi bi-card-text input-right-icon"></i>
+
+                    <!-- Live Autocomplete Search Dropdown -->
+                    @if (showSearchDropdown && matchingCustomers.Any())
+                    {
+                        <div class="search-results-dropdown">
+                            @foreach (var c in matchingCustomers)
+                            {
+                                <div class="search-result-item" @onclick="() => SelectCustomer(c)">
+                                    <div>
+                                        <div class="result-name">@(string.IsNullOrWhiteSpace(c.namewithinitials) ? c.name : c.namewithinitials)</div>
+                                        <div class="result-sub"><i class="bi bi-telephone"></i> @(string.IsNullOrWhiteSpace(c.mobile) ? c.phone : c.mobile)</div>
+                                    </div>
+                                    <div class="result-id">@(string.IsNullOrWhiteSpace(c.custcode) ? $"PID-{c.custid}" : c.custcode)</div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                <button type="button" class="btn-validate-blue" @onclick="ValidatePatient">
+                    Validate
+                </button>
+            </div>
+
+            <!-- Patient Found Info Box -->
+            @if (selectedCustomer != null)
+            {
+                <div class="patient-found-banner">
+                    <div class="patient-avatar-box">
+                        <div class="patient-avatar-initials">@GetInitials(selectedCustomer.namewithinitials ?? selectedCustomer.name)</div>
+                    </div>
+                    <div class="patient-details-info">
+                        <div class="found-label">PATIENT FOUND</div>
+                        <div class="patient-full-name">
+                            @(string.IsNullOrWhiteSpace(selectedCustomer.namewithinitials) ? selectedCustomer.name : selectedCustomer.namewithinitials)
+                            <span class="mrn-badge-pill">MRN: @(string.IsNullOrWhiteSpace(selectedCustomer.custcode) ? $"PID-{selectedCustomer.custid}" : selectedCustomer.custcode)</span>
+                        </div>
+                        <div class="patient-sub-detail">
+                            <i class="bi bi-cake2 detail-icon"></i> DOB: @(selectedCustomer.dateofbirth.HasValue ? selectedCustomer.dateofbirth.Value.ToString("dd MMM yyyy") : "N/A") (@(selectedCustomer.ageyears)y)
+                            &nbsp;|&nbsp; <i class="bi bi-telephone detail-icon"></i> Mobile: @(string.IsNullOrWhiteSpace(selectedCustomer.mobile) ? selectedCustomer.phone : selectedCustomer.mobile)
+                        </div>
+                        <div class="patient-sub-detail">
+                            <i class="bi bi-geo-alt detail-icon"></i> Address: @GetFormattedAddress(selectedCustomer)
+                        </div>
+                    </div>
+
+                    <!-- Right-aligned action buttons inside Patient Found banner -->
+                    <div class="patient-found-actions-right">
+                        <button type="button" class="btn-outline-modify" @onclick="ModifyProfile">
+                            Modify Profile
+                        </button>
+                        <button type="button" class="btn-confirm-blue" @onclick="() => ConfirmCheckIn(false)">
+                            Confirm Check-in
+                        </button>
+                    </div>
+                </div>
+            }
+            else if (isSearchPerformed && selectedCustomer == null)
+            {
+                <div class="patient-not-found-banner">
+                    <i class="bi bi-exclamation-circle text-warning fs-4"></i>
+                    <div>
+                        <div class="fw-bold text-dark">No patient found matching "@checkInSearchQuery"</div>
+                        <div class="text-muted small">Please verify MRN No, Name, or Mobile No, or click <strong>New Patient</strong> to register.</div>
+                    </div>
+                    <button type="button" class="btn-new-patient-sm" @onclick="OpenNewPatientModal">
+                        + Register New Patient
+                    </button>
+                </div>
+            }
+        </div>
+    </div>
+
+    <!-- Recent Check-in Confirmations Section -->
+    <div class="reception-card recent-confirmations-card">
+        <div class="card-header-flex">
+            <h2 class="card-section-title">
+                <span class="material-symbols-outlined icon-indigo-badge">history</span> Recent Check-in Confirmations
+            </h2>
+        </div>
+
+        <div class="recent-table-wrapper">
+            <table class="recent-checkins-table">
+                <thead>
+                    <tr>
+                        <th>MRN No</th>
+                        <th>PATIENT NAME</th>
+                        <th>MOBILE NO</th>
+                        <th>DATE & TIME</th>
+                        <th>ENTERED BY</th>
+                        <th>STATUS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (recentCheckIns != null && recentCheckIns.Any())
+                    {
+                        @foreach (var item in recentCheckIns)
+                        {
+                            <tr>
+                                <td>
+                                    <div class="table-patient-id">@item.MrnNo</div>
+                                </td>
+                                <td>
+                                    <div class="fw-bold text-dark">@item.PatientName</div>
+                                </td>
+                                <td>
+                                    <div class="table-icon-text">
+                                        <i class="bi bi-telephone"></i>
+                                        <span>@item.MobileNo</span>
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="table-icon-text">
+                                        <i class="bi bi-calendar3"></i>
+                                        <span>@item.CheckInTime.ToString("MMM dd, yyyy hh:mm tt")</span>
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="user-badge-cell">
+                                        <span class="avatar-circle-sm">RC</span>
+                                        <span>Receptionist</span>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="status-pill-arrived">
+                                        <span class="dot-inner"></span> Arrived
+                                    </span>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="6" class="text-center text-muted py-4">
+                                No recent check-in confirmations recorded.
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- New Patient Registration Modal Popup Component -->
+<NewPatientRegistration IsVisible="showNewPatientModal" EditPatient="editingCustomer" OnClose="HandleModalClose" OnPatientSaved="HandlePatientSaved" />
+
+@code {
+    public class CheckInItem
+    {
+        public string MrnNo { get; set; } = "";
+        public string PatientName { get; set; } = "";
+        public string MobileNo { get; set; } = "";
+        public DateTime CheckInTime { get; set; } = DateTime.Now;
+    }
+
+    private string searchPatientId = "";
+    private string checkInSearchQuery = "";
+    private bool showNewPatientModal = false;
+    private bool showSearchDropdown = false;
+    private bool isSearchPerformed = false;
+
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    private List<CustomerModel> allCustomers = new();
+    private List<CustomerModel> matchingCustomers = new();
+    private CustomerModel? selectedCustomer = null;
+    private CustomerModel? editingCustomer = null;
+
+    private List<CheckInItem> recentCheckIns = new();
+
+    protected override void OnInitialized()
+    {
+        var uri = NavigationManager.Uri;
+        if (uri.Contains("openRegister=true"))
+        {
+            editingCustomer = null;
+            showNewPatientModal = true;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : TenantState.TenantCode ?? "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : TenantState.AuthToken ?? "";
+
+                await LoadCustomersAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[ReceptionPortal] Init error: {ex.Message}");
+            }
+        }
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("LabCareUrl");
+        if (!string.IsNullOrEmpty(TenantCode))
+        {
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+        }
+        if (!string.IsNullOrEmpty(AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+        }
+        return client;
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            using var client = CreateClient();
+            HttpResponseMessage? response = null;
+
+            // 1. Try customer/getcus (primary endpoint used in PatientMaster)
+            try
+            {
+                response = await client.GetAsync("customer/getcus");
+                if (!response.IsSuccessStatusCode)
+                {
+                    response = await client.GetAsync("api/Customer/getcus");
+                }
+            }
+            catch { }
+
+            // 2. Try Customer/partition
+            if (response == null || !response.IsSuccessStatusCode)
+            {
+                try
+                {
+                    response = await client.GetAsync("Customer/partition?pagenumber=1&pagesize=1000");
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        response = await client.GetAsync("api/Customer/partition?pagenumber=1&pagesize=1000");
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Try api/Customer/get
+            if (response == null || !response.IsSuccessStatusCode)
+            {
+                try
+                {
+                    response = await client.GetAsync("api/Customer/get");
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        response = await client.GetAsync("Customer/get");
+                    }
+                }
+                catch { }
+            }
+
+            if (response != null && response.IsSuccessStatusCode)
+            {
+                var jsonStr = await response.Content.ReadAsStringAsync();
+                if (!string.IsNullOrWhiteSpace(jsonStr))
+                {
+                    var list = JsonConvert.DeserializeObject<List<CustomerModel>>(jsonStr);
+                    if (list != null)
+                    {
+                        allCustomers = list;
+                        Console.WriteLine($"[ReceptionPortal] Loaded {allCustomers.Count} customers.");
+                        if (selectedCustomer != null)
+                        {
+                            var updated = allCustomers.FirstOrDefault(x => x.custid == selectedCustomer.custid);
+                            if (updated != null) selectedCustomer = updated;
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[ReceptionPortal] Error loading customers: {ex.Message}");
+        }
+    }
+
+    private void OpenNewPatientModal()
+    {
+        editingCustomer = null;
+        showNewPatientModal = true;
+    }
+
+    private void HandleModalClose()
+    {
+        showNewPatientModal = false;
+        editingCustomer = null;
+    }
+
+    private async Task OnInputFocus()
+    {
+        if (!allCustomers.Any())
+        {
+            await LoadCustomersAsync();
+        }
+        showSearchDropdown = matchingCustomers.Any();
+    }
+
+    private async Task HandleCheckInKeyUp(KeyboardEventArgs e)
+    {
+        isSearchPerformed = true;
+
+        if (!allCustomers.Any())
+        {
+            await LoadCustomersAsync();
+        }
+
+        if (string.IsNullOrWhiteSpace(checkInSearchQuery))
+        {
+            matchingCustomers.Clear();
+            showSearchDropdown = false;
+            selectedCustomer = null;
+            return;
+        }
+
+        var query = checkInSearchQuery.Trim();
+        matchingCustomers = allCustomers.Where(c =>
+            (!string.IsNullOrEmpty(c.custcode) && c.custcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(c.customermanualcode) && c.customermanualcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+            ("PID-" + c.custid).Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            (c.custid.ToString().Contains(query)) ||
+            (!string.IsNullOrEmpty(c.name) && c.name.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(c.namewithinitials) && c.namewithinitials.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(c.mobile) && c.mobile.Contains(query)) ||
+            (!string.IsNullOrEmpty(c.phone) && c.phone.Contains(query))
+        ).Take(8).ToList();
+
+        showSearchDropdown = matchingCustomers.Any();
+
+        if (e.Key == "Enter")
+        {
+            await ValidatePatient();
+        }
+    }
+
+    private void SelectCustomer(CustomerModel customer)
+    {
+        selectedCustomer = customer;
+        checkInSearchQuery = string.IsNullOrWhiteSpace(customer.custcode) ? $"PID-{customer.custid}" : customer.custcode;
+        showSearchDropdown = false;
+        isSearchPerformed = true;
+    }
+
+    private async Task ValidatePatient()
+    {
+        showSearchDropdown = false;
+        isSearchPerformed = true;
+
+        if (!allCustomers.Any())
+        {
+            await LoadCustomersAsync();
+        }
+
+        if (string.IsNullOrWhiteSpace(checkInSearchQuery))
+        {
+            Toast.ShowError("Please enter MRN No, Name, or Mobile No to search.");
+            return;
+        }
+
+        var query = checkInSearchQuery.Trim();
+        var found = allCustomers.FirstOrDefault(c =>
+            (!string.IsNullOrEmpty(c.custcode) && c.custcode.Equals(query, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(c.customermanualcode) && c.customermanualcode.Equals(query, StringComparison.OrdinalIgnoreCase)) ||
+            ("PID-" + c.custid).Equals(query, StringComparison.OrdinalIgnoreCase) ||
+            (c.custid.ToString() == query) ||
+            (!string.IsNullOrEmpty(c.mobile) && c.mobile.Equals(query)) ||
+            (!string.IsNullOrEmpty(c.phone) && c.phone.Equals(query)) ||
+            (!string.IsNullOrEmpty(c.name) && c.name.Equals(query, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(c.namewithinitials) && c.namewithinitials.Equals(query, StringComparison.OrdinalIgnoreCase))
+        );
+
+        if (found == null)
+        {
+            found = allCustomers.FirstOrDefault(c =>
+                (!string.IsNullOrEmpty(c.custcode) && c.custcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                ("PID-" + c.custid).Contains(query, StringComparison.OrdinalIgnoreCase) ||
+                (c.custid.ToString().Contains(query)) ||
+                (!string.IsNullOrEmpty(c.name) && c.name.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrEmpty(c.namewithinitials) && c.namewithinitials.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrEmpty(c.mobile) && c.mobile.Contains(query)) ||
+                (!string.IsNullOrEmpty(c.phone) && c.phone.Contains(query))
+            );
+        }
+
+        selectedCustomer = found;
+        if (selectedCustomer != null)
+        {
+            Toast.ShowSuccess($"Patient Found: {(string.IsNullOrWhiteSpace(selectedCustomer.namewithinitials) ? selectedCustomer.name : selectedCustomer.namewithinitials)}");
+        }
+        else
+        {
+            Toast.ShowError("No patient record found matching your query.");
+        }
+    }
+
+    private void ConfirmCheckIn(bool isNewRegistration = false)
+    {
+        if (selectedCustomer == null)
+        {
+            Toast.ShowError("No patient selected for check-in.");
+            return;
+        }
+
+        var name = string.IsNullOrWhiteSpace(selectedCustomer.namewithinitials) ? selectedCustomer.name : selectedCustomer.namewithinitials;
+        var mrn = string.IsNullOrWhiteSpace(selectedCustomer.custcode) ? $"PID-{selectedCustomer.custid}" : selectedCustomer.custcode;
+        var mobile = string.IsNullOrWhiteSpace(selectedCustomer.mobile) ? selectedCustomer.phone ?? "" : selectedCustomer.mobile;
+
+        var existing = recentCheckIns.FirstOrDefault(x => x.MrnNo == mrn);
+        if (existing != null)
+        {
+            recentCheckIns.Remove(existing);
+        }
+
+        recentCheckIns.Insert(0, new CheckInItem
+        {
+            MrnNo = mrn ?? "PID-" + selectedCustomer.custid,
+            PatientName = name ?? "Unknown",
+            MobileNo = mobile,
+            CheckInTime = DateTime.Now
+        });
+
+        if (isNewRegistration)
+        {
+            Toast.ShowSuccess("Patient registered and check in successfully");
+        }
+        else
+        {
+            Toast.ShowSuccess($"Check-in confirmed for {name} ({mrn})");
+        }
+    }
+
+    private void ModifyProfile()
+    {
+        if (selectedCustomer != null)
+        {
+            editingCustomer = selectedCustomer;
+            showNewPatientModal = true;
+        }
+    }
+
+    private async Task HandlePatientSaved(CustomerModel savedPatient)
+    {
+        bool isNewPatientRegistration = (editingCustomer == null);
+
+        showNewPatientModal = false;
+        editingCustomer = null;
+        await LoadCustomersAsync();
+
+        CustomerModel? targetCustomer = null;
+
+        if (savedPatient != null)
+        {
+            if (savedPatient.custid > 0)
+            {
+                targetCustomer = allCustomers.FirstOrDefault(x => x.custid == savedPatient.custid);
+            }
+
+            if (targetCustomer == null && !string.IsNullOrWhiteSpace(savedPatient.name))
+            {
+                targetCustomer = allCustomers.FirstOrDefault(x =>
+                    (!string.IsNullOrEmpty(x.name) && x.name.Equals(savedPatient.name.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(x.mobile) && !string.IsNullOrEmpty(savedPatient.mobile) && x.mobile.Equals(savedPatient.mobile.Trim()))
+                );
+            }
+
+            if (targetCustomer == null && allCustomers.Any())
+            {
+                targetCustomer = allCustomers.OrderByDescending(x => x.custid).FirstOrDefault();
+            }
+
+            if (targetCustomer == null)
+            {
+                targetCustomer = savedPatient;
+            }
+
+            SelectCustomer(targetCustomer);
+
+            if (isNewPatientRegistration)
+            {
+                ConfirmCheckIn(isNewRegistration: true);
+            }
+        }
+    }
+
+    private string GetInitials(string? fullName)
+    {
+        if (string.IsNullOrWhiteSpace(fullName)) return "P";
+        var parts = fullName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
+        return $"{parts[0][0]}{parts[parts.Length - 1][0]}".ToUpper();
+    }
+
+    private string GetFormattedAddress(CustomerModel c)
+    {
+        var list = new List<string>();
+        if (!string.IsNullOrWhiteSpace(c.street)) list.Add(c.street.Trim());
+        if (!string.IsNullOrWhiteSpace(c.city)) list.Add(c.city.Trim());
+        if (!string.IsNullOrWhiteSpace(c.zipcode)) list.Add(c.zipcode.Trim());
+        return list.Any() ? string.Join(", ", list) : "No address provided";
+    }
+}
