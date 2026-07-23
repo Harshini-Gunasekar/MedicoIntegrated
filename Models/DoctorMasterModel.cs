@@ -120,5 +120,6 @@ namespace Booking.Models
         public bool? isregular { get; set; } = false;                    
         public double? normalconsultationfee { get; set; }              
         public double? offhoursconsultationfee { get; set; }
+        public long? group_id { get; set; }
     }
 }
