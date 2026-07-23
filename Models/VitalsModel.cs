@@ -22,7 +22,7 @@ namespace Medico_Backend.Model
         public int? dcode { get; set; }
 
         // REPLACED "investigation" (single string) with 5 slots
-        public string? in1 { get; set; }
+        public string? in1 { get; set; } = "doctor";
         public string? in2 { get; set; }
         public string? in3 { get; set; }
         public string? in4 { get; set; }
