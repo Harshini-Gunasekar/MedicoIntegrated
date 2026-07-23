@@ -1,10 +1,13 @@
 @page "/nishant/reception-portal"
 @using SharedComponents.Rcl.Models
 @using Newtonsoft.Json
+@using Medico_Backend.Model
 @inject NavigationManager NavigationManager
 @inject IHttpClientFactory ClientFactory
 @inject Booking.Services.ToastService Toast
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.VitalsService VitalsService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 
@@ -142,7 +145,7 @@
                         <th>PATIENT NAME</th>
                         <th>MOBILE NO</th>
                         <th>DATE & TIME</th>
-                        <th>ENTERED BY</th>
+                        <th>INVESTIGATION</th>
                         <th>STATUS</th>
                     </tr>
                 </thead>
@@ -153,32 +156,35 @@
                         {
                             <tr>
                                 <td>
-                                    <div class="table-patient-id">@item.MrnNo</div>
+                                    <div class="table-patient-id">@(item.custcode ?? "-")</div>
                                 </td>
                                 <td>
-                                    <div class="fw-bold text-dark">@item.PatientName</div>
+                                    <div class="fw-bold text-dark">@(item.patient_name ?? "-")</div>
                                 </td>
                                 <td>
                                     <div class="table-icon-text">
                                         <i class="bi bi-telephone"></i>
-                                        <span>@item.MobileNo</span>
+                                        <span>@GetMobileNo(item.custcode)</span>
                                     </div>
                                 </td>
                                 <td>
                                     <div class="table-icon-text">
                                         <i class="bi bi-calendar3"></i>
-                                        <span>@item.CheckInTime.ToString("MMM dd, yyyy hh:mm tt")</span>
+                                        <span>@item.entered_date.ToString("MMM dd, yyyy hh:mm tt")</span>
                                     </div>
                                 </td>
                                 <td>
-                                    <div class="user-badge-cell">
-                                        <span class="avatar-circle-sm">RC</span>
-                                        <span>Receptionist</span>
+                                    <div style="font-weight: 600; color: #475569;">
+                                        @(item.investigation ?? "-")
+                                        @if (!string.IsNullOrEmpty(item.test_name))
+                                        {
+                                            <span style="font-size: 0.72rem; color: #64748b; font-weight: normal; display: block;">@item.test_name</span>
+                                        }
                                     </div>
                                 </td>
                                 <td>
                                     <span class="status-pill-arrived">
-                                        <span class="dot-inner"></span> Arrived
+                                        <span class="dot-inner"></span> @(string.IsNullOrWhiteSpace(item.status) ? "Arrived" : item.status.Replace("_", " "))
                                     </span>
                                 </td>
                             </tr>
@@ -201,20 +207,103 @@
 <!-- New Patient Registration Modal Popup Component -->
 <NewPatientRegistration IsVisible="showNewPatientModal" EditPatient="editingCustomer" OnClose="HandleModalClose" OnPatientSaved="HandlePatientSaved" />
 
-@code {
-    public class CheckInItem
-    {
-        public string MrnNo { get; set; } = "";
-        public string PatientName { get; set; } = "";
-        public string MobileNo { get; set; } = "";
-        public DateTime CheckInTime { get; set; } = DateTime.Now;
-    }
+<!-- Check-in Details Modal -->
+@if (showCheckInModal)
+{
+    <div class="modal-overlay">
+        <div class="modal-container" style="max-width: 500px;">
+            <div class="modal-header">
+                <h3 class="modal-title">Confirm Patient Check-in</h3>
+                <button type="button" class="btn-close-modal" @onclick="() => showCheckInModal = false" title="Close">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div style="margin-bottom: 16px; padding: 12px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+                    <div style="font-weight: 700; color: #1e293b; font-size: 0.95rem;">
+                        @(string.IsNullOrWhiteSpace(selectedCustomer?.namewithinitials) ? selectedCustomer?.name : selectedCustomer?.namewithinitials)
+                    </div>
+                    <div style="font-size: 0.8rem; color: #64748b; font-weight: 600; margin-top: 4px;">
+                        MRN: @(string.IsNullOrWhiteSpace(selectedCustomer?.custcode) ? $"PID-{selectedCustomer?.custid}" : selectedCustomer?.custcode)
+                    </div>
+                </div>
 
+                <div class="form-grid" style="grid-template-columns: 1fr; gap: 12px;">
+                    <!-- Investigation Type -->
+                    <div class="form-group">
+                        <label class="field-uppercase-label">INVESTIGATION</label>
+                        <select class="form-control-select" @bind="checkInInvestigation">
+                            <option value="doctor">Doctor</option>
+                            <option value="lab">Lab</option>
+                            <option value="scan">Scan</option>
+                            <option value="ecg_echo">ECG/Echo</option>
+                        </select>
+                    </div>
+
+                    <!-- Doctor Selection -->
+                    <div class="form-group">
+                        <label class="field-uppercase-label">DOCTOR</label>
+                        <select class="form-control-select" @bind="checkInDoctorCode">
+                            <option value="">Select Doctor...</option>
+                            @foreach (var doc in doctors)
+                            {
+                                <option value="@doc.dcode">@doc.name</option>
+                            }
+                        </select>
+                    </div>
+
+                    <!-- Test Name -->
+                    @if (checkInInvestigation == "lab")
+                    {
+                        <div class="form-group">
+                            <label class="field-uppercase-label">TEST NAME</label>
+                            <input type="text" class="form-control-input" @bind="checkInTestName" placeholder="e.g. CBC Blood Test..." />
+                        </div>
+                    }
+                    else if (checkInInvestigation == "scan")
+                    {
+                        <div class="form-group">
+                            <label class="field-uppercase-label">TEST NAME</label>
+                            <select class="form-control-select" @bind="checkInTestName">
+                                <option value="">Select Scan Test</option>
+                                <option value="ANC Scan (Antenatal Check-up Ultrasound)">ANC Scan (Antenatal Check-up Ultrasound)</option>
+                                <option value="NT + FT Scan (Nuchal Translucency + First Trimester)">NT + FT Scan (Nuchal Translucency + First Trimester)</option>
+                                <option value="Anomaly Scan (Level II / TIFFA)">Anomaly Scan (Level II / TIFFA)</option>
+                                <option value="Growth Scan (Fetal Growth Ultrasound)">Growth Scan (Fetal Growth Ultrasound)</option>
+                                <option value="USG Abd Scan (Abdominal Ultrasound)">USG Abd Scan (Abdominal Ultrasound)</option>
+                            </select>
+                        </div>
+                    }
+
+                    <!-- VIP Checkbox -->
+                    <div class="form-group" style="display: flex; flex-direction: row; align-items: center; gap: 8px; margin-top: 8px;">
+                        <input type="checkbox" id="checkInIsVip" @bind="checkInIsVip" style="width: 16px; height: 16px; cursor: pointer;" />
+                        <label for="checkInIsVip" style="font-weight: 600; color: #334155; font-size: 0.82rem; cursor: pointer; user-select: none; margin: 0;">Mark as VIP Patient</label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-secondary" @onclick="() => showCheckInModal = false">Cancel</button>
+                <button type="button" class="btn-primary-indigo" @onclick="SubmitCheckIn">Confirm Check-in</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
     private string searchPatientId = "";
     private string checkInSearchQuery = "";
     private bool showNewPatientModal = false;
     private bool showSearchDropdown = false;
     private bool isSearchPerformed = false;
+
+    private bool showCheckInModal = false;
+    private int? checkInDoctorCode;
+    private string checkInInvestigation = "doctor";
+    private string checkInTestName = "";
+    private bool checkInIsVip = false;
 
     private string TenantCode = "";
     private string AuthToken = "";
@@ -224,7 +313,8 @@
     private CustomerModel? selectedCustomer = null;
     private CustomerModel? editingCustomer = null;
 
-    private List<CheckInItem> recentCheckIns = new();
+    private List<NewPatientRegistration.DoctorModel> doctors = new();
+    private List<VitalsModel> recentCheckIns = new();
 
     protected override void OnInitialized()
     {
@@ -249,6 +339,18 @@
                 AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : TenantState.AuthToken ?? "";
 
                 await LoadCustomersAsync();
+
+                // Load Doctors list
+                var rawDocs = await DoctorService.GetDoctorsAsync();
+                doctors = rawDocs.Select(d => new NewPatientRegistration.DoctorModel
+                {
+                    dcode = d.dcode,
+                    name = string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name
+                }).ToList();
+
+                // Load Vitals list
+                await LoadRecentCheckInsAsync();
+
                 StateHasChanged();
             }
             catch (Exception ex)
@@ -256,6 +358,26 @@
                 Console.Error.WriteLine($"[ReceptionPortal] Init error: {ex.Message}");
             }
         }
+    }
+
+    private async Task LoadRecentCheckInsAsync()
+    {
+        try
+        {
+            var list = await VitalsService.GetVitalsAsync();
+            recentCheckIns = list.OrderByDescending(x => x.entered_date).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[ReceptionPortal] Error loading recent check-ins: {ex.Message}");
+        }
+    }
+
+    private string GetMobileNo(string? custcode)
+    {
+        if (string.IsNullOrWhiteSpace(custcode)) return "-";
+        var cust = allCustomers.FirstOrDefault(x => x.custcode == custcode || x.tenantcustcode == custcode || x.custid.ToString() == custcode);
+        return cust?.mobile ?? cust?.phone ?? "-";
     }
 
     private HttpClient CreateClient()
@@ -470,31 +592,49 @@
             return;
         }
 
+        checkInDoctorCode = null;
+        checkInInvestigation = "doctor";
+        checkInTestName = "";
+        checkInIsVip = false;
+        showCheckInModal = true;
+    }
+
+    private async Task SubmitCheckIn()
+    {
+        if (selectedCustomer == null) return;
+
         var name = string.IsNullOrWhiteSpace(selectedCustomer.namewithinitials) ? selectedCustomer.name : selectedCustomer.namewithinitials;
         var mrn = string.IsNullOrWhiteSpace(selectedCustomer.custcode) ? $"PID-{selectedCustomer.custid}" : selectedCustomer.custcode;
-        var mobile = string.IsNullOrWhiteSpace(selectedCustomer.mobile) ? selectedCustomer.phone ?? "" : selectedCustomer.mobile;
 
-        var existing = recentCheckIns.FirstOrDefault(x => x.MrnNo == mrn);
-        if (existing != null)
+        var newVital = new VitalsModel
         {
-            recentCheckIns.Remove(existing);
-        }
+            custcode = mrn,
+            patient_name = name,
+            dcode = checkInDoctorCode,
+            in1 = checkInInvestigation,
+            test_name = checkInTestName,
+            status = "waiting_for_test",
+            is_vip = checkInIsVip,
+            entered_date = DateTime.Now,
+            arrival_time = TimeOnly.FromDateTime(DateTime.Now),
+            usercode = TenantState.UserCode > 0 ? TenantState.UserCode : 1,
+            computercode = 1
+        };
 
-        recentCheckIns.Insert(0, new CheckInItem
+        var success = await VitalsService.InsertVitalAsync(newVital);
+        if (success)
         {
-            MrnNo = mrn ?? "PID-" + selectedCustomer.custid,
-            PatientName = name ?? "Unknown",
-            MobileNo = mobile,
-            CheckInTime = DateTime.Now
-        });
-
-        if (isNewRegistration)
-        {
-            Toast.ShowSuccess("Patient registered and check in successfully");
+            Toast.ShowSuccess($"Check-in confirmed for {name} ({mrn})");
+            showCheckInModal = false;
+            selectedCustomer = null;
+            checkInSearchQuery = "";
+            isSearchPerformed = false;
+            await LoadRecentCheckInsAsync();
+            StateHasChanged();
         }
         else
         {
-            Toast.ShowSuccess($"Check-in confirmed for {name} ({mrn})");
+            Toast.ShowError("Failed to confirm check-in.");
         }
     }
 
