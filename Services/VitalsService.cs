@@ -254,5 +254,26 @@ namespace Booking.Services
                 return false;
             }
         }
+
+        // --- Update Slot Status ---
+        public async Task<bool> UpdateSlotStatusAsync(UpdateVitalSlotStatusRequest request)
+        {
+            try
+            {
+                var jsonPayload = JsonSerializer.Serialize(request, new JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine("\n==========================================");
+                Console.WriteLine("[POST /api/Vitals/update-slot-status] Payload:");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("==========================================\n");
+
+                var response = await _http.PostAsJsonAsync("api/Vitals/update-slot-status", request);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating vital slot status: {ex.Message}");
+                return false;
+            }
+        }
     }
 }

@@ -28,6 +28,12 @@ namespace Medico_Backend.Model
         public string? in4 { get; set; }
         public string? in5 { get; set; }
 
+        public string? in1_status { get; set; }
+        public string? in2_status { get; set; }
+        public string? in3_status { get; set; }
+        public string? in4_status { get; set; }
+        public string? in5_status { get; set; }
+
         // Computed helper property for UI display and two-way binding
         [Write(false)]
         public string? investigation
@@ -66,12 +72,23 @@ namespace Medico_Backend.Model
         public DateTime updated_at { get; set; }
 
         public bool deleted { get; set; } = false;
+
+        public long? group_id { get; set; }
     }
 
     public class UpdateVitalStatusRequest
     {
         public int vitalentryid { get; set; }
         public string? status { get; set; }
+        public int usercode { get; set; } = 1;
+        public int computercode { get; set; } = 1;
+    }
+
+    public class UpdateVitalSlotStatusRequest
+    {
+        public int vitalentryid { get; set; }
+        public string slot { get; set; } = "";
+        public string status { get; set; } = "";
         public int usercode { get; set; } = 1;
         public int computercode { get; set; } = 1;
     }
