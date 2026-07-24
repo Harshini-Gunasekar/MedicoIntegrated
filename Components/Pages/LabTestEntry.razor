@@ -4,9 +4,12 @@
 
 @using Booking.Services
 @using Medico_Backend.Model
+@using SharedComponents.Rcl.Models
 @inject VitalsService VitalsService
 @inject ToastService Toast
 @inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 
 <PageTitle>Lab Test Entry</PageTitle>
 
@@ -73,8 +76,8 @@
                                     <span class="font-bold text-indigo-600 cursor-pointer" @onclick="() => ViewDetails(item)">@(item.token_no ?? "-")</span>
                                 </td>
                                 <td class="lc-color-slate-500 lc-font-mono lc-font-700 lc-font-13">@(item.custcode ?? "-")</td>
-                                <td class="font-bold text-slate-800">@(item.patient_name ?? "Unnamed Patient")</td>
-                                <td class="lc-font-mono font-bold text-slate-800">@(item.mobile ?? "-")</td>
+                                <td class="font-bold text-slate-800">@(GetPatientName(item.custcode, item.patient_name))</td>
+                                <td class="lc-font-mono font-bold text-slate-800">@(GetPatientMobile(item.custcode, item.mobile))</td>
                                 <td class="text-slate-800 font-bold">@(item.test_name ?? "-")</td>
                                 <td class="text-slate-500 font-12">@(item.entered_date == DateTime.MinValue ? "-" : item.entered_date.ToString("dd-MM-yyyy hh:mm tt"))</td>
                                 <td>
@@ -184,11 +187,11 @@
                     <div class="um-grid-cols-2">
                         <div class="form-group">
                             <label>Patient Name</label>
-                            <div class="lab-input font-bold">@(selectedRecord.patient_name ?? "-")</div>
+                            <div class="lab-input font-bold">@(GetPatientName(selectedRecord.custcode, selectedRecord.patient_name))</div>
                         </div>
                         <div class="form-group">
                             <label>Mobile Number</label>
-                            <div class="lab-input lc-font-mono">@(selectedRecord.mobile ?? "-")</div>
+                            <div class="lab-input lc-font-mono font-bold">@(GetPatientMobile(selectedRecord.custcode, selectedRecord.mobile))</div>
                         </div>
                     </div>
 
@@ -238,6 +241,7 @@
     private LabResultEntryModel? selectedRecord;
 
     private List<LabResultEntryModel> labEntries = new();
+    private List<CustomerModel> allCustomersList = new();
 
     private IEnumerable<LabResultEntryModel> FilteredLabEntries =>
         string.IsNullOrWhiteSpace(searchQuery)
@@ -245,8 +249,8 @@
             : labEntries.Where(item =>
                 (item.token_no != null && item.token_no.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
                 (item.custcode != null && item.custcode.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
-                (item.patient_name != null && item.patient_name.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
-                (item.mobile != null && item.mobile.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
+                (GetPatientName(item.custcode, item.patient_name).Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
+                (GetPatientMobile(item.custcode, item.mobile).Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
                 (item.test_name != null && item.test_name.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
                 (item.status != null && item.status.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)));
 
@@ -267,7 +271,58 @@
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadAllCustomersAsync();
         await FetchLabEntriesAsync();
+    }
+
+    private async Task LoadAllCustomersAsync()
+    {
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/customer/getcus");
+            if (response.IsSuccessStatusCode)
+            {
+                var rawJson = await response.Content.ReadAsStringAsync();
+                allCustomersList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<CustomerModel>>(rawJson) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error loading customers in LabTestEntry: {ex.Message}");
+        }
+    }
+
+    private string GetPatientName(string? custcode, string? existingName)
+    {
+        if (!string.IsNullOrWhiteSpace(existingName)) return existingName;
+        if (string.IsNullOrWhiteSpace(custcode)) return "Unnamed Patient";
+        var cust = allCustomersList.FirstOrDefault(c =>
+            string.Equals(c.custcode, custcode, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(c.tenantcustcode, custcode, StringComparison.OrdinalIgnoreCase) ||
+            c.custid.ToString() == custcode);
+        return !string.IsNullOrWhiteSpace(cust?.name) ? cust.name : custcode;
+    }
+
+    private string GetPatientMobile(string? custcode, string? existingMobile)
+    {
+        if (!string.IsNullOrWhiteSpace(existingMobile)) return existingMobile;
+        if (string.IsNullOrWhiteSpace(custcode)) return "-";
+        var cust = allCustomersList.FirstOrDefault(c =>
+            string.Equals(c.custcode, custcode, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(c.tenantcustcode, custcode, StringComparison.OrdinalIgnoreCase) ||
+            c.custid.ToString() == custcode);
+        return !string.IsNullOrWhiteSpace(cust?.mobile) ? cust.mobile : "-";
     }
 
     private async Task FetchLabEntriesAsync()
