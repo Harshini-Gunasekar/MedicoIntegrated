@@ -171,11 +171,10 @@
             <table class="lc-table">
                 <thead>
                     <tr>
-                        <th style="width: 30px;">S.NO</th>
                         <th style="width: 60px;">TOKEN NO</th>
                         <th style="width: 80px;">CUST CODE</th>
                         <th>PATIENT NAME</th>
-                        <th>TEST / SCAN NAME</th>
+                        <th style="max-width: 130px;">TEST / SCAN NAME</th>
                         <th>DOCTOR</th>
                         <th style="width: 75px;">ARRIVAL TIME</th>
                         <th class="text-center" style="width: 110px;">DR STATUS</th>
@@ -188,11 +187,9 @@
                 <tbody>
                     @if (PaginatedVitalsList.Any())
                     {
-                        int sno = ((currentPage - 1) * pageSize) + 1;
                         @foreach (var item in PaginatedVitalsList)
                         {
                             <tr class="lc-table-row">
-                                <td><span class="font-bold text-indigo-600">@(sno++)</span></td>
                                 <td class="lc-font-mono font-bold">
                                     <div class="vitals-token-pill">
                                         <span>@(item.token_no ?? "-")</span>
@@ -204,7 +201,9 @@
                                 </td>
                                 <td class="font-bold text-slate-800">@(item.custcode ?? "-")</td>
                                 <td class="font-bold text-slate-800">@(item.patient_name ?? "-")</td>
-                                <td class="text-slate-700 font-bold">@(item.test_name ?? "-")</td>
+                                <td class="text-slate-700 font-bold" style="max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="@(item.test_name ?? "")">
+                                    @(item.test_name ?? "-")
+                                </td>
                                 <td class="text-slate-700 font-bold">
                                     <div class="vitals-doctor-cell">
                                         <span class="doctor-avatar-circle">@GetDoctorInitials(item.dcode)</span>
@@ -271,8 +270,8 @@
                                 <td class="text-center">
                                     @if (HasInvestigation(item, "ecg_and_echo"))
                                     {
-                                        <select class="@GetStatusDropdownClass(item.status)"
-                                                value="@(NormalizeStatus(item.status))"
+                                        <select class="@GetStatusDropdownClass(GetEcgEchoStatus(item))"
+                                                value="@(NormalizeStatus(GetEcgEchoStatus(item)))"
                                                 @onchange="(e) => UpdateVitalStatus(item, e.Value?.ToString())">
                                             <option value="waiting">Waiting</option>
                                             <option value="on_going">On going</option>
@@ -301,7 +300,7 @@
                     else
                     {
                         <tr>
-                            <td colspan="12" class="text-center p-24">
+                            <td colspan="11" class="text-center p-24">
                                 <div class="empty-state-subtle">
                                     <span class="empty-state-dot"></span>
                                     No vitals records found matching your search.
@@ -1140,22 +1139,68 @@
         _ => "status-select status-select-waiting"
     };
 
-    private bool HasInvestigation(VitalsModel record, string search)
+    private bool IsCategoryMatch(string? slotValue, string categoryKey)
     {
-        return string.Equals(record.in1, search, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(record.in2, search, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(record.in3, search, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(record.in4, search, StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(record.in5, search, StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(slotValue)) return false;
+        var val = slotValue.Trim().ToLower();
+        var cat = categoryKey.Trim().ToLower();
+
+        if (cat == "doctor")
+        {
+            return val == "doctor" || val == "doc" || val == "dr";
+        }
+        if (cat == "lab")
+        {
+            return val == "lab" || val.Contains("lab");
+        }
+        if (cat == "scan")
+        {
+            return val == "scan" || val.Contains("scan");
+        }
+        if (cat == "ecg_and_echo" || cat == "ecg-echo" || cat == "ecg" || cat == "echo")
+        {
+            return val.Contains("ecg") || val.Contains("echo");
+        }
+        return string.Equals(val, cat, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool HasInvestigation(VitalsModel record, string categoryKey)
+    {
+        return IsCategoryMatch(record.in1, categoryKey) ||
+               IsCategoryMatch(record.in2, categoryKey) ||
+               IsCategoryMatch(record.in3, categoryKey) ||
+               IsCategoryMatch(record.in4, categoryKey) ||
+               IsCategoryMatch(record.in5, categoryKey);
     }
 
     private string GetCategorySlotStatus(VitalsModel record, string categoryKey)
     {
-        if (string.Equals(record.in1, categoryKey, StringComparison.OrdinalIgnoreCase)) return record.in1_status ?? "waiting";
-        if (string.Equals(record.in2, categoryKey, StringComparison.OrdinalIgnoreCase)) return record.in2_status ?? "waiting";
-        if (string.Equals(record.in3, categoryKey, StringComparison.OrdinalIgnoreCase)) return record.in3_status ?? "waiting";
-        if (string.Equals(record.in4, categoryKey, StringComparison.OrdinalIgnoreCase)) return record.in4_status ?? "waiting";
-        if (string.Equals(record.in5, categoryKey, StringComparison.OrdinalIgnoreCase)) return record.in5_status ?? "waiting";
+        // 1. Check if OgQueue list has an entry for this record
+        var consultMatch = consultationList.FirstOrDefault(c => 
+            (c.vitalentryid.HasValue && c.vitalentryid.Value > 0 && c.vitalentryid.Value == record.vitalentryid) ||
+            (!string.IsNullOrWhiteSpace(c.token_no) && string.Equals(c.token_no, record.token_no, StringComparison.OrdinalIgnoreCase)));
+
+        // For doctor category, prioritize OgQueue queue_status/status if present
+        if (string.Equals(categoryKey, "doctor", StringComparison.OrdinalIgnoreCase) && consultMatch != null)
+        {
+            var qStat = consultMatch.queue_status ?? consultMatch.status;
+            if (!string.IsNullOrWhiteSpace(qStat)) return qStat;
+        }
+
+        // 2. Check direct slot status on vitals_entry
+        if (IsCategoryMatch(record.in1, categoryKey) && !string.IsNullOrWhiteSpace(record.in1_status)) return record.in1_status;
+        if (IsCategoryMatch(record.in2, categoryKey) && !string.IsNullOrWhiteSpace(record.in2_status)) return record.in2_status;
+        if (IsCategoryMatch(record.in3, categoryKey) && !string.IsNullOrWhiteSpace(record.in3_status)) return record.in3_status;
+        if (IsCategoryMatch(record.in4, categoryKey) && !string.IsNullOrWhiteSpace(record.in4_status)) return record.in4_status;
+        if (IsCategoryMatch(record.in5, categoryKey) && !string.IsNullOrWhiteSpace(record.in5_status)) return record.in5_status;
+
+        // Fallback to OgQueue status
+        if (consultMatch != null)
+        {
+            var qStat = consultMatch.queue_status ?? consultMatch.status;
+            if (!string.IsNullOrWhiteSpace(qStat)) return qStat;
+        }
+
         return record.status ?? "waiting";
     }
 
@@ -1169,15 +1214,18 @@
         if (string.IsNullOrEmpty(newStatus)) return;
 
         string? slotName = null;
-        if (string.Equals(record.in1, categoryKey, StringComparison.OrdinalIgnoreCase)) { slotName = "in1"; record.in1_status = newStatus; }
-        else if (string.Equals(record.in2, categoryKey, StringComparison.OrdinalIgnoreCase)) { slotName = "in2"; record.in2_status = newStatus; }
-        else if (string.Equals(record.in3, categoryKey, StringComparison.OrdinalIgnoreCase)) { slotName = "in3"; record.in3_status = newStatus; }
-        else if (string.Equals(record.in4, categoryKey, StringComparison.OrdinalIgnoreCase)) { slotName = "in4"; record.in4_status = newStatus; }
-        else if (string.Equals(record.in5, categoryKey, StringComparison.OrdinalIgnoreCase)) { slotName = "in5"; record.in5_status = newStatus; }
+        if (IsCategoryMatch(record.in1, categoryKey)) { slotName = "in1"; record.in1_status = newStatus; }
+        else if (IsCategoryMatch(record.in2, categoryKey)) { slotName = "in2"; record.in2_status = newStatus; }
+        else if (IsCategoryMatch(record.in3, categoryKey)) { slotName = "in3"; record.in3_status = newStatus; }
+        else if (IsCategoryMatch(record.in4, categoryKey)) { slotName = "in4"; record.in4_status = newStatus; }
+        else if (IsCategoryMatch(record.in5, categoryKey)) { slotName = "in5"; record.in5_status = newStatus; }
 
+        isLoading = true;
+
+        // 1. Update Vitals Slot Status
+        bool slotSuccess = true;
         if (slotName != null)
         {
-            isLoading = true;
             var req = new UpdateVitalSlotStatusRequest
             {
                 vitalentryid = record.vitalentryid,
@@ -1186,18 +1234,36 @@
                 usercode = 1,
                 computercode = 1
             };
+            slotSuccess = await VitalsService.UpdateSlotStatusAsync(req);
+        }
 
-            bool success = await VitalsService.UpdateSlotStatusAsync(req);
-            isLoading = false;
+        // 2. Also Update OgQueue Status via api/OgQueue/update-status if matching ogentryid is found
+        var consultMatch = consultationList.FirstOrDefault(c => 
+            (c.vitalentryid.HasValue && c.vitalentryid.Value > 0 && c.vitalentryid.Value == record.vitalentryid) ||
+            (!string.IsNullOrWhiteSpace(c.token_no) && string.Equals(c.token_no, record.token_no, StringComparison.OrdinalIgnoreCase)));
 
-            if (success)
+        if (consultMatch != null && consultMatch.ogentryid.HasValue && consultMatch.ogentryid.Value > 0)
+        {
+            await OGService.UpdateStatusAsync(new UpdateOgStatusRequest
             {
-                ToastService.ShowSuccess($"Status updated to '{FormatStatus(newStatus)}' for Token #{record.token_no}");
-            }
-            else
-            {
-                ToastService.ShowError($"Failed to update status for Token #{record.token_no}");
-            }
+                ogentryid = consultMatch.ogentryid.Value,
+                status = newStatus,
+                usercode = 1,
+                computercode = 1
+            });
+            consultMatch.queue_status = newStatus;
+            consultMatch.status = newStatus;
+        }
+
+        isLoading = false;
+
+        if (slotSuccess)
+        {
+            ToastService.ShowSuccess($"Status updated to '{FormatStatus(newStatus)}' for Token #{record.token_no}");
+        }
+        else
+        {
+            ToastService.ShowError($"Failed to update status for Token #{record.token_no}");
         }
     }
 

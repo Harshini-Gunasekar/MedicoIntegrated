@@ -1,0 +1,1414 @@
+@page "/token-display"
+@rendermode InteractiveServer
+@using Hospital_display.Models
+@layout SharedComponents.Rcl.Components.Layout.EmptyLayout
+@implements IDisposable
+@inject IJSRuntime JS
+@inject IConfiguration Configuration
+@inject IHttpClientFactory HttpClientFactory
+@inject NavigationManager NavManager
+
+<PageTitle>Hospital Token Display Signage</PageTitle>
+
+<div>
+
+    @if (!_hasSelectedDoctor && !_isAdminOpen)
+    {
+        <!-- DOCTOR SELECTION SCREEN -->
+        <div class="kiosk-display justify-content-center align-items-center">
+            <div class="doc-select-screen">
+                <div class="doc-select-header">
+                    <h1 class="doc-select-title">
+                        <i class="bi bi-display"></i> Select Display Doctor
+                    </h1>
+                    <p class="doc-select-subtitle">Tap a doctor below to load their specific token queue.</p>
+                </div>
+
+                <!-- SEARCH NAME FILTER -->
+                <div class="d-flex justify-content-center mb-4">
+                    <div class="doc-search-wrapper">
+                        <i class="bi bi-search search-icon"></i>
+                        <input type="text" class="form-control doc-search-input" 
+                               placeholder="Filter doctor by name..." 
+                               @bind-value="_doctorSearchQuery" 
+                               @bind-value:event="oninput" />
+                        @if (!string.IsNullOrEmpty(_doctorSearchQuery))
+                        {
+                            <button class="doc-search-clear" type="button" @onclick="ClearDoctorSearch" aria-label="Clear Search">
+                                <i class="bi bi-x-lg"></i>
+                            </button>
+                        }
+                    </div>
+                </div>
+                
+                @{
+                    var docs = GetAvailableDoctors();
+                    if (!string.IsNullOrWhiteSpace(_doctorSearchQuery))
+                    {
+                        docs = docs.Where(d => d.DoctorName.Contains(_doctorSearchQuery, StringComparison.OrdinalIgnoreCase)).ToList();
+                    }
+                }
+                @if (docs.Any())
+                {
+                    <div class="doc-select-grid">
+                        @foreach (var doc in docs)
+                        {
+                            <div class="doc-select-card" @onclick='() => SelectDoctorToDisplay(doc.Dcode, doc.DoctorName)'>
+                                <div class="doc-avatar-wrapper">
+                                    <i class="bi bi-person-fill"></i>
+                                </div>
+                                <h2 class="doc-select-name">@doc.DoctorName</h2>
+                                @if(doc.Dcode != null)
+                                {
+                                    <div class="doc-select-code">Code: @doc.Dcode</div>
+                                }
+                                <div class="doc-patient-badge">
+                                    <span class="pulse-dot"></span>
+                                    <span>@doc.TokenCount Patients Waiting</span>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="d-flex justify-content-center">
+                        <div class="no-docs-card">
+                            @if (!string.IsNullOrWhiteSpace(_doctorSearchQuery))
+                            {
+                                <i class="bi bi-search fs-2 mb-3 d-block"></i>
+                                <h3 class="fw-bold mb-2">No Matching Doctors</h3>
+                                <p class="mb-4 fs-6">We couldn't find any doctor matching "@_doctorSearchQuery".</p>
+                                <button class="btn btn-outline-info px-4 py-2" @onclick="ClearDoctorSearch">
+                                    Clear Filter
+                                </button>
+                            }
+                            else
+                            {
+                                <i class="bi bi-inbox"></i>
+                                <h3 class="fw-bold mb-2">No Active Doctors Found</h3>
+                                <p class="mb-4 fs-6">There are currently no patients waiting in the system.<br/>Wait for tokens to be generated or open settings.</p>
+                                <div class="d-flex justify-content-center gap-2 mt-3">
+                                    <button class="btn btn-outline-info px-4 py-2" @onclick="ToggleAdminDrawer">
+                                        <i class="bi bi-sliders"></i> Open Settings
+                                    </button>
+                                    <button class="btn btn-link text-muted" @onclick='() => SelectDoctorToDisplay(null, "All Doctors")'>
+                                        Show Empty Display
+                                    </button>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+    else
+    {
+    <!-- FULLSCREEN KIOSK DISPLAY COVERING THE PAGE -->
+    <div class="kiosk-display">
+        <div class="glass-panel">
+            
+            <!-- HEADER SECTION -->
+            <header class="signage-header image-style-header">
+                <!-- Inner curved glass shapes -->
+                <div class="header-glass-bg">
+                    <div class="glass-layer-1"></div>
+                    <div class="glass-layer-2"></div>
+                </div>
+
+                <div class="logo-section" @ondblclick="ToggleAdminDrawer" title="Double click to configure">
+                    <div style="overflow: hidden; width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; margin-right: -6px; flex-shrink: 0;">
+                        <img src="images/output-smallpngtools.png" alt="Hospital Logo" style="height: 90px; width: 90px; object-fit: cover; transform: scale(1.4); flex-shrink: 0;" />
+                    </div>
+                    <div class="hospital-name">
+                        @HospitalName
+                        <span>Patient Care Signage</span>
+                    </div>
+                </div>
+
+                <div class="doctor-plate" @ondblclick="ClearDoctorSelection" style="cursor: pointer;" title="Double click to change doctor">
+                    <div class="doc-info-list">
+                        <div class="doc-line">
+                            <span class="status-dot solid-green"></span>
+                            <h2 class="doctor-name">@GetDoctorName()</h2>
+                            @if (!string.IsNullOrWhiteSpace(GetDoctorCredentials()))
+                            {
+                                <span class="doctor-credentials ms-2">@GetDoctorCredentials()</span>
+                            }
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(GetDoctorSpecialty()))
+                        {
+                            <div class="doc-line">
+                                <span class="status-dot ring-gold"></span>
+                                <span class="doctor-specialty">@GetDoctorSpecialty()</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <div class="time-date-section" @ondblclick="ToggleAdminDrawer" title="Double click to configure">
+                    <div class="date-widget" style="margin-right: 15px; display: flex; flex-direction: column; align-items: flex-end; justify-content: center; line-height: 1.1;">
+                        <div class="date-day" style="font-size: 14px; font-weight: 800; color: #172046;">@_now.ToString("dddd")</div>
+                        <div class="date-full" style="font-size: 11px; font-weight: 700; color: #3b4588; text-transform: uppercase;">@_now.ToString("dd MMM yyyy")</div>
+                    </div>
+                    <div class="date-divider" style="width: 1px; height: 38px; background: rgba(0,0,0,0.15); margin-right: 15px;"></div>
+                    <div class="time-widget">
+                        <div class="time-display">
+                            @_now.ToString("hh:mm")<span class="seconds">:@_now.ToString("ss")</span><span class="ampm">@_now.ToString("tt")</span>
+                        </div>
+                    </div>
+                    <div class="clock-face-decor">
+                        <img src="data:image/svg+xml;utf8,<svg viewBox='0 0 100 100' xmlns='http://www.w3.org/2000/svg'><circle cx='50' cy='50' r='46' fill='none' stroke='black' stroke-width='2' opacity='0.3'/><line x1='50' y1='10' x2='50' y2='20' stroke='black' stroke-width='2' opacity='0.3'/><line x1='90' y1='50' x2='80' y2='50' stroke='black' stroke-width='2' opacity='0.3'/><line x1='50' y1='90' x2='50' y2='80' stroke='black' stroke-width='2' opacity='0.3'/><line x1='10' y1='50' x2='20' y2='50' stroke='black' stroke-width='2' opacity='0.3'/><path d='M50 50 L65 35' stroke='black' stroke-width='2' opacity='0.3'/><path d='M50 50 L55 70' stroke='black' stroke-width='2' opacity='0.3'/><circle cx='50' cy='50' r='4' fill='black' opacity='0.3'/></svg>" alt="clock" />
+                    </div>
+                    <!-- Quick UI Theme Toggles -->
+                    <div class="ui-theme-controls d-flex align-items-center gap-2 ms-4 z-3" @ondblclick:stopPropagation="true">
+                        <button class="btn btn-sm shadow-sm p-0" style="width: 42px; height: 42px; border-radius: 50%; background: @(_isDarkMode ? "rgba(255,255,255,0.1)" : "rgba(0,0,0,0.04)"); border: 1px solid @(_isDarkMode ? "rgba(255,255,255,0.2)" : "rgba(0,0,0,0.1)"); color: @(_isDarkMode ? "rgba(255,255,255,0.9)" : "rgba(0,0,0,0.7)"); display: flex; align-items: center; justify-content: center; transition: all 0.2s ease;" 
+                                @onclick="ToggleLayoutTheme" title="Switch Queue Style">
+                            <i class="bi @(LayoutTheme == "grid" ? "bi-table" : "bi-grid-fill") fs-5"></i>
+                        </button>
+                    </div>
+                </div>
+            </header>
+
+            <!-- MAIN 2-COLUMN QUEUE LAYOUT -->
+            <main class="main-layout">
+
+                @{
+                    var allQueue     = GetDisplayQueue();
+                    var consultItems = allQueue.Where(i => i.ColorTheme == "green").ToList();
+                    var queueItems   = allQueue.Where(i => i.ColorTheme == "orange" || i.ColorTheme == "blue" || i.ColorTheme == "purple").ToList();
+                }
+
+                <!-- LEFT: NOW CONSULTING HERO PANEL -->
+                <section class="consultation-panel">
+                    <div class="panel-title-bar green-bar">
+                        <span class="sound-wave-active me-2">
+                            <span></span><span></span><span></span>
+                        </span>
+                        CONSULTATION
+                    </div>
+
+                    @if (consultItems.Any())
+                    {
+                        @foreach (var item in consultItems)
+                        {
+                            <div class="consult-card @(item.Patient.ogentryid.HasValue && _callingOgEntryIds.Contains(item.Patient.ogentryid.Value) ? "calling-pulse-green" : "")">
+                                <div class="consult-token-box">
+                                    <span class="consult-token-lbl">Token</span>
+                                    <span class="consult-token-val">@item.Patient.og_token_no</span>
+                                </div>
+                                <div class="consult-info">
+                                    @* @if (!string.IsNullOrEmpty(item.Patient.custcode) && item.Patient.custcode != item.Patient.DisplayName)
+                                    {
+                                        <div class="consult-patient-id">ID: @item.Patient.custcode</div>
+                                    } *@
+                                    <div class="consult-patient-name">@item.Patient.DisplayName</div>
+                                    <div class="consult-status-row">
+                                        <span class="consult-room-badge">
+                                            <i class="bi bi-door-open-fill"></i>
+                                            Room @(item.Patient.dcode ?? 1)
+                                        </span>
+                                        <span class="consult-time">
+                                            <i class="bi bi-clock"></i>
+                                            @item.Patient.DisplayTime
+                                        </span>
+                                    </div>
+                                    <div class="consult-tag">
+                                        @if (item.StatusText.Contains("|"))
+                                        {
+                                            var parts = item.StatusText.Split('|');
+                                            <div class="status-marquee-container" style="color: var(--green);">
+                                                <div class="status-marquee-track-ta">@parts[1].Trim()</div>
+                                                <div class="status-marquee-track-en">@parts[0].Trim()</div>
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            @item.StatusText
+                                        }
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="consult-empty">
+                            <i class="bi bi-person-check-fill d-block mb-3"></i>
+                            <span>No active consultation</span>
+                        </div>
+                    }
+                </section>
+
+                <!-- RIGHT: QUEUE PANEL (Unified Grid for Up Next + Waiting) -->
+                <section class="queue-panel">
+
+                    @if (queueItems.Any())
+                    {
+                        @if (LayoutTheme == "table")
+                        {
+                            <div class="d-flex flex-column gap-3 w-100 flex-grow-1" style="overflow-y: auto; padding: 0.5rem 1.5rem;">
+                                @foreach (var item in queueItems.Take(8))
+                                {
+                                    var isCalling = item.Patient.ogentryid.HasValue && _callingOgEntryIds.Contains(item.Patient.ogentryid.Value) && (item.ColorTheme == "orange" || item.ColorTheme == "purple");
+
+                                    var rowClass = item.ColorTheme switch { "purple" => "purple-row", "orange" => "amber-row", _ => "blue-row" };
+
+                                    var tokenClass = item.ColorTheme switch { "purple" => "purple-token", "orange" => "amber-token", _ => "blue-token" };
+
+                                    var badgeClass = item.ColorTheme switch { "purple" => "badge-purple", "orange" => "badge-amber", _ => "badge-blue" };
+
+                                    <div class="queue-row @rowClass fade-in-entry @(isCalling ? "calling-pulse-amber" : "")">
+                                        <div class="row-token-box @tokenClass">
+                                            <span class="row-token-val">@item.Patient.og_token_no</span>
+                                        </div>
+                                        <div class="row-name">
+                                            @item.Patient.DisplayName
+                                        </div>
+                                        <div class="row-time">
+                                            <i class="bi bi-clock"></i> @item.Patient.DisplayTime
+                                        </div>
+                                        <div class="row-status">
+                                            <span class="row-badge @badgeClass">
+                                                @if (item.StatusText.Contains("|"))
+                                                {
+                                                    var parts = item.StatusText.Split('|');
+                                                    <div class="status-marquee-container">
+                                                        <div class="status-marquee-track-ta">@parts[1].Trim()</div>
+                                                        <div class="status-marquee-track-en">@parts[0].Trim()</div>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    @item.StatusText
+                                                }
+                                            </span>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="queue-grid" style="margin-bottom: 0.5rem;">
+                                @foreach (var item in queueItems.Take(8))
+                                {
+                                    if (item.ColorTheme == "orange")
+                                    {
+                                        <div class="queue-card amber-card fade-in-entry @(item.Patient.ogentryid.HasValue && _callingOgEntryIds.Contains(item.Patient.ogentryid.Value) ? "calling-pulse-amber" : "")">
+                                            <div class="card-token-box">
+                                                <span class="card-token-lbl">Token</span>
+                                                <span class="card-token-val">@item.Patient.og_token_no</span>
+                                            </div>
+                                            <div class="card-info d-flex flex-column align-items-center gap-1">
+                                                <span class="card-name w-100 text-truncate text-center">@item.Patient.DisplayName</span>
+                                                @* @if (!string.IsNullOrEmpty(item.Patient.custcode) && item.Patient.custcode != item.Patient.DisplayName)
+                                                {
+                                                    <span class="card-patient-id text-truncate" style="max-width: 140px;">@item.Patient.custcode</span>
+                                                } *@
+                                                <span class="card-time"><i class="bi bi-clock"></i> @item.Patient.DisplayTime</span>
+                                            </div>
+                                            <div class="card-status-badge">
+                                                @if (item.StatusText.Contains("|"))
+                                                {
+                                                    var parts = item.StatusText.Split('|');
+                                                    <div class="status-marquee-container">
+                                                        <div class="status-marquee-track-ta">@parts[1].Trim()</div>
+                                                        <div class="status-marquee-track-en">@parts[0].Trim()</div>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    @item.StatusText
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                    else if (item.ColorTheme == "purple")
+                                    {
+                                        <div class="queue-card purple-card fade-in-entry @(item.Patient.ogentryid.HasValue && _callingOgEntryIds.Contains(item.Patient.ogentryid.Value) ? "calling-pulse-purple" : "")">
+                                            <div class="card-token-box">
+                                                <span class="card-token-lbl">Token</span>
+                                                <span class="card-token-val">@item.Patient.og_token_no</span>
+                                            </div>
+                                            <div class="card-info d-flex flex-column align-items-center gap-1">
+                                                <span class="card-name w-100 text-truncate text-center">@item.Patient.DisplayName</span>
+                                                <span class="card-time"><i class="bi bi-clock"></i> @item.Patient.DisplayTime</span>
+                                            </div>
+                                            <div class="card-status-badge">
+                                                @if (item.StatusText.Contains("|"))
+                                                {
+                                                    var parts = item.StatusText.Split('|');
+                                                    <div class="status-marquee-container">
+                                                        <div class="status-marquee-track-ta">@parts[1].Trim()</div>
+                                                        <div class="status-marquee-track-en">@parts[0].Trim()</div>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    @item.StatusText
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                    else if (item.ColorTheme == "blue")
+                                    {
+                                        <div class="queue-card blue-card fade-in-entry">
+                                            <div class="card-token-box">
+                                                <span class="card-token-lbl">Token</span>
+                                                <span class="card-token-val">@item.Patient.og_token_no</span>
+                                            </div>
+                                            <div class="card-info d-flex flex-column align-items-center gap-1">
+                                                <span class="card-name w-100 text-truncate text-center">@item.Patient.DisplayName</span>
+                                                @* @if (!string.IsNullOrEmpty(item.Patient.custcode) && item.Patient.custcode != item.Patient.DisplayName)
+                                                {
+                                                    <span class="card-patient-id text-truncate" style="max-width: 140px;">@item.Patient.custcode</span>
+                                                } *@
+                                                <span class="card-time"><i class="bi bi-clock"></i> @item.Patient.DisplayTime</span>
+                                            </div>
+                                            <div class="card-status-badge">
+                                                @if (item.StatusText.Contains("|"))
+                                                {
+                                                    var parts = item.StatusText.Split('|');
+                                                    <div class="status-marquee-container">
+                                                        <div class="status-marquee-track-ta">@parts[1].Trim()</div>
+                                                        <div class="status-marquee-track-en">@parts[0].Trim()</div>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    @item.StatusText
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="queue-empty">
+                            <i class="bi bi-people fs-2 mb-2 d-block opacity-25"></i>
+                            <span>Queue is empty</span>
+                        </div>
+                    }
+
+                    <!-- Status Legend Guide (Moved to right panel) -->
+                    <div class="status-legend mt-auto align-self-end">
+                        <div class="legend-item legend-green">
+                            <span class="legend-color-box"></span>
+                            <div class="legend-text">
+                                <span class="lang-ta">மருத்துவர் பரிசோதனையில்</span>
+                                <span class="lang-en">Consulting</span>
+                            </div>
+                        </div>
+                        <div class="legend-item legend-amber">
+                            <span class="legend-color-box"></span>
+                            <div class="legend-text">
+                                <span class="lang-ta">அடுத்து நீங்கள் செல்லவும்</span>
+                                <span class="lang-en">Up Next</span>
+                            </div>
+                        </div>
+                        <div class="legend-item legend-purple">
+                            <span class="legend-color-box"></span>
+                            <div class="legend-text">
+                                <span class="lang-ta">ஆய்வக அறிக்கை தயார்</span>
+                                <span class="lang-en">Lab / Scan Ready</span>
+                            </div>
+                        </div>
+                        <div class="legend-item legend-blue">
+                            <span class="legend-color-box"></span>
+                            <div class="legend-text">
+                                <span class="lang-ta">காத்திருக்கவும்</span>
+                                <span class="lang-en">Waiting</span>
+                            </div>
+                        </div>
+                    </div>
+
+                </section>
+            </main>
+
+            <!-- FOOTER NEWS TICKER AND NOTICES -->
+            <footer class="signage-footer">
+                <div class="patience-notice">
+                    <i class="bi bi-megaphone-fill text-warning fs-5"></i>
+                    <span>Thank you for your patience</span>
+                </div>
+
+                <div class="ticker-wrap ms-auto">
+                    <div class="ticker-marquee">
+                        @TickerMessage
+                    </div>
+                </div>
+            </footer>
+        </div>
+    </div>
+    }
+
+    <!-- SPEAK VOICE / CALL OVERLAY POPUP FOR ANNOUNCEMENTS -->
+    <div class="overlay-notification @(_showCallOverlay ? "show-call" : "") overlay-@_callingColorTheme">
+        @if (_callingToken != null)
+        {
+            <div class="overlay-token-header">
+                <i class="bi bi-volume-up-fill me-2 anim-pulse"></i> Now Calling
+            </div>
+            <div class="overlay-token-number">
+                @_callingToken.og_token_no
+            </div>
+            <div class="overlay-patient-name">
+                @_callingToken.DisplayName
+            </div>
+            <div class="overlay-room">
+                @if (_callingToken.status == "in_consultation")
+                {
+                    <i class="bi bi-box-arrow-in-right me-2"></i><span>Proceed to Room @(_callingToken.dcode ?? 1)</span>
+                }
+                else if (_callingToken.entry_type == "vitals")
+                {
+                    <i class="bi bi-heart-pulse-fill me-2"></i><span>Proceed to Vitals Check</span>
+                }
+                else if (_callingToken.entry_type == "test_completed" || "lab_scan".Equals(_callingToken.list_type, StringComparison.OrdinalIgnoreCase) || "report_received".Equals(_callingToken.vitals_status, StringComparison.OrdinalIgnoreCase))
+                {
+                    <i class="bi bi-clipboard2-pulse me-2"></i><span>Report Review</span>
+                }
+            </div>
+        }
+    </div>
+
+
+    @* <!-- ADMIN CONSOLE SLIDE OUT PANEL -->
+    <div class="admin-drawer @(_isAdminOpen ? "" : "slide-closed")">
+        <div class="admin-drawer-header">
+            <h5 class="m-0 fw-bold"><i class="bi bi-sliders"></i> Clinic Control Board</h5>
+            <button class="btn-close btn-close-white" @onclick="ToggleAdminDrawer" aria-label="Close"></button>
+        </div>
+
+        <div class="admin-drawer-body">
+            
+            <!-- Quick System Operations -->
+            <div class="d-flex gap-2 mb-4">
+                <button class="btn btn-sm btn-outline-primary flex-grow-1" @onclick="FetchQueueFromApiAsync">
+                    <i class="bi bi-arrow-clockwise"></i> Refresh Queue (API)
+                </button>
+                <button class="btn btn-sm btn-outline-danger flex-grow-1" @onclick="ClearQueue">
+                    <i class="bi bi-trash"></i> Empty Queue
+                </button>
+            </div>
+
+            <!-- TABS FOR CONFIGURATION -->
+            <ul class="nav nav-pills nav-pills-custom mb-3 gap-1 bg-dark p-1 rounded" role="tablist">
+                <li class="nav-item flex-fill" role="presentation">
+                    <button class="nav-link w-100 @(_activeTab == "queue" ? "active" : "")" @onclick="@(() => SetActiveTab("queue"))">
+                        <i class="bi bi-list-ol"></i> Queue Management
+                    </button>
+                </li>
+                <li class="nav-item flex-fill" role="presentation">
+                    <button class="nav-link w-100 @(_activeTab == "config" ? "active" : "")" @onclick="@(() => SetActiveTab("config"))">
+                        <i class="bi bi-gear-wide-connected"></i> Signage Info
+                    </button>
+                </li>
+            </ul>
+
+            @if (_activeTab == "queue")
+            {
+                <!-- INSERT NEW PATIENT FORM -->
+                <div class="bg-dark p-3 rounded mb-4 border border-secondary">
+                    <h6 class="fw-bold mb-3 text-white"><i class="bi bi-person-plus"></i> Add Patient Token</h6>
+                    
+                    <div class="row g-2">
+                        <div class="col-4">
+                            <label class="form-label small fw-bold">Cust Code</label>
+                            <div class="input-group input-group-sm">
+                                <input type="text" class="form-control" @bind-value="newPatient.custcode" @bind-value:event="oninput" placeholder="001" />
+                                <button class="btn btn-outline-secondary" type="button" @onclick="FetchPatientNameAsync" title="Fetch Name"><i class="bi bi-search"></i></button>
+                            </div>
+                        </div>
+                        <div class="col-3">
+                            <label class="form-label small fw-bold">Token ID</label>
+                            <input type="text" class="form-control form-control-sm" @bind="newPatient.og_token_no" placeholder="145" />
+                        </div>
+                        <div class="col-5">
+                            <label class="form-label small fw-bold">Patient Name</label>
+                            <input type="text" class="form-control form-control-sm" @bind="newPatient.custname" placeholder="M. Chen" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-bold">Status Type</label>
+                            <select class="form-select form-select-sm" @bind="newPatient.status">
+                                <option value="waiting">Waiting/Queue</option>
+                                <option value="in_consultation">Ongoing Consultation</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-bold">Entry Type</label>
+                            <select class="form-select form-select-sm" @bind="newPatient.entry_type">
+                                <option value="direct">Direct Queue</option>
+                                <option value="vitals">Vitals Check</option>
+                                <option value="test_completed">Test Completed</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-bold">Doctor Code</label>
+                            <input type="number" class="form-control form-control-sm" @bind="newPatient.dcode" placeholder="4" />
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-bold">Notes/Specimen</label>
+                            <input type="text" class="form-control form-control-sm" @bind="newPatient.notes" placeholder="ECG, CBC etc." />
+                        </div>
+                        <div class="col-12 mt-3">
+                            <button class="btn btn-sm btn-success w-100" @onclick="AddNewPatient">
+                                <i class="bi bi-plus-lg"></i> Insert Patient Token
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- CURRENT QUEUE LIST WITH QUICK CONTROL ACTIONS -->
+                <div>
+                    <h6 class="fw-bold mb-3 text-white"><i class="bi bi-bezier2"></i> Active Queue Actions</h6>
+                    @if (_apiError != null)
+                    {
+                        <div class="alert alert-warning py-1 px-2 small mb-2">
+                            <i class="bi bi-wifi-off"></i> API Connection Offline. Showing local data.
+                        </div>
+                    }
+                    
+                    @if (_allPatients.Any())
+                    {
+                        <div class="list-group list-group-flush border border-secondary rounded overflow-hidden">
+                            @foreach (var p in _allPatients)
+                            {
+                                <div class="list-group-item p-3 d-flex align-items-center justify-content-between bg-dark border-bottom border-secondary text-white">
+                                    <div>
+                                        <span class="badge bg-secondary me-2">#@p.og_token_no</span>
+                                        <strong>@p.DisplayName</strong>
+                                        
+                                        <div class="small text-muted mt-1">
+                                            Status: @p.status | Entry: @p.entry_type 
+                                            @(p.dcode != null ? $" | Doc Code: {p.dcode}" : "")
+                                            @(string.IsNullOrEmpty(p.notes) ? "" : $" - {p.notes}")
+                                        </div>
+                                    </div>
+
+                                    <div class="d-flex gap-1">
+                                        <!-- CALL AND AUDIO ANNOUNCEMENT -->
+                                        <button class="btn btn-sm btn-success" @onclick="() => CallToken(p)" title="Call Out Voice Announcement">
+                                            <i class="bi bi-volume-up-fill"></i> Call
+                                        </button>
+
+                                        <!-- CHANGE STATUS SELECT DYNAMICALLY -->
+                                        <select class="form-select form-select-sm py-0 px-2" style="width: 100px; font-size: 12px; height: 31px;"
+                                                value="@(p.status == "in_consultation" ? "OngoingConsultation" : (p.entry_type == "test_completed" ? "ReadyForReview" : (p.entry_type == "vitals" ? "VitalsCheck" : "Waiting")))"
+                                                @onchange="@((ChangeEventArgs e) => UpdatePatientStatus(p, e.Value?.ToString() ?? string.Empty))">
+                                            <option value="Waiting">Waiting</option>
+                                            <option value="VitalsCheck">Vitals</option>
+                                            <option value="OngoingConsultation">Ongoing</option>
+                                            <option value="ReadyForReview">Review</option>
+                                        </select>
+
+                                        <!-- DELETE PATIENT FROM QUEUE -->
+                                        <button class="btn btn-sm btn-outline-danger" @onclick="() => RemovePatient(p)" title="Close Token">
+                                            <i class="bi bi-x"></i>
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="text-center py-4 text-muted bg-dark border border-secondary rounded">
+                            Queue is currently empty. Add a patient token above.
+                        </div>
+                    }
+                </div>
+            }
+            else if (_activeTab == "config")
+            {
+                <!-- SIGNAGE AND SPEECH GENERAL SETTINGS -->
+                <div class="mb-4">
+                    <h6 class="fw-bold mb-3 text-primary"><i class="bi bi-buildings"></i> Signage Identity Plate</h6>
+                    
+                    <div class="mb-2">
+                        <label class="form-label small fw-bold">Clinic / Hospital Name</label>
+                        <input type="text" class="form-control form-control-sm" @bind="HospitalName" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small fw-bold">Main Doctor</label>
+                        <input type="text" class="form-control form-control-sm" @bind="DoctorName" />
+                    </div>
+                    <div class="mb-2">
+                        <label class="form-label small fw-bold">Credentials</label>
+                        <input type="text" class="form-control form-control-sm" @bind="DoctorCredentials" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold">Designation/Specialty</label>
+                        <input type="text" class="form-control form-control-sm" @bind="DoctorSpecialty" />
+                    </div>
+                </div>
+
+                <div class="mb-4 border-top border-secondary pt-3">
+                    <h6 class="fw-bold mb-3 text-primary"><i class="bi bi-soundwave"></i> Voice Announcement Parameters</h6>
+                    
+                    <div class="row g-2">
+                        <div class="col-6">
+                            <label class="form-label small fw-bold">Voice Accent/Language</label>
+                            <select class="form-select form-select-sm" @bind="SelectedLanguage">
+                                <option value="en-IN">Indian English (en-IN)</option>
+                                <option value="en-US">US English (en-US)</option>
+                                <option value="ta-IN">Tamil (ta-IN)</option>
+                            </select>
+                        </div>
+                        <div class="col-6">
+                            <label class="form-label small fw-bold">Speech Speed</label>
+                            <select class="form-select form-select-sm" @bind="SpeechRate">
+                                <option value="0.7">Very Slow (0.7)</option>
+                                <option value="0.8">Polite/Slow (0.8)</option>
+                                <option value="0.9">Clear/Medium (0.9)</option>
+                                <option value="1.0">Standard Speed (1.0)</option>
+                            </select>
+                        </div>
+                        <div class="col-12 mt-2">
+                            <button class="btn btn-sm btn-outline-secondary w-100" @onclick="TestVoiceChime">
+                                <i class="bi bi-play-fill"></i> Test Announcement Chime Sound
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="mb-3 border-top border-secondary pt-3">
+                    <h6 class="fw-bold mb-3 text-primary"><i class="bi bi-palette"></i> Screen Presentation Customization</h6>
+                    
+                    <div class="form-check form-switch mb-2">
+                        <input class="form-check-input" type="checkbox" role="switch" id="autoThemeSwitch" @bind="_autoThemeSwitch" />
+                        <label class="form-check-label fw-bold text-white small" for="autoThemeSwitch">Auto Theme (Dark Mode 6 PM - 6 AM)</label>
+                    </div>
+
+                    <div class="form-check form-switch mb-3">
+                        <input class="form-check-input" type="checkbox" role="switch" id="themeSwitch" @bind="_isDarkMode" disabled="@_autoThemeSwitch" />
+                        <label class="form-check-label fw-bold text-white small" for="themeSwitch">Manual Tech Sapphire Dark Mode</label>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label small fw-bold">Queue Layout Theme</label>
+                        <select class="form-select form-select-sm" @bind="LayoutTheme">
+                            <option value="grid">Grid Card Layout (Default)</option>
+                            <option value="table">Table List Flow</option>
+                        </select>
+                    </div>
+
+                    <div class="mb-2">
+                        <label class="form-label small fw-bold">Running Ticker Notification Bar Text</label>
+                        <textarea class="form-control form-control-sm" rows="3" @bind="TickerMessage"></textarea>
+                    </div>
+                </div>
+            }
+        </div>
+
+        <div class="admin-drawer-footer">
+            <button class="btn btn-sm btn-primary w-100" @onclick="ToggleAdminDrawer">
+                <i class="bi bi-check2-circle"></i> Save Settings &amp; Return
+            </button>
+        </div>
+    </div> *@
+
+</div>
+
+@code {
+    // Theme and control configurations
+    private bool _autoThemeSwitch = false;
+    private bool _isDarkMode = false;
+    private string LayoutTheme { get; set; } = "grid";
+    private bool _isAdminOpen = false;
+    private string _activeTab = "queue";
+    private DateTime _now = DateTime.Now;
+    private CancellationTokenSource _cts = new();
+    private int _apiPollCounter = 0;
+
+    private void ToggleLayoutTheme()
+    {
+        LayoutTheme = LayoutTheme == "grid" ? "table" : "grid";
+    }
+
+    private void ToggleColorTheme()
+    {
+        _autoThemeSwitch = false; 
+        _isDarkMode = false;
+    }
+
+    // Signage details (Initialized to match the user uploaded image)
+    public string HospitalName { get; set; } = "Nishanth Hospital";
+    public string DoctorName { get; set; } = "Dr. Abhishant Padmanaban";
+    public string DoctorCredentials { get; set; } = "";
+    public string DoctorSpecialty { get; set; } = "";
+    public string TickerMessage { get; set; } = "Kindly wait for your token number and follow directions. | Thank you! | டோக்கன் எண்ணுக்குக் காத்திருந்து அறிவுறுத்தல்களைப் பின்பற்றவும். நன்றி! | Thank you for choosing Nishanth Hospital.";
+
+    private string GetDoctorName()
+    {
+        if (_selectedDcode.HasValue)
+        {
+            var doc = GetAvailableDoctors().FirstOrDefault(d => d.Dcode == _selectedDcode.Value);
+            if (doc != null && !string.IsNullOrEmpty(doc.DoctorName)) return doc.DoctorName;
+        }
+        return DoctorName;
+    }
+
+    private string? GetDoctorCredentials()
+    {
+        if (_selectedDcode.HasValue)
+        {
+            var doc = GetAvailableDoctors().FirstOrDefault(d => d.Dcode == _selectedDcode.Value);
+            if (doc != null && !string.IsNullOrEmpty(doc.DoctorQualification)) return doc.DoctorQualification;
+        }
+        return !string.IsNullOrEmpty(DoctorCredentials) ? DoctorCredentials : null;
+    }
+
+    private string? GetDoctorSpecialty()
+    {
+        if (_selectedDcode.HasValue)
+        {
+            var doc = GetAvailableDoctors().FirstOrDefault(d => d.Dcode == _selectedDcode.Value);
+            if (doc != null && !string.IsNullOrEmpty(doc.DoctorSpecialization)) return doc.DoctorSpecialization;
+        }
+        return !string.IsNullOrEmpty(DoctorSpecialty) ? DoctorSpecialty : null;
+    }
+
+
+    // Speech synthesis configuration parameters
+    public string SelectedLanguage { get; set; } = "en-IN";
+    public double SpeechRate { get; set; } = 0.9;
+    public double SpeechPitch { get; set; } = 1.0;
+
+    // Patient queues lists using OgQueueModel directly
+    private List<OgQueueModel> _allPatients = new();
+    private HashSet<int> _callingOgEntryIds = new();
+    private string? _apiError;
+
+    // Background cache for patient names fetched dynamically
+    private Dictionary<string, string> _patientNamesCache = new(StringComparer.OrdinalIgnoreCase);
+    // Guard: Prevents multiple concurrent mass-syncs to Labcare
+    private bool _isHydratingNames = false;
+    private async Task FetchPatientNameAsync()
+    {
+        // Stub to unbreak build
+        await Task.CompletedTask;
+    }
+
+    // Computed lists from API queue
+    private OgQueueModel? _ongoingPatient => _allPatients.FirstOrDefault(p => "in_consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase) && !p.deleted);
+    private IEnumerable<OgQueueModel> _reportPatients => _allPatients.Where(p => "waiting".Equals(p.status, StringComparison.OrdinalIgnoreCase) && ("report_received".Equals(p.vitals_status, StringComparison.OrdinalIgnoreCase) || "lab_scan".Equals(p.list_type, StringComparison.OrdinalIgnoreCase)) && !p.deleted);
+    private IEnumerable<OgQueueModel> _waitingPatients => _allPatients.Where(p => "waiting".Equals(p.status, StringComparison.OrdinalIgnoreCase) && !"report_received".Equals(p.vitals_status, StringComparison.OrdinalIgnoreCase) && !"lab_scan".Equals(p.list_type, StringComparison.OrdinalIgnoreCase) && !p.deleted);
+
+    // Call Overlay Patient State
+    private OgQueueModel? _callingToken;
+    private bool _showCallOverlay = false;
+    private string _callingColorTheme = "green";
+
+    // Doctor Selection variables
+    public int? QueryDocCode { get; set; }
+
+    // Tenant Code
+    public string TenantCode { get; set; } = "0010";
+
+    private bool _hasSelectedDoctor = false;
+    private int? _selectedDcode = null;
+    private string _doctorSearchQuery = "";
+
+    private void ClearDoctorSearch()
+    {
+        _doctorSearchQuery = "";
+    }
+
+    private class DoctorItem
+    {
+        public int? Dcode { get; set; }
+        public string DoctorName { get; set; } = "";
+        public string? DoctorQualification { get; set; }
+        public string? DoctorSpecialization { get; set; }
+        public int TokenCount { get; set; }
+    }
+
+    private List<DoctorItem> GetAvailableDoctors()
+    {
+        return _allPatients
+            .Where(p => !p.deleted && 
+                        !"completed".Equals(p.status, StringComparison.OrdinalIgnoreCase))
+            .GroupBy(p => p.dcode)
+            .Select(g => {
+                var firstWithDocName = g.FirstOrDefault(x => !string.IsNullOrEmpty(x.doctor_name));
+                var firstWithQual = g.FirstOrDefault(x => !string.IsNullOrEmpty(x.doctor_qualification));
+                var firstWithSpec = g.FirstOrDefault(x => !string.IsNullOrEmpty(x.doctor_specialization));
+                return new DoctorItem 
+                { 
+                    Dcode = g.Key, 
+                    DoctorName = firstWithDocName?.doctor_name ?? $"Doctor {g.Key ?? 1}",
+                    DoctorQualification = firstWithQual?.doctor_qualification,
+                    DoctorSpecialization = firstWithSpec?.doctor_specialization,
+                    TokenCount = g.Count()
+                };
+            })
+            .OrderByDescending(d => d.TokenCount)
+            .ToList();
+    }
+
+    private void SelectDoctorToDisplay(int? dcode, string name)
+    {
+        _selectedDcode = dcode;
+        _hasSelectedDoctor = true;
+        if (!string.IsNullOrEmpty(name) && name != "All Doctors")
+        {
+            DoctorName = name; // Update UI title
+        }
+    }
+
+    private void ClearDoctorSelection()
+    {
+        _hasSelectedDoctor = false;
+        _selectedDcode = null;
+    }
+
+    // Form binding model for new patient
+    private OgQueueModel newPatient = new() { og_token_no = "", custname = "", status = "waiting", entry_type = "direct", arrival_time_str = DateTime.Now.ToString("HH:mm:ss") };
+
+    // Track last known state for each patient to detect any status change
+    private Dictionary<int, string> _lastPatientStateSnapshot = new();
+    private bool _isFirstLoad = true;
+    private string _lastAnnouncedNextToken = "";
+
+    protected override void OnInitialized()
+    {
+        // Parse Query String manually using NavigationManager to ensure it always works in InteractiveServer mode
+        var uri = new Uri(NavManager.Uri);
+        var queryStr = uri.Query;
+        if (!string.IsNullOrEmpty(queryStr))
+        {
+            var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(queryStr);
+            if (query.TryGetValue("doccode", out var doccodeValues) && int.TryParse(doccodeValues.First(), out int dcode))
+            {
+                QueryDocCode = dcode;
+                _selectedDcode = dcode;
+                _hasSelectedDoctor = true;
+            }
+            if (query.TryGetValue("tenant_code", out var tenantValues))
+            {
+                TenantCode = tenantValues.First() ?? "0010";
+            }
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // First load: build snapshot, populate UI, no announcements
+        await FetchQueueFromApiAsync();
+        
+        // If doccode was provided in URL, update the DoctorName
+        if (QueryDocCode.HasValue)
+        {
+            var doc = GetAvailableDoctors().FirstOrDefault(d => d.Dcode == QueryDocCode.Value);
+            if (doc != null && !string.IsNullOrEmpty(doc.DoctorName) && doc.DoctorName != $"Doctor {doc.Dcode}")
+            {
+                DoctorName = doc.DoctorName;
+            }
+        }
+
+        await InvokeAsync(StateHasChanged);
+
+        // Start background polling AFTER first load — no race condition
+        _ = StartPollingLoopAsync(_cts.Token);
+    }
+
+
+
+    /// <summary>
+    /// Sequential polling loop.
+    /// IMPORTANT: For Blazor Server, ALL UI work must run inside
+    /// InvokeAsync so it executes on the SignalR circuit context.
+    /// </summary>
+    private async Task StartPollingLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(1000, ct);
+
+                // Run everything on the Blazor circuit thread
+                await InvokeAsync(async () =>
+                {
+                    _now = DateTime.Now;
+                    _apiPollCounter++;
+
+                    // Only poll the backend API every 5 seconds (5 ticks) to avoid overloading the server,
+                    // while updating the clock seconds every 1 second.
+                    if (_apiPollCounter >= 5 || _isFirstLoad)
+                    {
+                        _apiPollCounter = 0;
+                        await FetchQueueFromApiAsync();
+                    }
+                    
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (TaskCanceledException) { /* Normal on page dispose */ }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[Polling Error] {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Returns a unique state key for a patient to detect any status change.
+    /// Covers: status, entry_type, vitals_status, list_type
+    /// </summary>
+    private string GetPatientStateKey(OgQueueModel p) =>
+        $"{p.status}|{p.entry_type}|{p.vitals_status}|{p.list_type}";
+
+    private async Task FetchQueueFromApiAsync()
+    {
+        try
+        {
+            string baseUrl = Configuration["ApiBaseUrl"] ?? "http://medicoapi.iscansoft.com/";
+            // Add timestamp cache-buster so the response is NEVER cached
+            string url = $"{baseUrl.TrimEnd('/')}/api/OgQueue/merged-list?_t={DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()}";
+
+            // Use IHttpClientFactory — correct pattern for Blazor Server
+            using var http = HttpClientFactory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            request.Headers.Add("tenant_code", TenantCode);
+            request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
+            {
+                NoCache = true,
+                NoStore = true
+            };
+
+            using var response = await http.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                var list = await response.Content.ReadFromJsonAsync<List<OgQueueModel>>();
+                if (list != null)
+                {
+                    // Disable Labcare bulk customer fetch to prevent endpoint issues
+                    // The names should come directly from Medico API.
+                    _apiError = null;
+
+                    if (_isFirstLoad)
+                    {
+                        // First load: build snapshot, no announcements
+                        _allPatients = list;
+                        var firstDisplayQueue = GetDisplayQueue();
+                        var firstUpNext = firstDisplayQueue.FirstOrDefault(i => i.ColorTheme == "orange")?.Patient;
+                        if (firstUpNext != null && !string.IsNullOrEmpty(firstUpNext.og_token_no))
+                        {
+                            _lastAnnouncedNextToken = firstUpNext.og_token_no;
+                        }
+
+                        _lastPatientStateSnapshot.Clear();
+                        foreach (var p in list.Where(p => p.ogentryid.HasValue && !p.deleted))
+                            _lastPatientStateSnapshot[p.ogentryid!.Value] = GetPatientStateKey(p);
+                        _isFirstLoad = false;
+                        return;
+                    }
+
+                    // ── Detect changed patients since last poll ──────────────────
+                    var changedPatients = new List<OgQueueModel>();
+                    foreach (var p in list.Where(p => p.ogentryid.HasValue && !p.deleted))
+                    {
+                        int id = p.ogentryid!.Value;
+                        string newKey = GetPatientStateKey(p);
+                        if (_lastPatientStateSnapshot.TryGetValue(id, out var oldKey) && oldKey != newKey)
+                            changedPatients.Add(p);
+                        _lastPatientStateSnapshot[id] = newKey;
+                    }
+
+                    // Clean up departed patients from snapshot
+                    var activeIds = list.Where(p => p.ogentryid.HasValue && !p.deleted)
+                                        .Select(p => p.ogentryid!.Value).ToHashSet();
+                    foreach (var k in _lastPatientStateSnapshot.Keys.Where(k => !activeIds.Contains(k)).ToList())
+                        _lastPatientStateSnapshot.Remove(k);
+
+                    // Update list and repaint UI
+                    _allPatients = list;
+                    StateHasChanged();
+
+                    // --- AUTO ANNOUNCEMENT FOR NEXT PATIENT ---
+                    var displayList = GetDisplayQueue();
+                    var currentNextPatient = displayList.FirstOrDefault(i => i.ColorTheme == "orange")?.Patient;
+                    if (currentNextPatient != null && !string.IsNullOrEmpty(currentNextPatient.og_token_no))
+                    {
+                        if (currentNextPatient.og_token_no != _lastAnnouncedNextToken)
+                        {
+                            // It's a new Next Patient, announce them natively.
+                            _lastAnnouncedNextToken = currentNextPatient.og_token_no;
+                            await JS.InvokeVoidAsync("hospitalAudio.playBilingualNextPatientAnnouncement", currentNextPatient.og_token_no);
+                            await Task.Delay(2000); // Small breath before standard status announcements
+                        }
+                    }
+
+                    // ── Auto-announce status-changed patients ────────────────────
+                    var toAnnounce = changedPatients
+                        .OrderByDescending(p => "in_consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    foreach (var changed in toAnnounce)
+                    {
+                        await CallToken(changed);
+                        if (toAnnounce.Count > 1)
+                            await Task.Delay(500);
+                    }
+                }
+            }
+            else
+            {
+                _apiError = $"API error: {response.StatusCode}";
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            _apiError = ex.Message;
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleAdminDrawer()
+    {
+        _isAdminOpen = !_isAdminOpen;
+    }
+
+    private void SetActiveTab(string tabName)
+    {
+        _activeTab = tabName;
+    }
+
+    private void LoadMockData()
+    {
+        _allPatients.Clear();
+    }
+
+    private void ClearQueue()
+    {
+        _allPatients.Clear();
+        _apiError = null;
+    }
+
+    private async Task AddNewPatient()
+    {
+        if (string.IsNullOrWhiteSpace(newPatient.og_token_no) || string.IsNullOrWhiteSpace(newPatient.custname))
+            return;
+
+        newPatient.arrival_time_str = DateTime.Now.ToString("HH:mm:ss");
+        newPatient.ogentryid = _allPatients.Any(p => p.ogentryid.HasValue) ? (_allPatients.Where(p => p.ogentryid.HasValue).Max(p => p.ogentryid) ?? 0) + 1 : 1;
+        newPatient.created_at = DateTime.Now;
+        newPatient.updated_at = DateTime.Now;
+
+        // Add to local list
+        _allPatients.Add(newPatient);
+
+        // Reset inputs
+        newPatient = new OgQueueModel { og_token_no = "", custcode = "", custname = "", status = "waiting", entry_type = "direct", arrival_time_str = DateTime.Now.ToString("HH:mm:ss") };
+        await InvokeAsync(StateHasChanged);
+    }
+
+    /*
+    private async Task FetchPatientNameAsync()
+    {
+        // HIDDEN: Disabled to prevent use of api/customer/get
+    }
+
+    private async Task HydratePatientNamesFromLabcareAsync()
+    {
+        // HIDDEN: Disabled to prevent use of api/customer/get
+    }
+    */
+
+    private async Task RemovePatient(OgQueueModel patient)
+    {
+        try
+        {
+            string baseUrl = Configuration["ApiBaseUrl"] ?? "http://medicoapi.iscansoft.com/";
+            string url = $"{baseUrl.TrimEnd('/')}/api/OgQueue/update-out-time";
+
+            var requestData = new UpdateOgOutTimeRequest
+            {
+                ogentryid = patient.ogentryid ?? 0,
+                out_time = TimeOnly.FromDateTime(DateTime.Now),
+                status = "completed",
+                notes = patient.notes,
+                usercode = 1,
+                computercode = 1
+            };
+
+            using var http = HttpClientFactory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add("tenant_code", TenantCode);
+            request.Content = JsonContent.Create(requestData);
+            await http.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error removing patient: {ex.Message}");
+        }
+
+        patient.deleted = true;
+        _allPatients.Remove(patient);
+        await FetchQueueFromApiAsync();
+    }
+
+    private async Task UpdatePatientStatus(OgQueueModel patient, string statusStr)
+    {
+        string apiStatus = "waiting";
+        string entryType = patient.entry_type;
+
+        if (statusStr == "OngoingConsultation")
+        {
+            apiStatus = "in_consultation";
+            entryType = "direct";
+            
+            // Revert existing ongoing patient to waiting
+            var currentOngoing = _ongoingPatient;
+            if (currentOngoing != null && currentOngoing != patient)
+            {
+                currentOngoing.status = "waiting";
+            }
+        }
+        else if (statusStr == "ReadyForReview")
+        {
+            apiStatus = "waiting";
+            entryType = "test_completed";
+        }
+        else if (statusStr == "VitalsCheck")
+        {
+            apiStatus = "waiting";
+            entryType = "vitals";
+        }
+        else if (statusStr == "Waiting")
+        {
+            apiStatus = "waiting";
+            entryType = "direct";
+        }
+
+        patient.status = apiStatus;
+        patient.entry_type = entryType;
+
+        try
+        {
+            string baseUrl = Configuration["ApiBaseUrl"] ?? "http://medicoapi.iscansoft.com/";
+            string url = $"{baseUrl.TrimEnd('/')}/api/OgQueue/update-status";
+
+            var requestData = new UpdateOgStatusRequest
+            {
+                ogentryid = patient.ogentryid ?? 0,
+                status = apiStatus,
+                usercode = 1,
+                computercode = 1
+            };
+
+            using var http = HttpClientFactory.CreateClient();
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add("tenant_code", TenantCode);
+            request.Content = JsonContent.Create(requestData);
+            await http.SendAsync(request);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error updating status: {ex.Message}");
+        }
+
+        await FetchQueueFromApiAsync();
+    }
+
+    private async Task CallToken(OgQueueModel token)
+    {
+        var displayQueue = GetDisplayQueue();
+        var match = displayQueue.FirstOrDefault(item => item.Patient.ogentryid == token.ogentryid);
+        _callingColorTheme = match?.ColorTheme ?? "green";
+
+        if (token.ogentryid.HasValue)
+        {
+            _callingOgEntryIds.Add(token.ogentryid.Value);
+        }
+        _callingToken = token;
+        _showCallOverlay = true;
+        StateHasChanged();
+        
+        string announcementText = "";
+        
+        if (SelectedLanguage == "ta-IN")
+        {
+            if (token.status == "in_consultation")
+            {
+                var loc = token.dcode == null ? "மருத்துவரைச் சந்திக்க" : $"அறை எண் {token.dcode}";
+                announcementText = $"அன்பான வேண்டுகோள். டோக்கன் எண் {token.og_token_no}, தயவுசெய்து {loc} -ற்கு வரவும்.";
+            }
+            else if (token.entry_type == "vitals")
+            {
+                announcementText = $"அன்பான வேண்டுகோள். டோக்கன் எண் {token.og_token_no}, உடல்நிலை பரிசோதனைக்காக வரவும்.";
+            }
+            else
+            {
+                announcementText = $"அன்பான வேண்டுகோள். டோக்கன் எண் {token.og_token_no}, உங்கள் பரிசோதனை அறிக்கையை சரிபார்க்க வரவும்.";
+            }
+        }
+        else
+        {
+            if (token.status == "in_consultation")
+            {
+                var loc = token.dcode == null ? "" : $", Room {token.dcode}";
+                announcementText = $"Next token number {token.og_token_no}{loc}.";
+            }
+            else if (token.entry_type == "vitals")
+            {
+                announcementText = $"Next token number {token.og_token_no}, Vitals check.";
+            }
+            else
+            {
+                announcementText = $"Next token number {token.og_token_no}, Report review.";
+            }
+        }
+
+        await JS.InvokeVoidAsync("hospitalAudio.playChimeAndSpeak", announcementText, SelectedLanguage, SpeechRate, SpeechPitch);
+        
+        _ = Task.Delay(4200).ContinueWith(_ =>
+        {
+            if (token.ogentryid.HasValue)
+            {
+                _callingOgEntryIds.Remove(token.ogentryid.Value);
+            }
+            _showCallOverlay = false;
+            InvokeAsync(StateHasChanged);
+        });
+    }
+
+    private async Task TestVoiceChime()
+    {
+        string testStr = SelectedLanguage == "ta-IN" ? "அறிவிப்பு சோதனை" : "Voice chime test successful.";
+        await JS.InvokeVoidAsync("hospitalAudio.playChimeAndSpeak", testStr, SelectedLanguage, SpeechRate, SpeechPitch);
+    }
+
+    private List<PatientQueueDisplayItem> GetDisplayQueue()
+    {
+        var displayList = new List<PatientQueueDisplayItem>();
+
+        // ── RULE: Exclude 'completed' and 'deleted' patients entirely ──────────
+        // ── ALSO: Filter by Selected Doctor if one is chosen ──────────
+        var activePatients = _allPatients
+            .Where(p => !p.deleted &&
+                        !"completed".Equals(p.status, StringComparison.OrdinalIgnoreCase) &&
+                        (_selectedDcode == null || p.dcode == _selectedDcode) &&
+                        ("waiting".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                         "in_consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                         "up-next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                         "up_next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                         "upnext".Equals(p.status, StringComparison.OrdinalIgnoreCase)))
+            .OrderBy(p => p.token_sort ?? 999)
+            .ToList();
+
+        // ── 1. GREEN: In Consultation ──────────────────────────────────────────
+        var consulting = activePatients
+            .Where(p => "in_consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        foreach (var p in consulting)
+        {
+            bool isReport = "lab_scan".Equals(p.list_type, StringComparison.OrdinalIgnoreCase) ||
+                            "report_received".Equals(p.vitals_status, StringComparison.OrdinalIgnoreCase) ||
+                            p.entry_type == "test_completed";
+
+            displayList.Add(new PatientQueueDisplayItem
+            {
+                Patient       = p,
+                ColorTheme    = "green",
+                StatusText    = isReport ? "REPORT REVIEW|அறிக்கை பரிசோதனையில்" : "IN CONSULTATION|மருத்துவர் பரிசோதனையில்",
+                StatusSubtext = isReport ? "Reviewing Lab Reports" : $"Consulting Room {p.dcode ?? 1}"
+            });
+        }
+
+        // ── 2. ORANGE (Up Next) + BLUE (Waiting) ──────────────────────────────
+        // Explicit 'up_next' from API come first, then waiting ordered by token_sort
+        var upNextFromApi = activePatients
+            .Where(p => "up-next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                        "up_next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                        "upnext".Equals(p.status, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var waitingOnly = activePatients
+            .Where(p => "waiting".Equals(p.status, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // Merge: explicit up-next first, then waiting ordered by token_sort
+        var orderedQueue = upNextFromApi.Concat(waitingOnly).ToList();
+
+        for (int i = 0; i < orderedQueue.Count; i++)
+        {
+            var p = orderedQueue[i];
+            bool isLabScan = "lab_scan".Equals(p.list_type, StringComparison.OrdinalIgnoreCase);
+            bool isReport = isLabScan ||
+                            "report_received".Equals(p.vitals_status, StringComparison.OrdinalIgnoreCase) ||
+                            p.entry_type == "test_completed";
+
+            bool isUpNext = "up-next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                            "up_next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                            "upnext".Equals(p.status, StringComparison.OrdinalIgnoreCase);
+
+            if (isLabScan)
+            {
+                // ── PURPLE: Lab Scan ──
+                displayList.Add(new PatientQueueDisplayItem
+                {
+                    Patient       = p,
+                    ColorTheme    = "purple",
+                    StatusText    = "LAB SCAN REPORT|ஆய்வக அறிக்கை தயார்",
+                    StatusSubtext = "Lab scan report ready for review"
+                });
+            }
+            else if (isUpNext)
+            {
+                // ── ORANGE: Up Next ──
+                displayList.Add(new PatientQueueDisplayItem
+                {
+                    Patient       = p,
+                    ColorTheme    = "orange",
+                    StatusText    = isReport          ? "WAITING FOR REPORT|ஆய்வக அறிக்கைக்காக காத்திருக்கவும்"
+                                  : p.entry_type == "vitals" ? "VITALS CHECK|உடல்நிலை பரிசோதனை"
+                                  : "NEXT IN LINE|அடுத்து நீங்கள் செல்லவும்",
+                    StatusSubtext = isReport          ? "Report ready for review"
+                                  : p.entry_type == "vitals" ? "Vitals check next"
+                                  : "Please prepare to enter"
+                });
+            }
+            else
+            {
+                // ── BLUE: Waiting ──
+                displayList.Add(new PatientQueueDisplayItem
+                {
+                    Patient       = p,
+                    ColorTheme    = "blue",
+                    StatusText    = isReport          ? "WAITING FOR REPORT|ஆய்வக அறிக்கைக்காக காத்திருக்கவும்"
+                                  : p.entry_type == "vitals" ? "VITALS CHECK|உடல்நிலை பரிசோதனை"
+                                  : "WAITING|காத்திருக்கவும்",
+                    StatusSubtext = isReport          ? "Report pending review"
+                                  : p.entry_type == "vitals" ? "Vitals check pending"
+                                  : "Waiting in lounge"
+                });
+            }
+        }
+
+        return displayList;
+    }
+
+    public class PatientQueueDisplayItem
+    {
+        public OgQueueModel Patient { get; set; } = null!;
+        public string ColorTheme { get; set; } = "blue"; // green | orange | blue
+        public string StatusText { get; set; } = "";
+        public string StatusSubtext { get; set; } = "";
+    }
+
+    public void Dispose()
+    {
+        _cts.Cancel();
+        _cts.Dispose();
+    }
+}
