@@ -159,7 +159,7 @@
                                     <div class="table-patient-id">@(item.custcode ?? "-")</div>
                                 </td>
                                 <td>
-                                    <div class="fw-bold text-dark">@(item.patient_name ?? "-")</div>
+                                    <div class="fw-bold text-dark">@GetPatientName(item)</div>
                                 </td>
                                 <td>
                                     <div class="table-icon-text">
@@ -238,7 +238,7 @@
                             <option value="doctor">Doctor</option>
                             <option value="lab">Lab</option>
                             <option value="scan">Scan</option>
-                            <option value="ecg-echo">ECG/Echo</option>
+                            <option value="ecg_echo">ECG/Echo</option>
                         </select>
                     </div>
 
@@ -376,8 +376,37 @@
     private string GetMobileNo(string? custcode)
     {
         if (string.IsNullOrWhiteSpace(custcode)) return "-";
-        var cust = allCustomers.FirstOrDefault(x => x.custcode == custcode || x.tenantcustcode == custcode || x.custid.ToString() == custcode);
+        var cleanCustCode = custcode.Replace("PID-", "", StringComparison.OrdinalIgnoreCase);
+        var cust = allCustomers.FirstOrDefault(x => 
+            x.custcode == custcode || 
+            x.tenantcustcode == custcode || 
+            x.custid.ToString() == custcode ||
+            x.custcode == cleanCustCode ||
+            x.tenantcustcode == cleanCustCode ||
+            x.custid.ToString() == cleanCustCode);
         return cust?.mobile ?? cust?.phone ?? "-";
+    }
+
+    private string GetPatientName(VitalsModel item)
+    {
+        if (!string.IsNullOrWhiteSpace(item.patient_name) && item.patient_name != "-")
+        {
+            return item.patient_name;
+        }
+        if (string.IsNullOrWhiteSpace(item.custcode)) return "-";
+        var cleanCustCode = item.custcode.Replace("PID-", "", StringComparison.OrdinalIgnoreCase);
+        var cust = allCustomers.FirstOrDefault(x => 
+            x.custcode == item.custcode || 
+            x.tenantcustcode == item.custcode || 
+            x.custid.ToString() == item.custcode ||
+            x.custcode == cleanCustCode ||
+            x.tenantcustcode == cleanCustCode ||
+            x.custid.ToString() == cleanCustCode);
+        if (cust != null)
+        {
+            return string.IsNullOrWhiteSpace(cust.namewithinitials) ? cust.name : cust.namewithinitials;
+        }
+        return "-";
     }
 
     private HttpClient CreateClient()
@@ -402,18 +431,32 @@
             using var client = CreateClient();
             HttpResponseMessage? response = null;
 
-            // 1. Try customer/getcus (primary endpoint used in PatientMaster)
+            // 1. Try api/Customer/get
             try
             {
-                response = await client.GetAsync("customer/getcus");
+                response = await client.GetAsync("api/Customer/get");
                 if (!response.IsSuccessStatusCode)
                 {
-                    response = await client.GetAsync("api/Customer/getcus");
+                    response = await client.GetAsync("Customer/get");
                 }
             }
             catch { }
 
-            // 2. Try Customer/partition
+            // 2. Try customer/getcus (primary endpoint used in PatientMaster)
+            if (response == null || !response.IsSuccessStatusCode)
+            {
+                try
+                {
+                    response = await client.GetAsync("customer/getcus");
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        response = await client.GetAsync("api/Customer/getcus");
+                    }
+                }
+                catch { }
+            }
+
+            // 3. Try Customer/partition
             if (response == null || !response.IsSuccessStatusCode)
             {
                 try
@@ -422,20 +465,6 @@
                     if (!response.IsSuccessStatusCode)
                     {
                         response = await client.GetAsync("api/Customer/partition?pagenumber=1&pagesize=1000");
-                    }
-                }
-                catch { }
-            }
-
-            // 3. Try api/Customer/get
-            if (response == null || !response.IsSuccessStatusCode)
-            {
-                try
-                {
-                    response = await client.GetAsync("api/Customer/get");
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        response = await client.GetAsync("Customer/get");
                     }
                 }
                 catch { }
@@ -507,6 +536,7 @@
         var query = checkInSearchQuery.Trim();
         matchingCustomers = allCustomers.Where(c =>
             (!string.IsNullOrEmpty(c.custcode) && c.custcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(c.tenantcustcode) && c.tenantcustcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
             (!string.IsNullOrEmpty(c.customermanualcode) && c.customermanualcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
             ("PID-" + c.custid).Contains(query, StringComparison.OrdinalIgnoreCase) ||
             (c.custid.ToString().Contains(query)) ||
@@ -527,7 +557,7 @@
     private void SelectCustomer(CustomerModel customer)
     {
         selectedCustomer = customer;
-        checkInSearchQuery = string.IsNullOrWhiteSpace(customer.custcode) ? $"PID-{customer.custid}" : customer.custcode;
+        checkInSearchQuery = !string.IsNullOrWhiteSpace(customer.tenantcustcode) ? customer.tenantcustcode : (string.IsNullOrWhiteSpace(customer.custcode) ? $"PID-{customer.custid}" : customer.custcode);
         showSearchDropdown = false;
         isSearchPerformed = true;
     }
@@ -551,6 +581,7 @@
         var query = checkInSearchQuery.Trim();
         var found = allCustomers.FirstOrDefault(c =>
             (!string.IsNullOrEmpty(c.custcode) && c.custcode.Equals(query, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(c.tenantcustcode) && c.tenantcustcode.Equals(query, StringComparison.OrdinalIgnoreCase)) ||
             (!string.IsNullOrEmpty(c.customermanualcode) && c.customermanualcode.Equals(query, StringComparison.OrdinalIgnoreCase)) ||
             ("PID-" + c.custid).Equals(query, StringComparison.OrdinalIgnoreCase) ||
             (c.custid.ToString() == query) ||
@@ -564,6 +595,7 @@
         {
             found = allCustomers.FirstOrDefault(c =>
                 (!string.IsNullOrEmpty(c.custcode) && c.custcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrEmpty(c.tenantcustcode) && c.tenantcustcode.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
                 ("PID-" + c.custid).Contains(query, StringComparison.OrdinalIgnoreCase) ||
                 (c.custid.ToString().Contains(query)) ||
                 (!string.IsNullOrEmpty(c.name) && c.name.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
@@ -604,7 +636,9 @@
         if (selectedCustomer == null) return;
 
         var name = string.IsNullOrWhiteSpace(selectedCustomer.namewithinitials) ? selectedCustomer.name : selectedCustomer.namewithinitials;
-        var mrn = string.IsNullOrWhiteSpace(selectedCustomer.custcode) ? $"PID-{selectedCustomer.custid}" : selectedCustomer.custcode;
+        var mrn = !string.IsNullOrWhiteSpace(selectedCustomer.tenantcustcode) 
+            ? selectedCustomer.tenantcustcode 
+            : (string.IsNullOrWhiteSpace(selectedCustomer.custcode) ? $"PID-{selectedCustomer.custid}" : selectedCustomer.custcode);
 
         var newVital = new VitalsModel
         {

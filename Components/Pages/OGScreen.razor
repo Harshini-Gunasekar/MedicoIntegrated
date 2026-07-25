@@ -39,13 +39,6 @@
             </div>
 
             <div class="doctor-filter-wrapper">
-                <i class="bi bi-calendar3 filter-icon-left"></i>
-                <input type="date" class="search-input" style="padding-left: 36px; width: 150px;" 
-                       value="@selectedDate.ToString("yyyy-MM-dd")" 
-                       @onchange="OnDateChanged" />
-            </div>
-
-            <div class="doctor-filter-wrapper">
                 <i class="bi bi-funnel filter-icon-left"></i>
                 <select class="doctor-filter-select" @bind="selectedDoctorCode" @bind:after="OnDoctorChanged">
                     <option value="">All Doctors</option>
@@ -286,26 +279,17 @@
                                     <td class="col-name">@(string.IsNullOrWhiteSpace(currentItem.patient_name) ? (currentItem.custcode ?? "-") : $"{currentItem.patient_name}  ({currentItem.custcode ?? "-"})")</td>
                                     <td class="col-time">@(currentItem.arrival_time?.ToString("hh:mm tt") ?? "-")</td>
                                     <td>
-                                        <div class="status-dropdown-wrapper">
-                                            <select class="status-dropdown-select @GetStatusClass(currentItem.status)" 
-                                                    value="@currentItem.status"
-                                                    @onchange="(e) => OnStatusChanged(currentItem, e.Value?.ToString())">
-                                                 <option value="waiting">Waiting</option>
-                                                 <option value="up_next">Up-next</option>
-                                                 <option value="in_consultation">Consultation</option>
-                                                 <option value="completed">Completed</option>
-                                                 @if (!string.IsNullOrEmpty(currentItem.status) && 
-                                                      currentItem.status != "waiting" && 
-                                                      currentItem.status != "up_next" && 
-                                                      currentItem.status != "in_consultation" && 
-                                                      currentItem.status != "completed" && 
-                                                      currentItem.status != "in_queue")
-                                                 {
-                                                     <option value="@currentItem.status">@currentItem.status</option>
-                                                 }
-                                            </select>
-                                            <i class="bi bi-chevron-down select-arrow-icon"></i>
-                                        </div>
+                                        <span class="status-pill-static @GetStatusClass(currentItem.status)">
+                                            @(currentItem.status switch
+                                            {
+                                                "waiting" => "Waiting",
+                                                "up_next" => "Up-next",
+                                                "in_consultation" or "consultation" => "Consultation",
+                                                "completed" or "report_received" => "Completed",
+                                                "in_queue" => "In Queue",
+                                                _ => string.IsNullOrEmpty(currentItem.status) ? "-" : currentItem.status
+                                            })
+                                        </span>
                                     </td>
                                     <td class="col-time">
                                         <input type="time" class="notes-input-cell" 
@@ -411,11 +395,8 @@
     private bool IsCompletedAndOlderThanOneMinute(OgQueueFrontendDto item)
     {
         if (item.status != "completed" && item.status != "report_received") return false;
-        
-        // For past dates, do not auto-hide completed items
-        if (selectedDate.Date < DateTime.Today) return false;
-
         if (!item.out_time.HasValue) return false;
+        if (selectedDate.Date != DateTime.Today) return true;
         
         var now = TimeOnly.FromDateTime(DateTime.Now);
         var diff = now - item.out_time.Value;
@@ -523,36 +504,6 @@
         }
     }
 
-    private List<CustomerModel> allCustomersList = new();
-
-    private async Task LoadPatientsFromGetCusAsync()
-    {
-        try
-        {
-            using var client = ClientFactory.CreateClient("LabCareUrl");
-            if (!string.IsNullOrEmpty(TenantState.TenantCode))
-            {
-                client.DefaultRequestHeaders.Remove("tenant_code");
-                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
-            }
-            if (!string.IsNullOrEmpty(TenantState.AuthToken))
-            {
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
-            }
-
-            var response = await client.GetAsync("api/customer/getcus");
-            if (response.IsSuccessStatusCode)
-            {
-                var rawJson = await response.Content.ReadAsStringAsync();
-                allCustomersList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<CustomerModel>>(rawJson) ?? new();
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error loading api/customer/getcus: {ex.Message}");
-        }
-    }
-
     private async Task LoadQueueAsync()
     {
         try
@@ -565,52 +516,6 @@
 
             consultationItems = await consultTask ?? new();
             labScanItems = await labScanTask ?? new();
-
-            if (allCustomersList == null)
-            {
-                allCustomersList = new();
-            }
-
-            if (allCustomersList.Count == 0)
-            {
-                await LoadPatientsFromGetCusAsync();
-            }
-
-            if (consultationItems == null) consultationItems = new();
-            if (labScanItems == null) labScanItems = new();
-            if (allCustomersList == null) allCustomersList = new();
-
-            foreach (var item in consultationItems.Concat(labScanItems))
-            {
-                if (item == null) continue;
-                try
-                {
-                    if (string.IsNullOrWhiteSpace(item.patient_name))
-                    {
-                        var fallbackName = item.name ?? item.customer_name ?? item.custname;
-                        if (!string.IsNullOrWhiteSpace(fallbackName))
-                        {
-                            item.patient_name = fallbackName;
-                        }
-                        else if (!string.IsNullOrWhiteSpace(item.custcode) && allCustomersList.Count > 0)
-                        {
-                            var match = allCustomersList.FirstOrDefault(c =>
-                                c != null &&
-                                (string.Equals(c.custcode, item.custcode, StringComparison.OrdinalIgnoreCase) ||
-                                 string.Equals(c.tenantcustcode, item.custcode, StringComparison.OrdinalIgnoreCase) ||
-                                 c.custid.ToString() == item.custcode));
-                            if (match != null && !string.IsNullOrWhiteSpace(match.name))
-                            {
-                                item.patient_name = match.name;
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[OGScreen] Error mapping patient name for Token {item.token_no}: {ex.Message}");
-                }
-            }
         }
         catch (Exception ex)
         {
