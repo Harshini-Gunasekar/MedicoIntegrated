@@ -9,6 +9,7 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Booking.Services.OGScreenService OGService
 @inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.DoctorGroupMasterService DoctorGroupService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @implements IDisposable
@@ -40,11 +41,33 @@
 
             <div class="doctor-filter-wrapper">
                 <i class="bi bi-funnel filter-icon-left"></i>
-                <select class="doctor-filter-select" @bind="selectedDoctorCode" @bind:after="OnDoctorChanged">
+                <select class="doctor-filter-select" @bind="selectedFilterValue" @bind:after="OnDoctorChanged">
                     <option value="">All Doctors</option>
-                    @foreach (var doc in doctors)
+                    @foreach (var grpName in doctors
+                        .Where(d => d.group_id.HasValue && d.group_id.Value > 0)
+                        .Select(d => doctorGroups.FirstOrDefault(g => g.group_id == d.group_id.Value)?.group_name)
+                        .Where(name => !string.IsNullOrWhiteSpace(name))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .OrderBy(name => name))
                     {
-                        <option value="@doc.dcode">@(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                        var groupDocs = doctors
+                            .Where(d => {
+                                if (!d.group_id.HasValue || d.group_id.Value <= 0) return false;
+                                var g = doctorGroups.FirstOrDefault(x => x.group_id == d.group_id.Value);
+                                return g != null && string.Equals(g.group_name, grpName, StringComparison.OrdinalIgnoreCase);
+                            })
+                            .Select(d => string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name)
+                            .Where(n => !string.IsNullOrWhiteSpace(n))
+                            .ToList();
+                        var doctorsJoined = string.Join(", ", groupDocs);
+                        <option value="group:@grpName">@grpName @(groupDocs.Any() ? $"({doctorsJoined})" : "")</option>
+                    }
+                    @foreach (var doc in doctors
+                        .Where(d => !d.group_id.HasValue || d.group_id.Value <= 0)
+                        .OrderBy(d => string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name))
+                    {
+                        var displayName = string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name;
+                        <option value="doctor:@doc.dcode">@displayName</option>
                     }
                 </select>
                 <i class="bi bi-chevron-down select-arrow-icon-right"></i>
@@ -344,7 +367,8 @@
     private List<OgQueueFrontendDto> consultationItems = new();
     private List<OgQueueFrontendDto> labScanItems = new();
     private List<DoctorMasterModel> doctors = new();
-    private int? selectedDoctorCode;
+    private List<DoctorGroupMasterModel> doctorGroups = new();
+    private string selectedFilterValue = "";
     private DateTime selectedDate = DateTime.Today;
 
     private string TenantCode = "";
@@ -417,9 +441,32 @@
 
     private List<OgQueueFrontendDto> FilterByDoctor(List<OgQueueFrontendDto> sourceList)
     {
-        if (selectedDoctorCode.HasValue && selectedDoctorCode.Value != 0)
+        if (!string.IsNullOrWhiteSpace(selectedFilterValue))
         {
-            return sourceList.Where(x => x.dcode == selectedDoctorCode.Value).ToList();
+            if (selectedFilterValue.StartsWith("group:", StringComparison.OrdinalIgnoreCase))
+            {
+                var targetGroupName = selectedFilterValue.Substring(6).Trim();
+                return sourceList.Where(x => 
+                    !string.IsNullOrWhiteSpace(x.group_name) && 
+                    string.Equals(x.group_name.Trim(), targetGroupName, StringComparison.OrdinalIgnoreCase)
+                ).ToList();
+            }
+            else if (selectedFilterValue.StartsWith("doctor:", StringComparison.OrdinalIgnoreCase))
+            {
+                if (int.TryParse(selectedFilterValue.Substring(7), out int docCode))
+                {
+                    var selectedDoc = doctors.FirstOrDefault(d => d.dcode == docCode);
+                    if (selectedDoc == null) return sourceList;
+
+                    var selectedDocName = selectedDoc.name ?? selectedDoc.doctorfullname ?? "";
+                    return sourceList.Where(x => 
+                        (x.dcode == docCode) || 
+                        (!string.IsNullOrWhiteSpace(x.doctor_name) && 
+                         !string.IsNullOrWhiteSpace(selectedDocName) && 
+                         string.Equals(x.doctor_name.Trim(), selectedDocName.Trim(), StringComparison.OrdinalIgnoreCase))
+                    ).ToList();
+                }
+            }
         }
         return sourceList;
     }
@@ -470,6 +517,7 @@
 
                 // Load doctors list
                 doctors = await DoctorService.GetDoctorsAsync() ?? new();
+                doctorGroups = await DoctorGroupService.GetDoctorGroupsAsync() ?? new();
 
                 await LoadQueueAsync();
                 isLoading = false;
