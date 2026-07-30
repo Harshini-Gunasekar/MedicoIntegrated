@@ -13,12 +13,14 @@
 @inject HttpClient Http
 @inject ProtectedSessionStorage _sessionStorage
 @using Medico_Backend.Model
+@using medico_backend.Model
 @using LabCare.Models
 @inject Booking.Services.CounterMasterService CounterMasterService
 @inject LabCare.Services.TestService LabCareTestSvc
 @inject LabCare.Services.UserService UserService
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Booking.Services.PaymodeMasterService PaymodeService
+@inject Booking.Services.IpRegistrationService IpRegistrationService
 @inject IJSRuntime JS
 
 
@@ -98,6 +100,13 @@
                 <span class="info-label">OP ID</span>
                 <span class="info-value">@(string.IsNullOrEmpty(selectedOpNo) || selectedOpNo == "-" ? "-" : selectedOpNo)</span>
             </div>
+            @if (!string.IsNullOrEmpty(selectedIpNo) && selectedIpNo != "-")
+            {
+                <div class="patient-info-item">
+                    <span class="info-label">IP ID</span>
+                    <span class="info-value" style="color: #4f46e5; font-weight: 700;">@selectedIpNo</span>
+                </div>
+            }
            
             <div class="patient-info-item">
                 <span class="info-label">Mobile number</span>
@@ -219,7 +228,7 @@
         <div style="display: flex; flex-direction: column; gap: 0.5rem;">
             
             <!-- Unbilled Charges Modal -->
-            @if (showUnbilledModal && !string.IsNullOrEmpty(billModel.op_id))
+            @if (showUnbilledModal && (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null))
             {
                 <div class="modal-backdrop" style="z-index: 1100;" @onclick="() => showUnbilledModal = false"></div>
                 <div class="doctor-modal" style="z-index: 1101; width: 600px; height: auto; max-height: 80vh; top: 50%; left: 50%; transform: translate(-50%, -50%); border-radius: 12px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15); background: #ffffff;">
@@ -278,7 +287,10 @@
                             <div style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 350px; overflow-y: auto;">
                                 @foreach (var uc in unbilledCharges)
                                 {
-                                    var isAdded = billModel.items.Any(i => i.requestdetailsid == uc.unbilledid);
+                                    var isAdded = billModel.items.Any(i => 
+                                        (!string.IsNullOrEmpty(i.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(i.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                                        (!string.IsNullOrEmpty(i.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(i.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
+                                    );
                                     <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                                         <div>
                                             <span style="font-size: 0.9rem; font-weight: 700; color: #1e293b;">@GetUnbilledChargeName(uc)</span>
@@ -336,9 +348,9 @@
                             </div>
                         }
                         </div>
-                        @if (!string.IsNullOrEmpty(billModel.op_id))
+                        @if (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null)
                         {
-                            <button type="button" class="btn-save" style="font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 0.5rem; padding: 0 1rem; color: white; background: linear-gradient(135deg, #4f46e5, #4338ca); border: none; border-radius: 6px; height: 38px; box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);" @onclick="() => showUnbilledModal = true">
+                            <button type="button" class="btn-save" style="font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 0.5rem; padding: 0 1rem; color: white; background: linear-gradient(135deg, #4f46e5, #4338ca); border: none; border-radius: 6px; height: 38px; box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);" @onclick="OpenUnbilledModal">
                                 <i class="bi bi-clock-history"></i> Unbilled Charges (@unbilledCharges.Count)
                             </button>
                         }
@@ -633,6 +645,8 @@
     private List<OPRegistrationModel.OpRegistrationModel> filteredRegistrations = new();
     private List<DoctorBookingListModel> bookingsCache = new();
     private string? selectedOpNo = "-";
+    private List<IPRegistrationModel.IpRegistrationModel> activeAdmissions = new();
+    private string? selectedIpNo = "-";
     
     private List<Booking.Models.CustomerWithOpModel> searchedPatients = new();
     private List<CustomerModel> allCustomersCache = new();
@@ -834,6 +848,19 @@
         billModel.custid = pat.custid;
         billModel.op_id = pat.op_id;
         selectedOpNo = pat.op_no;
+
+        var activeIp = activeAdmissions.FirstOrDefault(a => a.custid == pat.custid && (string.Equals(a.ip_status, "ADMITTED", StringComparison.OrdinalIgnoreCase) || a.dischargedate == null));
+        if (activeIp != null)
+        {
+            billModel.ip_id = activeIp.ip_id;
+            selectedIpNo = activeIp.ip_no;
+        }
+        else
+        {
+            billModel.ip_id = null;
+            selectedIpNo = "-";
+        }
+
         billModel.patient_name = string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials;
         billModel.mobileno = pat.mobile;
         billModel.gender = pat.gender;
@@ -859,6 +886,10 @@
         if (!string.IsNullOrEmpty(pat.op_id) && Guid.TryParse(pat.op_id, out var opId))
         {
             await LoadExistingBillOrRegistrationAsync(opId);
+        }
+        else
+        {
+            await LoadUnbilledChargesAsync();
         }
 
         RecalculateTotals();
@@ -925,6 +956,16 @@
         {
             Console.WriteLine($"Error loading registrations: {ex.Message}");
             allRegistrations ??= new();
+        }
+
+        try
+        {
+            activeAdmissions = await IpRegistrationService.GetActiveAdmissionsAsync() ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading active admissions: {ex.Message}");
+            activeAdmissions ??= new();
         }
 
         try
@@ -1003,6 +1044,7 @@
                 {
                     requestguid = billResp.requestguid,
                     op_id = billResp.op_id, 
+                    ip_id = billResp.ip_id,
                     custid = billResp.custid ?? 0,
                     patient_name = billResp.patient_name,
                     mobileno = billResp.mobileno,
@@ -1035,7 +1077,8 @@
                         amount = (decimal)(i.amount ?? 0),
                         discount = (decimal)(i.discount ?? 0),
                         charge_type = i.charge_type ?? "INVESTIGATION",
-                        requestdetailsid = i.requestdetailsid
+                        requestdetailsid = i.requestdetailsid,
+                        item_ref_id = i.item_ref_id
                     }).ToList() ?? new List<HmsBillItemModel>()
                 };
 
@@ -1046,6 +1089,24 @@
                     if (regMatch != null)
                     {
                         selectedOpNo = regMatch.op_no;
+                    }
+                }
+
+                selectedIpNo = "-";
+                if (billModel.ip_id != null)
+                {
+                    var activeIp = activeAdmissions.FirstOrDefault(a => a.ip_id == billModel.ip_id.Value);
+                    if (activeIp != null)
+                    {
+                        selectedIpNo = activeIp.ip_no;
+                    }
+                    else
+                    {
+                        var ipReg = await IpRegistrationService.GetIpRegistrationByIdAsync(billModel.ip_id.Value);
+                        if (ipReg != null)
+                        {
+                            selectedIpNo = ipReg.ip_no;
+                        }
                     }
                 }
 
@@ -1083,6 +1144,24 @@
                 billModel = existingBill;
                 var regMatch = allRegistrations.FirstOrDefault(r => r.op_id == opId);
                 selectedOpNo = regMatch?.op_no ?? billModel.op_id;
+
+                selectedIpNo = "-";
+                if (billModel.ip_id != null)
+                {
+                    var activeIp = activeAdmissions.FirstOrDefault(a => a.ip_id == billModel.ip_id.Value);
+                    if (activeIp != null)
+                    {
+                        selectedIpNo = activeIp.ip_no;
+                    }
+                    else
+                    {
+                        var ipReg = await IpRegistrationService.GetIpRegistrationByIdAsync(billModel.ip_id.Value);
+                        if (ipReg != null)
+                        {
+                            selectedIpNo = ipReg.ip_no;
+                        }
+                    }
+                }
                 
                 // Parse prefix out of name if possible
                 if (billModel.patient_name != null)
@@ -1183,18 +1262,64 @@
         }
     }
 
+    private async Task OpenUnbilledModal()
+    {
+        await LoadUnbilledChargesAsync();
+        showUnbilledModal = true;
+    }
+
     private async Task LoadUnbilledChargesAsync()
     {
-        if (string.IsNullOrEmpty(billModel.op_id))
+        unbilledCharges.Clear();
+        if (string.IsNullOrEmpty(billModel.op_id) && billModel.ip_id == null)
         {
-            unbilledCharges.Clear();
             return;
         }
 
         loadingUnbilled = true;
         try
         {
-            unbilledCharges = await HmsBillingService.GetUnbilledChargesByVisitAsync(billModel.op_id);
+            // 1. Hit api/UnbilledCharges/ip-room-rent-summary BEFORE by-visit to generate/calculate room rent entries
+            if (billModel.ip_id != null && billModel.ip_id != Guid.Empty)
+            {
+                await HmsBillingService.GetIpRoomRentSummaryAsync(billModel.ip_id.Value);
+            }
+
+            // 2. NOW hit api/UnbilledCharges/by-visit to retrieve all visit unbilled charges including room rent
+            List<UnbilledChargeSummary> visitCharges = await HmsBillingService.GetUnbilledChargesByVisitAsync(billModel.op_id, billModel.ip_id);
+
+            // Write debug info to a file to trace matching issues
+            try
+            {
+                var logLines = new List<string>
+                {
+                    $"=== LoadUnbilledChargesAsync at {DateTime.Now} ===",
+                    $"Grid items count: {billModel.items.Count}"
+                };
+                foreach (var item in billModel.items)
+                {
+                    logLines.Add($"  Grid Item: Name={item.item_name}, requestdetailsid='{item.requestdetailsid}', ref_id='{item.item_ref_id}'");
+                }
+                logLines.Add($"Unbilled charges count: {visitCharges.Count}");
+                foreach (var uc in visitCharges)
+                {
+                    logLines.Add($"  Unbilled Charge: Name={GetUnbilledChargeName(uc)}, unbilledid='{uc.unbilledid}', entryid='{uc.entryid}'");
+                }
+                logLines.Add("===============================================\n");
+                System.IO.File.AppendAllLines(@"d:\Iscan\Medico\unbilled_debug.txt", logLines);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error writing unbilled debug log: {ex.Message}");
+            }
+
+            // Filter out charges that are already added to the billing grid (casing-independent matching by unbilledid OR stable entryid/item_ref_id)
+            unbilledCharges = visitCharges.Where(uc => 
+                !billModel.items.Any(i => 
+                    (!string.IsNullOrEmpty(i.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(i.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(i.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(i.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
+                )
+            ).ToList();
         }
         catch (Exception ex)
         {
@@ -1211,7 +1336,7 @@
         string displayItemName = uc.item_name;
         if (string.IsNullOrWhiteSpace(displayItemName))
         {
-            if (uc.entrytype == "INVESTIGATION" && uc.tcode.HasValue)
+            if (string.Equals(uc.entrytype, "INVESTIGATION", StringComparison.OrdinalIgnoreCase) && uc.tcode.HasValue)
             {
                 var tmMatch = allTestMasters.FirstOrDefault(t => t.tcode == uc.tcode.Value);
                 if (tmMatch != null && !string.IsNullOrWhiteSpace(tmMatch.name))
@@ -1220,15 +1345,20 @@
                 }
             }
             
-            if (uc.entrytype == "CONSULTATION")
+            if (string.Equals(uc.entrytype, "CONSULTATION", StringComparison.OrdinalIgnoreCase))
                 return "Consultation Charge";
+
+            if (string.Equals(uc.entrytype, "ROOMRENT", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(uc.entrytype, "ROOM RENT", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(uc.entrytype, "ROOM_RENT", StringComparison.OrdinalIgnoreCase))
+                return "Room Rent Charge";
             
             return "Unbilled Charge";
         }
         return displayItemName;
     }
 
-    private void AddUnbilledChargeItem(UnbilledChargeSummary uc)
+    private async Task AddUnbilledChargeItem(UnbilledChargeSummary uc)
     {
         if (billModel.items.Any(i => i.requestdetailsid == uc.unbilledid))
         {
@@ -1258,22 +1388,44 @@
         });
 
         RecalculateTotals();
+        await LoadUnbilledChargesAsync();
         ToastService.ShowSuccess($"Added: {displayItemName}");
     }
 
-    private void AddAllUnbilledCharges()
+    private async Task AddAllUnbilledCharges()
     {
         int addedCount = 0;
         foreach (var uc in unbilledCharges)
         {
             if (!billModel.items.Any(i => i.requestdetailsid == uc.unbilledid))
             {
-                AddUnbilledChargeItem(uc);
+                var rate = (decimal)(uc.rate ?? 0);
+                var qty = (decimal)(uc.quantity ?? 1);
+                var amt = (decimal)(uc.amount ?? 0);
+
+                string displayItemName = GetUnbilledChargeName(uc);
+
+                billModel.items.Add(new HmsBillItemModel
+                {
+                    sno = billModel.items.Count + 1,
+                    charge_type = uc.entrytype ?? "INVESTIGATION",
+                    item_name = displayItemName,
+                    tcode = uc.tcode.HasValue ? (decimal)uc.tcode.Value : 0m,
+                    item_ref_id = uc.entryid ?? "UNBILLED",
+                    unit_rate = rate,
+                    qty = qty,
+                    discount = 0,
+                    gst_per = 0,
+                    amount = amt,
+                    requestdetailsid = uc.unbilledid
+                });
                 addedCount++;
             }
         }
         if (addedCount > 0)
         {
+            RecalculateTotals();
+            await LoadUnbilledChargesAsync();
             ToastService.ShowSuccess($"Added {addedCount} unbilled charges to grid.");
         }
     }
@@ -1352,7 +1504,7 @@
         try
         {
             using var client = CreateClient(true); // LabCareUrl
-            var response = await client.GetAsync($"api/Customer/partition?pagenumber=1&pagesize=50&key={Uri.EscapeDataString(patientSearchQuery)}");
+            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}");
             var rawJson = await response.Content.ReadAsStringAsync();
             
             try
@@ -1370,7 +1522,24 @@
                 { 
                     NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
                 };
-                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings) ?? new();
+                
+                List<Booking.Models.CustomerWithOpModel> list = new();
+                try
+                {
+                    var token = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
+                    if (token is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
+                    {
+                        list = obj["value"].ToObject<List<Booking.Models.CustomerWithOpModel>>(Newtonsoft.Json.JsonSerializer.Create(settings)) ?? new();
+                    }
+                    else
+                    {
+                        list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings) ?? new();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error parsing search results JSON: {ex.Message}");
+                }
                 
                 // Fallback local filtering in case partition API doesn't filter server-side
                 var lowerQuery = patientSearchQuery.ToLower();
@@ -1410,6 +1579,19 @@
         billModel.custid = reg.custid;
         billModel.op_id = reg.op_id.ToString();
         selectedOpNo = reg.op_no;
+
+        var activeIp = activeAdmissions.FirstOrDefault(a => a.custid == reg.custid && a.ip_status == "ADMITTED");
+        if (activeIp != null)
+        {
+            billModel.ip_id = activeIp.ip_id;
+            selectedIpNo = activeIp.ip_no;
+        }
+        else
+        {
+            billModel.ip_id = null;
+            selectedIpNo = "-";
+        }
+
         billModel.patient_name = name;
         billModel.mobileno = mobile;
         billModel.consultantdcode = reg.dcode;
@@ -1430,7 +1612,9 @@
     {
         billModel.custid = 0;
         billModel.op_id = null;
+        billModel.ip_id = null;
         selectedOpNo = "-";
+        selectedIpNo = "-";
         billModel.patient_name = string.Empty;
         billModel.mobileno = string.Empty;
         patientSearchQuery = string.Empty;
@@ -1544,7 +1728,7 @@
         }
     }
 
-    private void RemoveTestItem(HmsBillItemModel item)
+    private async Task RemoveTestItem(HmsBillItemModel item)
     {
         billModel.items.Remove(item);
         for (int i = 0; i < billModel.items.Count; i++)
@@ -1552,6 +1736,7 @@
             billModel.items[i].sno = i + 1;
         }
         RecalculateTotals();
+        await LoadUnbilledChargesAsync();
     }
 
     // --- Calculations ---
@@ -1745,23 +1930,47 @@
                 billModel.op_id = selectedOpNo;
             }
 
+            // Retrieve latest unbilled charges from backend to get their current unbilledids (especially for room rent where Guid changes on every query)
+            List<UnbilledChargeSummary> latestUnbilled = new();
+            try
+            {
+                latestUnbilled = await HmsBillingService.GetUnbilledChargesByVisitAsync(originalOpId, billModel.ip_id);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching latest unbilled charges for ID mapping: {ex.Message}");
+            }
+
+            var unbilledIdsToPass = new List<string>();
+            foreach (var item in billModel.items)
+            {
+                // Try to find the matching unbilled charge from the latest API response
+                var match = latestUnbilled.FirstOrDefault(uc =>
+                    (!string.IsNullOrEmpty(item.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(item.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(item.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(item.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
+                );
+
+                if (match != null && !string.IsNullOrEmpty(match.unbilledid))
+                {
+                    unbilledIdsToPass.Add(match.unbilledid);
+                }
+                else if (!string.IsNullOrEmpty(item.requestdetailsid))
+                {
+                    unbilledIdsToPass.Add(item.requestdetailsid);
+                }
+            }
+
+            billModel.unbilled_charge_ids = unbilledIdsToPass.Distinct().ToList();
+
             string result;
             if (!string.IsNullOrEmpty(billModel.requestguid))
             {
-                billModel.unbilled_charge_ids = billModel.items
-                    .Where(i => !string.IsNullOrEmpty(i.requestdetailsid))
-                    .Select(i => i.requestdetailsid!)
-                    .ToList();
                 result = await HmsBillingService.UpdateBillAsync(billModel);
             }
             else
             {
                 // Ensure requestguid is passed as null for saving as requested
                 billModel.requestguid = null;
-                billModel.unbilled_charge_ids = billModel.items
-                    .Where(i => !string.IsNullOrEmpty(i.requestdetailsid))
-                    .Select(i => i.requestdetailsid!)
-                    .ToList();
                 result = await HmsBillingService.SaveBillAsync(billModel);
             }
 
@@ -1914,6 +2123,7 @@
         selectedPatientBadgeVisible = false;
         isCustomersCacheLoaded = false;
         selectedOpNo = "-";
+        selectedIpNo = "-";
         
         unbilledCharges.Clear();
         showAddConsultationForm = false;

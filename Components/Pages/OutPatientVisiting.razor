@@ -1,7 +1,10 @@
 @page "/booking/outpatient"
 @using Booking.Models
 @using Booking.Services
+@using Booking.Helpers
+
 @inject AppointmentBookingService BookingService
+@inject HmsBillingService HmsBillingService
 @inject DoctorService DoctorService
 @inject ToastService ToastService
 @inject NavigationManager NavigationManager
@@ -16,6 +19,7 @@
 </div>
 
 <div class="dashboard-container">
+    <DnaLoader IsLoading="@loading" Message="Loading Outpatients..." />
     <!-- Header -->
     <div class="dashboard-header">
         <div class="dashboard-title">
@@ -154,6 +158,7 @@
                                 <th>Time</th>
                                 <th>Doctor</th>
                                 <th>Status</th>
+                                <th>Bills Status</th>
                                 <th style="text-align: center;">Actions</th>
                             </tr>
                         </thead>
@@ -169,7 +174,7 @@
                                     displayType = "WALKIN";
                                 }
 
-                                <tr>
+                                <tr class="@(booking.isvip == true || booking.is_vip == true ? "vip-row" : "")">
                                     <td>
                                         @if (booking.token_no > 0)
                                         {
@@ -180,14 +185,27 @@
                                             <span class="text-muted" style="margin-left: 14px; font-weight: 700;">-</span>
                                         }
                                     </td>
-                                    <td><span style="font-weight: 700; color: #334155;">@GetPatientName(booking.custid)</span></td>
+                                    <td>
+                                        <span style="font-weight: 700; color: #334155;">@(string.IsNullOrWhiteSpace(booking.patient_name) ? $"CUST-{booking.custid}" : booking.patient_name)</span>
+                                        @if (booking.isvip == true || booking.is_vip == true)
+                                        {
+                                            <span class="vip-badge" style="background: #fffbeb; border: 1px solid #fde68a; color: #d97706; padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 0.7rem; margin-left: 8px; display: inline-flex; align-items: center; gap: 2px;" title="VIP Patient">VIP</span>
+                                        }
+                                    </td>
                                     <td><span class="fw-bold text-primary">@(isRegistered && opData != null ? opData.op_no : "-")</span></td>
                                    
                                     <td>
                                         <span class="badge-type @displayType.ToLower()">@displayType</span>
                                     </td>
                                     <td>
-                                        <div class="time-badge">@booking.slot_start_time.ToString("hh:mm tt") - @booking.slot_end_time.ToString("hh:mm tt")</div>
+                                        @if (booking.slot_start_time == default(TimeOnly) && booking.slot_end_time == default(TimeOnly))
+                                        {
+                                            <span class="text-muted" style="margin-left: 14px; font-weight: 700;">-</span>
+                                        }
+                                        else
+                                        {
+                                            <div class="time-badge">@booking.slot_start_time.ToIndianTime().ToString("hh:mm tt") - @booking.slot_end_time.ToIndianTime().ToString("hh:mm tt")</div>
+                                        }
                                     </td>
                                     <td style="font-weight: 700; color: #334155;">Dr. @GetDoctorName(booking.dcode)</td>
                                     <td>
@@ -204,6 +222,35 @@
                                         else
                                         {
                                             <span class="status-badge pending">UNREGISTERED</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        @if (isRegistered && opData != null)
+                                        {
+                                            var opId = opData.op_id;
+                                            var patName = string.IsNullOrWhiteSpace(booking.patient_name) ? $"CUST-{booking.custid}" : booking.patient_name;
+                                            if (visitUnbilledCharges.TryGetValue(opId, out var charges))
+                                            {
+                                                var unpaid = charges.Where(c => c.billedstatus != true).ToList();
+                                                if (unpaid.Count == 0)
+                                                {
+                                                    <span class="btn-bill-status paid">Paid</span>
+                                                }
+                                                else
+                                                {
+                                                    <button type="button" @onclick="() => ShowUnpaidDetails(unpaid, patName)" class="btn-bill-status unpaid">
+                                                        Unpaid: @string.Join(", ", unpaid.Select(u => u.entrytype).Distinct())
+                                                    </button>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                <span class="text-muted">Loading...</span>
+                                            }
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">-</span>
                                         }
                                     </td>
                                     <td>
@@ -285,13 +332,57 @@
     </div>
 }
 
+@if (showUnpaidModal)
+{
+    <div class="modal-backdrop" @onclick="CloseUnpaidModal"></div>
+    <div class="glass-modal">
+        <div class="modal-header">
+             <h3>Unpaid Bill Details</h3>
+             <button class="close-btn" @onclick="CloseUnpaidModal">×</button>
+        </div>
+        <div class="modal-body" style="max-height: 60vh; overflow-y: auto;">
+             <div class="mb-3">
+                 Patient Name: <strong class="text-dark">@unpaidPatientName</strong>
+             </div>
+             <div class="table-responsive">
+                 <table class="medico-table">
+                     <thead>
+                         <tr>
+                             <th>Entry Type</th>
+                             <th>Date</th>
+                             <th class="text-end">Quantity</th>
+                             <th class="text-end">Rate</th>
+                             <th class="text-end">Amount</th>
+                         </tr>
+                     </thead>
+                     <tbody>
+                         @foreach (var uc in unpaidChargesList)
+                         {
+                             <tr>
+                                 <td class="font-bold">@uc.entrytype</td>
+                                 <td>@uc.chargedate?.ToIndianTime().ToString("dd-MM-yyyy hh:mm tt")</td>
+                                 <td class="text-end">@uc.quantity</td>
+                                 <td class="text-end">@(uc.rate?.ToString("0.00") ?? "-")</td>
+                                 <td class="text-end" style="font-weight: 700; color: #b91c1c;">@(uc.amount?.ToString("0.00") ?? "-")</td>
+                             </tr>
+                         }
+                     </tbody>
+                 </table>
+             </div>
+        </div>
+        <div class="modal-footer">
+             <button class="btn-modal cancel" @onclick="CloseUnpaidModal">Close</button>
+        </div>
+    </div>
+}
+
 @if (showVitalsModal && currentOp != null)
 {
     <div class="modal-backdrop" @onclick="CloseVitalsModal"></div>
     <div class="glass-modal large-modal">
         <div class="modal-header">
             <h3>Patient Vitals</h3>
-            <span class="vitals-header-badge">OP NO: @currentOp.op_no | PATIENT ID: @currentOp.custid</span>
+            <span class="vitals-header-badge">OP NO: @currentOp.op_no | PATIENT NAME: @(string.IsNullOrWhiteSpace(currentOp.patient_name) ? currentOp.custid.ToString() : currentOp.patient_name)</span>
             <button class="close-btn" @onclick="CloseVitalsModal">×</button>
         </div>
         <div class="modal-body vitals-dashboard-layout" style="max-height: 65vh; overflow-y: auto;">
@@ -582,7 +673,7 @@
                                         class="slot-theme-btn @(isSelected ? "selected" : "") @(isFull ? "disabled" : "")" 
                                         disabled="@isFull"
                                         @onclick="() => SelectDirectWalkinSlot(slot)">
-                                    <div class="slot-time-bold">@slot.slot_start_time.ToString("hh:mm tt")</div>
+                                    <div class="slot-time-bold">@slot.slot_start_time.ToIndianTime().ToString("hh:mm tt")</div>
                                     <div class="slot-count-sub">@walkinLeft left (W)</div>
                                 </button>
                             }
@@ -593,7 +684,7 @@
                 @if (selectedDirectWalkinSlot != null)
                 {
                     <div style="background:#e0f2fe; border:1px solid #bae6fd; border-radius:8px; padding:0.75rem; font-size:0.85rem; color:#0369a1; font-weight:600; margin-top: 1rem;">
-                        Selected: @selectedDirectWalkinSlot.slot_start_time.ToString("hh:mm tt") - @selectedDirectWalkinSlot.slot_end_time.ToString("hh:mm tt")
+                        Selected: @selectedDirectWalkinSlot.slot_start_time.ToIndianTime().ToString("hh:mm tt") - @selectedDirectWalkinSlot.slot_end_time.ToIndianTime().ToString("hh:mm tt")
                     </div>
                 }
             </div>
@@ -618,8 +709,13 @@
     private List<DoctorMasterModel> doctors = new();
     private List<SharedComponents.Rcl.Models.CustomerModel> allCustomers = new();
 
+    private System.Collections.Concurrent.ConcurrentDictionary<Guid, List<UnbilledChargeSummary>> visitUnbilledCharges = new();
+    private bool showUnpaidModal = false;
+    private List<UnbilledChargeSummary> unpaidChargesList = new();
+    private string unpaidPatientName = "";
+
     // Filter states
-    private DateTime? filterDate = DateTime.Today;
+    private DateTime? filterDate = DateTime.UtcNow.ToIndianTime().Date;
     private string filterStatus = "ALL";
     private int filterDoctor = 0;
     private string filterType = "ALL";
@@ -636,7 +732,7 @@
     private bool loadingDirectWalkinSlots = false;
     private int directWalkinSelectedDcode = 0;
     private int directWalkinDutyDcode = 0;
-    private DateTime directWalkinDate = DateTime.Today;
+    private DateTime directWalkinDate = DateTime.UtcNow.ToIndianTime().Date;
 
     private string patientSearchQuery = "";
     private bool showPatientDropdown = false;
@@ -705,7 +801,7 @@
 
     private void ClearFilters()
     {
-        filterDate = DateTime.Today;
+        filterDate = DateTime.UtcNow.ToIndianTime().Date;
         filterDoctor = 0;
         filterStatus = "ALL";
         filterType = "ALL";
@@ -726,44 +822,10 @@
     protected override async Task OnInitializedAsync()
     {
         await LoadDoctorsAsync();
-        await LoadCustomersAsync();
         await LoadDataAsync();
     }
 
-    private async Task LoadCustomersAsync()
-    {
-        try
-        {
-            using var client = ClientFactory.CreateClient("LabCareUrl");
-            if (!string.IsNullOrEmpty(TenantState.TenantCode))
-            {
-                client.DefaultRequestHeaders.Remove("tenant_code");
-                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
-            }
-            if (!string.IsNullOrEmpty(TenantState.AuthToken))
-            {
-                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
-            }
 
-            var response = await client.GetAsync("api/Customer/get");
-            if (response.IsSuccessStatusCode)
-            {
-                var json = await response.Content.ReadAsStringAsync();
-                allCustomers = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error loading customers in OutPatientVisiting: {ex.Message}");
-        }
-    }
-
-    private string GetPatientName(decimal custid)
-    {
-        var pat = allCustomers.FirstOrDefault(c => c.custid == custid);
-        if (pat == null) return $"CUST-{custid}";
-        return string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials;
-    }
 
     private async Task LoadDoctorsAsync()
     {
@@ -889,6 +951,22 @@
                 }
             }
 
+            visitUnbilledCharges.Clear();
+            var fetchTasks = regs
+                .Where(r => r.op_id != Guid.Empty)
+                .Select(async r => {
+                    try
+                    {
+                        var charges = await HmsBillingService.GetUnbilledChargesByVisitAsync(opvisitid: r.op_id.ToString());
+                        visitUnbilledCharges[r.op_id] = charges ?? new();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error loading unbilled for visit {r.op_id}: {ex.Message}");
+                    }
+                });
+            await Task.WhenAll(fetchTasks);
+
             ApplyFilters();
         }
         catch (Exception ex)
@@ -924,6 +1002,7 @@
             var searchLower = filterSearch.Trim().ToLower();
             query = query.Where(b => 
                 (b.booking_no != null && b.booking_no.ToLower().Contains(searchLower)) ||
+                (b.patient_name != null && b.patient_name.ToLower().Contains(searchLower)) ||
                 ("cust-" + b.custid).ToLower().Contains(searchLower) ||
                 b.custid.ToString().Contains(searchLower) ||
                 ("doc-" + b.dcode).ToLower().Contains(searchLower) ||
@@ -982,7 +1061,7 @@
             visit_type = "NEWVISIT",
             reg_type = regType,
             notes = "Patient arrived",
-            visit_date = DateOnly.FromDateTime(DateTime.Today)
+            visit_date = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime())
         };
         showRegisterModal = true;
     }
@@ -1166,7 +1245,7 @@
         };
         directWalkinSelectedDcode = 0;
         directWalkinDutyDcode = 0;
-        directWalkinDate = DateTime.Today;
+        directWalkinDate = DateTime.UtcNow.ToIndianTime().Date;
         selectedDirectWalkinSlot = null;
         directWalkinSlots.Clear();
         showDirectWalkinModal = true;
@@ -1302,5 +1381,18 @@
         {
             saving = false;
         }
+    }
+
+    private void ShowUnpaidDetails(List<UnbilledChargeSummary> unpaid, string patientName)
+    {
+        unpaidChargesList = unpaid;
+        unpaidPatientName = patientName;
+        showUnpaidModal = true;
+    }
+
+    private void CloseUnpaidModal()
+    {
+        showUnpaidModal = false;
+        unpaidChargesList.Clear();
     }
 }

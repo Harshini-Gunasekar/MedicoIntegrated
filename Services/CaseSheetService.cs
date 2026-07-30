@@ -18,25 +18,28 @@ namespace Booking.Services
 
         public async Task<string> SaveCaseSheetAsync(SaveCaseSheetRequest request)
         {
+            var originalFollowUpDate = request.followup_date;
             try
             {
-                // ── DEBUG: Print draft payload to terminal ──
-                var jsonOptions = new System.Text.Json.JsonSerializerOptions
+                if (request.followup_date.HasValue)
                 {
-                    WriteIndented = true,
-                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.Never
-                };
-                var payloadJson = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
-                Console.WriteLine("========== [SaveCaseSheetAsync] PAYLOAD ==========");
-                Console.WriteLine(payloadJson);
-                Console.WriteLine("==================================================");
+                    var istZone = GetIstTimeZone();
+                    var istTime = DateTime.SpecifyKind(request.followup_date.Value, DateTimeKind.Unspecified);
+                    request.followup_date = TimeZoneInfo.ConvertTimeToUtc(istTime, istZone);
+                }
+
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- SAVE CASE SHEET PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("-------------------------------");
 
                 var response = await _http.PostAsJsonAsync("api/CaseSheet/save", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
 
-                Console.WriteLine($"[SaveCaseSheetAsync] API URL  : {_http.BaseAddress}api/CaseSheet/save");
-                Console.WriteLine($"[SaveCaseSheetAsync] HTTP Status: {(int)response.StatusCode} {response.StatusCode}");
-                Console.WriteLine($"[SaveCaseSheetAsync] Response : {rawResponse}");
+                Console.WriteLine("--- SAVE CASE SHEET RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("--------------------------------");
 
                 return rawResponse;
             }
@@ -45,13 +48,29 @@ namespace Booking.Services
                 Console.WriteLine($"Error saving case sheet: {ex.Message}");
                 return $"Error|{ex.Message}";
             }
+            finally
+            {
+                request.followup_date = originalFollowUpDate;
+            }
         }
 
         public async Task<bool> FinalizeCaseSheetAsync(FinalizeCaseSheetRequest request)
         {
             try
             {
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- FINALIZE CASE SHEET PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("------------------------------------");
+
                 var response = await _http.PostAsJsonAsync("api/CaseSheet/finalize", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- FINALIZE CASE SHEET RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("-------------------------------------");
+
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
@@ -61,11 +80,39 @@ namespace Booking.Services
             }
         }
 
-        public async Task<CaseSheetViewModel?> GetCaseSheetByVisitAsync(Guid opId)
+        public async Task<CaseSheetViewModel?> GetCaseSheetByVisitAsync(Guid? opId = null, Guid? ipId = null)
         {
             try
             {
-                return await _http.GetFromJsonAsync<CaseSheetViewModel>($"api/CaseSheet/by-visit?op_id={opId}");
+                var queryParams = new List<string>();
+                if (ipId.HasValue && ipId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"ip_id={ipId.Value}");
+                }
+                else if (opId.HasValue && opId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"op_id={opId.Value}");
+                }
+
+                var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
+                var url = $"api/CaseSheet/by-visit{queryString}";
+
+                Console.WriteLine($"--- GET CASE SHEET BY VISIT URL: {url} ---");
+                var response = await _http.GetAsync(url);
+                var rawJson = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- GET CASE SHEET BY VISIT RESPONSE ---");
+                Console.WriteLine(rawJson);
+                Console.WriteLine("----------------------------------------");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var vm = System.Text.Json.JsonSerializer.Deserialize<CaseSheetViewModel>(rawJson, options);
+                    AdjustViewModelDatesToIst(vm);
+                    return vm;
+                }
+                return null;
             }
             catch (Exception ex)
             {
@@ -74,11 +121,24 @@ namespace Booking.Services
             }
         }
 
-        public async Task<CaseSheetPrescriptionViewModel?> GetPrescriptionByVisitAsync(Guid opId)
+        public async Task<CaseSheetPrescriptionViewModel?> GetPrescriptionByVisitAsync(Guid? opId = null, Guid? ipId = null)
         {
             try
             {
-                return await _http.GetFromJsonAsync<CaseSheetPrescriptionViewModel>($"api/CaseSheet/prescription?op_id={opId}");
+                var queryParams = new List<string>();
+                if (ipId.HasValue && ipId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"ip_id={ipId.Value}");
+                }
+                else if (opId.HasValue && opId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"op_id={opId.Value}");
+                }
+
+                var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
+                var response = await _http.GetFromJsonAsync<CaseSheetPrescriptionViewModel>($"api/CaseSheet/prescription{queryString}");
+                AdjustPrescriptionDatesToIst(response);
+                return response;
             }
             catch (Exception ex)
             {
@@ -99,12 +159,26 @@ namespace Booking.Services
                     try
                     {
                         var list = await response.Content.ReadFromJsonAsync<List<CaseSheetViewModel>>();
+                        if (list != null)
+                        {
+                            foreach (var item in list)
+                            {
+                                AdjustViewModelDatesToIst(item);
+                            }
+                        }
                         return list ?? new List<CaseSheetViewModel>();
                     }
                     catch
                     {
                         // Fallback in case of wrapper
                         var wrapper = await response.Content.ReadFromJsonAsync<HistoryResponseWrapper>();
+                        if (wrapper?.items != null)
+                        {
+                            foreach (var item in wrapper.items)
+                            {
+                                AdjustViewModelDatesToIst(item);
+                            }
+                        }
                         return wrapper?.items ?? new List<CaseSheetViewModel>();
                     }
                 }
@@ -186,7 +260,19 @@ namespace Booking.Services
         {
             try
             {
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- UPDATE INVESTIGATION RESULT PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("-------------------------------------------");
+
                 var response = await _http.PostAsJsonAsync("api/CaseSheet/investigation/result", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- UPDATE INVESTIGATION RESULT RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("--------------------------------------------");
+
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
@@ -236,6 +322,78 @@ namespace Booking.Services
                 Console.WriteLine($"Error deleting prescription: {ex.Message}");
                 return false;
             }
+        }
+
+        private static TimeZoneInfo GetIstTimeZone()
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("India Standard Time");
+            }
+            catch
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById("Asia/Kolkata");
+            }
+        }
+
+        private static DateTime? ConvertToIst(DateTime? utcDateTime)
+        {
+            if (!utcDateTime.HasValue) return null;
+            var utc = DateTime.SpecifyKind(utcDateTime.Value, DateTimeKind.Utc);
+            return TimeZoneInfo.ConvertTime(utc, GetIstTimeZone());
+        }
+
+        private static DateTime ConvertToIst(DateTime utcDateTime)
+        {
+            var utc = DateTime.SpecifyKind(utcDateTime, DateTimeKind.Utc);
+            return TimeZoneInfo.ConvertTime(utc, GetIstTimeZone());
+        }
+
+        private void AdjustViewModelDatesToIst(CaseSheetViewModel? vm)
+        {
+            if (vm == null) return;
+            
+            if (vm.visit_date.HasValue)
+                vm.visit_date = ConvertToIst(vm.visit_date.Value);
+            
+            if (vm.followup_date.HasValue)
+                vm.followup_date = ConvertToIst(vm.followup_date.Value);
+            
+            if (vm.diagnosis_list != null)
+            {
+                foreach (var diag in vm.diagnosis_list)
+                {
+                    diag.visit_date = ConvertToIst(diag.visit_date);
+                }
+            }
+
+            if (vm.prescription != null)
+            {
+                if (vm.prescription.pr_date.HasValue)
+                    vm.prescription.pr_date = ConvertToIst(vm.prescription.pr_date.Value);
+            }
+
+            if (vm.investigation != null)
+            {
+                if (vm.investigation.inv_date.HasValue)
+                    vm.investigation.inv_date = ConvertToIst(vm.investigation.inv_date.Value);
+
+                if (vm.investigation.tests != null)
+                {
+                    foreach (var test in vm.investigation.tests)
+                    {
+                        if (test.result_date.HasValue)
+                            test.result_date = ConvertToIst(test.result_date.Value);
+                    }
+                }
+            }
+        }
+
+        private void AdjustPrescriptionDatesToIst(CaseSheetPrescriptionViewModel? vm)
+        {
+            if (vm == null) return;
+            if (vm.pr_date.HasValue)
+                vm.pr_date = ConvertToIst(vm.pr_date.Value);
         }
 
         // Helper class to deserialize paginated histories if wrapped

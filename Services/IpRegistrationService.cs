@@ -14,28 +14,54 @@ namespace Booking.Services
 
         public async Task<List<IPRegistrationModel.IpRegistrationModel>> GetIpRegistrationsAsync(string status)
         {
-            try
-            {
-                var response = await _http.GetFromJsonAsync<List<IPRegistrationModel.IpRegistrationModel>>($"api/IpRegistration/get?ip_status={status}");
-                return response ?? new List<IPRegistrationModel.IpRegistrationModel>();
-            }
-            catch
-            {
-                return new List<IPRegistrationModel.IpRegistrationModel>();
-            }
+            return await FetchIpListAsync($"api/IpRegistration/get?ip_status={status}");
         }
 
         public async Task<List<IPRegistrationModel.IpRegistrationModel>> GetActiveAdmissionsAsync()
         {
+            return await FetchIpListAsync("api/IpRegistration/active-admissions");
+        }
+
+        private async Task<List<IPRegistrationModel.IpRegistrationModel>> FetchIpListAsync(string url)
+        {
             try
             {
-                var response = await _http.GetFromJsonAsync<List<IPRegistrationModel.IpRegistrationModel>>("api/IpRegistration/active-admissions");
-                return response ?? new List<IPRegistrationModel.IpRegistrationModel>();
-            }
-            catch
-            {
+                var rawJson = await _http.GetStringAsync(url);
+                if (string.IsNullOrWhiteSpace(rawJson))
+                    return new List<IPRegistrationModel.IpRegistrationModel>();
+
+                using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    return System.Text.Json.JsonSerializer.Deserialize<List<IPRegistrationModel.IpRegistrationModel>>(rawJson, options)
+                           ?? new List<IPRegistrationModel.IpRegistrationModel>();
+                }
+                else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    if (doc.RootElement.TryGetProperty("value", out var valueProp) && valueProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        return System.Text.Json.JsonSerializer.Deserialize<List<IPRegistrationModel.IpRegistrationModel>>(valueProp.GetRawText(), options)
+                               ?? new List<IPRegistrationModel.IpRegistrationModel>();
+                    }
+
+                    var wrapper = System.Text.Json.JsonSerializer.Deserialize<IpListResponse>(rawJson, options);
+                    return wrapper?.value ?? new List<IPRegistrationModel.IpRegistrationModel>();
+                }
+
                 return new List<IPRegistrationModel.IpRegistrationModel>();
             }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching IP list from {url}: {ex.Message}");
+                return new List<IPRegistrationModel.IpRegistrationModel>();
+            }
+        }
+
+        private class IpListResponse
+        {
+            public List<IPRegistrationModel.IpRegistrationModel>? value { get; set; }
         }
 
         public async Task<IPRegistrationModel.IpRegistrationModel?> GetIpRegistrationByIdAsync(Guid ipId)
@@ -57,10 +83,37 @@ namespace Booking.Services
             return response.IsSuccessStatusCode;
         }
 
-        public async Task<bool> DischargePatientAsync(IPRegistrationModel.DischargeRequest request)
+        public async Task<(bool Success, string Message)> DischargePatientAsync(IPRegistrationModel.DischargeRequest request)
         {
-            var response = await _http.PostAsJsonAsync("api/IpRegistration/discharge", request);
-            return response.IsSuccessStatusCode;
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/IpRegistration/discharge", request);
+                var rawContent = await response.Content.ReadAsStringAsync();
+                var cleaned = rawContent?.Trim().Trim('"') ?? "";
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return (false, string.IsNullOrWhiteSpace(cleaned) ? "Failed to discharge patient." : cleaned);
+                }
+
+                if (!string.IsNullOrWhiteSpace(cleaned))
+                {
+                    if (cleaned.StartsWith("Cannot discharge", StringComparison.OrdinalIgnoreCase) ||
+                        cleaned.StartsWith("Error", StringComparison.OrdinalIgnoreCase) ||
+                        cleaned.StartsWith("Failed", StringComparison.OrdinalIgnoreCase) ||
+                        cleaned.Contains("unbilled charges are pending", StringComparison.OrdinalIgnoreCase) ||
+                        cleaned.Contains("Generate the final bill first", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return (false, cleaned);
+                    }
+                }
+
+                return (true, string.IsNullOrWhiteSpace(cleaned) ? "Patient discharged successfully!" : cleaned);
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error discharging patient: {ex.Message}");
+            }
         }
 
         public async Task<bool> UpdateIpRegistrationAsync(IPRegistrationModel.UpdateIpRegistrationRequest request, decimal? custid = null)

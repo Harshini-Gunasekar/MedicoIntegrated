@@ -74,6 +74,12 @@ namespace Medico_Backend.Model
         public bool deleted { get; set; } = false;
 
         public long? group_id { get; set; }
+
+        [Write(false)]
+        public bool? isvip { get; set; }
+
+        [Write(false)]
+        public string? viprole { get; set; }
     }
 
     public class UpdateVitalStatusRequest

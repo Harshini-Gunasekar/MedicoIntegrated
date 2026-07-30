@@ -59,6 +59,21 @@ namespace medico_backend.Model
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
             public DateTime updated_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+            [Write(false)]
+            public string? patient_name { get; set; }
+
+            [Write(false)]
+            public string? mobile { get; set; }
+
+            [Write(false)]
+            public bool? isvip { get; set; }
+
+            [Write(false)]
+            public bool? is_vip { get; set; }
+
+            [Write(false)]
+            public string? viprole { get; set; }
         }
 
         // ─── Request DTOs ──────────────────────────────

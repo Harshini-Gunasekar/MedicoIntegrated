@@ -7,6 +7,7 @@ namespace Booking.Models
     {
         public int? bhcode { get; set; }
         public int? cntcode { get; set; }
+        public Guid? ip_id { get; set; }
         public DateTime? fromdate { get; set; }
         public DateTime? todate { get; set; }
         public decimal? custid { get; set; }
@@ -22,6 +23,7 @@ namespace Booking.Models
     public class HmsBillSummary
     {
         public string? requestguid { get; set; }
+        public Guid? ip_id { get; set; }
         public string? bill_no { get; set; }
         public string? patient_name { get; set; }
         public string? mobileno { get; set; }
@@ -35,6 +37,8 @@ namespace Booking.Models
         public bool is_settled { get; set; }
         public int? enteredbhcode { get; set; }
         public int? cntcode { get; set; }
+        public string? opvisitid { get; set; }
+        public string? dateofbirth { get; set; }
         public int? dcode { get; set; }
     }
 
@@ -42,6 +46,7 @@ namespace Booking.Models
     {
         public string? requestguid { get; set; }
         public string? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public string? bill_no { get; set; }
         public string? barcode { get; set; }
         public DateTime? bill_date { get; set; }
@@ -172,4 +177,25 @@ namespace Booking.Models
         public int? usercode { get; set; }
         public int? computercode { get; set; }
     }
+
+    public class HmsPaymentRequest
+    {
+        public string? requestguid { get; set; }
+        public double amount { get; set; }
+        public string? collection_type { get; set; }
+        public string? reference_no { get; set; }
+        public string? bank_name { get; set; }
+        public int cntcode { get; set; }
+        public int enteredbhcode { get; set; }
+        public int usercode { get; set; } = 1;
+        public int computercode { get; set; } = 1;
+
+        public decimal? pmc1 { get; set; }
+        public double? pmc1_amount { get; set; }
+        public decimal? pmc2 { get; set; }
+        public double? pmc2_amount { get; set; }
+        public decimal? pmc3 { get; set; }
+        public double? pmc3_amount { get; set; }
+    }
 }
+

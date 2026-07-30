@@ -16,10 +16,13 @@ namespace Booking.Models
         [Required(ErrorMessage = "First Name is required")]
         public string? name { get; set; }
 
+        [Required(ErrorMessage = "Qualification is required")]
         public string? qualification { get; set; }
 
         public string? shortname { get; set; }
 
+        [Required(ErrorMessage = "Specialty is required")]
+        [Range(1, int.MaxValue, ErrorMessage = "Specialty is required")]
         public int? spcode { get; set; }
 
         public int? tcode { get; set; }
@@ -52,8 +55,10 @@ namespace Booking.Models
 
         public string? fax { get; set; }
 
+        [Required(ErrorMessage = "Mobile Number is required")]
         public string? mobile { get; set; }
 
+        [Required(ErrorMessage = "Email Address is required")]
         public string? email { get; set; }
 
         public string? website { get; set; }
@@ -121,5 +126,30 @@ namespace Booking.Models
         public double? normalconsultationfee { get; set; }              
         public double? offhoursconsultationfee { get; set; }
         public long? group_id { get; set; }
+        public int? room_no { get; set; }
+           [NotMapped] public string? DoctorImageBase64 { get; set; }
+
+        public string GetFormattedName()
+        {
+            if (!string.IsNullOrWhiteSpace(doctorfullname))
+                return doctorfullname;
+            
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                string title = !string.IsNullOrWhiteSpace(nametitle) ? nametitle.Trim() : "Dr.";
+                if (!title.EndsWith(".")) title += ".";
+                return $"{title} {name.Trim()}";
+            }
+
+            return $"Doctor #{dcode}";
+        }
+    }
+
+    [NotMapped]
+    public class FileDownloadResponse
+    {
+        public string? fileName { get; set; }
+        public string? contentType { get; set; }
+        public string? base64 { get; set; }
     }
 }

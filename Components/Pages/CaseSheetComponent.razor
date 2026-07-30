@@ -868,15 +868,12 @@
                                                                     }
                                                                     else if (!isReadOnly)
                                                                     {
-                                                                        <!-- Entry box to input test results -->
                                                                         <div class="result-input-box">
                                                                             <input type="text" class="form-control-input" style="height:28px; font-size:0.75rem; padding: 0.2rem 0.5rem;"
-                                                                                   placeholder="Result value..." value="@GetResultValue(savedDetail.inv_det_id.ToString())" 
-                                                                                   @onchange="@(e => SetResultValue(savedDetail.inv_det_id.ToString(), e.Value?.ToString() ?? ""))" />
+                                                                                   placeholder="Result value..." @bind="savedDetail.result_value" />
                                                                             <input type="text" class="form-control-input" style="height:28px; font-size:0.75rem; padding: 0.2rem 0.5rem;"
-                                                                                   placeholder="Result notes..." value="@GetResultNotes(savedDetail.inv_det_id.ToString())" 
-                                                                                   @onchange="@(e => SetResultNotes(savedDetail.inv_det_id.ToString(), e.Value?.ToString() ?? ""))" />
-                                                                            <button class="btn-save-result" @onclick="() => SaveTestResultAsync(savedDetail.inv_det_id)">
+                                                                                   placeholder="Result notes..." @bind="savedDetail.result_notes" />
+                                                                            <button class="btn-save-result" @onclick="() => SaveTestResultAsync(savedDetail)">
                                                                                 Submit Result
                                                                             </button>
                                                                         </div>
@@ -1476,7 +1473,9 @@
                         {
                             @foreach (var visit in past3Visits)
                             {
-                                var isSelected = selectedHistoryOpId == (string.IsNullOrEmpty(visit.op_id) ? Guid.Empty : Guid.Parse(visit.op_id));
+                                var isSelected = selectedPastVisitCaseSheet != null && 
+                                                 ((!string.IsNullOrEmpty(visit.op_id) && visit.op_id == selectedPastVisitCaseSheet.op_id) || 
+                                                  (visit.ip_id.HasValue && visit.ip_id == selectedPastVisitCaseSheet.ip_id));
                                 <button class="past-visit-pill-btn @(isSelected ? "active" : "")" 
                                         @onclick="() => TogglePastVisitCaseSheet(visit)"
                                         title="Click to view case sheet from @(visit.visit_date?.ToString("dd-MMM-yyyy") ?? "this visit")">
@@ -1525,7 +1524,9 @@
     [Parameter] public EventCallback<bool> VisibleChanged { get; set; }
 
     [Parameter] public Guid OpId { get; set; }
+    [Parameter] public Guid? IpId { get; set; }
     [Parameter] public string OpNo { get; set; } = string.Empty;
+    [Parameter] public string IpNo { get; set; } = string.Empty;
     [Parameter] public decimal CustId { get; set; }
     [Parameter] public int Dcode { get; set; }
     [Parameter] public string PatientName { get; set; } = string.Empty;
@@ -1574,9 +1575,6 @@
     private bool savingVitals = false;
     private bool allNormalToggle = false;
 
-    // Lab Results Caching
-    private Dictionary<string, string> resultValueCache = new();
-    private Dictionary<string, string> resultNotesCache = new();
     private CaseSheetViewModel? rawLoadedSheet = null; // Stored to look up inv_det_id by sno
 
     // History
@@ -1608,7 +1606,7 @@
         {
             allTestMasters = await LabCareTestService.GetAllTestsAsync();
         }
-        if (Visible && OpId != Guid.Empty && currentRequest.op_id != OpId.ToString())
+        if (Visible && ((OpId != Guid.Empty && currentRequest.op_id != OpId.ToString()) || (IpId.HasValue && IpId.Value != Guid.Empty && currentRequest.ip_id != IpId)))
         {
             await LoadClinicalWorkspaceAsync();
         }
@@ -1630,16 +1628,14 @@
         
         inlineIcdSearchResults.Clear();
         activeInlineDiagSno = 0;
-        
-        resultValueCache.Clear();
-        resultNotesCache.Clear();
 
         try
         {
             // Reset request object
             currentRequest = new SaveCaseSheetRequest
             {
-                op_id = OpId.ToString(),
+                op_id = OpId != Guid.Empty ? OpId.ToString() : "",
+                ip_id = IpId,
                 custid = CustId,
                 dcode = Dcode,
                 sheet_status = "DRAFT"
@@ -1655,7 +1651,7 @@
             selectedPastVisitVitals = null;
 
             // 1. Load existing case sheet (if any)
-            var existingSheet = await CaseSheetService.GetCaseSheetByVisitAsync(OpId);
+            var existingSheet = await CaseSheetService.GetCaseSheetByVisitAsync(OpId, IpId);
             rawLoadedSheet = existingSheet;
             if (existingSheet != null && !string.IsNullOrEmpty(existingSheet.sheet_id))
             {
@@ -1678,18 +1674,29 @@
             // 2. Load Patient Vitals
             loadingVitals = true;
             StateHasChanged();
-            vitalsList = await AppointmentBookingService.GetOpVitalsAsync(OpId);
+            vitalsList = await AppointmentBookingService.GetOpVitalsAsync(OpId != Guid.Empty ? OpId : null, IpId);
             if (vitalsList != null && vitalsList.Any())
             {
                 activeVitals = vitalsList.OrderByDescending(v => v.created_at).First();
+                // Ensure ip_id and ip_no are set if they are not already
+                if (IpId.HasValue && IpId.Value != Guid.Empty && activeVitals.ip_id == null)
+                {
+                    activeVitals.ip_id = IpId;
+                }
+                if (!string.IsNullOrEmpty(IpNo) && string.IsNullOrEmpty(activeVitals.ip_no))
+                {
+                    activeVitals.ip_no = IpNo;
+                }
                 isEditingVitals = true;
             }
             else
             {
                 activeVitals = new OPRegistrationModel.PatientVitalsModel
                 {
-                    op_id = OpId,
-                    op_no = OpNo,
+                    op_id = OpId != Guid.Empty ? OpId : null,
+                    op_no = !string.IsNullOrEmpty(OpNo) ? OpNo : null,
+                    ip_id = IpId != Guid.Empty ? IpId : null,
+                    ip_no = !string.IsNullOrEmpty(IpNo) ? IpNo : null,
                     custid = CustId,
                     dcode = Dcode,
                     pedal_oedema = "",
@@ -1757,18 +1764,18 @@
         currentRequest.followup_notes = vm.followup_notes;
         currentRequest.sheet_status = vm.sheet_status ?? "DRAFT";
 
-        currentRequest.symptom_list = vm.symptom_list.Select(s => new CaseSheetSymptomItem
+        currentRequest.symptom_list = vm.symptom_list.Select((s, index) => new CaseSheetSymptomItem
         {
-            sno = s.sno,
+            sno = index + 1,
             symptom_text = s.symptom_text ?? "",
             duration = s.duration,
             severity = s.severity,
             notes = s.notes
         }).ToList();
 
-        currentRequest.diagnosis_list = vm.diagnosis_list.Select(d => new CaseSheetDiagnosisItem
+        currentRequest.diagnosis_list = vm.diagnosis_list.Select((d, index) => new CaseSheetDiagnosisItem
         {
-            sno = d.sno,
+            sno = index + 1,
             icd_code = d.icd_code,
             icd_description = d.icd_description,
             diagnosis_text = d.diagnosis_text,
@@ -1785,9 +1792,9 @@
                 pr_code = vm.prescription.pr_code,
                 topremarks = vm.prescription.topremarks,
                 bottonremarks = vm.prescription.bottonremarks,
-                items = vm.prescription.items.Select(i => new CaseSheetPrescriptionItem
+                items = vm.prescription.items.Select((i, index) => new CaseSheetPrescriptionItem
                 {
-                    sno = i.sno,
+                    sno = index + 1,
                     diag_id = i.diag_id?.ToString(),
                     drug_name = i.drug_name ?? "",
                     drug_code = i.drug_code,
@@ -1815,21 +1822,30 @@
 
         if (vm.investigation != null)
         {
+            // Assign sequential sno to source investigation tests so lookups by sno work
+            for (int i = 0; i < vm.investigation.tests.Count; i++)
+            {
+                vm.investigation.tests[i].sno = i + 1;
+            }
+
             currentRequest.investigation = new CaseSheetInvestigationRequest
             {
                 inv_id = vm.investigation.inv_id,
                 notes = vm.investigation.notes,
                 is_urgent = vm.investigation.is_urgent,
-                tests = vm.investigation.tests.Select(t => new CaseSheetInvestigationItem
+                tests = vm.investigation.tests.Select((t, index) => new CaseSheetInvestigationItem
                 {
-                    sno = t.sno,
+                    sno = index + 1,
                     diag_id = t.diag_id?.ToString(),
                     test_name = t.test_name ?? "",
                     test_code = t.test_code,
                     
                     quantity = t.quantity,
                     rate = t.rate,
-                    amount = t.amount
+                    amount = t.amount,
+                    result_value = t.result_value,
+                    result_notes = t.result_notes,
+                    result_status = t.result_status
                 }).ToList()
             };
         }
@@ -2170,41 +2186,11 @@
         return null;
     }
 
-    private string GetResultValue(string key)
+    private async Task SaveTestResultAsync(OpInvestigationDetailModel savedDetail)
     {
-        if (!resultValueCache.ContainsKey(key))
-        {
-            resultValueCache[key] = "";
-        }
-        return resultValueCache[key];
-    }
+        if (savedDetail == null) return;
 
-    private void SetResultValue(string key, string val)
-    {
-        resultValueCache[key] = val;
-    }
-
-    private string GetResultNotes(string key)
-    {
-        if (!resultNotesCache.ContainsKey(key))
-        {
-            resultNotesCache[key] = "";
-        }
-        return resultNotesCache[key];
-    }
-
-    private void SetResultNotes(string key, string val)
-    {
-        resultNotesCache[key] = val;
-    }
-
-    private async Task SaveTestResultAsync(Guid invDetId)
-    {
-        var key = invDetId.ToString();
-        resultValueCache.TryGetValue(key, out var val);
-        resultNotesCache.TryGetValue(key, out var notes);
-
-        if (string.IsNullOrWhiteSpace(val))
+        if (string.IsNullOrWhiteSpace(savedDetail.result_value))
         {
             ToastService.ShowError("Please fill in the result value.");
             return;
@@ -2213,9 +2199,9 @@
         savingData = true;
         var req = new UpdateInvestigationResultRequest
         {
-            inv_det_id = key,
-            result_value = val,
-            result_notes = notes,
+            inv_det_id = savedDetail.inv_det_id.ToString(),
+            result_value = savedDetail.result_value,
+            result_notes = savedDetail.result_notes,
             result_status = "COMPLETED"
         };
 
@@ -2226,7 +2212,7 @@
         {
             ToastService.ShowSuccess("Lab result saved successfully.");
             // Reload the case sheet to display updated test results
-            var existingSheet = await CaseSheetService.GetCaseSheetByVisitAsync(OpId);
+            var existingSheet = await CaseSheetService.GetCaseSheetByVisitAsync(OpId, IpId);
             rawLoadedSheet = existingSheet;
             if (existingSheet != null)
             {
@@ -2256,9 +2242,10 @@
         selectedPastVisitCaseSheet = pastVisit;
 
         // Load vitals for the historical visit
-        if (selectedHistoryOpId.HasValue && selectedHistoryOpId.Value != Guid.Empty)
+        var targetOpId = selectedHistoryOpId.HasValue && selectedHistoryOpId.Value != Guid.Empty ? selectedHistoryOpId.Value : (Guid?)null;
+        if (targetOpId != null || (pastVisit.ip_id.HasValue && pastVisit.ip_id.Value != Guid.Empty))
         {
-            var pastVitalsList = await AppointmentBookingService.GetOpVitalsAsync(selectedHistoryOpId.Value);
+            var pastVitalsList = await AppointmentBookingService.GetOpVitalsAsync(targetOpId, pastVisit.ip_id);
             if (pastVitalsList != null && pastVitalsList.Any())
             {
                 selectedPastVisitVitals = pastVitalsList.OrderByDescending(v => v.created_at).First();
@@ -2267,8 +2254,10 @@
             {
                 selectedPastVisitVitals = new OPRegistrationModel.PatientVitalsModel
                 {
-                    op_id = selectedHistoryOpId.Value,
+                    op_id = targetOpId,
                     op_no = OpNo,
+                    ip_id = pastVisit.ip_id != Guid.Empty ? pastVisit.ip_id : null,
+                    ip_no = IpNo,
                     custid = CustId,
                     dcode = pastVisit.dcode
                 };
@@ -2283,8 +2272,20 @@
 
     private async Task TogglePastVisitCaseSheet(CaseSheetViewModel visit)
     {
-        var targetGuid = string.IsNullOrEmpty(visit.op_id) ? Guid.Empty : Guid.Parse(visit.op_id);
-        if (selectedHistoryOpId == targetGuid)
+        bool isSelected = false;
+        if (selectedPastVisitCaseSheet != null)
+        {
+            if (!string.IsNullOrEmpty(visit.op_id) && !string.IsNullOrEmpty(selectedPastVisitCaseSheet.op_id))
+            {
+                isSelected = visit.op_id == selectedPastVisitCaseSheet.op_id;
+            }
+            else if (visit.ip_id.HasValue && selectedPastVisitCaseSheet.ip_id.HasValue)
+            {
+                isSelected = visit.ip_id.Value == selectedPastVisitCaseSheet.ip_id.Value;
+            }
+        }
+
+        if (isSelected)
         {
             await RestoreActiveVisitCaseSheet();
         }
@@ -2356,7 +2357,51 @@
         {
             currentRequest.investigation.notes = investigationNotes;
             currentRequest.investigation.is_urgent = investigationMasterUrgent;
+
+            if (currentRequest.investigation.tests != null)
+            {
+                foreach (var test in currentRequest.investigation.tests)
+                {
+                    var savedDetail = GetSavedInvestigationDetail(test.sno);
+                    if (savedDetail != null)
+                    {
+                        test.result_value = savedDetail.result_value;
+                        test.result_notes = savedDetail.result_notes;
+                        test.result_status = savedDetail.result_status;
+                    }
+                }
+            }
         }
+    }
+
+    private bool HasVitalsData(OPRegistrationModel.PatientVitalsModel? v)
+    {
+        if (v == null) return false;
+        return (v.height_cm.HasValue && v.height_cm > 0) || 
+               (v.weight_kg.HasValue && v.weight_kg > 0) ||
+               (v.bp_systolic.HasValue && v.bp_systolic > 0) ||
+               (v.bp_diastolic.HasValue && v.bp_diastolic > 0) ||
+               (v.pulse_rate.HasValue && v.pulse_rate > 0) ||
+               (v.temperature_f.HasValue && v.temperature_f > 0) ||
+               (v.spo2.HasValue && v.spo2 > 0) ||
+               (v.sugar_level.HasValue && v.sugar_level > 0) ||
+               (v.pain_scale.HasValue && v.pain_scale > 0) ||
+               (v.respiratory_rate.HasValue && v.respiratory_rate > 0) ||
+               (v.hba1c.HasValue && v.hba1c > 0) ||
+               (v.waist_cm.HasValue && v.waist_cm > 0) ||
+               (v.hip_cm.HasValue && v.hip_cm > 0) ||
+               (v.head_circumference_cm.HasValue && v.head_circumference_cm > 0) ||
+               !string.IsNullOrWhiteSpace(v.allergy_notes) ||
+               !string.IsNullOrWhiteSpace(v.pedal_oedema) ||
+               !string.IsNullOrWhiteSpace(v.jvp) ||
+               !string.IsNullOrWhiteSpace(v.cvs) ||
+               !string.IsNullOrWhiteSpace(v.rs) ||
+               !string.IsNullOrWhiteSpace(v.cns) ||
+               !string.IsNullOrWhiteSpace(v.abdomen) ||
+               !string.IsNullOrWhiteSpace(v.cardiac_monitor) ||
+               !string.IsNullOrWhiteSpace(v.cd_echo) ||
+               !string.IsNullOrWhiteSpace(v.blood_chemistry) ||
+               !string.IsNullOrWhiteSpace(v.ecg_notes);
     }
 
     private async Task<bool> SaveDraftAsyncInternal()
@@ -2366,23 +2411,91 @@
 
         savingData = true;
         StateHasChanged();
+
+        if (activeVitals != null && !isReadOnly && (isEditingVitals || HasVitalsData(activeVitals)))
+        {
+            try
+            {
+                if (isEditingVitals)
+                {
+                    await AppointmentBookingService.UpdateOpVitalsAsync(activeVitals);
+                }
+                else
+                {
+                    await AppointmentBookingService.SaveOpVitalsAsync(activeVitals);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error auto-saving vitals: {ex.Message}");
+            }
+        }
+
+        // Cache the currently entered results in memory before we save/reload
+        var enteredResults = currentRequest.investigation?.tests
+            .Where(t => !string.IsNullOrWhiteSpace(t.result_value))
+            .ToList() ?? new List<CaseSheetInvestigationItem>();
+
         var response = await CaseSheetService.SaveCaseSheetAsync(currentRequest);
-        savingData = false;
 
         if (response.StartsWith("Error"))
         {
+            savingData = false;
             ToastService.ShowError(response);
             return false;
         }
 
-        // Successfully saved. Re-fetch to populate IDs.
-        var reloaded = await CaseSheetService.GetCaseSheetByVisitAsync(OpId);
-        rawLoadedSheet = reloaded;
-        if (reloaded != null)
+        // 1st reload: fetch the sheet to get database-generated inv_det_id values for any new tests
+        var firstReload = await CaseSheetService.GetCaseSheetByVisitAsync(OpId, IpId);
+        if (firstReload != null && firstReload.investigation != null && enteredResults.Count > 0)
         {
-            LoadFromViewModel(reloaded);
+            // Assign sequential sno to matching elements to align them
+            for (int i = 0; i < firstReload.investigation.tests.Count; i++)
+            {
+                firstReload.investigation.tests[i].sno = i + 1;
+            }
+
+            foreach (var enteredTest in enteredResults)
+            {
+                // Match by sno
+                var dbTest = firstReload.investigation.tests.FirstOrDefault(t => t.sno == enteredTest.sno);
+                if (dbTest != null && dbTest.inv_det_id != Guid.Empty)
+                {
+                    var req = new UpdateInvestigationResultRequest
+                    {
+                        inv_det_id = dbTest.inv_det_id.ToString(),
+                        result_value = enteredTest.result_value,
+                        result_notes = enteredTest.result_notes,
+                        result_status = "COMPLETED"
+                    };
+                    await CaseSheetService.UpdateInvestigationResultAsync(req);
+                }
+            }
         }
-        
+
+        // 2nd reload: fetch the final state from DB with results populated
+        var finalReload = await CaseSheetService.GetCaseSheetByVisitAsync(OpId, IpId);
+        rawLoadedSheet = finalReload;
+        if (finalReload != null)
+        {
+            LoadFromViewModel(finalReload);
+        }
+
+        try
+        {
+            vitalsList = await AppointmentBookingService.GetOpVitalsAsync(OpId);
+            if (vitalsList != null && vitalsList.Any())
+            {
+                activeVitals = vitalsList.OrderByDescending(v => v.created_at).First();
+                isEditingVitals = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error reloading vitals list: {ex.Message}");
+        }
+
+        savingData = false;
         ToastService.ShowSuccess("Draft case sheet saved successfully.");
         await OnSaved.InvokeAsync();
         return true;
@@ -2424,7 +2537,7 @@
             ToastService.ShowSuccess("Case sheet finalized and locked.");
             
             // Reload
-            var reloaded = await CaseSheetService.GetCaseSheetByVisitAsync(OpId);
+            var reloaded = await CaseSheetService.GetCaseSheetByVisitAsync(OpId, IpId);
             rawLoadedSheet = reloaded;
             if (reloaded != null)
             {
@@ -2496,7 +2609,7 @@
             {
                 ToastService.ShowSuccess("Vitals saved successfully!");
                 // Reload list
-                vitalsList = await AppointmentBookingService.GetOpVitalsAsync(OpId);
+                vitalsList = await AppointmentBookingService.GetOpVitalsAsync(OpId != Guid.Empty ? OpId : null, IpId);
                 if (vitalsList != null && vitalsList.Any())
                 {
                     activeVitals = vitalsList.OrderByDescending(v => v.created_at).First();

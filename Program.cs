@@ -40,6 +40,17 @@ builder.Services.AddHttpClient("RidoUrl", client =>
     client.BaseAddress = new Uri(baseUrl);
 });
 
+builder.Services.AddHttpClient("InventoryApi", client => 
+{
+    var baseUrl = builder.Configuration["ApiBaseUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("ApiBaseUrl is not configured in appsettings.json");
+    if (!baseUrl.EndsWith("/"))
+    {
+        baseUrl += "/";
+    }
+    client.BaseAddress = new Uri(baseUrl + "api/");
+});
+
 builder.Services.AddScoped(sp => 
 {
     var tenantHandler = sp.GetRequiredService<TenantHeaderHandler>();
@@ -71,6 +82,7 @@ builder.Services.AddScoped<Booking.Services.SampleMasterService>();
 builder.Services.AddScoped<Booking.Services.TestTypeMasterService>();
 builder.Services.AddScoped<Booking.Services.TestMasterService>();
 builder.Services.AddScoped<Booking.Services.ToastService>();
+builder.Services.AddScoped<Booking.Services.NotificationService>();
 builder.Services.AddScoped<Booking.Services.AppointmentBookingService>();
 builder.Services.AddScoped<Booking.Services.CaseSheetService>();
 builder.Services.AddScoped<Booking.Services.VitalsService>();
@@ -96,6 +108,7 @@ builder.Services.AddScoped<Booking.Services.BlockMasterService>();
 builder.Services.AddScoped<Booking.Services.IpRegistrationService>();
 builder.Services.AddScoped<Booking.Services.FloorMasterService>();
 builder.Services.AddScoped<Booking.Services.OGScreenService>();
+builder.Services.AddScoped<Booking.Services.DashboardService>();
 builder.Services.AddScoped<Booking.Services.AppointmentPreBookingService>();
 builder.Services.AddScoped<LabCare.Services.TestService>(sp =>
 {

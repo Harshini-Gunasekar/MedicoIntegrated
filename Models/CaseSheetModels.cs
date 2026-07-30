@@ -8,7 +8,8 @@ namespace Booking.Models
     public class OpCaseSheetModel
     {
         public Guid sheet_id { get; set; } = Guid.NewGuid();
-        public Guid op_id { get; set; }
+        public Guid? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public DateTime visit_date { get; set; } = DateTime.UtcNow.Date;
@@ -39,7 +40,7 @@ namespace Booking.Models
     {
         public Guid diag_id { get; set; } = Guid.NewGuid();
         public Guid sheet_id { get; set; }
-        public Guid op_id { get; set; }
+        public string? op_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public DateTime visit_date { get; set; }
@@ -67,7 +68,7 @@ namespace Booking.Models
     {
         public Guid symptom_id { get; set; } = Guid.NewGuid();
         public Guid sheet_id { get; set; }
-        public Guid op_id { get; set; }
+        public string? op_id { get; set; }
         public decimal custid { get; set; }
         public int sno { get; set; }
 
@@ -194,6 +195,7 @@ namespace Booking.Models
     public class SaveCaseSheetRequest
     {
         public string op_id { get; set; } = string.Empty;
+        public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public string? sheet_id { get; set; }
@@ -292,6 +294,9 @@ namespace Booking.Models
         public decimal quantity { get; set; } = 1;
         public decimal? rate { get; set; }
         public decimal? amount { get; set; }
+        public string? result_value { get; set; }
+        public string? result_notes { get; set; }
+        public string result_status { get; set; } = "PENDING";
     }
 
     public class FinalizeCaseSheetRequest
@@ -313,6 +318,7 @@ namespace Booking.Models
     {
         public string? sheet_id { get; set; }
         public string? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public DateTime? visit_date { get; set; }
@@ -434,6 +440,7 @@ namespace Booking.Models
         // Income = 4
 
         public string? manufacturername { get; set; }
+        public string? manufacturer { get; set; }
         public int ledgergroupcode { get; set; }
 
         public string? drugname { get; set; }
@@ -445,9 +452,11 @@ namespace Booking.Models
         public bool deleted { get; set; }
 
         public DateTime createddate { get; set; }
-
+ 
         public int usercode { get; set; }
-
+ 
         public string tenantcode { get; set; }
+        public string? schedule { get; set; }
+        public bool isnarcoticdrug { get; set; }
     }
 }

@@ -84,6 +84,20 @@ namespace Booking.Services
             }
         }
 
+        public async Task<bool> AddPaymentAsync(HmsPaymentRequest request)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/add-payment", request);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error adding payment: {ex.Message}");
+                return false;
+            }
+        }
+
         public async Task<HmsBillResponse?> GetBillByGuidAsync(string guid)
         {
             try
@@ -263,12 +277,23 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<UnbilledChargeSummary>> GetUnbilledChargesByVisitAsync(string opvisitid)
+        public async Task<List<UnbilledChargeSummary>> GetUnbilledChargesByVisitAsync(string? opvisitid = null, Guid? ip_id = null)
         {
             try
             {
-                var response = await _http.GetFromJsonAsync<List<UnbilledChargeSummary>>($"api/UnbilledCharges/by-visit?opvisitid={Uri.EscapeDataString(opvisitid)}");
-                return response ?? new List<UnbilledChargeSummary>();
+                var queryParams = new List<string>();
+                if (ip_id.HasValue && ip_id.Value != Guid.Empty)
+                {
+                    queryParams.Add($"ip_id={ip_id.Value}");
+                }
+                else if (!string.IsNullOrEmpty(opvisitid))
+                {
+                    queryParams.Add($"opvisitid={Uri.EscapeDataString(opvisitid)}");
+                }
+
+                var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
+                var rawJson = await _http.GetStringAsync($"api/UnbilledCharges/by-visit{queryString}");
+                return ParseUnbilledChargeSummaryList(rawJson);
             }
             catch (Exception ex)
             {
@@ -290,6 +315,53 @@ namespace Booking.Services
                 Console.WriteLine($"Error adding unbilled consultation: {ex.Message}");
                 return $"Error|{ex.Message}";
             }
+        }
+
+        public async Task<List<UnbilledChargeSummary>> GetIpRoomRentSummaryAsync(Guid ipId)
+        {
+            try
+            {
+                var rawJson = await _http.GetStringAsync($"api/UnbilledCharges/ip-room-rent-summary?ip_id={ipId}");
+                return ParseUnbilledChargeSummaryList(rawJson);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching IP room rent summary: {ex.Message}");
+                return new List<UnbilledChargeSummary>();
+            }
+        }
+
+        private List<UnbilledChargeSummary> ParseUnbilledChargeSummaryList(string? rawJson)
+        {
+            if (string.IsNullOrWhiteSpace(rawJson))
+                return new List<UnbilledChargeSummary>();
+
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    return System.Text.Json.JsonSerializer.Deserialize<List<UnbilledChargeSummary>>(rawJson, options) ?? new();
+                }
+                else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    if (doc.RootElement.TryGetProperty("value", out var valueProp) && valueProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        return System.Text.Json.JsonSerializer.Deserialize<List<UnbilledChargeSummary>>(valueProp.GetRawText(), options) ?? new();
+                    }
+                    if (doc.RootElement.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        return System.Text.Json.JsonSerializer.Deserialize<List<UnbilledChargeSummary>>(dataProp.GetRawText(), options) ?? new();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error parsing unbilled charges JSON: {ex.Message}");
+            }
+            return new List<UnbilledChargeSummary>();
         }
     }
 }

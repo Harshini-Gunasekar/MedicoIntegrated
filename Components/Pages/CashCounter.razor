@@ -1,0 +1,837 @@
+@page "/cash-counter"
+@rendermode InteractiveServer
+@inject Booking.Services.HmsBillingService HmsBillingService
+@inject Booking.Services.CounterMasterService CounterMasterService
+@inject Booking.Services.PaymodeMasterService PaymodeMasterService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.ToastService ToastService
+@inject IHttpClientFactory ClientFactory
+@using Booking.Models
+@using Newtonsoft.Json
+@using Booking.Helpers
+@using Medico_Backend.Model
+
+<div class="cash-counter-wrapper">
+    <!-- Header -->
+    <div class="page-header">
+        <div class="header-title-container">
+            <div class="header-icon">
+                <i class="bi bi-cash-coin"></i>
+            </div>
+            <div>
+                <h1 class="header-title">Cash Counter Portal</h1>
+                <p class="header-subtitle">Manage counter-wise collections, list bills, and process payments</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filters Section -->
+    <div class="filter-card">
+        <div class="filter-grid">
+            <div class="filter-item">
+                <label>BRANCH</label>
+                <select class="form-select" @bind="filter.bhcode">
+                    <option value="">All Branches</option>
+                    @foreach (var b in branches)
+                    {
+                        <option value="@b.bh_code">@b.name</option>
+                    }
+                </select>
+            </div>
+
+            <div class="filter-item">
+                <label>COUNTER</label>
+                <select class="form-select" @bind="filter.cntcode">
+                    <option value="">All Counters</option>
+                    @foreach (var c in counters)
+                    {
+                        <option value="@((int)c.cntcode)">@c.name</option>
+                    }
+                </select>
+            </div>
+
+            <div class="filter-item">
+                <label>FROM DATE</label>
+                <input type="date" class="form-control" @bind="filter.fromdate" />
+            </div>
+
+            <div class="filter-item">
+                <label>TO DATE</label>
+                <input type="date" class="form-control" @bind="filter.todate" />
+            </div>
+
+            <div class="filter-item">
+                <label>PAYMENT STATUS</label>
+                <select class="form-select" @bind="statusFilter">
+                    <option value="ALL">All Bills</option>
+                    <option value="PENDING">Pending Only</option>
+                    <option value="SETTLED">Settled Only</option>
+                </select>
+            </div>
+
+            <div class="filter-item search-item">
+                <label>PATIENT SEARCH</label>
+                <div class="search-input-wrapper">
+                    <input type="text" class="form-control" @bind="filter.search" placeholder="Name, ID or Mobile..." @onkeyup="HandleSearchKeyUp" />
+                    <i class="bi bi-search search-icon"></i>
+                </div>
+            </div>
+            <div class="filter-item action-item">
+                <div class="filter-actions-inline">
+                    <button class="btn-primary" @onclick="LoadBillsAsync" disabled="@isLoading">
+                        @if (isLoading)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            <span> Searching...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-search"></i>
+                            <span>Search</span>
+                        }
+                    </button>
+                    <button class="btn-secondary" @onclick="ResetFiltersAsync" disabled="@isLoading">
+                        <i class="bi bi-arrow-clockwise"></i>
+                        <span>Reset</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bills Table Card -->
+    <div class="table-card">
+        <div class="table-header">
+            <h2 class="table-title">Bills List</h2>
+            <div class="table-actions">
+                <span class="record-count">Total: @(billsList?.total ?? 0) bills</span>
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            <table class="custom-table">
+                <thead>
+                    <tr>
+                        <th style="width: 60px;">S.NO</th>
+                        <th>BILL NO</th>
+                        <th>DATE</th>
+                        <th>PATIENT NAME</th>
+                        <th>MOBILE</th>
+                        <th>REF. DOCTOR</th>
+                        <th class="text-end">GROSS</th>
+                        <th class="text-end">DISC</th>
+                        <th class="text-end">NET</th>
+                        <th class="text-end">PAID</th>
+                        <th class="text-end">BALANCE</th>
+                        <th class="text-center" style="width: 100px;">STATUS</th>
+                        <th class="text-center" style="width: 130px;">ACTION</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (isLoading)
+                    {
+                        <tr>
+                            <td colspan="13" class="text-center py-5">
+                                <div class="spinner-container">
+                                    <div class="spinner-border text-primary" role="status"></div>
+                                    <p class="mt-2">Loading bills list...</p>
+                                </div>
+                            </td>
+                        </tr>
+                    }
+                    else if (billsList == null || !billsList.data.Any())
+                    {
+                        <tr>
+                            <td colspan="13" class="text-center py-5 text-muted">
+                                <i class="bi bi-receipt-cutoff" style="font-size: 2.5rem; color: #94a3b8; display: block; margin-bottom: 0.5rem;"></i>
+                                No bills found matching the selected criteria.
+                            </td>
+                        </tr>
+                    }
+                    else
+                    {
+                        int sno = (filter.page - 1) * filter.pagesize + 1;
+                        @foreach (var bill in billsList.data)
+                        {
+                            var balance = bill.balance_amount ?? 0;
+                            var isSettled = bill.is_settled || balance <= 0;
+                            <tr>
+                                <td>@(sno++)</td>
+                                <td class="bill-no">@bill.bill_no</td>
+                                <td>@(bill.bill_date?.ToString("dd-MMM-yyyy hh:mm tt") ?? "-")</td>
+                                <td class="patient-name">@bill.patient_name</td>
+                                <td class="patient-phone">@bill.mobileno</td>
+                                <td>Dr. @(string.IsNullOrWhiteSpace(bill.doctor_name) ? "Self" : bill.doctor_name)</td>
+                                <td class="text-end font-numeric">@(bill.gross_amount?.ToString("0.00") ?? "0.00")</td>
+                                <td class="text-end font-numeric">@(bill.discount_amount?.ToString("0.00") ?? "0.00")</td>
+                                <td class="text-end font-numeric font-bold">@(bill.net_amount?.ToString("0.00") ?? "0.00")</td>
+                                <td class="text-end font-numeric text-success">@(bill.paid_amount?.ToString("0.00") ?? "0.00")</td>
+                                <td class="text-end font-numeric text-danger font-bold">@(balance.ToString("0.00"))</td>
+                                <td class="text-center">
+                                    <span class="status-badge @(isSettled ? "settled" : "pending")">
+                                        @(isSettled ? "Settled" : "Pending")
+                                    </span>
+                                </td>
+                                <td class="text-center">
+                                    @if (!isSettled)
+                                    {
+                                        <button class="btn-action pay" @onclick="() => OpenPaymentModal(bill)" title="Receive Payment">
+                                            <i class="bi bi-wallet2"></i> Receive
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-success-bold"><i class="bi bi-check-circle-fill"></i> Paid</span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        @if (billsList != null && billsList.total > filter.pagesize)
+        {
+            <div class="pagination-container">
+                <button class="pagination-btn" @onclick="PrevPageAsync" disabled="@(filter.page <= 1)">
+                    <i class="bi bi-chevron-left"></i> Prev
+                </button>
+                <span class="pagination-info">Page @filter.page of @TotalPages</span>
+                <button class="pagination-btn" @onclick="NextPageAsync" disabled="@(filter.page >= TotalPages)">
+                    Next <i class="bi bi-chevron-right"></i>
+                </button>
+            </div>
+        }
+    </div>
+</div>
+
+<!-- Add Payment Modal -->
+@if (showPaymentModal && selectedBill != null)
+{
+    var dueAmt = selectedBill.balance_amount ?? 0;
+    var netAmt = selectedBill.net_amount ?? 0;
+    var paidAmt = selectedBill.paid_amount ?? 0;
+
+    <div class="modal-backdrop" @onclick="ClosePaymentModal"></div>
+    <div class="payment-modal animated-modal">
+        <div class="modal-header-gradient">
+            <div class="modal-header-left">
+                <div class="modal-header-icon">
+                    <i class="bi bi-wallet2"></i>
+                </div>
+                <div>
+                    <h3 class="modal-title-text">Cash Counter Payment</h3>
+                    <p class="modal-subtitle-text">Process bill settlement and paymode allocations</p>
+                </div>
+            </div>
+            <button class="modal-close-icon-btn" @onclick="ClosePaymentModal" title="Close Modal">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+
+        <div class="modal-body-custom">
+            <!-- Hero Summary Header Card -->
+            <div class="bill-summary-card">
+                <div class="bill-summary-top-row">
+                    <div class="bill-summary-meta">
+                        <span class="meta-label">BILL NO:</span>
+                        <span class="meta-value bill-code-badge">@selectedBill.bill_no</span>
+                    </div>
+                    <div class="bill-summary-meta text-end">
+                        <span class="meta-label">PATIENT NAME:</span>
+                        <span class="meta-value patient-name-highlight">@selectedBill.patient_name</span>
+                    </div>
+                </div>
+
+                <div class="stat-pills-grid">
+                    <div class="stat-pill net-pill">
+                        <span class="stat-pill-label">NET AMOUNT</span>
+                        <span class="stat-pill-value">₹ @netAmt.ToString("0.00")</span>
+                    </div>
+                    <div class="stat-pill paid-pill">
+                        <span class="stat-pill-label">TOTAL PAID</span>
+                        <span class="stat-pill-value">₹ @paidAmt.ToString("0.00")</span>
+                    </div>
+                    <div class="stat-pill due-pill">
+                        <span class="stat-pill-label">BALANCE DUE</span>
+                        <span class="stat-pill-value">₹ @dueAmt.ToString("0.00")</span>
+                    </div>
+                </div>
+            </div>
+
+            <EditForm Model="@paymentRequest" OnValidSubmit="SubmitPaymentAsync" class="payment-form">
+                <!-- Hero Collection Amount Section -->
+                <div class="collection-amount-hero">
+                    <div class="d-flex justify-content-between align-items-center mb-2">
+                        <label class="hero-amount-label">
+                            <i class="bi bi-cash-stack text-indigo me-1"></i> COLLECTION AMOUNT (₹) <span class="text-danger">*</span>
+                        </label>
+                        <span class="quick-fill-title">Quick Presets:</span>
+                    </div>
+
+                    <div class="hero-amount-input-wrapper">
+                        <span class="currency-symbol">₹</span>
+                        <input type="number" step="0.01" class="hero-amount-input" value="@paymentRequest.amount" @oninput="OnTotalAmountInput" max="@dueAmt" min="0.01" required placeholder="0.00" />
+                    </div>
+
+                    <!-- Quick Preset Buttons -->
+                    <div class="quick-presets-row">
+                        <button type="button" class="preset-btn full-due" @onclick="() => SetQuickAmount(dueAmt)">
+                            Full Due (₹ @dueAmt.ToString("0.00"))
+                        </button>
+                        @if (dueAmt > 0)
+                        {
+                            <button type="button" class="preset-btn half-due" @onclick="() => SetQuickAmount(dueAmt / 2)">
+                                50% (₹ @((dueAmt / 2).ToString("0.00")))
+                            </button>
+                        }
+                    </div>
+                </div>
+
+                <!-- Paymodes Selection & Breakdown Card -->
+                <div class="paymode-card">
+                    <div class="paymode-card-header">
+                        <div class="paymode-title">
+                            <i class="bi bi-credit-card-2-front-fill text-indigo me-2"></i>
+                            <span>Select Paymodes & Breakdown</span>
+                        </div>
+                        <div class="paymode-badge-chip @(paymentRequest.collection_type == "MIXED" ? "mixed-chip" : "single-chip")">
+                            <i class="bi @(paymentRequest.collection_type == "MIXED" ? "bi-diagram-3-fill" : "bi-check-circle-fill") me-1"></i>
+                            <span>Mode: @paymentRequest.collection_type</span>
+                        </div>
+                    </div>
+
+                    <div class="paymode-rows-container">
+                        <!-- Paymode 1 -->
+                        <div class="paymode-row">
+                            <div class="paymode-select-wrap">
+                                <label class="paymode-field-label">Paymode 1</label>
+                                <div class="input-with-icon">
+                                    <i class="bi bi-wallet-fill field-icon"></i>
+                                    <select class="form-select custom-select" value="@paymentRequest.pmc1" @onchange="OnPmc1Changed">
+                                        <option value="">-- Select Paymode --</option>
+                                        @foreach (var pm in paymodes)
+                                        {
+                                            <option value="@pm.pmcode">@pm.name (@pm.shortname)</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="paymode-amount-wrap">
+                                <label class="paymode-field-label">Amount 1 (₹)</label>
+                                <div class="input-with-currency">
+                                    <span class="field-currency">₹</span>
+                                    <input type="number" step="0.01" class="form-control custom-input" value="@(paymentRequest.pmc1_amount ?? 0)" @oninput="OnPmc1AmountInput" placeholder="0.00" />
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Paymode 2 -->
+                        <div class="paymode-row">
+                            <div class="paymode-select-wrap">
+                                <label class="paymode-field-label">Paymode 2 <span class="text-muted fw-normal">(Optional)</span></label>
+                                <div class="input-with-icon">
+                                    <i class="bi bi-credit-card-fill field-icon"></i>
+                                    <select class="form-select custom-select" value="@paymentRequest.pmc2" @onchange="OnPmc2Changed">
+                                        <option value="">-- Select Paymode --</option>
+                                        @foreach (var pm in paymodes)
+                                        {
+                                            <option value="@pm.pmcode">@pm.name (@pm.shortname)</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="paymode-amount-wrap">
+                                <label class="paymode-field-label">Amount 2 (₹)</label>
+                                <div class="input-with-currency">
+                                    <span class="field-currency">₹</span>
+                                    <input type="number" step="0.01" class="form-control custom-input" value="@(paymentRequest.pmc2_amount ?? 0)" @oninput="OnPmc2AmountInput" placeholder="0.00" />
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Paymode 3 -->
+                        <div class="paymode-row">
+                            <div class="paymode-select-wrap">
+                                <label class="paymode-field-label">Paymode 3 <span class="text-muted fw-normal">(Optional)</span></label>
+                                <div class="input-with-icon">
+                                    <i class="bi bi-qr-code-scan field-icon"></i>
+                                    <select class="form-select custom-select" value="@paymentRequest.pmc3" @onchange="OnPmc3Changed">
+                                        <option value="">-- Select Paymode --</option>
+                                        @foreach (var pm in paymodes)
+                                        {
+                                            <option value="@pm.pmcode">@pm.name (@pm.shortname)</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="paymode-amount-wrap">
+                                <label class="paymode-field-label">Amount 3 (₹)</label>
+                                <div class="input-with-currency">
+                                    <span class="field-currency">₹</span>
+                                    <input type="number" step="0.01" class="form-control custom-input" value="@(paymentRequest.pmc3_amount ?? 0)" @oninput="OnPmc3AmountInput" placeholder="0.00" />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Form Fields 2-Column Grid -->
+                <div class="modal-form-grid">
+                    <div class="form-field-group">
+                        <label class="field-label"><i class="bi bi-pc-display me-1 text-muted"></i> COUNTER CODE <span class="text-danger">*</span></label>
+                        <select class="form-select custom-select" @bind="paymentRequest.cntcode" required>
+                            <option value="">Select Counter</option>
+                            @foreach (var c in counters)
+                            {
+                                <option value="@((int)c.cntcode)">@c.name</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="form-field-group">
+                        <label class="field-label"><i class="bi bi-building me-1 text-muted"></i> COUNTER BRANCH <span class="text-danger">*</span></label>
+                        <select class="form-select custom-select" @bind="paymentRequest.enteredbhcode" required>
+                            <option value="">Select Branch</option>
+                            @foreach (var b in branches)
+                            {
+                                <option value="@b.bh_code">@b.name</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="form-field-group">
+                        <label class="field-label"><i class="bi bi-hash me-1 text-muted"></i> REFERENCE NO / TXN ID</label>
+                        <input type="text" class="form-control custom-input" @bind="paymentRequest.reference_no" placeholder="e.g. APRV-88421" />
+                    </div>
+
+                    <div class="form-field-group">
+                        <label class="field-label"><i class="bi bi-bank me-1 text-muted"></i> BANK NAME</label>
+                        <input type="text" class="form-control custom-input" @bind="paymentRequest.bank_name" placeholder="e.g. HDFC Bank" />
+                    </div>
+                </div>
+
+                <!-- Actions -->
+                <div class="modal-footer-actions">
+                    <button type="button" class="btn-modal-cancel" @onclick="ClosePaymentModal" disabled="@paymentSaving">
+                        <i class="bi bi-x-circle me-1"></i> Cancel
+                    </button>
+                    <button type="submit" class="btn-modal-submit" disabled="@(paymentSaving || paymentRequest.amount <= 0)">
+                        @if (paymentSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                            <span> Processing...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check-circle-fill me-1"></i>
+                            <span>Confirm & Add Payment</span>
+                        }
+                    </button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    private HmsBillFilterRequest filter = new() { page = 1, pagesize = 50 };
+    private HmsBillListResponse? billsList;
+    private List<Booking.Models.BranchModel> branches = new();
+    private List<CounterMasterModel> counters = new();
+    private List<PaymodeMasterModel> paymodes = new();
+    private bool isLoading = false;
+    private string statusFilter = "ALL"; // Default to all bills
+
+    // Add Payment Modal State
+    private bool showPaymentModal = false;
+    private HmsBillSummary? selectedBill;
+    private HmsPaymentRequest paymentRequest = new();
+    private bool paymentSaving = false;
+
+    private int TotalPages => billsList != null ? (int)Math.Ceiling((double)billsList.total / filter.pagesize) : 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        filter.fromdate = null;
+        filter.todate = null;
+
+        await Task.WhenAll(
+            LoadBranchesAsync(),
+            LoadCountersAsync(),
+            LoadPaymodesAsync()
+        );
+
+        // Prepopulate filter counter from tenant state if available
+        if (TenantState.BranchCode > 0) filter.bhcode = TenantState.BranchCode;
+
+        await LoadBillsAsync();
+    }
+
+    private async Task LoadBillsAsync()
+    {
+        isLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            // Apply report type toggles to the filter request model
+            if (statusFilter == "PENDING")
+            {
+                filter.pendingonly = true;
+                filter.iscashbill = null;
+                filter.iscreditbill = null;
+            }
+            else if (statusFilter == "SETTLED")
+            {
+                filter.pendingonly = false;
+                filter.iscashbill = true;
+                filter.iscreditbill = null;
+            }
+            else
+            {
+                filter.pendingonly = null;
+                filter.iscashbill = null;
+                filter.iscreditbill = null;
+            }
+
+            billsList = await HmsBillingService.ListBillsAsync(filter);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading bills: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ResetFiltersAsync()
+    {
+        filter = new HmsBillFilterRequest
+        {
+            page = 1,
+            pagesize = 50,
+            fromdate = null,
+            todate = null
+        };
+        if (TenantState.BranchCode > 0) filter.bhcode = TenantState.BranchCode;
+        statusFilter = "ALL";
+        await LoadBillsAsync();
+    }
+
+    private void HandleSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            filter.page = 1;
+            _ = LoadBillsAsync();
+        }
+    }
+
+    private async Task PrevPageAsync()
+    {
+        if (filter.page > 1)
+        {
+            filter.page--;
+            await LoadBillsAsync();
+        }
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (filter.page < TotalPages)
+        {
+            filter.page++;
+            await LoadBillsAsync();
+        }
+    }
+
+    // Modal Control
+    private void OpenPaymentModal(HmsBillSummary bill)
+    {
+        selectedBill = bill;
+        var dueAmt = bill.balance_amount ?? 0;
+
+        decimal? defaultPmc1 = null;
+        decimal? defaultPmc2 = null;
+        decimal? defaultPmc3 = null;
+
+        if (paymodes != null && paymodes.Count > 0)
+        {
+            var cashPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CASH", StringComparison.OrdinalIgnoreCase));
+            defaultPmc1 = cashPm != null ? cashPm.pmcode : paymodes[0].pmcode;
+
+            var cardPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
+            if (cardPm != null) defaultPmc2 = cardPm.pmcode;
+
+            var upiPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
+            if (upiPm != null) defaultPmc3 = upiPm.pmcode;
+        }
+
+        paymentRequest = new HmsPaymentRequest
+        {
+            requestguid = bill.requestguid,
+            amount = dueAmt,
+            collection_type = "CASH",
+            cntcode = bill.cntcode ?? 1,
+            enteredbhcode = bill.enteredbhcode ?? 1,
+            usercode = TenantState.UserCode > 0 ? TenantState.UserCode : 101,
+            computercode = 1,
+            reference_no = "",
+            bank_name = "",
+            pmc1 = defaultPmc1,
+            pmc1_amount = dueAmt,
+            pmc2 = defaultPmc2,
+            pmc2_amount = null,
+            pmc3 = defaultPmc3,
+            pmc3_amount = null
+        };
+
+        if (TenantState.BranchCode > 0) paymentRequest.enteredbhcode = TenantState.BranchCode.Value;
+
+        showPaymentModal = true;
+    }
+
+    private void SetQuickAmount(double amt)
+    {
+        paymentRequest.amount = Math.Round(amt, 2);
+        double a2 = paymentRequest.pmc2_amount ?? 0;
+        double a3 = paymentRequest.pmc3_amount ?? 0;
+        if (a2 == 0 && a3 == 0)
+        {
+            paymentRequest.pmc1_amount = paymentRequest.amount;
+        }
+        RecalculatePaymentTotals();
+    }
+
+    private void RecalculatePaymentTotals()
+    {
+        double a1 = paymentRequest.pmc1_amount ?? 0;
+        double a2 = paymentRequest.pmc2_amount ?? 0;
+        double a3 = paymentRequest.pmc3_amount ?? 0;
+
+        int activeCount = 0;
+        string singleMode = "CASH";
+
+        if (a1 > 0 && paymentRequest.pmc1.HasValue)
+        {
+            activeCount++;
+            var pm1 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc1.Value);
+            if (pm1 != null && !string.IsNullOrEmpty(pm1.shortname)) singleMode = pm1.shortname;
+        }
+        if (a2 > 0 && paymentRequest.pmc2.HasValue)
+        {
+            activeCount++;
+            var pm2 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc2.Value);
+            if (pm2 != null && !string.IsNullOrEmpty(pm2.shortname)) singleMode = pm2.shortname;
+        }
+        if (a3 > 0 && paymentRequest.pmc3.HasValue)
+        {
+            activeCount++;
+            var pm3 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc3.Value);
+            if (pm3 != null && !string.IsNullOrEmpty(pm3.shortname)) singleMode = pm3.shortname;
+        }
+
+        if (activeCount > 1)
+        {
+            paymentRequest.collection_type = "MIXED";
+            paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
+        }
+        else if (activeCount == 1)
+        {
+            paymentRequest.collection_type = singleMode;
+            paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
+        }
+        else
+        {
+            paymentRequest.collection_type = "CASH";
+        }
+    }
+
+    private void OnTotalAmountInput(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out double val))
+        {
+            paymentRequest.amount = val;
+            double a2 = paymentRequest.pmc2_amount ?? 0;
+            double a3 = paymentRequest.pmc3_amount ?? 0;
+            if (a2 == 0 && a3 == 0)
+            {
+                paymentRequest.pmc1_amount = val;
+            }
+            RecalculatePaymentTotals();
+        }
+    }
+
+    private void OnPmc1Changed(ChangeEventArgs e)
+    {
+        if (decimal.TryParse(e.Value?.ToString(), out decimal val))
+        {
+            paymentRequest.pmc1 = val;
+        }
+        else
+        {
+            paymentRequest.pmc1 = null;
+        }
+        RecalculatePaymentTotals();
+    }
+
+    private void OnPmc2Changed(ChangeEventArgs e)
+    {
+        if (decimal.TryParse(e.Value?.ToString(), out decimal val))
+        {
+            paymentRequest.pmc2 = val;
+        }
+        else
+        {
+            paymentRequest.pmc2 = null;
+        }
+        RecalculatePaymentTotals();
+    }
+
+    private void OnPmc3Changed(ChangeEventArgs e)
+    {
+        if (decimal.TryParse(e.Value?.ToString(), out decimal val))
+        {
+            paymentRequest.pmc3 = val;
+        }
+        else
+        {
+            paymentRequest.pmc3 = null;
+        }
+        RecalculatePaymentTotals();
+    }
+
+    private void OnPmc1AmountInput(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out double val))
+        {
+            paymentRequest.pmc1_amount = val;
+        }
+        else
+        {
+            paymentRequest.pmc1_amount = 0;
+        }
+        RecalculatePaymentTotals();
+    }
+
+    private void OnPmc2AmountInput(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out double val))
+        {
+            paymentRequest.pmc2_amount = val;
+        }
+        else
+        {
+            paymentRequest.pmc2_amount = 0;
+        }
+        RecalculatePaymentTotals();
+    }
+
+    private void OnPmc3AmountInput(ChangeEventArgs e)
+    {
+        if (double.TryParse(e.Value?.ToString(), out double val))
+        {
+            paymentRequest.pmc3_amount = val;
+        }
+        else
+        {
+            paymentRequest.pmc3_amount = 0;
+        }
+        RecalculatePaymentTotals();
+    }
+
+    private void ClosePaymentModal()
+    {
+        showPaymentModal = false;
+        selectedBill = null;
+    }
+
+    private async Task SubmitPaymentAsync()
+    {
+        if (selectedBill == null) return;
+        paymentSaving = true;
+        StateHasChanged();
+
+        try
+        {
+            var success = await HmsBillingService.AddPaymentAsync(paymentRequest);
+            if (success)
+            {
+                ToastService.ShowSuccess("Payment received successfully!");
+                ClosePaymentModal();
+                await LoadBillsAsync();
+            }
+            else
+            {
+                ToastService.ShowError("Payment submission failed.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error processing payment: {ex.Message}");
+        }
+        finally
+        {
+            paymentSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    // Data Load Helpers
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branches = branches.Where(b => !b.deleted).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCountersAsync()
+    {
+        counters = await CounterMasterService.GetCountersAsync();
+    }
+
+    private async Task LoadPaymodesAsync()
+    {
+        paymodes = await PaymodeMasterService.GetPaymodeMastersAsync();
+        // Fallback: If paymodes is empty, default values
+        if (paymodes == null || !paymodes.Any())
+        {
+            paymodes = new List<PaymodeMasterModel>
+            {
+                new() { shortname = "CASH", name = "Cash" },
+                new() { shortname = "CARD", name = "Card" },
+                new() { shortname = "UPI", name = "UPI / GPay" }
+            };
+        }
+    }
+}

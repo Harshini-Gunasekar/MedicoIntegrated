@@ -7,6 +7,7 @@ namespace Booking.Models
     {
         public string? requestguid { get; set; }
         public string? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public string? sheet_id { get; set; }
         public decimal custid { get; set; }
         public string? patient_name { get; set; }
@@ -81,6 +82,13 @@ namespace Booking.Models
         public double? rate { get; set; }
         public double? amount { get; set; }
         public string? item_name { get; set; }
+        public decimal? custid { get; set; }
+        public string? opvisitid { get; set; }
+        public Guid? ip_id { get; set; }
+        public int? bedcode { get; set; }
+        public double? discount { get; set; }
+        public double? charityamount { get; set; }
+        public bool? billedstatus { get; set; }
     }
 
     public class AddUnbilledConsultationRequest

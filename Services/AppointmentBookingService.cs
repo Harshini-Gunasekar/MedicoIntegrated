@@ -161,8 +161,19 @@ namespace Booking.Services
         {
             try
             {
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- CREATE OP PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("-------------------------");
+
                 var response = await _http.PostAsJsonAsync("api/OpRegistration/create", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- CREATE OP RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("--------------------------");
+
                 return rawResponse;
             }
             catch (Exception ex)
@@ -176,8 +187,19 @@ namespace Booking.Services
         {
             try
             {
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- DIRECT WALKIN PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("-----------------------------");
+
                 var response = await _http.PostAsJsonAsync("api/OpRegistration/direct-walkin", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- DIRECT WALKIN RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("------------------------------");
+
                 return rawResponse;
             }
             catch (Exception ex)
@@ -191,10 +213,11 @@ namespace Booking.Services
         {
             try
             {
-                // var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request);
-                // Console.WriteLine("--- SAVE VITALS PAYLOAD ---");
-                // Console.WriteLine(jsonPayload);
-                // Console.WriteLine("---------------------------");
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- SAVE VITALS PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("---------------------------");
 
                 var response = await _http.PostAsJsonAsync("api/OpRegistration/save-vitals", request);
                 return response.IsSuccessStatusCode;
@@ -206,16 +229,26 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<OPRegistrationModel.PatientVitalsModel>> GetOpVitalsAsync(Guid opId)
+        public async Task<List<OPRegistrationModel.PatientVitalsModel>> GetOpVitalsAsync(Guid? opId, Guid? ipId = null)
         {
             try
             {
-                var response = await _http.GetFromJsonAsync<List<OPRegistrationModel.PatientVitalsModel>>($"api/OpRegistration/vitals/all?op_id={opId}");
+                var queryParams = new List<string>();
+                if (opId.HasValue && opId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"op_id={opId.Value}");
+                }
+                if (ipId.HasValue && ipId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"ip_id={ipId.Value}");
+                }
+                string queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
+                var response = await _http.GetFromJsonAsync<List<OPRegistrationModel.PatientVitalsModel>>($"api/OpRegistration/vitals/all{queryString}");
                 return response ?? new List<OPRegistrationModel.PatientVitalsModel>();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error getting OP vitals: {ex.Message}");
+                Console.WriteLine($"Error getting OP/IP vitals: {ex.Message}");
                 return new List<OPRegistrationModel.PatientVitalsModel>();
             }
         }
@@ -224,10 +257,11 @@ namespace Booking.Services
         {
             try
             {
-                // var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request);
-                // Console.WriteLine("--- UPDATE VITALS PAYLOAD ---");
-                // Console.WriteLine(jsonPayload);
-                // Console.WriteLine("-----------------------------");
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- UPDATE VITALS PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("-----------------------------");
 
                 var response = await _http.PostAsJsonAsync("api/OpRegistration/update-vitals", request);
                 return response.IsSuccessStatusCode;

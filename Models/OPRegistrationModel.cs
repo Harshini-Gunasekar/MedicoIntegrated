@@ -1,15 +1,14 @@
 using System;
-using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
+using Dapper.Contrib.Extensions;
 
 namespace Booking.Models
 {
     public class OPRegistrationModel
     {
-          [Table("op_registration")]
+        [Table("op_registration")]
         public class OpRegistrationModel
         {
-            [Key]
+            [ExplicitKey]
             public Guid op_id { get; set; } = Guid.NewGuid();
             public string op_no { get; set; } = string.Empty;
             public Guid? booking_id { get; set; }
@@ -31,19 +30,38 @@ namespace Booking.Models
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
             public DateTime updated_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
-        }
+            public bool is_direct_walkin { get; set; } = false;
+            public int? duty_dcode { get; set; }
+            public int? transferred_to_dcode { get; set; }
+            public string? transfer_reason { get; set; }
 
+            [Write(false)]
+            public string? patient_name { get; set; }
+
+            [Write(false)]
+            public string? mobile { get; set; }
+
+            [Write(false)]
+            public bool? isvip { get; set; }
+
+            [Write(false)]
+            public bool? is_vip { get; set; }
+
+            [Write(false)]
+            public string? viprole { get; set; }
+        }
 
         [Table("patient_vitals")]
         public class PatientVitalsModel
         {
-            [Key]
+            [ExplicitKey]
             public Guid vital_id { get; set; } = Guid.NewGuid();
-            public Guid op_id { get; set; }
-            public string op_no { get; set; } = string.Empty;
+            public Guid? op_id { get; set; }          
+            public string? op_no { get; set; }        
+            public Guid? ip_id { get; set; }          
+            public string? ip_no { get; set; }
             public decimal custid { get; set; }
             public int dcode { get; set; }
-
 
             // ── Basic Vitals ─────────────────────────────
             public decimal? height_cm { get; set; }
@@ -56,20 +74,19 @@ namespace Booking.Models
             public int? bp_diastolic { get; set; }
             public decimal? spo2 { get; set; }
 
-
             // ── Additional Measurements ───────────────────
             public decimal? sugar_level { get; set; }
             public int? pain_scale { get; set; }
-            public decimal? waist_cm { get; set; }         
-            public decimal? hip_cm { get; set; }           
+            public decimal? waist_cm { get; set; }          
+            public decimal? hip_cm { get; set; }            
+
             // ── Clinical Examination ──────────────────────
             public string? pedal_oedema { get; set; }       
-            public string? jvp { get; set; }                
-            public string? cvs { get; set; }                
+            public string? jvp { get; set; }               
+            public string? cvs { get; set; }               
             public string? rs { get; set; }                 
             public string? cns { get; set; }                
-            public string? abdomen { get; set; }           
-
+            public string? abdomen { get; set; }            
 
             // ── Investigations ────────────────────────────
             public string? cardiac_monitor { get; set; }    
@@ -77,12 +94,10 @@ namespace Booking.Models
             public string? blood_chemistry { get; set; }    
             public string? allergy_notes { get; set; }
 
-
             // ── Special Dept ──────────────────────────────
             public decimal? hba1c { get; set; }
             public string? ecg_notes { get; set; }
             public decimal? head_circumference_cm { get; set; }
-
 
             public string? entered_by { get; set; }
             public string? tenant_code { get; set; }
@@ -93,14 +108,12 @@ namespace Booking.Models
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         }
 
-
-
         public class UpdateVisitStatusRequest
         {
             public Guid op_id { get; set; }
             public string visit_status { get; set; } = string.Empty;
         }
-
+        // Direct walk-in — no booking needed
         public class DirectWalkinRequest
         {
             public decimal custid { get; set; }
@@ -111,5 +124,36 @@ namespace Booking.Models
             public string visit_type { get; set; } = "NEWVISIT";
             public string? notes { get; set; }
         }
-    }
+
+        // Transfer to another doctor after duty doctor consultation
+        public class TransferDoctorRequest
+        {
+            public Guid op_id { get; set; }
+            public int transfer_to_dcode { get; set; }
+            public string? transfer_reason { get; set; }
+            public Guid? slot_detail_id { get; set; }
+        }
+        public class DoctorBookingListModel
+        {
+            public Guid booking_id { get; set; }
+            public string? booking_no { get; set; }
+            public decimal custid { get; set; }
+
+            public string? patient_name { get; set; }
+
+            public int dcode { get; set; }
+
+            public DateOnly appointment_date { get; set; }
+
+            public TimeOnly slot_start_time { get; set; }
+            public TimeOnly slot_end_time { get; set; }
+
+            public int token_no { get; set; }
+
+            public string? booking_status { get; set; }
+            public string? booking_type { get; set; }
+
+            public string? notes { get; set; }
+        }
+    } 
 }

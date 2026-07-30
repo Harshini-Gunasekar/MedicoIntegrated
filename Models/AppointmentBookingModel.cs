@@ -32,6 +32,12 @@ namespace Booking.Models
             DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         public DateTime updated_at { get; set; } =
             DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+        public string? patient_name { get; set; }
+        public string? mobile { get; set; }
+        public bool? isvip { get; set; }
+        public bool? is_vip { get; set; }
+        public string? viprole { get; set; }
     }
 
     public class CancelAppointmentRequest
@@ -153,6 +159,7 @@ namespace Booking.Models
         public int token_no { get; set; }
         public string? booking_status { get; set; }
         public string? booking_type { get; set; }
+        public string? reg_type { get; set; }
         public string? notes { get; set; }
         public bool? isvip { get; set; }
         public string? viprole { get; set; }

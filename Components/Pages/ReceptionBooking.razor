@@ -6,6 +6,7 @@
 @inject NavigationManager Navigation
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject IHttpClientFactory ClientFactory
+@using Booking.Helpers
 
 <div class="animated-background">
     <div class="floating-blob blob-1"></div>
@@ -97,6 +98,7 @@
                     <option value="BOOKED">BOOKED</option>
                     <option value="CONFIRMED">CONFIRMED</option>
                     <option value="CANCELLED">CANCELLED</option>
+                    <option value="RESCHEDULED">RESCHEDULED</option>
                 </select>
             </div>
             <div class="filter-group">
@@ -138,8 +140,8 @@
                             <tr>
                                 <th>Booking No</th>
                                 <th>Patient Name</th>
+                                <th>Phone</th>
                                 <th>Specialist</th>
-                                <th>Appt Date</th>
                                 <th>Time Slot</th>
                                 <th>Type</th>
                                 <th>Notes</th>
@@ -158,12 +160,28 @@
                                     displayNotes = book.notes.Substring("[WALKIN]".Length).Trim();
                                     if (string.IsNullOrWhiteSpace(displayNotes)) displayNotes = "-";
                                 }
-                                <tr>
+                                <tr class="@(book.isvip == true || book.is_vip == true ? "vip-row" : "")">
                                     <td style="font-weight: 800; color: #026aa7;">#@book.booking_no</td>
-                                    <td><span style="font-weight: 700; color: #334155;">@GetPatientName(book.custid)</span></td>
+                                    <td>
+                                        <span style="font-weight: 700; color: #334155;">@GetPatientName(book.custid)</span>
+                                        @if (book.isvip == true || book.is_vip == true)
+                                        {
+                                            <span class="vip-badge" style="background: #fffbeb; border: 1px solid #fde68a; color: #d97706; padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 0.7rem; margin-left: 8px; display: inline-flex; align-items: center; gap: 2px;" title="VIP Patient">VIP</span>
+                                        }
+                                    </td>
+                                    <td><span style="color: #64748b; font-weight: 600;">@GetPatientPhone(book.custid)</span></td>
                                     <td style="font-weight: 700; color: #334155;">Dr. @GetDoctorName(book.dcode)</td>
-                                    <td>@book.appointment_date.ToString("dd MMM yyyy")</td>
-                                    <td><i class="bi bi-clock" style="color:#94a3b8; margin-right:4px;"></i>@FormatTime(book.slot_start_time) - @FormatTime(book.slot_end_time)</td>
+                                    <td>
+                                        @if (book.slot_start_time == default(TimeOnly) && book.slot_end_time == default(TimeOnly))
+                                        {
+                                            <span class="text-muted" style="margin-left: 14px; font-weight: 700;">-</span>
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-clock" style="color:#94a3b8; margin-right:4px;"></i>
+                                            @($"{FormatTime(book.slot_start_time)} - {FormatTime(book.slot_end_time)}")
+                                        }
+                                    </td>
                                     <td>
                                         <span class="badge-type @displayType.ToLower()">@displayType</span>
                                     </td>
@@ -664,24 +682,6 @@
                 <label>Notes</label>
                 <textarea class="filter-control" @bind="newOpRequest.notes" placeholder="Enter arrival notes..."></textarea>
             </div>
-            <div class="form-group mt-3">
-                <details class="payload-details">
-                    <summary class="text-muted small fw-bold" style="cursor:pointer; outline:none; user-select:none;">
-                        <i class="bi bi-code-slash"></i> View JSON Payload Preview
-                    </summary>
-                    <pre class="bg-dark text-light p-2 rounded mt-2 small" style="max-height: 200px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; text-align: left;">@System.Text.Json.JsonSerializer.Serialize(new {
-    booking_id = newOpRequest.booking_id,
-    booking_no = newOpRequest.booking_no,
-    slot_detail_id = newOpRequest.slot_detail_id,
-    custid = newOpRequest.custid,
-    dcode = newOpRequest.dcode,
-    department_code = newOpRequest.department_code,
-    visit_type = newOpRequest.visit_type,
-    reg_type = newOpRequest.reg_type,
-    notes = newOpRequest.notes
-}, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull })</pre>
-                </details>
-            </div>
         </div>
         <div class="modal-footer">
             <button class="btn-modal cancel" @onclick="CloseRegisterModal">Cancel</button>
@@ -703,7 +703,7 @@
     private List<AppointmentBookingModel> filteredBookings = new();
 
     // Filters state (Defaults to current date)
-    private DateTime? filterDate = DateTime.Today;
+    private DateTime? filterDate = DateTime.UtcNow.ToIndianTime().Date;
     private int filterDoctor = 0;
     private string filterStatus = "ALL";
     private string filterType = "ALL";
@@ -718,7 +718,7 @@
     // Walk-in booking state
     private bool showWalkinModal = false;
     private int walkinDcode = 0;
-    private DateTime walkinDate = DateTime.Today;
+    private DateTime walkinDate = DateTime.UtcNow.ToIndianTime().Date;
     private List<AvailableSlotModel> walkinSlots = new();
     private AvailableSlotModel? selectedWalkinSlot;
     private decimal walkinCustid = 1003;
@@ -764,7 +764,24 @@
 
             if (response.IsSuccessStatusCode)
             {
-                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson) ?? new();
+                List<SharedComponents.Rcl.Models.CustomerModel> list = new();
+                try
+                {
+                    var token = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
+                    if (token is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
+                    {
+                        list = obj["value"].ToObject<List<SharedComponents.Rcl.Models.CustomerModel>>() ?? new();
+                    }
+                    else
+                    {
+                        list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson) ?? new();
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Error parsing search results JSON in ReceptionBooking: {ex.Message}");
+                }
+
                 searchedPatients = list.Take(10).ToList();
                 showPatientDropdown = searchedPatients.Count > 0;
                 Console.WriteLine($"[ReceptionBooking] Found {searchedPatients.Count} patients");
@@ -806,7 +823,7 @@
     private bool showRescheduleModal = false;
     private AppointmentBookingModel? selectedBookingToReschedule;
     private int rescheduleDcode = 0;
-    private DateTime rescheduleDate = DateTime.Today;
+    private DateTime rescheduleDate = DateTime.UtcNow.ToIndianTime().Date;
     private List<AvailableSlotModel> rescheduleSlots = new();
     private AvailableSlotModel? selectedRescheduleSlot;
     private string rescheduleReason = string.Empty;
@@ -815,12 +832,12 @@
     // Reschedule WHOLE SLOT state
     private bool showRescheduleWholeSlotModal = false;
     private int wholeSourceDcode = 0;
-    private DateTime wholeSourceDate = DateTime.Today;
+    private DateTime wholeSourceDate = DateTime.UtcNow.ToIndianTime().Date;
     private List<AvailableSlotModel> wholeSourceSlots = new();
     private AvailableSlotModel? selectedWholeSourceSlot;
 
     private int wholeTargetDcode = 0;
-    private DateTime wholeTargetDate = DateTime.Today;
+    private DateTime wholeTargetDate = DateTime.UtcNow.ToIndianTime().Date;
     private List<AvailableSlotModel> wholeTargetSlots = new();
     private AvailableSlotModel? selectedWholeTargetSlot;
 
@@ -868,6 +885,13 @@
         var pat = allCustomers.FirstOrDefault(c => c.custid == custid);
         if (pat == null) return $"CUST-{custid}";
         return string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials;
+    }
+
+    private string GetPatientPhone(decimal custid)
+    {
+        var pat = allCustomers.FirstOrDefault(c => c.custid == custid);
+        if (pat == null) return "-";
+        return !string.IsNullOrWhiteSpace(pat.mobile) ? pat.mobile : (!string.IsNullOrWhiteSpace(pat.phone) ? pat.phone : "-");
     }
 
     private async Task LoadDoctorsAsync()
@@ -974,7 +998,7 @@
 
     private async Task ClearFilters()
     {
-        filterDate = DateTime.Today; // Re-align to current date
+        filterDate = DateTime.UtcNow.ToIndianTime().Date; // Re-align to current date
         filterDoctor = 0;
         filterStatus = "ALL";
         filterType = "ALL";
@@ -991,13 +1015,21 @@
 
     private string FormatTime(TimeOnly time)
     {
-        return time.ToString("hh:mm tt");
+        if (time == default(TimeOnly)) return "-";
+        return time.ToIndianTime().ToString("hh:mm tt");
     }
 
     private async Task UpdateBookingStatus(AppointmentBookingModel booking, string newStatus)
     {
         if (newStatus == "CONFIRMED")
         {
+            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
+            if (booking.appointment_date > today)
+            {
+                ToastService.ShowError("Cannot confirm bookings for future dates.");
+                selectRefreshKey++; // Force dropdown to reset
+                return;
+            }
             OpenRegisterModal(booking);
             return;
         }
@@ -1025,7 +1057,7 @@
     private void OpenWalkinModal()
     {
         walkinDcode = 0;
-        walkinDate = DateTime.Today;
+        walkinDate = DateTime.UtcNow.ToIndianTime().Date;
         walkinCustid = 0;
         walkinNotes = string.Empty;
         selectedWalkinSlot = null;
@@ -1050,8 +1082,8 @@
         try
         {
             var allSlots = await BookingService.GetAvailableSlotsAsync(walkinDcode, DateOnly.FromDateTime(walkinDate));
-            var today = DateOnly.FromDateTime(DateTime.Today);
-            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
+            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
             walkinSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
         }
         catch (Exception ex)
@@ -1141,7 +1173,7 @@
             visit_type = "NEWVISIT",
             reg_type = regType,
             notes = "Patient arrived",
-            visit_date = DateOnly.FromDateTime(DateTime.Today)
+            visit_date = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime())
         };
         showRegisterModal = true;
     }
@@ -1259,8 +1291,8 @@
         try
         {
             var allSlots = await BookingService.GetAvailableSlotsAsync(rescheduleDcode, DateOnly.FromDateTime(rescheduleDate));
-            var today = DateOnly.FromDateTime(DateTime.Today);
-            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
+            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
             rescheduleSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
         }
         catch (Exception ex)
@@ -1338,12 +1370,12 @@
     private void OpenRescheduleWholeSlotModal()
     {
         wholeSourceDcode = 0;
-        wholeSourceDate = DateTime.Today;
+        wholeSourceDate = DateTime.UtcNow.ToIndianTime().Date;
         wholeSourceSlots.Clear();
         selectedWholeSourceSlot = null;
 
         wholeTargetDcode = 0;
-        wholeTargetDate = DateTime.Today;
+        wholeTargetDate = DateTime.UtcNow.ToIndianTime().Date;
         wholeTargetSlots.Clear();
         selectedWholeTargetSlot = null;
 
@@ -1365,8 +1397,8 @@
         {
             // We fetch the slots. The slots returnbooked_count representing how many patients are locked in
             var allSlots = await BookingService.GetAvailableSlotsAsync(wholeSourceDcode, DateOnly.FromDateTime(wholeSourceDate));
-            var today = DateOnly.FromDateTime(DateTime.Today);
-            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
+            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
             wholeSourceSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
         }
         catch (Exception ex)
@@ -1387,8 +1419,8 @@
         try
         {
             var allSlots = await BookingService.GetAvailableSlotsAsync(wholeTargetDcode, DateOnly.FromDateTime(wholeTargetDate));
-            var today = DateOnly.FromDateTime(DateTime.Today);
-            var nowTime = TimeOnly.FromDateTime(DateTime.Now);
+            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
+            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
             wholeTargetSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
         }
         catch (Exception ex)
