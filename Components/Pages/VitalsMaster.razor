@@ -221,7 +221,7 @@
                                     {
                                         <select class="@GetStatusDropdownClass(GetDoctorStatus(item))"
                                                 value="@(NormalizeStatus(GetDoctorStatus(item)))"
-                                                @onchange="(e) => UpdateDoctorStatus(item, e.Value?.ToString())">
+                                                disabled>
                                             <option value="waiting">Waiting</option>
                                             <option value="up_next">Up-next</option>
                                             <option value="in_consultation">Consultation</option>
@@ -605,7 +605,8 @@
             isLoading = true;
             doctorsList = await DoctorService.GetDoctorsAsync() ?? new();
             testMastersList = await TestMasterService.GetTestMastersAsync() ?? new();
-            vitalsList = await VitalsService.GetVitalsAsync() ?? new();
+            var allVitals = await VitalsService.GetVitalsAsync() ?? new();
+            vitalsList = allVitals.Where(v => v.entered_date.Date == DateTime.Today).ToList();
 
             var todayStr = DateTime.Now.ToString("yyyy-MM-dd");
             var consultList = await OGService.GetConsultationListAsync(todayStr) ?? new();
@@ -1173,19 +1174,46 @@
                IsCategoryMatch(record.in5, categoryKey);
     }
 
+    private Booking.Services.OgQueueFrontendDto? GetConsultMatch(VitalsModel record, string categoryKey)
+    {
+        var matches = consultationList.Where(c => 
+            (c.vitalentryid.HasValue && c.vitalentryid.Value > 0 && c.vitalentryid.Value == record.vitalentryid) ||
+            (!string.IsNullOrWhiteSpace(c.token_no) && string.Equals(c.token_no, record.token_no, StringComparison.OrdinalIgnoreCase))).ToList();
+        
+        if (!matches.Any()) return null;
+
+        var cat = categoryKey.Trim().ToLower();
+
+        if (cat == "doctor")
+        {
+            return matches.FirstOrDefault(c => string.Equals(c.entry_type, "consultation", StringComparison.OrdinalIgnoreCase))
+                ?? matches.FirstOrDefault(c => string.IsNullOrEmpty(c.entry_type))
+                ?? matches.FirstOrDefault();
+        }
+        else if (cat == "lab")
+        {
+            return matches.FirstOrDefault(c => string.Equals(c.entry_type, "lab", StringComparison.OrdinalIgnoreCase))
+                ?? matches.FirstOrDefault(c => c.entry_type != null && c.entry_type.ToLower().Contains("lab"));
+        }
+        else if (cat == "scan")
+        {
+            return matches.FirstOrDefault(c => string.Equals(c.entry_type, "scan", StringComparison.OrdinalIgnoreCase))
+                ?? matches.FirstOrDefault(c => c.entry_type != null && c.entry_type.ToLower().Contains("scan"));
+        }
+        else if (cat == "ecg_and_echo" || cat == "ecg" || cat == "echo")
+        {
+            return matches.FirstOrDefault(c => string.Equals(c.entry_type, "ecg", StringComparison.OrdinalIgnoreCase) || string.Equals(c.entry_type, "echo", StringComparison.OrdinalIgnoreCase))
+                ?? matches.FirstOrDefault(c => c.entry_type != null && (c.entry_type.ToLower().Contains("ecg") || c.entry_type.ToLower().Contains("echo")));
+        }
+
+        return matches.FirstOrDefault();
+    }
+
     private string GetCategorySlotStatus(VitalsModel record, string categoryKey)
     {
-        // 1. Check if OgQueue list has an entry for this record
-        var consultMatch = consultationList.FirstOrDefault(c => 
-            (c.vitalentryid.HasValue && c.vitalentryid.Value > 0 && c.vitalentryid.Value == record.vitalentryid) ||
-            (!string.IsNullOrWhiteSpace(c.token_no) && string.Equals(c.token_no, record.token_no, StringComparison.OrdinalIgnoreCase)));
+        // 1. Check if OgQueue list has an entry for this record and category
+        var consultMatch = GetConsultMatch(record, categoryKey);
 
-        // For doctor category, prioritize OgQueue queue_status/status if present
-        if (string.Equals(categoryKey, "doctor", StringComparison.OrdinalIgnoreCase) && consultMatch != null)
-        {
-            var qStat = consultMatch.queue_status ?? consultMatch.status;
-            if (!string.IsNullOrWhiteSpace(qStat)) return qStat;
-        }
 
         // 2. Check direct slot status on vitals_entry
         if (IsCategoryMatch(record.in1, categoryKey) && !string.IsNullOrWhiteSpace(record.in1_status)) return record.in1_status;
@@ -1220,7 +1248,10 @@
         else if (IsCategoryMatch(record.in4, categoryKey)) { slotName = "in4"; record.in4_status = newStatus; }
         else if (IsCategoryMatch(record.in5, categoryKey)) { slotName = "in5"; record.in5_status = newStatus; }
 
+        record.status = newStatus;
+
         isLoading = true;
+        StateHasChanged();
 
         // 1. Update Vitals Slot Status
         bool slotSuccess = true;
@@ -1238,19 +1269,20 @@
         }
 
         // 2. Also Update OgQueue Status via api/OgQueue/update-status if matching ogentryid is found
-        var consultMatch = consultationList.FirstOrDefault(c => 
-            (c.vitalentryid.HasValue && c.vitalentryid.Value > 0 && c.vitalentryid.Value == record.vitalentryid) ||
-            (!string.IsNullOrWhiteSpace(c.token_no) && string.Equals(c.token_no, record.token_no, StringComparison.OrdinalIgnoreCase)));
+        var consultMatch = GetConsultMatch(record, categoryKey);
 
-        if (consultMatch != null && consultMatch.ogentryid.HasValue && consultMatch.ogentryid.Value > 0)
+        if (consultMatch != null)
         {
-            await OGService.UpdateStatusAsync(new UpdateOgStatusRequest
+            if (consultMatch.ogentryid.HasValue && consultMatch.ogentryid.Value > 0)
             {
-                ogentryid = consultMatch.ogentryid.Value,
-                status = newStatus,
-                usercode = 1,
-                computercode = 1
-            });
+                await OGService.UpdateStatusAsync(new UpdateOgStatusRequest
+                {
+                    ogentryid = consultMatch.ogentryid.Value,
+                    status = newStatus,
+                    usercode = 1,
+                    computercode = 1
+                });
+            }
             consultMatch.queue_status = newStatus;
             consultMatch.status = newStatus;
         }
@@ -1265,6 +1297,8 @@
         {
             ToastService.ShowError($"Failed to update status for Token #{record.token_no}");
         }
+
+        StateHasChanged();
     }
 
     private Task UpdateDoctorStatus(VitalsModel record, string? newStatus) => UpdateCategorySlotStatus(record, "doctor", newStatus);
