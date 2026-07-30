@@ -7,7 +7,37 @@ namespace Medico_Backend.Model
     public class OgQueueModel
     {
         [Key]
-        public int ogentryid { get; set; }
+        public int? ogentryid { get; set; }
+
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? room_no { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public int? group_id { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? group_name { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? custname { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? arrival_time_str { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? doctor_name { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? doctor_qualification { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? doctor_specialization { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? vitals_status { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public string? list_type { get; set; }
+        [System.ComponentModel.DataAnnotations.Schema.NotMapped] public int? token_sort { get; set; }
+
+        public string DisplayName => !string.IsNullOrWhiteSpace(custname) ? custname : (!string.IsNullOrWhiteSpace(custcode) ? custcode : "Patient");
+        public string DisplayDoctor => !string.IsNullOrEmpty(doctor_name) ? doctor_name : $"Doctor #{dcode ?? 1}";
+
+        public string DisplayTime
+        {
+            get
+            {
+                if (string.IsNullOrEmpty(arrival_time_str))
+                    return DateTime.Now.ToString("hh:mm tt");
+
+                if (TimeSpan.TryParse(arrival_time_str, out var ts))
+                {
+                    return DateTime.Today.Add(ts).ToString("hh:mm tt");
+                }
+                return arrival_time_str;
+            }
+        }
 
         public string? tenant_code { get; set; }
 

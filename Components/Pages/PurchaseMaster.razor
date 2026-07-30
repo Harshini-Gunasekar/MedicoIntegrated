@@ -1,0 +1,1988 @@
+@page "/purchasemaster"
+@page "/purchase"
+@using Booking.Models
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components
+@inject IHttpClientFactory ClientFactory
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+@inject Booking.Services.ToastService ToastService
+
+<style>
+    @@keyframes blinker {
+        50% { opacity: 0.3; }
+    }
+    .custom-typeahead-dropdown {
+        position: absolute;
+        top: 100%;
+        left: 0;
+        right: 0;
+        z-index: 1000;
+        max-height: 200px;
+        overflow-y: auto;
+        background: white;
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        margin-top: 2px;
+    }
+    .custom-typeahead-item {
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 0.75rem;
+        text-align: left;
+        color: #1e293b;
+        transition: background-color 0.2s;
+    }
+    .custom-typeahead-item:hover {
+        background-color: #f1f5f9;
+        color: #02659e;
+    }
+</style>
+
+<PageTitle>Purchase Master</PageTitle>
+
+<link rel="stylesheet" href="PurchaseMaster.css" />
+
+<div class="items-page purchase-page pt-4 pb-3" style="@(IsCardView ? "" : "min-height: auto !important;")">
+    <div class="items-shell px-3">
+        <div class="items-content">
+            <div class="premium-header-card mb-5">
+                <div class="header-card-left">
+                    <div class="header-card-icon">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                            <polyline points="14 2 14 8 20 8" />
+                            <line x1="16" y1="13" x2="8" y2="13" />
+                            <line x1="16" y1="17" x2="8" y2="17" />
+                            <polyline points="10 9 9 9 8 9" />
+                        </svg>
+                    </div>
+                    <div class="header-card-text">
+                        <h2 class="header-card-heading">Purchase Master</h2>
+                        <div class="header-card-subheading">
+                            <span class="status-dot"></span> Total purchases : @PurchaseList.Count
+                        </div>
+                    </div>
+                </div>
+
+                <div class="header-card-right">
+                    <div class="items-search-wrap">
+                        <i class="bi bi-search items-search-icon"></i>
+                        <input type="text" class="form-control items-search" placeholder="Search by bill no or vendor..." @oninput="OnSearchInput" />
+                    </div>
+
+                    <div class="view-toggle" title="Switch view">
+                        <button type="button" class="@(IsCardView ? string.Empty : "active")" @onclick="() => SetView(false)"><i class="bi bi-table"></i></button>
+                        <button type="button" class="@(IsCardView ? "active" : string.Empty)" @onclick="() => SetView(true)"><i class="bi bi-grid-3x3-gap"></i></button>
+                    </div>
+
+                    <button class="add-item-btn" @onclick="AddNewPurchase">
+                        <i class="bi bi-plus-lg"></i>
+                        <span class="ms-1">New Purchase</span>
+                    </button>
+                </div>
+            </div>
+
+            <div class="card items-main-card">
+                @if (IsLoading)
+                {
+                    <div class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                }
+                else if (!FilteredPurchases.Any())
+                {
+                    <div class="text-center py-5 text-muted">
+                        <i class="bi bi-receipt fs-1 d-block mb-3"></i>
+                        No purchases found.
+                    </div>
+                }
+                else if (!IsCardView)
+                {
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0 items-table w-100">
+                            <thead>
+                                <tr>
+                                    <th style="width: 65px; text-align: center;">S.NO</th>
+                                    <th style="width: 110px; text-align: center;">BILL NO</th>
+                                    <th style="width: 120px; text-align: center;">INVOICE NO</th>
+                                    <th style="width: 110px; text-align: center;">DATE</th>
+                                    <th style="width: 25%; text-align: center;">VENDOR</th>
+                                    <th style="width: 14%; text-align: center;">NET AMOUNT</th>
+                                    <th style="width: 14%; text-align: center;">PAYMENT MODE</th>
+                                    <th style="width: 100px; text-align: center;">STATUS</th>
+                                    <th style="width: 100px; text-align: center;">ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in PagedPurchases.Select((value, index) => new { value, index }))
+                                {
+                                    <tr>
+                                        <td style="text-align: center; font-weight: 700; color: #3b82f6;">@(((CurrentPage - 1) * ItemsPerPage) + row.index + 1)</td>
+                                        <td style="text-align: center; font-weight: 700; color: #4f46e5;">#@(string.IsNullOrEmpty(row.value.billno) ? row.value.purchasecode.ToString() : row.value.billno)</td>
+                                        <td style="color: #475569; font-weight: 500; text-align: center;">@(string.IsNullOrWhiteSpace(row.value.invoiceno) ? "N/A" : row.value.invoiceno)</td>
+                                        <td style="color: #475569; font-weight: 500; text-align: center;">@(row.value.billdate.ToString("yyyy-MM-dd"))</td>
+                                        <td style="color: #0f172a; font-weight: 600; text-align: center;">@(VendorList.FirstOrDefault(v => v.vendorCode == row.value.vendorcode)?.vendorName ?? (row.value.vendorcode > 0 ? row.value.vendorcode.ToString() : "N/A"))</td>
+                                        <td style="font-weight: 700; color: #0f172a; text-align: center;">₹@row.value.netamount.ToString("N2")</td>
+                                        <td style="color: #475569; font-weight: 500; text-align: center;">@row.value.paymentmode</td>
+                                        <td style="text-align: center;">
+                                            <span style="color: @(row.value.paymentstatus == "Paid" ? "#059669" : "#d97706"); font-weight: 700; font-size: 0.78rem; text-transform: uppercase;">
+                                                @row.value.paymentstatus
+                                            </span>
+                                        </td>
+                                        <td style="text-align: center;">
+                                            <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(row.value)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="items-card-grid">
+                        @foreach (var p in PagedPurchases)
+                        {
+                            <div class="item-card">
+                                <div class="item-card-head">
+                                    <span class="card-item-code">#@(string.IsNullOrEmpty(p.billno) ? p.purchasecode.ToString() : p.billno)</span>
+                                    <div>
+                                        <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(p)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                        <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(p)" title="Delete"><i class="bi bi-trash"></i></button>
+                                    </div>
+                                </div>
+                                <div class="item-card-body">
+                                     <div class="detail-row"><span>Invoice No</span><strong>@(string.IsNullOrWhiteSpace(p.invoiceno) ? "N/A" : p.invoiceno)</strong></div>
+                                     <div class="detail-row"><span>Date</span><strong>@(p.billdate.ToString("yyyy-MM-dd"))</strong></div>
+                                    <div class="detail-row"><span>Vendor</span><strong>@(VendorList.FirstOrDefault(v => v.vendorCode == p.vendorcode)?.vendorName ?? p.vendorcode?.ToString())</strong></div>
+                                    <div class="detail-row"><span>Net Amount</span><strong>₹@p.netamount.ToString("N2")</strong></div>
+                                    <div class="detail-row"><span>Status</span><strong>@p.paymentstatus</strong></div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                <div class="display-controls px-4 py-3 border-top" style="background: #ffffff; display: flex; justify-content: space-between; align-items: center; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+                    <div class="total-count-text text-muted" style="font-size: 0.82rem; font-weight: 500; text-align: left; margin-left: 20px;">
+                        @if (FilteredPurchases.Any())
+                        {
+                            <span>Showing <strong>@(((CurrentPage - 1) * ItemsPerPage) + 1)</strong> to <strong>@(Math.Min(CurrentPage * ItemsPerPage, FilteredPurchases.Count()))</strong> of <strong>@FilteredPurchases.Count()</strong> items</span>
+                        }
+                        else
+                        {
+                            <span>Showing <strong>0</strong> to <strong>0</strong> of <strong>0</strong> items</span>
+                        }
+                    </div>
+                    <div class="pagination-bar d-flex gap-1">
+                        <button class="page-btn" @onclick="() => ChangePage(CurrentPage - 1)" disabled="@(CurrentPage <= 1)" title="Previous">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        @if (TotalPages > 0)
+                        {
+                            @for (int i = 1; i <= TotalPages; i++)
+                            {
+                                var pageNum = i;
+                                <button class="page-btn @(CurrentPage == pageNum ? "active" : "")" @onclick="() => ChangePage(pageNum)">
+                                    @pageNum
+                                </button>
+                            }
+                        }
+                        else
+                        {
+                            <button class="page-btn active">1</button>
+                        }
+                        <button class="page-btn" @onclick="() => ChangePage(CurrentPage + 1)" disabled="@(CurrentPage >= TotalPages)" title="Next">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (ShowModal)
+{
+    <div class="modal-overlay">
+        <div class="modal-card" @onclick:stopPropagation="true" style="max-width: 1350px; width: 95%;">
+            <div class="modal-header-bar" style="padding: 20px 32px !important;">
+                <div class="modal-header-left">
+                    <div>
+                        <h3 class="modal-title" style="color: #1e293b !important; font-weight: 800; font-size: 1.25rem; letter-spacing: -0.2px;">@(IsEdit ? "Edit Purchase" : "New Purchase")</h3>
+                    </div>
+                </div>
+                <button class="btn-close-modal" title="Close" @onclick="CloseModal">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+
+            <div class="modal-inner" style="padding: 1.25rem 1rem 1.25rem;">
+                <EditForm Model="CurrentRequest" OnValidSubmit="SavePurchase" autocomplete="off">
+                    <DataAnnotationsValidator />
+                    <ValidationSummary />
+                    <div class="modal-scroll-area" style="overflow-x: hidden; padding: 18px 12px 18px 0px;">
+                        
+                        <!-- Bill Information main wrapper divided into Left (fields) and Right (card) -->
+                        <div class="purchase-bill-wrapper mb-4">
+                            <!-- Left Section: Reduced flex width for entering billing fields -->
+                            <div class="purchase-bill-fields" style="flex: 1.1;">
+                                <div class="form-section-header" style="margin-top: 0; margin-bottom: 8px; padding-bottom: 2px; border-bottom: 1px solid #f1f5f9;">
+                                    <div class="form-section-title" style="font-size: 0.85rem; font-weight: 800; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.5px;">Bill Information</div>
+                                </div>
+                                <!-- Row 1: Vendor, GRN No, Invoice No in one line (col-6, col-3, col-3) -->
+                                <div class="form-grid" style="margin-bottom: 0;">
+                                    <div class="field-group col-6">
+                                        <label class="field-label required">Vendor</label>
+                                        <InputSelect class="form-control premium-input" @bind-Value="CurrentRequest.master.vendorcode">
+                                            <option value="0">-- Select Vendor --</option>
+                                            @if (CurrentRequest.master.vendorcode > 0 && !VendorList.Any(v => v.vendorCode == CurrentRequest.master.vendorcode))
+                                            {
+                                                <option value="@CurrentRequest.master.vendorcode">Unknown Vendor (Code: @CurrentRequest.master.vendorcode)</option>
+                                            }
+                                            @foreach (var v in VendorList)
+                                            {
+                                                <option value="@v.vendorCode">@v.vendorName</option>
+                                            }
+                                        </InputSelect>
+                                    </div>
+                                    <div class="field-group col-3">
+                                        <label class="field-label required">GRN No</label>
+                                        <InputText class="form-control premium-input" @bind-Value="CurrentRequest.master.billno" disabled="@IsEdit" autocomplete="off" />
+                                    </div>
+                                    <div class="field-group col-3">
+                                        <label class="field-label">Invoice No</label>
+                                        <InputText class="form-control premium-input" @bind-Value="CurrentRequest.master.invoiceno" autocomplete="off" />
+                                    </div>
+                                </div>
+
+                                <!-- Row 2: Entered Date, Invoice Date, Payment Mode, Payment Status, Warehouse (span 4, span 4, span 4, span 6, span 6 of 24) -->
+                                <div class="form-grid" style="margin-bottom: 0; grid-template-columns: repeat(24, 1fr);">
+                                    <div class="field-group" style="grid-column: span 4;">
+                                        <label class="field-label">Entered Date</label>
+                                        <InputDate class="form-control premium-input" style="font-size: 0.76rem !important; padding: 0 6px !important; max-width: 135px;" @bind-Value="CurrentRequest.master.billdate" />
+                                    </div>
+                                    <div class="field-group" style="grid-column: span 4;">
+                                        <label class="field-label">Invoice Date</label>
+                                        <InputDate class="form-control premium-input" style="font-size: 0.76rem !important; padding: 0 6px !important; max-width: 135px;" @bind-Value="CurrentRequest.master.invoicedate" />
+                                    </div>
+                                    <div class="field-group" style="grid-column: span 4;">
+                                        <label class="field-label">Payment Mode</label>
+                                        <InputSelect class="form-control premium-input" @bind-Value="CurrentRequest.master.paymentmode">
+                                            <option value="Cash">Cash</option>
+                                            <option value="Bank">Bank</option>
+                                            <option value="Credit">Credit</option>
+                                        </InputSelect>
+                                    </div>
+                                    <div class="field-group" style="grid-column: span 6;">
+                                        <label class="field-label">Payment Status</label>
+                                        <InputSelect class="form-control premium-input" @bind-Value="CurrentRequest.master.paymentstatus">
+                                            <option value="Pending">Pending</option>
+                                            <option value="Paid">Paid</option>
+                                            <option value="Partial">Partial</option>
+                                        </InputSelect>
+                                    </div>
+                                    <div class="field-group" style="grid-column: span 6;">
+                                        <label class="field-label">Store</label>
+                                        <InputSelect class="form-control premium-input" @bind-Value="SelectedWarehouseCode">
+                                            <option value="0">-- Select Store --</option>
+                                            @foreach (var w in WarehouseList)
+                                            {
+                                                <option value="@w.warehousecode">@w.warehousename</option>
+                                            }
+                                        </InputSelect>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Right Section: Increased physical bill total width -->
+                            <div class="purchase-bill-summary" style="flex: 0.9; max-width: 380px;">
+                                <div class="bill-card-premium">
+                                    <div class="bill-card-header-premium">
+                                        Physical Bill Totals
+                                    </div>
+                                    
+                                    <div style="display: flex; flex-direction: column; gap: 4px; flex-grow: 1; justify-content: center;">
+                                        <!-- Gross Amount Row -->
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <span style="font-size: 0.72rem; color: #475569; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Gross Amount</span>
+                                            <input type="number" step="any" class="compact-summary-input input-premium-gross" @bind:get="GetManualGross()" @bind:set="SetManualGross" @bind:event="oninput" @onkeyup="CalculateManualNet" placeholder="0" style="width: 125px; height: 23px; font-size: 0.75rem; padding: 0 6px; text-align: right; box-sizing: border-box; border-radius: 6px;" />
+                                        </div>
+
+                                        <!-- Discount Row -->
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <span style="font-size: 0.72rem; color: #475569; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Discount</span>
+                                            <input type="number" step="any" class="compact-summary-input input-premium-discount" @bind:get="GetManualDiscount()" @bind:set="SetManualDiscount" @bind:event="oninput" @onkeyup="CalculateManualNet" placeholder="0" style="width: 125px; height: 23px; font-size: 0.75rem; padding: 0 6px; text-align: right; box-sizing: border-box; border-radius: 6px;" />
+                                        </div>
+
+                                        <!-- Tax Amount Row -->
+                                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                                            <span style="font-size: 0.72rem; color: #475569; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px;">Tax Amount</span>
+                                            <input type="number" step="any" class="compact-summary-input input-premium-tax" @bind:get="GetManualTax()" @bind:set="SetManualTax" @bind:event="oninput" @onkeyup="CalculateManualNet" placeholder="0" style="width: 125px; height: 23px; font-size: 0.75rem; padding: 0 6px; text-align: right; box-sizing: border-box; border-radius: 6px;" />
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="net-payable-wrapper-premium" style="margin-top: 2px; padding-top: 3px; border-top: 1.5px dashed rgba(99, 102, 241, 0.25); display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                                        <span class="net-payable-label-premium" style="font-size: 0.75rem; font-weight: 800; color: #1e293b; text-transform: uppercase; letter-spacing: 0.5px;">Net Payable</span>
+                                        <span class="net-payable-value-premium blink-payable-value" style="font-size: 1.12rem; font-weight: 800; color: #4f46e5; text-shadow: 0 1px 2px rgba(79, 70, 229, 0.1);">₹ @ManualNetAmount.ToString("N2")</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-section-header" style="margin-top: 2.8rem !important; padding-top: 0.4rem; border-top: 1px solid #f1f5f9; margin-bottom: 8px; padding-bottom: 2px; border-bottom: 1px solid #f1f5f9;">
+                            <div class="form-section-title" style="font-size: 0.85rem; font-weight: 800; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.5px;">Purchase Details</div>
+                        </div>
+
+                        <!-- Table showing item entry and added rows -->
+                        <div class="purchase-items-table-wrapper table-responsive">
+                            <table class="table align-middle mb-0" style="font-size: 0.85rem;">
+                                <thead class="purchase-items-table-header">
+                                    <tr>
+                                        <th style="width: 30px; text-align: center;">S.NO</th>
+                                        <th style="width: 140px;">ITEM</th>
+                                        <th style="width: 75px; text-align: center;">MFR</th>
+                                        <th style="width: 65px; text-align: center;">BATCH NO</th>
+                                        <th style="width: 95px; text-align: center;">EXPIRY DATE</th>
+                                        <th style="text-align: center; width: 45px;">QTY</th>
+                                        <th style="width: 75px; text-align: center;">PACKG</th>
+                                        <th style="text-align: center; width: 55px;">RATE</th>
+                                        <th style="text-align: center; width: 48px;">DISC %</th>
+                                        <th style="text-align: center; width: 38px;">TAX %</th>
+                                        <th style="text-align: center; width: 55px;">TAX AMT</th>
+                                        <th style="text-align: center; width: 65px;">TOTAL</th>
+                                        <th style="text-align: center; width: 45px;">ACTION</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var row in CurrentRequest.details.Select((detail, index) => new { detail, index }))
+                                    {
+                                        var detail = row.detail;
+                                        var index = row.index;
+                                        var rowId = $"row-{index}";
+                                        var searchKey = detail.GetHashCode();
+                                        <tr>
+                                            <td style="padding: 0; color: #64748b; text-align: center; font-weight: 600; width: 30px; line-height: 34px;">@(index + 1)</td>
+                                            <td style="padding: 0; min-width: 140px; width: 140px; position: relative;">
+                                                <input id="item-input-@index"
+                                                       type="text"
+                                                       class="purchase-item-select"
+                                                       style="width: 100%;"
+                                                       placeholder="Type to search item..."
+                                                       autocomplete="off"
+                                                       value="@(ItemSearchTexts.GetValueOrDefault(searchKey, ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode)?.itemname ?? ""))"
+                                                       @oninput="@(e => FilterItems(e, detail, searchKey))"
+                                                       @onfocus="@(() => ActiveItemSearchRow = index)"
+                                                       @onblur="OnSearchBlur"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 0))" />
+
+                                                @if (ActiveItemSearchRow == index)
+                                                {
+                                                    var searchText = ItemSearchTexts.GetValueOrDefault(searchKey, "");
+                                                    var filteredItems = ItemList
+                                                        .Where(i => string.IsNullOrEmpty(searchText) || (i.itemname != null && i.itemname.StartsWith(searchText, StringComparison.OrdinalIgnoreCase)))
+                                                        .ToList();
+
+                                                    if (filteredItems.Any())
+                                                    {
+                                                        <div class="custom-typeahead-dropdown">
+                                                            @foreach (var item in filteredItems)
+                                                            {
+                                                                <div class="custom-typeahead-item" 
+                                                                     @onmousedown="@(() => SelectItemFromDropdown(detail, item, searchKey))">
+                                                                    @item.itemname
+                                                                </div>
+                                                            }
+                                                        </div>
+                                                    }
+                                                }
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 75px; position: relative;">
+                                                <input id="mfr-@index"
+                                                       type="text"
+                                                       class="purchase-item-input"
+                                                       style="width: 100%; height: 34px; font-size: 0.65rem; min-width: 0 !important;"
+                                                       placeholder="Type MFR..."
+                                                       autocomplete="off"
+                                                       value="@(MfrSearchTexts.GetValueOrDefault(searchKey, ManufacturerList.FirstOrDefault(m => m.manufacturercode == detail.manufacturercode)?.manufacturername ?? ""))"
+                                                       @oninput="@(e => FilterMfrs(e, detail, searchKey))"
+                                                       @onfocus="@(() => ActiveMfrSearchRow = index)"
+                                                       @onblur="OnMfrBlur"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 1))" />
+
+                                                @if (ActiveMfrSearchRow == index)
+                                                {
+                                                    var searchText = MfrSearchTexts.GetValueOrDefault(searchKey, "");
+                                                    var filteredMfrs = ManufacturerList
+                                                        .Where(m => string.IsNullOrEmpty(searchText) || (m.manufacturername != null && m.manufacturername.StartsWith(searchText, StringComparison.OrdinalIgnoreCase)))
+                                                        .ToList();
+
+                                                    if (filteredMfrs.Any())
+                                                    {
+                                                        <div class="custom-typeahead-dropdown">
+                                                            @foreach (var m in filteredMfrs)
+                                                            {
+                                                                <div class="custom-typeahead-item" 
+                                                                     style="font-size: 0.65rem;"
+                                                                     @onmousedown="@(() => SelectMfrFromDropdown(detail, m, searchKey))">
+                                                                    @m.manufacturername
+                                                                </div>
+                                                            }
+                                                        </div>
+                                                    }
+                                                }
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 65px;">
+                                                <input id="batch-@index" type="text" class="purchase-item-input text-center" @bind="detail.batchno"
+                                                       autocomplete="off"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 2))" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 95px;">
+                                                <input id="expiry-@index" type="date" class="purchase-item-input text-center"
+                                                       value="@(detail.expirydate?.ToString("yyyy-MM-dd"))"
+                                                       @onchange="@(e => { if(DateTime.TryParse(e.Value?.ToString(), out var dt)) detail.expirydate = dt; else detail.expirydate = null; })"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 3))" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 45px;">
+                                                <input id="qty-@index" type="number" step="any" class="purchase-item-input text-center" @bind:get="GetQty(detail)" @bind:set="(val) => SetQty(detail, val)" @bind:event="oninput" @onkeyup="() => CalculateRow(detail)"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 4))" placeholder="0" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 75px;">
+                                                <input id="packg-@index" type="text" class="purchase-item-input text-center" @bind="detail.packaging" style="width: 100%;"
+                                                       autocomplete="off"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 5))" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 55px;">
+                                                <input id="rate-@index" type="number" step="any" class="purchase-item-input text-end" @bind:get="GetRate(detail)" @bind:set="(val) => SetRate(detail, val)" @bind:event="oninput" @onkeyup="() => CalculateRow(detail)"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 6))" placeholder="0" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 48px;">
+                                                <input id="disc-@index" type="number" step="any" class="purchase-item-input text-center" @bind:get="GetDisc(detail)" @bind:set="(val) => SetDisc(detail, val)" @bind:event="oninput" @onkeyup="() => CalculateRow(detail)"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 7))" placeholder="0" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 38px;">
+                                                <input id="tax-@index" type="number" step="any" class="purchase-item-input text-center" @bind:get="GetTax(detail)" @bind:set="(val) => SetTax(detail, val)" @bind:event="oninput" @onkeyup="() => CalculateRow(detail)"
+                                                       @onkeydown="@(e => HandleRowKeyDown(e, index, 8))" placeholder="0" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 55px;">
+                                                <span class="purchase-item-readonly text-end">₹@detail.taxamount.ToString("N2")</span>
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 65px;">
+                                                <span class="purchase-item-readonly text-end fw-bold" style="color: #0f678f;">₹@detail.totalamount.ToString("N2")</span>
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 45px; vertical-align: middle;">
+                                                <button type="button" class="btn btn-outline-danger btn-sm" style="border-radius: 6px; padding: 4px 8px; border: none; background: rgba(239, 68, 68, 0.08); color: #dc2626; margin: 0 auto; display: block;" @onclick="() => RemoveDetailRow(detail)" title="Delete">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div style="padding: 8px 0; display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                            <!-- Left Corner: Total Items count -->
+                            <span style="color: #475569; font-weight: 600; font-size: 0.82rem; white-space: nowrap; flex: 1; text-align: left;">
+                                Total Items: <span style="color: #0f678f; font-weight: 700;">@(CurrentRequest.details?.Count(d => d.itemcode > 0) ?? 0)</span>
+                            </span>
+                            
+                            <!-- Center: Dotted Add Item Button -->
+                            <div style="flex: 1; text-align: center;">
+                                <button type="button" class="btn-dotted-add" @onclick="AddDetailRow" style="padding: 5px 22px; font-size: 0.82rem; border-radius: 16px;">
+                                    <i class="bi bi-plus-circle-fill" style="font-size: 0.9rem;"></i> Add Item
+                                </button>
+                            </div>
+                            
+                            <!-- Right Corner: Computed Total -->
+                            <div style="display: flex; align-items: center; justify-content: flex-end; gap: 8px; font-size: 0.83rem; flex: 1; text-align: right; white-space: nowrap;">
+                                <span style="color: #64748b; font-weight: 600;">Computed Items Total:</span>
+                                <span style="font-weight: 800; font-size: 1.05rem; color: #0f678f;">&#8377; @CurrentRequest.master.netamount.ToString("N2")</span>
+                            </div>
+                        </div>
+
+                    </div>
+
+                    <div class="modal-footer-actions" style="display: flex; flex-direction: row; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; padding-top: 24px; padding-bottom: 16px;">
+                        <!-- Round Off Section on the left -->
+                        <div class="roundoff-section">
+                            <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
+                                <span style="font-size: 0.75rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">Round Off</span>
+                                <div style="display: flex; align-items: center; gap: 4px; background: #ffffff; padding: 4px; border-radius: 8px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
+                                    <input type="number" step="any" class="form-control text-end px-2" @bind:get="CurrentRequest.master.roundoff" @bind:set="SetRoundOff" @bind:event="oninput" @onkeyup="CalculateTotals" placeholder="0.00" style="width: 85px; height: 32px; font-size: 0.9rem; font-weight: 700; color: #0f678f; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.03); background: #f8fafc; appearance: textfield; animation: blinker 1.5s linear infinite;" />
+                                    <button class="btn btn-sm" type="button" @onclick="RoundOffUp" title="Round Up (+)" style="display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; border: none; background: rgba(22, 163, 74, 0.1); color: #16a34a; font-weight: 800; font-size: 1.1rem; padding: 0; cursor: pointer;">+</button>
+                                    <button class="btn btn-sm" type="button" @onclick="RoundOffDown" title="Round Down (-)" style="display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; border: none; background: rgba(220, 38, 38, 0.1); color: #dc2626; font-weight: 800; font-size: 1.2rem; padding: 0; cursor: pointer;">-</button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Action Buttons on the right -->
+                        <div style="display: flex; flex-direction: row; align-items: center; gap: 12px;">
+                            <button type="button" class="btn-cancel-modal" @onclick="CloseModal" style="background: #f1f5f9; color: #0f172a; border: none; padding: 0.5rem 1.5rem; border-radius: 12px; font-weight: 700; min-width: 100px; transition: all 0.2s;">Cancel</button>
+                            <button type="submit" class="btn-save-premium" disabled="@IsSaving" style="min-width: 150px; height: 48px; margin: 0; position: relative; top: 0;">
+                                @if (IsSaving)
+                                {
+                                    <span class="spinner-border spinner-border-sm me-2"></span>
+                                }
+                                else
+                                {
+                                    <i class="bi bi-check2-circle me-2" style="font-size: 1.1rem;"></i>
+                                }
+                                <span>@(IsEdit ? "Update Bill" : "Save Bill")</span>
+                            </button>
+                        </div>
+                    </div>
+                </EditForm>
+            </div>
+        </div>
+    </div>
+}
+
+@if (ShowDeleteConfirm)
+{
+    <div class="action-popup-overlay" @onclick="() => ShowDeleteConfirm = false">
+        <div class="action-popup-card" @onclick:stopPropagation="true">
+            <div class="action-popup-header">Delete Purchase</div>
+            <div class="action-popup-body">Are you sure you want to delete this purchase bill? This action cannot be undone.</div>
+            <div class="action-popup-actions">
+                <button type="button" class="popup-btn popup-btn-cancel" @onclick="() => ShowDeleteConfirm = false">Cancel</button>
+                <button type="button" class="popup-btn popup-btn-delete" @onclick="DeleteConfirmed">Delete</button>
+            </div>
+        </div>
+    </div>
+}
+
+@if (ShowBillMatchPopup)
+{
+    <div class="action-popup-overlay" @onclick="() => ShowBillMatchPopup = false">
+        <div class="action-popup-card" @onclick:stopPropagation="true" style="max-width: 440px;">
+            <div class="action-popup-header" style="@(IsBillMatched ? "background: linear-gradient(135deg,#10b981,#059669);" : "background: linear-gradient(135deg,#ef4444,#dc2626);") color: #ffffff;">
+                <i class="bi @(IsBillMatched ? "bi-check-circle-fill" : "bi-x-circle-fill")" style="margin-right: 8px; font-size: 1.1rem;"></i>
+                @(IsBillMatched ? "Bill Matched" : "Bill Mismatched")
+            </div>
+            <div class="action-popup-body" style="text-align: center; padding: 24px 20px 12px;">
+                <div style="font-size: 2.8rem; margin-bottom: 10px; color: @(IsBillMatched ? "#10b981" : "#ef4444");">
+                    <i class="bi @(IsBillMatched ? "bi-check-circle-fill" : "bi-exclamation-circle-fill")"></i>
+                </div>
+                @if (IsBillMatched)
+                {
+                    <p style="margin: 0; font-size: 0.92rem; color: #1e293b;">
+                        Physical bill amount <strong>&#8377; @ManualNetAmount.ToString("N2")</strong> matches the computed items total
+                        <strong>&#8377; @CurrentRequest.master.netamount.ToString("N2")</strong>.
+                        Proceed to save?
+                    </p>
+                }
+                else
+                {
+                    <p style="margin: 0; font-size: 0.92rem; color: #1e293b;">
+                        Physical bill amount <strong>&#8377; @ManualNetAmount.ToString("N2")</strong> does <strong>NOT</strong> match
+                        the computed items total <strong>&#8377; @CurrentRequest.master.netamount.ToString("N2")</strong>.
+                        Please review your entries before saving.
+                    </p>
+                }
+            </div>
+            <div class="action-popup-actions">
+                <button type="button" class="popup-btn popup-btn-cancel" @onclick="() => ShowBillMatchPopup = false">
+                    @(IsBillMatched ? "Cancel" : "Go Back & Fix")
+                </button>
+                @if (IsBillMatched)
+                {
+                    <button type="button" class="popup-btn" style="background: linear-gradient(135deg,#10b981,#059669); color:#fff; border:none;" @onclick="ProceedSaveAfterMatch">
+                        <i class="bi bi-check2-circle me-1"></i> Proceed &amp; Save
+                    </button>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+
+@code {
+    private List<PurchaseMasterModel> PurchaseList = new();
+    private List<vendor_master> VendorList = new();
+    private List<inventory_item_master> ItemList = new();
+    private List<warehouse_master> WarehouseList = new();
+    private List<manufacturer_master> ManufacturerList = new();
+    private PurchaseRequest CurrentRequest = new();
+    private PurchaseDetailModel NewDetailItem = new() { tenantcode = DefaultTenant };
+    private long? SelectedWarehouseCode { get; set; }
+
+    // Typeahead: tracks the typed text per detail row (keyed by object hash)
+    private Dictionary<int, string> ItemSearchTexts = new();
+    private Dictionary<int, string> MfrSearchTexts = new();
+
+    private int ActiveItemSearchRow = -1;
+    private int ActiveMfrSearchRow = -1;
+
+    private void FilterItems(ChangeEventArgs e, PurchaseDetailModel detail, int searchKey)
+    {
+        var text = e.Value?.ToString() ?? "";
+        ItemSearchTexts[searchKey] = text;
+        
+        var matched = ItemList.FirstOrDefault(i => string.Equals(i.itemname, text, StringComparison.OrdinalIgnoreCase));
+        if (matched != null)
+        {
+            detail.itemcode = matched.itemcode;
+            OnItemChanged(detail);
+        }
+        else
+        {
+            detail.itemcode = 0;
+        }
+    }
+
+    private void SelectItemFromDropdown(PurchaseDetailModel detail, inventory_item_master item, int searchKey)
+    {
+        detail.itemcode = item.itemcode;
+        ItemSearchTexts[searchKey] = item.itemname;
+        OnItemChanged(detail);
+        ActiveItemSearchRow = -1;
+    }
+
+    private async Task OnSearchBlur()
+    {
+        await Task.Delay(200);
+        ActiveItemSearchRow = -1;
+        StateHasChanged();
+    }
+
+    private void FilterMfrs(ChangeEventArgs e, PurchaseDetailModel detail, int searchKey)
+    {
+        var text = e.Value?.ToString() ?? "";
+        MfrSearchTexts[searchKey] = text;
+        
+        var matched = ManufacturerList.FirstOrDefault(m => string.Equals(m.manufacturername, text, StringComparison.OrdinalIgnoreCase));
+        if (matched != null)
+        {
+            detail.manufacturercode = matched.manufacturercode;
+        }
+        else
+        {
+            detail.manufacturercode = 0;
+        }
+    }
+
+    private void SelectMfrFromDropdown(PurchaseDetailModel detail, manufacturer_master m, int searchKey)
+    {
+        detail.manufacturercode = m.manufacturercode;
+        MfrSearchTexts[searchKey] = m.manufacturername ?? "";
+        ActiveMfrSearchRow = -1;
+    }
+
+    private async Task OnMfrBlur()
+    {
+        await Task.Delay(200);
+        ActiveMfrSearchRow = -1;
+        StateHasChanged();
+    }
+
+    private void OnSelectItemChanged(PurchaseDetailModel detail, ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var code))
+        {
+            detail.itemcode = code;
+            OnItemChanged(detail);
+        }
+    }
+
+    private void OnSelectMfrChanged(PurchaseDetailModel detail, ChangeEventArgs e)
+    {
+        if (long.TryParse(e.Value?.ToString(), out var code))
+        {
+            detail.manufacturercode = code;
+        }
+    }
+
+    private void OnItemTypeaheadInput(ChangeEventArgs e, PurchaseDetailModel detail, int searchKey)
+    {
+        var typed = e.Value?.ToString() ?? "";
+        ItemSearchTexts[searchKey] = typed;
+        // Try to find an exact match in the item list
+        var matched = ItemList.FirstOrDefault(i =>
+            string.Equals(i.itemname, typed, StringComparison.OrdinalIgnoreCase));
+        if (matched != null)
+        {
+            detail.itemcode = matched.itemcode;
+            OnItemChanged(detail);
+        }
+        else
+        {
+            detail.itemcode = 0;
+        }
+    }
+
+    private void OnMfrTypeaheadInput(ChangeEventArgs e, PurchaseDetailModel detail, int searchKey)
+    {
+        var typed = e.Value?.ToString() ?? "";
+        MfrSearchTexts[searchKey] = typed;
+        // Try to find a match in the ItemList for manufacturer
+        var matched = ItemList.FirstOrDefault(i =>
+            !string.IsNullOrEmpty(i.manufacturer) &&
+            string.Equals(i.manufacturer, typed, StringComparison.OrdinalIgnoreCase));
+        if (matched != null)
+        {
+            detail.manufacturercode = matched.manufacturercode;
+        }
+        else
+        {
+            detail.manufacturercode = 0;
+        }
+    }
+
+    // Field order in a row: 0=item, 1=mfr, 2=batch, 3=expiry, 4=qty, 5=packg, 6=rate, 7=disc, 8=tax
+    private readonly string[] _rowFieldPrefixes = { "item-input", "mfr", "batch", "expiry", "qty", "packg", "rate", "disc", "tax" };
+
+    private async Task HandleRowKeyDown(KeyboardEventArgs e, int rowIndex, int fieldIndex)
+    {
+        if (e.Key == "Enter" || e.Key == "Tab")
+        {
+            int nextField = fieldIndex + 1;
+            int nextRow = rowIndex;
+            if (nextField >= _rowFieldPrefixes.Length)
+            {
+                nextField = 0;
+                nextRow = rowIndex + 1;
+                // If next row doesn't exist, add one
+                if (nextRow >= CurrentRequest.details.Count)
+                    AddDetailRow();
+            }
+            var targetId = $"{_rowFieldPrefixes[nextField]}-{nextRow}";
+            await JS.InvokeVoidAsync("focusElement", targetId);
+        }
+    }
+
+    private HashSet<PurchaseDetailModel> EditableRows = new();
+
+    private bool IsRowEditable(PurchaseDetailModel detail)
+    {
+        // First row is always editable by default if it's empty, or if explicitly in EditableRows
+        if (CurrentRequest.details != null && CurrentRequest.details.Count > 0 && CurrentRequest.details[0] == detail && detail.itemcode == 0)
+        {
+            return true;
+        }
+        return EditableRows.Contains(detail);
+    }
+    
+    private string SearchQuery = "";
+    private bool IsLoading = true;
+    private bool IsSaving = false;
+    private bool ShowModal = false;
+    private bool IsEdit = false;
+    private bool IsCardView = false;
+    private bool ShowDeleteConfirm = false;
+    private bool ShowBillMatchPopup = false;
+    private bool IsBillMatched = false;
+    private PurchaseMasterModel? PendingDelete;
+    
+    private decimal ManualGross = 0;
+    private decimal ManualDiscount = 0;
+    private decimal ManualTax = 0;
+    private decimal ManualNetAmount = 0;
+
+    private decimal? GetManualGross() => !IsEdit && ManualGross == 0 ? null : ManualGross;
+    private void SetManualGross(decimal? value) => ManualGross = value ?? 0;
+
+    private decimal? GetManualDiscount() => !IsEdit && ManualDiscount == 0 ? null : ManualDiscount;
+    private void SetManualDiscount(decimal? value) => ManualDiscount = value ?? 0;
+
+    private decimal? GetManualTax() => !IsEdit && ManualTax == 0 ? null : ManualTax;
+    private void SetManualTax(decimal? value) => ManualTax = value ?? 0;
+
+    private decimal? GetQty(PurchaseDetailModel detail) => !IsEdit && detail.quantity == 0 ? null : detail.quantity;
+    private void SetQty(PurchaseDetailModel detail, decimal? value) => detail.quantity = value ?? 0;
+
+    private decimal? GetRate(PurchaseDetailModel detail) => !IsEdit && detail.rate == 0 ? null : detail.rate;
+    private void SetRate(PurchaseDetailModel detail, decimal? value) => detail.rate = value ?? 0;
+
+    private decimal? GetDisc(PurchaseDetailModel detail) => !IsEdit && detail.discountpercentage == 0 ? null : detail.discountpercentage;
+    private void SetDisc(PurchaseDetailModel detail, decimal? value) => detail.discountpercentage = value ?? 0;
+
+    private decimal? GetTax(PurchaseDetailModel detail) => !IsEdit && detail.taxpercentage == 0 ? null : detail.taxpercentage;
+    private void SetTax(PurchaseDetailModel detail, decimal? value) => detail.taxpercentage = value ?? 0;
+    
+    private const string DefaultTenant = "TEN1011";
+
+    private int CurrentPage = 1;
+    private int ItemsPerPage => IsCardView ? 6 : 12;
+
+    private IEnumerable<PurchaseMasterModel> FilteredPurchases => 
+        string.IsNullOrWhiteSpace(SearchQuery) 
+            ? PurchaseList 
+            : PurchaseList.Where(p => 
+                (p.billno?.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (p.purchasecode.ToString().Contains(SearchQuery)) ||
+                (VendorList.FirstOrDefault(v => v.vendorCode == p.vendorcode)?.vendorName?.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
+
+    private IEnumerable<PurchaseMasterModel> PagedPurchases => 
+        FilteredPurchases.Skip((CurrentPage - 1) * ItemsPerPage).Take(ItemsPerPage);
+
+    private int TotalPages => (int)Math.Ceiling((double)FilteredPurchases.Count() / ItemsPerPage);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(LoadPurchases(), LoadVendors(), LoadItems(), LoadWarehouses(), LoadManufacturers());
+        AddNewPurchase();
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("DoctorApi");
+        // Ensure the header is present and correctly cased if necessary, 
+        // though lowercase 'tenantcode' is common in this project's existing code.
+        client.DefaultRequestHeaders.Remove("tenantcode");
+        client.DefaultRequestHeaders.Add("tenantcode", DefaultTenant);
+        return client;
+    }
+
+    private List<PurchaseRequest> FullPurchaseRequests = new();
+
+    private async Task LoadPurchases()
+    {
+        IsLoading = true;
+        try {
+            var client = CreateClient();
+            var response = await client.GetStringAsync("api/ItemMaster/getallpurchases");
+            
+            if (!string.IsNullOrWhiteSpace(response)) {
+                var fullList = ParseFullRequestList(response);
+                if (fullList != null) {
+                    FullPurchaseRequests = fullList;
+                } else {
+                    try {
+                        using var doc = System.Text.Json.JsonDocument.Parse(response);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == System.Text.Json.JsonValueKind.Object && TryGetPropertyIgnoreCase(root, "data", out var d)) root = d;
+                        if (root.ValueKind == System.Text.Json.JsonValueKind.Array) {
+                            var list = new List<PurchaseRequest>();
+                            foreach (var item in root.EnumerateArray()) {
+                                var req = ParseRequestResponse(item.GetRawText());
+                                if (req != null) list.Add(req);
+                            }
+                            FullPurchaseRequests = list;
+                        }
+                    } catch { }
+                }
+
+                var masterList = ParseMasterListResponse(response);
+                PurchaseList = masterList ?? new();
+            }
+        } catch (Exception ex) {
+            ToastService.ShowError($"Load Error: {ex.Message}");
+        } finally {
+            IsLoading = false;
+        }
+    }
+
+    private List<PurchaseRequest>? ParseFullRequestList(string json)
+    {
+        var options = new System.Text.Json.JsonSerializerOptions { 
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+        try {
+            var direct = System.Text.Json.JsonSerializer.Deserialize<List<PurchaseRequest>>(json, options);
+            if (direct != null && direct.Any() && direct[0].master != null) return direct;
+        } catch { }
+        try {
+            var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<List<PurchaseRequest>>>(json, options);
+            if (wrapped?.data != null && wrapped.data.Any()) return wrapped.data;
+        } catch { }
+        return null;
+    }
+
+    private List<PurchaseMasterModel> ParseMasterListResponse(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new();
+        var options = new System.Text.Json.JsonSerializerOptions { 
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+        
+        try {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            
+            JsonElement arrayElement;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Array) {
+                arrayElement = root;
+            } else if (root.ValueKind == System.Text.Json.JsonValueKind.Object) {
+                if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array) {
+                    arrayElement = dataProp;
+                } else {
+                    // Search for any property that is an array
+                    bool found = false;
+                    arrayElement = default;
+                    foreach (var prop in root.EnumerateObject()) {
+                        if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array) {
+                            arrayElement = prop.Value;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) return new();
+                }
+            } else return new();
+
+            var result = new List<PurchaseMasterModel>();
+            foreach (var item in arrayElement.EnumerateArray()) {
+                var m = MapFuzzyMaster(item, options);
+                if (m != null) result.Add(m);
+            }
+            return result.OrderByDescending(x => x.billdate).ToList();
+        } catch (Exception ex) {
+            Console.WriteLine("Parse Error: " + ex.Message);
+        }
+ 
+        return new();
+    }
+
+    private static bool TryGetPropertyIgnoreCase(System.Text.Json.JsonElement el, string name, out System.Text.Json.JsonElement prop)
+    {
+        prop = default;
+        if (el.ValueKind != System.Text.Json.JsonValueKind.Object) return false;
+        foreach (var p in el.EnumerateObject()) {
+            if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase)) {
+                prop = p.Value;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private PurchaseMasterModel? MapFuzzyMaster(System.Text.Json.JsonElement el, System.Text.Json.JsonSerializerOptions options)
+    {
+        // 1. Try to unwrap "master" if it exists
+        var target = el;
+        if (TryGetPropertyIgnoreCase(el, "master", out var mProp)) target = mProp;
+
+        var m = System.Text.Json.JsonSerializer.Deserialize<PurchaseMasterModel>(target.GetRawText(), options);
+        if (m == null) return null;
+
+        // 2. Fuzzy map ID (billno)
+        if (string.IsNullOrEmpty(m.billno)) {
+            foreach(var key in new[] { "billno", "purchasecode", "code", "id", "prmbillno", "purchase_code", "bill_no" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    var val = p.ValueKind == System.Text.Json.JsonValueKind.Number ? p.ToString() : p.GetString();
+                    if (!string.IsNullOrEmpty(val)) {
+                        m.billno = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 3. Fuzzy map Date
+        if (m.billdate == default(DateTime)) {
+            foreach(var key in new[] { "billdate", "date", "purchasedate", "prmbilldate" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p) && p.TryGetDateTime(out var d)) {
+                    m.billdate = d;
+                    break;
+                }
+            }
+        }
+
+        // 4. Fuzzy map Amount (netamount)
+        if (m.netamount == 0) {
+            foreach(var key in new[] { "netamount", "total", "totalamount", "prmnetamount" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.netamount = p.GetDecimal();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) {
+                        m.netamount = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 5. Fuzzy map Round Off (roundoff)
+        if (m.roundoff == 0) {
+            foreach(var key in new[] { "roundoff", "prmroundoff", "round_off" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.roundoff = p.GetDecimal();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) {
+                        m.roundoff = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 6. Fuzzy map Gross Amount (grossamount)
+        if (m.grossamount == 0) {
+            foreach(var key in new[] { "grossamount", "prmgrossamount", "gross_amount" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.grossamount = p.GetDecimal();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) {
+                        m.grossamount = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 7. Fuzzy map Discount Amount (discountamount)
+        if (m.discountamount == 0) {
+            foreach(var key in new[] { "discountamount", "prmdiscountamount", "discount_amount" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.discountamount = p.GetDecimal();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) {
+                        m.discountamount = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 8. Fuzzy map Tax Amount (taxamount)
+        if (m.taxamount == 0) {
+            foreach(var key in new[] { "taxamount", "prmtaxamount", "tax_amount" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.taxamount = p.GetDecimal();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) {
+                        m.taxamount = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 9. Fuzzy map Vendor Code (vendorcode)
+        if (m.vendorcode == null || m.vendorcode == 0) {
+            foreach(var key in new[] { "vendorcode", "prmvendorcode", "vendor_code" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.vendorcode = p.GetInt32();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && int.TryParse(p.GetString(), out var val)) {
+                        m.vendorcode = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 11. Fuzzy map Purchase Code (purchasecode)
+        if (m.purchasecode == 0) {
+            foreach(var key in new[] { "purchasecode", "prmpurchasecode", "purchase_code", "id" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.purchasecode = p.GetInt64();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && long.TryParse(p.GetString(), out var val)) {
+                        m.purchasecode = val;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 12. Fuzzy map Payment Mode (paymentmode)
+        if (string.IsNullOrEmpty(m.paymentmode)) {
+            foreach(var key in new[] { "paymentmode", "prmpaymentmode", "payment_mode" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.paymentmode = p.GetString();
+                    break;
+                }
+            }
+        }
+
+        // 13. Fuzzy map Payment Status (paymentstatus)
+        if (string.IsNullOrEmpty(m.paymentstatus)) {
+            foreach(var key in new[] { "paymentstatus", "prmpaymentstatus", "payment_status" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.paymentstatus = p.GetString();
+                    break;
+                }
+            }
+        }
+
+        return m;
+    }
+
+    private async Task LoadVendors()
+    {
+        try {
+            var client = CreateClient();
+            var urls = new[] { "api/ItemMaster/getallvendors", "api/ItemMaster/getallvendor", "Vendor/getallvendors" };
+            string? response = null;
+            
+            foreach (var url in urls) {
+                try {
+                    response = await client.GetStringAsync(url);
+                    if (!string.IsNullOrWhiteSpace(response)) break;
+                } catch { }
+            }
+            
+            if (string.IsNullOrWhiteSpace(response)) return;
+
+            var options = new System.Text.Json.JsonSerializerOptions { 
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+            };
+            try {
+                var direct = System.Text.Json.JsonSerializer.Deserialize<List<vendor_master>>(response, options);
+                VendorList = direct ?? new();
+            } catch {
+                var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<List<vendor_master>>>(response, options);
+                VendorList = wrapped?.data ?? new();
+            }
+        } catch { }
+    }
+
+    private async Task LoadItems()
+    {
+        try {
+            var client = CreateClient();
+            var urls = new[] { "api/ItemMaster/getallitems", "api/ItemMaster/getallitem", "Item/getallitems" };
+            string? response = null;
+            
+            foreach (var url in urls) {
+                try {
+                    response = await client.GetStringAsync(url);
+                    if (!string.IsNullOrWhiteSpace(response)) break;
+                } catch { }
+            }
+            
+            if (string.IsNullOrWhiteSpace(response)) return;
+
+            var options = new System.Text.Json.JsonSerializerOptions { 
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+            };
+            try {
+                var direct = System.Text.Json.JsonSerializer.Deserialize<List<inventory_item_master>>(response, options);
+                ItemList = direct ?? new();
+            } catch {
+                var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<List<inventory_item_master>>>(response, options);
+                ItemList = wrapped?.data ?? new();
+            }
+        } catch { }
+    }
+
+    private async Task LoadWarehouses()
+    {
+        try {
+            var client = CreateClient();
+            var responseString = await client.GetStringAsync("api/ItemMaster/getallwarehouse");
+            var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            try {
+                var direct = System.Text.Json.JsonSerializer.Deserialize<List<warehouse_master>>(responseString, options);
+                WarehouseList = (direct ?? new List<warehouse_master>()).Where(w => !w.isdeleted).OrderBy(w => w.orderno).ToList();
+            }
+            catch {
+                var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<List<warehouse_master>>>(responseString, options);
+                WarehouseList = (wrapped?.data ?? new List<warehouse_master>()).Where(w => !w.isdeleted).OrderBy(w => w.orderno).ToList();
+            }
+        }
+        catch { }
+    }
+
+    private async Task LoadManufacturers()
+    {
+        try {
+            var client = CreateClient();
+            var responseString = await client.GetStringAsync("api/ItemMaster/getlistmanufacturer");
+            try {
+                var direct = System.Text.Json.JsonSerializer.Deserialize<List<manufacturer_master>>(responseString, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                ManufacturerList = (direct ?? new List<manufacturer_master>()).Where(m => !m.deleted).OrderBy(m => m.manufacturername).ToList();
+            }
+            catch {
+                var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<List<manufacturer_master>>>(responseString, new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                ManufacturerList = (wrapped?.data ?? new List<manufacturer_master>()).Where(m => !m.deleted).OrderBy(m => m.manufacturername).ToList();
+            }
+        } catch { }
+    }
+
+    private void AddNewPurchase()
+    {
+        IsEdit = false;
+        CurrentRequest = new PurchaseRequest { 
+            master = new PurchaseMasterModel { 
+                billno = null,
+                tenantcode = DefaultTenant, 
+                billdate = DateTime.Now.Date,
+                paymentmode = "Cash",
+                paymentstatus = "Pending",
+                usercode = null,
+                branchcode = "BLR001",
+                companycode = "CMP001"
+            },
+            details = new List<PurchaseDetailModel>()
+        };
+        // Reset manual bill totals
+        ManualGross = 0;
+        ManualDiscount = 0;
+        ManualTax = 0;
+        ManualNetAmount = 0;
+        EditableRows.Clear();
+        ItemSearchTexts.Clear();
+        MfrSearchTexts.Clear();
+        NewDetailItem = new PurchaseDetailModel { tenantcode = DefaultTenant };
+        AddDetailRow();
+        ShowModal = true;
+    }
+
+    private async Task EditPurchase(PurchaseMasterModel master)
+    {
+        IsEdit = true;
+        // Try multiple ID variations for the fetch
+        var ids = new List<string?>();
+        if (master.purchasecode > 0) ids.Add(master.purchasecode.ToString());
+        if (!string.IsNullOrEmpty(master.billno)) ids.Add(master.billno);
+        if (!string.IsNullOrEmpty(master.invoiceno)) ids.Add(master.invoiceno);
+        
+        // Remove duplicates and nulls
+        ids = ids.Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
+
+        if (!ids.Any()) {
+            ToastService.ShowWarning("Cannot edit: ID not found");
+            return;
+        }
+        bool fetchSuccess = false;
+        var attemptLogs = new List<string>();
+
+        foreach (var id in ids) {
+            var isNumeric = long.TryParse(id, out long numericId);
+            var variations = new List<(string url, HttpMethod method, object? body)>();
+            
+            if (isNumeric) {
+                variations.Add(($"api/ItemMaster/getpurchasebycode?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode?purchaseCode={id}&tenantCode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode/{id}?tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebyid?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode", HttpMethod.Post, new { purchasecode = numericId, tenantcode = DefaultTenant }));
+                variations.Add(($"api/ItemMaster/getpurchase?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"Purchase/getpurchasebycode?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode?purchasecode={id}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode/{id}", HttpMethod.Get, null));
+            } else {
+                variations.Add(($"api/ItemMaster/getpurchasebycode?billno={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode?billNo={id}&tenantCode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode", HttpMethod.Post, new { billno = id, tenantcode = DefaultTenant }));
+                variations.Add(($"api/ItemMaster/getpurchase?billno={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                variations.Add(($"api/ItemMaster/getpurchasebycode?billno={id}", HttpMethod.Get, null));
+            }
+
+            foreach (var v in variations) {
+                try {
+                    var client = CreateClient();
+                    HttpResponseMessage response;
+                    if (v.method == HttpMethod.Get) {
+                        response = await client.GetAsync(v.url);
+                    } else {
+                        response = await client.PostAsJsonAsync(v.url, v.body);
+                    }
+
+                    var statusInfo = $"URL: {v.url} ({v.method}) -> Status: {(int)response.StatusCode}";
+                    attemptLogs.Add(statusInfo);
+                    Console.WriteLine($"[EditPurchase Diagnostic] {statusInfo}");
+
+                    if (response.IsSuccessStatusCode) {
+                        var responseString = await response.Content.ReadAsStringAsync();
+                        Console.WriteLine($"[EditPurchase Diagnostic] URL: {v.url} -> Raw JSON response: {responseString}");
+                        var loaded = ParseRequestResponse(responseString);
+                        if (loaded != null) {
+                            CurrentRequest = loaded;
+                            // Dates are now DateTime?, no string normalization needed
+                            fetchSuccess = true;
+                            break;
+                        } else {
+                            attemptLogs.Add($"  -> Succeeded but ParseRequestResponse returned null. JSON length: {responseString.Length}");
+                        }
+                    } else {
+                        var errorBody = await response.Content.ReadAsStringAsync();
+                        attemptLogs.Add($"  -> Failed Status: {(int)response.StatusCode}. Error: {errorBody}");
+                        if (response.StatusCode == System.Net.HttpStatusCode.BadRequest || response.StatusCode == System.Net.HttpStatusCode.InternalServerError) {
+                            Console.WriteLine($"[EditPurchase Diagnostic] Endpoint returned error {(int)response.StatusCode}. Breaking early to prevent redundant HTTP requests and terminal spam.");
+                            break;
+                        }
+                    }
+                } catch (Exception ex) {
+                    attemptLogs.Add($"URL: {v.url} Exception: {ex.Message}");
+                    Console.WriteLine($"[EditPurchase Diagnostic] Error for {v.url}: {ex}");
+                }
+            }
+            if (fetchSuccess) break;
+        }
+
+        if (!fetchSuccess) {
+            Console.WriteLine("[EditPurchase Diagnostic] All variations failed to load purchase details!");
+            foreach (var log in attemptLogs) {
+                Console.WriteLine($"  {log}");
+            }
+            var cached = FullPurchaseRequests.FirstOrDefault(f => f.master?.purchasecode == master.purchasecode);
+            CurrentRequest = new PurchaseRequest {
+                master = new PurchaseMasterModel {
+                    purchasecode = master.purchasecode,
+                    billno = master.billno,
+                    billdate = master.billdate,
+                    invoiceno = master.invoiceno,
+                    invoicedate = master.invoicedate,
+                    vendorcode = master.vendorcode,
+                    grossamount = master.grossamount,
+                    discountamount = master.discountamount,
+                    taxamount = master.taxamount,
+                    netamount = master.netamount,
+                    roundoff = master.roundoff,
+                    grncode = master.grncode,
+                    transportationcharges = master.transportationcharges,
+                    paymentmode = master.paymentmode,
+                    paymentstatus = master.paymentstatus,
+                    currencycode = master.currencycode,
+                    isactive = master.isactive,
+                    deleted = master.deleted,
+                    remarks = master.remarks,
+                    usercode = master.usercode,
+                    tenantcode = master.tenantcode ?? DefaultTenant,
+                    branchcode = master.branchcode ?? "BLR001",
+                    companycode = master.companycode ?? "CMP001"
+                },
+                details = cached?.details != null 
+                    ? cached.details.Select(d => new PurchaseDetailModel {
+                        purchasedetailcode = d.purchasedetailcode,
+                        purchasecode = d.purchasecode,
+                        itemcode = d.itemcode,
+                        quantity = d.quantity,
+                        freequantity = d.freequantity,
+                        uomcode = d.uomcode,
+                        rate = d.rate,
+                        discountpercentage = d.discountpercentage,
+                        discountamount = d.discountamount,
+                        taxpercentage = d.taxpercentage,
+                        taxamount = d.taxamount,
+                        amount = d.amount,
+                        totalamount = d.totalamount,
+                        batchno = d.batchno,
+                        manufacturingdate = d.manufacturingdate,
+                        expirydate = d.expirydate,
+                        orderedqty = d.orderedqty,
+                        receivedqty = d.receivedqty,
+                        rejectedqty = d.rejectedqty,
+                        warehousecode = d.warehousecode,
+                        packaging = d.packaging,
+                        manufacturercode = d.manufacturercode,
+                        tenantcode = d.tenantcode ?? DefaultTenant
+                    }).ToList()
+                    : new List<PurchaseDetailModel>()
+            };
+            // Dates are now DateTime?, no string normalization needed
+            Console.WriteLine($"[Purchase Master] Fallback loaded basic record info for code: {master.purchasecode}");
+            ToastService.ShowSuccess("Loaded purchase record details successfully.");
+        }
+
+        CurrentRequest.details ??= new List<PurchaseDetailModel>();
+
+        if (CurrentRequest.master != null && CurrentRequest.details.Any()) {
+            var whCode = CurrentRequest.details.FirstOrDefault(d => d.warehousecode > 0)?.warehousecode;
+            if (whCode > 0) {
+                SelectedWarehouseCode = whCode;
+            }
+        }
+
+        // Populate physical bill totals for the frontend fields on edit load
+        ManualGross = CurrentRequest.master.grossamount;
+        ManualDiscount = CurrentRequest.master.discountamount;
+        ManualTax = CurrentRequest.master.taxamount;
+        ManualNetAmount = CurrentRequest.master.netamount;
+
+        // Populate item and MFR search texts dictionary for typeahead inputs
+        ItemSearchTexts.Clear();
+        MfrSearchTexts.Clear();
+        if (CurrentRequest.details != null)
+        {
+            foreach (var d in CurrentRequest.details)
+            {
+                var key = d.GetHashCode();
+                var itemName = ItemList.FirstOrDefault(i => i.itemcode == d.itemcode)?.itemname ?? "";
+                ItemSearchTexts[key] = itemName;
+                var mfrName = ManufacturerList.FirstOrDefault(m => m.manufacturercode == d.manufacturercode)?.manufacturername ?? "";
+                MfrSearchTexts[key] = mfrName;
+                // d.expirydate is now DateTime?, no string normalization needed
+            }
+        }
+
+        AddDetailRow();
+        NewDetailItem = new PurchaseDetailModel { tenantcode = DefaultTenant };
+
+        ShowModal = true;
+    }
+
+    private PurchaseRequest? ParseRequestResponse(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        var options = new System.Text.Json.JsonSerializerOptions { 
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+        
+        // 1. Try parsing using fuzzy fallback (JSON unwrapping) first to ensure custom/DB naming conventions map correctly
+        try {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            
+            // Unwrap "data" if present
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Object && TryGetPropertyIgnoreCase(root, "data", out var d)) root = d;
+            
+            // Handle array
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Array && root.GetArrayLength() > 0) root = root[0];
+
+            var master = MapFuzzyMaster(root, options);
+            if (master != null) {
+                var req = new PurchaseRequest { master = master };
+                
+                // Map details fuzzy (check both root level and inside nested master property)
+                System.Text.Json.JsonElement detailsProp;
+                bool hasDetails = TryGetPropertyIgnoreCase(root, "details", out detailsProp);
+                if (!hasDetails && TryGetPropertyIgnoreCase(root, "master", out var masterProp)) {
+                    hasDetails = TryGetPropertyIgnoreCase(masterProp, "details", out detailsProp);
+                }
+                
+                if (hasDetails && detailsProp.ValueKind == System.Text.Json.JsonValueKind.Array) {
+                    req.details = System.Text.Json.JsonSerializer.Deserialize<List<PurchaseDetailModel>>(detailsProp.GetRawText(), options) ?? new();
+                }
+                return req;
+            }
+        } catch (Exception ex) {
+            Console.WriteLine($"ParseRequestResponse fuzzy attempt error: {ex}");
+        }
+
+        // 2. Try parsing as ServiceResponse<List<PurchaseRequest>> (wrapped list)
+        try {
+            var wrappedList = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<List<PurchaseRequest>>>(json, options);
+            if (wrappedList?.data != null && wrappedList.data.Any()) {
+                var direct = wrappedList.data.First();
+                if (direct?.master != null) {
+                    direct.details ??= new List<PurchaseDetailModel>();
+                    return direct;
+                }
+            }
+        } catch { }
+
+        // 3. Try parsing as List<PurchaseRequest> (direct list)
+        try {
+            var directList = System.Text.Json.JsonSerializer.Deserialize<List<PurchaseRequest>>(json, options);
+            if (directList != null && directList.Any()) {
+                var direct = directList.First();
+                if (direct?.master != null) {
+                    direct.details ??= new List<PurchaseDetailModel>();
+                    return direct;
+                }
+            }
+        } catch { }
+
+        // 4. Try parsing as ServiceResponse<PurchaseRequest> (wrapped single item)
+        try {
+            var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<PurchaseRequest>>(json, options);
+            if (wrapped?.data != null && wrapped.data.master != null) {
+                var direct = wrapped.data;
+                direct.details ??= new List<PurchaseDetailModel>();
+                return direct;
+            }
+        } catch { }
+
+        // 5. Try parsing as PurchaseRequest directly
+        try {
+            var direct = System.Text.Json.JsonSerializer.Deserialize<PurchaseRequest>(json, options);
+            if (direct?.master != null && (direct.master.purchasecode > 0 || !string.IsNullOrEmpty(direct.master.billno))) {
+                direct.details ??= new List<PurchaseDetailModel>();
+                return direct;
+            }
+        } catch { }
+
+        return null;
+    }
+
+    public class ServiceResponse<T>
+    {
+        public T? data { get; set; }
+    }
+
+    private void OnNewItemChanged()
+    {
+        var item = ItemList.FirstOrDefault(i => i.itemcode == NewDetailItem.itemcode);
+        if (item != null) {
+            NewDetailItem.rate = item.purchaserate;
+            NewDetailItem.uomcode = (int)item.uomcode;
+            NewDetailItem.taxpercentage = item.gstpercentage;
+            NewDetailItem.packaging = item.packaging;
+            NewDetailItem.manufacturercode = item.manufacturercode;
+            CalculateNewItemRow();
+        }
+    }
+
+    private void CalculateNewItemRow()
+    {
+        NewDetailItem.amount = NewDetailItem.quantity * NewDetailItem.rate;
+        NewDetailItem.discountamount = (NewDetailItem.amount * NewDetailItem.discountpercentage) / 100;
+        var afterDiscount = NewDetailItem.amount - NewDetailItem.discountamount;
+        NewDetailItem.taxamount = (afterDiscount * NewDetailItem.taxpercentage) / 100;
+        NewDetailItem.totalamount = afterDiscount + NewDetailItem.taxamount;
+    }
+
+    private void AddNewItemToList()
+    {
+        if (NewDetailItem.itemcode <= 0)
+        {
+            ToastService.ShowWarning("Please select an item.");
+            return;
+        }
+        if (NewDetailItem.quantity <= 0)
+        {
+            ToastService.ShowWarning("Please enter a valid quantity.");
+            return;
+        }
+
+        // Add to details list
+        CurrentRequest.details.Add(new PurchaseDetailModel
+        {
+            itemcode = NewDetailItem.itemcode,
+            quantity = NewDetailItem.quantity,
+            rate = NewDetailItem.rate,
+            discountpercentage = NewDetailItem.discountpercentage,
+            discountamount = NewDetailItem.discountamount,
+            taxpercentage = NewDetailItem.taxpercentage,
+            taxamount = NewDetailItem.taxamount,
+            amount = NewDetailItem.amount,
+            totalamount = NewDetailItem.totalamount,
+            batchno = NewDetailItem.batchno,
+            packaging = NewDetailItem.packaging,
+            manufacturercode = NewDetailItem.manufacturercode,
+            tenantcode = DefaultTenant
+        });
+
+        // Reset input row
+        NewDetailItem = new PurchaseDetailModel { tenantcode = DefaultTenant };
+        CalculateTotals();
+    }
+
+    private void AddDetailRow()
+    {
+        EditableRows.Clear();
+        var newRow = new PurchaseDetailModel { 
+            tenantcode = DefaultTenant,
+            expirydate = null
+        };
+        CurrentRequest.details.Add(newRow);
+        EditableRows.Add(newRow);
+    }
+
+    private void RemoveDetailRow(PurchaseDetailModel detail)
+    {
+        // Clear search text from the typeahead dictionary
+        var searchKey = detail.GetHashCode();
+        ItemSearchTexts.Remove(searchKey);
+        MfrSearchTexts.Remove(searchKey);
+
+        if (CurrentRequest.details != null && CurrentRequest.details.Count > 0 && CurrentRequest.details[0] == detail)
+        {
+            detail.itemcode = 0;
+            detail.quantity = 0;
+            detail.rate = 0;
+            detail.discountpercentage = 0;
+            detail.discountamount = 0;
+            detail.taxpercentage = 0;
+            detail.taxamount = 0;
+            detail.amount = 0;
+            detail.totalamount = 0;
+            detail.batchno = "";
+            EditableRows.Add(detail); // Always keep the reset first row editable
+        }
+        else if (CurrentRequest.details != null)
+        {
+            CurrentRequest.details.Remove(detail);
+            EditableRows.Remove(detail);
+        }
+        CalculateTotals();
+    }
+
+    private void EditDetailRow(PurchaseDetailModel detail)
+    {
+        NewDetailItem = new PurchaseDetailModel
+        {
+            tenantcode = detail.tenantcode,
+            itemcode = detail.itemcode,
+            quantity = detail.quantity,
+            rate = detail.rate,
+            discountpercentage = detail.discountpercentage,
+            discountamount = detail.discountamount,
+            taxpercentage = detail.taxpercentage,
+            taxamount = detail.taxamount,
+            amount = detail.amount,
+            totalamount = detail.totalamount,
+            batchno = detail.batchno,
+            packaging = detail.packaging,
+            manufacturercode = detail.manufacturercode
+        };
+        RemoveDetailRow(detail);
+    }
+
+    private void CalculateManualNet()
+    {
+        ManualNetAmount = ManualGross - ManualDiscount + ManualTax;
+    }
+
+    private void OnItemChanged(PurchaseDetailModel detail)
+    {
+        var item = ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode);
+        if (item != null) {
+            detail.rate = item.purchaserate;
+            detail.uomcode = (int)item.uomcode;
+            detail.taxpercentage = item.gstpercentage;
+            detail.expirydate = null;
+            detail.packaging = item.packaging;
+            detail.manufacturercode = item.manufacturercode;
+
+            // Sync MFR typeahead text
+            var searchKey = detail.GetHashCode();
+            MfrSearchTexts[searchKey] = ManufacturerList.FirstOrDefault(m => m.manufacturercode == item.manufacturercode)?.manufacturername ?? "";
+
+            CalculateRow(detail);
+        }
+    }
+
+    private void CalculateRow(PurchaseDetailModel detail)
+    {
+        var item = ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode);
+        if (item != null && detail.quantity > 0)
+        {
+            detail.packaging = (detail.quantity * item.packsize).ToString("0.##");
+        }
+
+        detail.amount = detail.quantity * detail.rate;
+        detail.discountamount = (detail.amount * detail.discountpercentage) / 100;
+        var afterDiscount = detail.amount - detail.discountamount;
+        detail.taxamount = (afterDiscount * detail.taxpercentage) / 100;
+        detail.totalamount = afterDiscount + detail.taxamount;
+        CalculateTotals();
+    }
+
+    private void CalculateTotals()
+    {
+        CurrentRequest.master.grossamount = CurrentRequest.details.Sum(d => d.amount);
+        CurrentRequest.master.discountamount = CurrentRequest.details.Sum(d => d.discountamount);
+        CurrentRequest.master.taxamount = CurrentRequest.details.Sum(d => d.taxamount);
+        CurrentRequest.master.netamount = CurrentRequest.details.Sum(d => d.totalamount) + CurrentRequest.master.roundoff;
+    }
+
+    private void SetRoundOff(decimal val)
+    {
+        CurrentRequest.master.roundoff = val;
+        CalculateTotals();
+    }
+
+    private void RoundOffUp()
+    {
+        var total = CurrentRequest.details.Sum(d => d.totalamount);
+        var ceiling = Math.Ceiling(total);
+        CurrentRequest.master.roundoff = ceiling - total;
+        CalculateTotals();
+    }
+
+    private void RoundOffDown()
+    {
+        var total = CurrentRequest.details.Sum(d => d.totalamount);
+        var floor = Math.Floor(total);
+        CurrentRequest.master.roundoff = floor - total;
+        CalculateTotals();
+    }
+
+    private async Task SavePurchase()
+    {
+        CalculateTotals();
+
+        if ((CurrentRequest.master.vendorcode ?? 0) <= 0) {
+            ToastService.ShowWarning("Please select a vendor");
+            return;
+        }
+        CurrentRequest.details = CurrentRequest.details.Where(d => (d.itemcode > 0) && (d.quantity > 0)).ToList();
+        if (!CurrentRequest.details.Any()) {
+            ToastService.ShowWarning("Please add at least one valid item with quantity");
+            if (!CurrentRequest.details.Any()) AddDetailRow();
+            return;
+        }
+
+        // Show Bill Matched / Bill Mismatched popup
+        IsBillMatched = Math.Round(ManualNetAmount, 2) == Math.Round(CurrentRequest.master.netamount, 2);
+        ShowBillMatchPopup = true;
+    }
+
+    private async Task ProceedSaveAfterMatch()
+    {
+        ShowBillMatchPopup = false;
+        IsSaving = true;
+        try {
+            var client = CreateClient();
+            // 1. Data Sanitization
+            CurrentRequest.master.tenantcode = DefaultTenant;
+            CurrentRequest.master.branchcode ??= "BLR001";
+            CurrentRequest.master.companycode ??= "CMP001";
+            CurrentRequest.master.usercode ??= 101;
+
+            // Ensure dates have a value
+            if (CurrentRequest.master.billdate == default(DateTime)) CurrentRequest.master.billdate = DateTime.Now.Date;
+            if (!CurrentRequest.master.invoicedate.HasValue) CurrentRequest.master.invoicedate = DateTime.Now.Date;
+
+            foreach (var d in CurrentRequest.details) {
+                d.tenantcode = DefaultTenant;
+                d.warehousecode = SelectedWarehouseCode ?? 0;
+                d.receivedqty = d.quantity;
+                d.orderedqty = d.quantity;
+                if (!d.manufacturingdate.HasValue) d.manufacturingdate = DateTime.Now.Date;
+                if (!d.expirydate.HasValue) d.expirydate = DateTime.Now.Date.AddYears(1);
+            }
+
+            // 2. Prepare JSON Payload
+            if (CurrentRequest.master.purchasecode > 0) {
+                foreach(var d in CurrentRequest.details) d.purchasecode = CurrentRequest.master.purchasecode;
+            }
+
+            var options = new System.Text.Json.JsonSerializerOptions {
+                DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                PropertyNamingPolicy = null
+            };
+
+            var json = System.Text.Json.JsonSerializer.Serialize(CurrentRequest, options);
+            await JS.InvokeVoidAsync("console.log", "Sending JSON Payload:", json);
+
+            var url = IsEdit ? "api/ItemMaster/updatepurchase" : "api/ItemMaster/insertpurchase";
+            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+            var response = await client.PostAsync(url, content);
+
+            if (response.IsSuccessStatusCode) {
+                ToastService.ShowSuccess(IsEdit ? "Purchase updated" : "Purchase recorded");
+                // Reset manual bill total inputs for next use
+                ManualGross = 0;
+                ManualDiscount = 0;
+                ManualTax = 0;
+                ManualNetAmount = 0;
+                EditableRows.Clear();
+                ShowModal = false;
+                await LoadPurchases();
+            } else {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Save Failed (400): {errorBody}");
+                await JS.InvokeVoidAsync("console.error", "Update/Insert Failed:", errorBody);
+            }
+        } catch (Exception ex) {
+            ToastService.ShowError($"Error: {ex.Message}");
+        } finally {
+            IsSaving = false;
+        }
+    }
+
+    private void ConfirmDelete(PurchaseMasterModel p)
+    {
+        PendingDelete = p;
+        ShowDeleteConfirm = true;
+    }
+
+    private async Task DeleteConfirmed()
+    {
+        if (PendingDelete == null) return;
+        IsLoading = true;
+        try {
+            var code = (PendingDelete.purchasecode > 0) ? PendingDelete.purchasecode.ToString() : PendingDelete.billno;
+            var success = await DeletePurchase(code);
+            if (success) {
+                ToastService.ShowSuccess("Purchase deleted");
+                await LoadPurchases();
+            } else {
+                // Final Fallback: Soft Delete via Update
+                var softSuccess = await SoftDeleteViaUpdate(PendingDelete.billno ?? "");
+                if (softSuccess) {
+                    ToastService.ShowSuccess("Purchase deactivated (Soft-Delete)");
+                    await LoadPurchases();
+                } else {
+                    ToastService.ShowError("Delete failed. Please verify API mapping.");
+                }
+            }
+        } catch (Exception ex) {
+            ToastService.ShowError($"Error: {ex.Message}");
+        } finally {
+            ShowDeleteConfirm = false;
+            PendingDelete = null;
+            IsLoading = false;
+        }
+    }
+
+    private async Task<bool> DeletePurchase(string? code)
+    {
+        if (string.IsNullOrEmpty(code)) return false;
+        var client = CreateClient();
+        var isNumeric = long.TryParse(code, out _);
+
+        var urls = new List<string>();
+        if (isNumeric) {
+            urls.Add($"api/ItemMaster/deletepurchase?purchasecode={code}");
+            urls.Add($"Purchase/deletepurchase?purchasecode={code}");
+            urls.Add($"api/ItemMaster/deletepurchase?purchasecode={code}&tenantcode={DefaultTenant}");
+        } else {
+            urls.Add($"api/ItemMaster/deletepurchase?billno={code}");
+            urls.Add($"Purchase/deletepurchase?billno={code}");
+            urls.Add($"api/ItemMaster/deletepurchase?billno={code}&tenantcode={DefaultTenant}");
+            urls.Add($"api/ItemMaster/deletepurchase?purchasecode={code}"); // Last resort
+        }
+
+        foreach (var url in urls) {
+            try {
+                var response = await client.GetAsync(url);
+                if (response.IsSuccessStatusCode) return true;
+                
+                // Try DELETE method as fallback
+                var delResponse = await client.DeleteAsync(url);
+                if (delResponse.IsSuccessStatusCode) return true;
+            } catch { }
+        }
+        return false;
+    }
+
+    private async Task<bool> SoftDeleteViaUpdate(string billNo)
+    {
+        try {
+            var client = CreateClient();
+            string responseText = "";
+            
+            // 1. Check if we already have it in memory
+            var cached = FullPurchaseRequests.FirstOrDefault(f => f.master?.billno == billNo);
+            if (cached != null && cached.master != null) {
+                cached.master.deleted = true;
+                cached.master.isactive = false;
+                cached.master.tenantcode = DefaultTenant;
+                if (cached.details != null) {
+                    foreach(var d in cached.details) d.tenantcode = DefaultTenant;
+                }
+                var updateResponse = await client.PostAsJsonAsync($"api/ItemMaster/updatepurchase?purchasecode={billNo}&tenantcode={DefaultTenant}", cached);
+                if (updateResponse.IsSuccessStatusCode) return true;
+            }
+
+            // 2. If not cached, fall back to discovery fetch
+            var fetchUrls = new List<string> {
+                $"api/ItemMaster/getpurchasebycode?purchasecode={billNo}&tenantcode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebycode?purchaseCode={billNo}&tenantCode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebycode/{billNo}?tenantcode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebycode?billno={billNo}&tenantcode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebycode?billNo={billNo}&tenantCode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebycode?code={billNo}&tenantcode={DefaultTenant}",
+                $"Purchase/getpurchasebycode?purchasecode={billNo}&tenantcode={DefaultTenant}",
+                $"Purchase/getpurchasebycode/{billNo}?tenantcode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebyid?purchasecode={billNo}&tenantcode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebybillno?billno={billNo}&tenantcode={DefaultTenant}",
+                $"api/ItemMaster/getpurchase?purchasecode={billNo}&tenantcode={DefaultTenant}",
+                $"api/ItemMaster/getpurchasebycode?purchasecode={billNo}",
+                $"api/ItemMaster/getpurchasebycode?billno={billNo}"
+            };
+
+
+            foreach (var url in fetchUrls) {
+                try {
+                    responseText = await client.GetStringAsync(url);
+                    var request = ParseRequestResponse(responseText);
+                    if (request != null && request.master != null) {
+                        request.master.deleted = true;
+                        request.master.isactive = false;
+                        request.master.tenantcode = DefaultTenant;
+                        
+                        if (request.details != null) {
+                            foreach(var d in request.details) d.tenantcode = DefaultTenant;
+                        }
+
+                        // Try multiple update variations for soft delete too
+                        var updateUrl = $"api/ItemMaster/updatepurchase?purchasecode={billNo}&tenantcode={DefaultTenant}";
+                        var updateResponse = await client.PostAsJsonAsync(updateUrl, request);
+                        if (!updateResponse.IsSuccessStatusCode) {
+                            // Fallback to simple URL
+                            updateResponse = await client.PostAsJsonAsync("api/ItemMaster/updatepurchase", request);
+                        }
+                        
+                        if (updateResponse.IsSuccessStatusCode) return true;
+                    }
+                } catch { }
+            }
+            return false;
+        } catch {
+            return false;
+        }
+    }
+
+    private async Task<HttpResponseMessage> SendRequest(HttpClient client, HttpMethod method, string url, object content, JsonSerializerOptions options)
+    {
+        if (method == HttpMethod.Post) return await client.PostAsJsonAsync(url, content, options);
+        if (method == HttpMethod.Put) return await client.PutAsJsonAsync(url, content, options);
+        return await client.PostAsJsonAsync(url, content, options);
+    }
+
+    private static string FormatDateOnly(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        
+        // Remove trailing time part if it is standard T00:00:00
+        var cleanValue = value.Trim();
+        if (cleanValue.Contains('T')) {
+            cleanValue = cleanValue.Split('T')[0];
+        } else if (cleanValue.Contains(' ')) {
+            cleanValue = cleanValue.Split(' ')[0];
+        }
+
+        // Try standard invariant parsing first (e.g. M/d/yyyy works here)
+        if (DateTime.TryParse(cleanValue, System.Globalization.CultureInfo.InvariantCulture, out var parsedInv))
+            return parsedInv.ToString("yyyy-MM-dd");
+
+        // Try standard local parsing
+        if (DateTime.TryParse(cleanValue, out var parsed)) 
+            return parsed.ToString("yyyy-MM-dd");
+
+        // Explicit format patterns matching common ones
+        var formats = new[] { 
+            "M/d/yyyy", "MM/dd/yyyy", "d/M/yyyy", "dd/MM/yyyy", 
+            "yyyy-MM-dd", "yyyy/MM/dd", "d.M.yyyy", "dd.MM.yyyy",
+            "M-d-yyyy", "MM-dd-yyyy", "d-M-yyyy", "dd-MM-yyyy"
+        };
+        if (DateTime.TryParseExact(cleanValue, formats, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsedExact))
+        {
+            return parsedExact.ToString("yyyy-MM-dd");
+        }
+
+        return cleanValue;
+    }
+
+    private static string? NormalizeDateForInput(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return value;
+        return FormatDateOnly(value);
+    }
+
+    private void EditRowInline(PurchaseDetailModel detail)
+    {
+        EditableRows.Add(detail);
+        ToastService.ShowSuccess("Row is now editable. Modify values directly.");
+    }
+
+    private void CloseModal() => ShowModal = false;
+    private void SetView(bool card)
+    {
+        IsCardView = card;
+        CurrentPage = 1;
+    }
+    private void OnSearchInput(ChangeEventArgs e) { SearchQuery = e.Value?.ToString() ?? ""; CurrentPage = 1; }
+    private void ChangePage(int p) { if (p >= 1 && p <= TotalPages) CurrentPage = p; }
+}
+
+
+

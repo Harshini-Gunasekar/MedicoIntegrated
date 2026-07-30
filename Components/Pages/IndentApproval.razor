@@ -1,0 +1,745 @@
+@page "/indentapproval"
+@page "/indent-approval"
+@using Booking.Models
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Forms
+@inject IHttpClientFactory ClientFactory
+@inject IJSRuntime JS
+@inject Booking.Services.ToastService ToastService
+
+<style>
+    @@keyframes blinker {
+        50% { opacity: 0.4; }
+    }
+    .blinking-flicker {
+        animation: blinker 1.5s linear infinite;
+    }
+</style>
+
+<div class="items-page indent-page pt-0 pb-3" style="@(IsCardView ? "" : "min-height: auto !important;")">
+    <div class="items-shell px-3">
+        <div class="items-content">
+            <div class="premium-header-card mb-5">
+                <div class="header-card-left">
+                    <div class="header-card-icon">
+                        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                            <line x1="16" y1="13" x2="8" y2="13"></line>
+                            <line x1="16" y1="17" x2="8" y2="17"></line>
+                            <polyline points="10 9 9 9 8 9"></polyline>
+                        </svg>
+                    </div>
+                    <div class="header-card-text">
+                        <h2 class="header-card-heading">Indent Approval</h2>
+                        <div class="header-card-subheading">
+                            <span class="status-dot" style="background-color: #f59e0b; box-shadow: 0 0 8px #f59e0b;"></span> Pending requests : @FilteredIndents.Count()
+                        </div>
+                    </div>
+                </div>
+
+                <div class="header-card-right">
+                    <div class="items-search-wrap">
+                        <i class="bi bi-search items-search-icon"></i>
+                        <input type="text" class="form-control items-search" placeholder="Search by Indent No or Dept" @oninput="OnSearchInput" />
+                    </div>
+
+                    <div class="view-toggle" title="Switch view">
+                        <button type="button" class="@(IsCardView ? string.Empty : "active")" @onclick="() => SetView(false)"><i class="bi bi-table"></i></button>
+                        <button type="button" class="@(IsCardView ? "active" : string.Empty)" @onclick="() => SetView(true)"><i class="bi bi-grid-3x3-gap"></i></button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card items-main-card">
+                @if (IsLoading)
+                {
+                    <div class="text-center py-5">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                    </div>
+                }
+                else if (!FilteredIndents.Any())
+                {
+                    <div class="text-center py-5 text-muted">
+                        <i class="bi bi-check-circle fs-1 d-block mb-3 text-success"></i>
+                        No pending indent requests found for approval.
+                    </div>
+                }
+                else if (!IsCardView)
+                {
+                    <div class="table-responsive">
+                        <table class="table table-hover align-middle mb-0 items-table w-100">
+                            <thead>
+                                <tr>
+                                    <th style="width: 60px;">S.NO</th>
+                                    <th>INDENT CODE</th>
+                                    <th>INDENT NO</th>
+                                    <th>INDENT DATE</th>
+                                    <th>STORE</th>
+                                    <th>STATUS</th>
+                                    <th>ITEMS COUNT</th>
+                                    <th style="width: 100px;">ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in PagedIndents.Select((value, index) => new { value, index }))
+                                {
+                                    var itemIndex = row.index;
+                                    var indent = row.value;
+                                    <tr>
+                                        <td>@(((CurrentPage - 1) * ItemsPerPage) + itemIndex + 1)</td>
+                                        <td class="fw-bold text-primary">#@indent.indentcode</td>
+                                        <td>@(string.IsNullOrWhiteSpace(indent.indentno) ? "N/A" : indent.indentno)</td>
+                                        <td>@indent.indentdate.ToString("yyyy-MM-dd")</td>
+                                        <td>@GetStoreName(indent.departmentcode)</td>
+                                        <td>
+                                            @if (string.Equals(indent.approvalstatus, "APPROVED", StringComparison.OrdinalIgnoreCase) && HasPendingQuantities(indent.indentcode))
+                                            {
+                                                <span class="badge bg-info-subtle text-info border border-info">PARTIAL ISSUE</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="badge bg-warning-subtle text-warning border border-warning">PENDING</span>
+                                            }
+                                        </td>
+                                        <td>@GetItemsCount(indent.indentcode)</td>
+                                        <td>
+                                            <button class="btn-approve-action" @onclick="async () => await OpenApproval(indent)" title="Approve"><i class="bi bi-check-circle-fill"></i> Approve</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="items-card-grid">
+                        @foreach (var indent in PagedIndents)
+                        {
+                            <div class="item-card">
+                                <div class="item-card-head">
+                                    <span class="card-item-code">#@indent.indentcode</span>
+                                    <div>
+                                        <button class="btn-approve-action" style="font-size: 0.65rem !important; padding: 4px 10px !important;" @onclick="async () => await OpenApproval(indent)" title="Approve"><i class="bi bi-check-circle-fill"></i> Approve</button>
+                                    </div>
+                                </div>
+                                <div class="item-card-body">
+                                    <div class="detail-row"><span>Indent No</span><strong>@(string.IsNullOrWhiteSpace(indent.indentno) ? "N/A" : indent.indentno)</strong></div>
+                                    <div class="detail-row"><span>Indent Date</span><strong>@indent.indentdate.ToString("yyyy-MM-dd")</strong></div>
+                                    <div class="detail-row"><span>Store</span><strong>@GetStoreName(indent.departmentcode)</strong></div>
+                                    <div class="detail-row">
+                                        <span>Status</span>
+                                        @if (string.Equals(indent.approvalstatus, "APPROVED", StringComparison.OrdinalIgnoreCase) && HasPendingQuantities(indent.indentcode))
+                                        {
+                                            <strong class="text-info">PARTIAL ISSUE</strong>
+                                        }
+                                        else
+                                        {
+                                            <strong class="text-warning">PENDING</strong>
+                                        }
+                                    </div>
+                                    <div class="detail-row"><span>Items Count</span><strong>@GetItemsCount(indent.indentcode)</strong></div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                
+                <div class="display-controls px-4 py-3 border-top" style="background: #ffffff; display: flex; justify-content: space-between; align-items: center; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+                    <div class="total-count-text text-muted" style="font-size: 0.82rem; font-weight: 500; text-align: left; margin-left: 20px;">
+                        @if (FilteredIndents.Any())
+                        {
+                            <span>Showing <strong>@(((CurrentPage - 1) * ItemsPerPage) + 1)</strong> to <strong>@(Math.Min(CurrentPage * ItemsPerPage, FilteredIndents.Count()))</strong> of <strong>@FilteredIndents.Count()</strong> items</span>
+                        }
+                        else
+                        {
+                            <span>Showing <strong>0</strong> to <strong>0</strong> of <strong>0</strong> items</span>
+                        }
+                    </div>
+                    <div class="pagination-bar">
+                        <button class="page-btn" @onclick="() => ChangePage(CurrentPage - 1)" disabled="@(CurrentPage <= 1)" title="Previous">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        @if (TotalPages > 0)
+                        {
+                            @for (int i = 1; i <= TotalPages; i++)
+                            {
+                                var pageNum = i;
+                                <button class="page-btn @(CurrentPage == pageNum ? "active" : "")" @onclick="() => ChangePage(pageNum)">
+                                    @pageNum
+                                </button>
+                            }
+                        }
+                        else
+                        {
+                            <button class="page-btn active">1</button>
+                        }
+                        <button class="page-btn" @onclick="() => ChangePage(CurrentPage + 1)" disabled="@(CurrentPage >= TotalPages)" title="Next">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@if (ShowModal)
+{
+    <div class="modal-overlay">
+        <div class="modal-card" @onclick:stopPropagation="true" style="max-width: 900px; width: 95%;">
+            <div class="modal-header-bar" style="padding: 14px 32px !important;">
+                <div class="modal-header-left">
+                    <div>
+                        <h3 class="modal-title" style="color: #1e293b !important; font-weight: 800; font-size: 1.25rem; letter-spacing: -0.2px;">Approve Indent Request</h3>
+                    </div>
+                </div>
+                <button class="btn-close-modal" title="Close" @onclick="CloseModal">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+
+            <div class="modal-inner">
+                <EditForm Model="CurrentRequest" OnValidSubmit="SaveApproval" autocomplete="off">
+                    <DataAnnotationsValidator />
+                    <div class="modal-scroll-area" style="overflow-x: hidden; padding: 0 10px 20px 0;">
+                        @if (IsPartialIssueCase)
+                        {
+                            <div class="alert alert-warning py-2 px-3 mb-4 blinking-flicker d-flex align-items-center justify-content-between" style="border-radius: 8px; font-size: 0.85rem; font-weight: 600; color: #b45309; background-color: #fef3c7; border: 1px solid #fde68a;">
+                                <span><i class="bi bi-exclamation-triangle-fill me-2"></i> PARTIAL ISSUE PENDING:</span>
+                                <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+                                    @foreach (var d in CurrentRequest.details.Where(d => d.issuedqty > 0 && d.approvedqty != d.issuedqty))
+                                    {
+                                        <span><strong>@GetItemName(d.itemcode)</strong>: @(d.approvedqty - d.issuedqty) pending</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        
+                        <!-- Section 1: Read-Only Requisition Information -->
+                        <div class="form-section-header">
+                            <div class="form-section-title" style="font-size: 0.85rem; font-weight: 800; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.5px;">Requisition Details</div>
+                        </div>
+
+                        <div class="form-grid" style="background: #f8fafc; padding: 16px; border-radius: 12px; margin-bottom: 20px; border: 1px solid #e2e8f0;">
+                            <div class="field-group col-3">
+                                <label class="field-label">Indent Number</label>
+                                <div class="fw-bold" style="font-size: 0.9rem; color: #1e293b; padding-top: 4px;">@(string.IsNullOrWhiteSpace(CurrentRequest.master.indentno) ? "N/A" : CurrentRequest.master.indentno)</div>
+                            </div>
+                            <div class="field-group col-3">
+                                <label class="field-label">Indent Date</label>
+                                <div class="fw-bold" style="font-size: 0.9rem; color: #1e293b; padding-top: 4px;">@CurrentRequest.master.indentdate.ToString("yyyy-MM-dd")</div>
+                            </div>
+                            <div class="field-group col-3">
+                                <label class="field-label">Store</label>
+                                <div class="fw-bold" style="font-size: 0.9rem; color: #1e293b; padding-top: 4px;">@GetStoreName(CurrentRequest.master.departmentcode)</div>
+                            </div>
+                            <div class="field-group col-3">
+                                <label class="field-label">Remarks</label>
+                                <div style="font-size: 0.9rem; color: #64748b; padding-top: 4px; font-style: italic;">@(string.IsNullOrWhiteSpace(CurrentRequest.master.remarks) ? "No remarks" : CurrentRequest.master.remarks)</div>
+                            </div>
+                        </div>
+
+                        <!-- Section 2: Approval Status (APPROVED/REJECTED) -->
+                        <div class="form-section-header mt-4">
+                            <div class="form-section-title" style="font-size: 0.85rem; font-weight: 800; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.5px;">Workflow Approval</div>
+                        </div>
+
+                        <div class="form-grid">
+                            <div class="field-group col-3">
+                                <label class="field-label required">Approval Status</label>
+                                <select class="form-control premium-input" value="@CurrentRequest.master.approvalstatus" @onchange="OnStatusChanged">
+                                    <option value="">-- Select Status --</option>
+                                    <option value="APPROVED">APPROVED</option>
+                                    <option value="REJECTED">REJECTED</option>
+                                </select>
+                            </div>
+                            <div class="field-group col-3">
+                                <label class="field-label required">Approved By ID</label>
+                                <InputNumber class="form-control premium-input" @bind-Value="CurrentRequest.master.approvedby" placeholder="Approver ID" disabled="@(string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))" />
+                            </div>
+                            <div class="field-group col-3">
+                                <label class="field-label required">Approved Date</label>
+                                <InputDate class="form-control premium-input" @bind-Value="CurrentRequest.master.approveddate" disabled="@(string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))" />
+                            </div>
+                            <div class="field-group col-3">
+                                <label class="field-label">Approval Remarks</label>
+                                <InputText class="form-control premium-input" @bind-Value="CurrentRequest.master.approvalremarks" placeholder="Comments from approver" disabled="@(string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))" />
+                            </div>
+                        </div>
+
+                        <!-- Section 3: Indent Detail Row items -->
+                        <div class="form-section-header mt-4">
+                            <div class="form-section-title" style="font-size: 0.85rem; font-weight: 800; color: #4f46e5; text-transform: uppercase; letter-spacing: 0.5px;">Requested Items</div>
+                        </div>
+
+                        <div class="purchase-items-table-wrapper table-responsive mt-3">
+                            <table class="table align-middle mb-0" style="font-size: 0.85rem;">
+                                <thead class="purchase-items-table-header">
+                                    <tr>
+                                        <th style="width: 50px; text-align: center;">S.NO</th>
+                                        <th>ITEM NAME</th>
+                                        <th style="width: 120px; text-align: center;">REQUESTED QTY</th>
+                                        <th style="width: 120px; text-align: center;">APPROVED QTY</th>
+                                        <th style="width: 120px; text-align: center;">ISSUED QTY</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var row in CurrentRequest.details.Select((detail, index) => new { detail, index }))
+                                    {
+                                        var detail = row.detail;
+                                        var index = row.index;
+                                        <tr>
+                                            <td style="padding: 12px 6px; color: #64748b; text-align: center; font-weight: 600; width: 50px;">@(index + 1)</td>
+                                            <td style="padding: 12px 6px; font-weight: 600; color: #334155;">
+                                                @GetItemName(detail.itemcode)
+                                            </td>
+                                            <td style="padding: 12px 6px; text-align: center; font-weight: 600; color: #475569; width: 120px;">
+                                                @detail.requestedqty
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 120px;">
+                                                <input type="number" class="purchase-item-input text-center" @bind="detail.approvedqty" @bind:event="oninput" />
+                                            </td>
+                                            <td style="padding: 0; text-align: center; width: 120px;">
+                                                <input type="number" class="purchase-item-input text-center" @bind="detail.issuedqty" @bind:event="oninput" />
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <div class="modal-footer-actions" style="display: flex; justify-content: flex-end; gap: 16px; padding: 24px 32px; border-top: 1px solid #f0f0f0;">
+                        <button type="button" class="btn-cancel-modal" @onclick="CloseModal">Cancel</button>
+                        <button type="submit" class="btn-save-premium" disabled="@IsSaving" style="min-width: 180px; height: 48px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white;">
+                            @if (IsSaving)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2"></span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-check2-circle me-2" style="font-size: 1.1rem;"></i>
+                            }
+                            <span>Submit Decision</span>
+                        </button>
+                    </div>
+                </EditForm>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<indent_request> RawRequestList = new();
+    private List<indent_master> IndentList = new();
+    private List<inventory_item_master> ItemList = new();
+    private List<warehouse_master> WarehouseList = new();
+    private indent_request CurrentRequest = new();
+    
+    private string SearchQuery = "";
+    private bool IsLoading = true;
+    private bool IsSaving = false;
+    private bool ShowModal = false;
+    private bool IsCardView = false;
+    
+    private const string DefaultTenant = "TEN1011";
+    private int CurrentPage = 1;
+    private int ItemsPerPage => IsCardView ? 6 : 12;
+
+    private bool IsPartialIssueCase => 
+        CurrentRequest?.master != null && 
+        string.Equals(CurrentRequest.master.approvalstatus, "APPROVED", StringComparison.OrdinalIgnoreCase) && 
+        CurrentRequest.details != null && 
+        CurrentRequest.details.Any(d => d.issuedqty > 0 && d.approvedqty != d.issuedqty);
+
+    private bool HasPendingQuantities(long indentCode)
+    {
+        var req = RawRequestList.FirstOrDefault(r => r.master != null && r.master.indentcode == indentCode);
+        if (req?.details == null) return false;
+        return req.details.Any(d => d.approvedqty != d.issuedqty);
+    }
+
+    private IEnumerable<indent_master> FilteredIndents => 
+        IndentList.Where(i => 
+            (
+             string.Equals(i.approvalstatus, "PENDING", StringComparison.OrdinalIgnoreCase) || 
+             string.IsNullOrWhiteSpace(i.approvalstatus) ||
+             HasPendingQuantities(i.indentcode)
+            ) &&
+            (string.IsNullOrWhiteSpace(SearchQuery) || 
+             (i.indentno?.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+             (i.departmentcode?.ToString().Contains(SearchQuery) ?? false) ||
+             (i.indentcode.ToString().Contains(SearchQuery))));
+
+    private IEnumerable<indent_master> PagedIndents => 
+        FilteredIndents.Skip((CurrentPage - 1) * ItemsPerPage).Take(ItemsPerPage);
+
+    private int TotalPages => (int)Math.Ceiling((double)FilteredIndents.Count() / ItemsPerPage);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(LoadIndents(), LoadItems(), LoadWarehouses());
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("DoctorApi");
+        client.DefaultRequestHeaders.Remove("tenantcode");
+        client.DefaultRequestHeaders.Add("tenantcode", DefaultTenant);
+        return client;
+    }
+
+    private async Task LoadIndents()
+    {
+        IsLoading = true;
+        try 
+        {
+            var client = CreateClient();
+            var response = await client.GetStringAsync("api/ItemMaster/getallindents");
+            
+            if (!string.IsNullOrWhiteSpace(response)) 
+            {
+                ParseIndentsList(response);
+            }
+        } 
+        catch (Exception ex) 
+        {
+            ToastService.ShowError($"Load Error: {ex.Message}");
+        } 
+        finally 
+        {
+            IsLoading = false;
+        }
+    }
+
+    private void ParseIndentsList(string json)
+    {
+        var options = new JsonSerializerOptions 
+        { 
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        // Parse list of full requests if available, to access items count
+        try 
+        {
+            var wrappedReq = JsonSerializer.Deserialize<ServiceResponse<List<indent_request>>>(json, options);
+            if (wrappedReq?.data != null && wrappedReq.data.Any()) 
+            {
+                RawRequestList = wrappedReq.data.Where(r => r.master != null && !r.master.deleted).ToList();
+                IndentList = RawRequestList.Select(r => r.master).ToList();
+                return;
+            }
+        } 
+        catch { }
+
+        try 
+        {
+            var directReq = JsonSerializer.Deserialize<List<indent_request>>(json, options);
+            if (directReq != null && directReq.Any()) 
+            {
+                RawRequestList = directReq.Where(r => r.master != null && !r.master.deleted).ToList();
+                IndentList = RawRequestList.Select(r => r.master).ToList();
+                return;
+            }
+        } 
+        catch { }
+
+        try 
+        {
+            var wrapped = JsonSerializer.Deserialize<ServiceResponse<List<indent_master>>>(json, options);
+            if (wrapped?.data != null && wrapped.data.Any()) 
+            {
+                IndentList = wrapped.data.Where(x => x.indentcode > 0 && !x.deleted).ToList();
+                return;
+            }
+        } 
+        catch { }
+
+        try 
+        {
+            var direct = JsonSerializer.Deserialize<List<indent_master>>(json, options);
+            if (direct != null && direct.Any()) 
+            {
+                IndentList = direct.Where(x => x.indentcode > 0 && !x.deleted).ToList();
+                return;
+            }
+        } 
+        catch { }
+    }
+
+    private int GetItemsCount(long indentCode)
+    {
+        var req = RawRequestList.FirstOrDefault(r => r.master.indentcode == indentCode);
+        return req?.details?.Count ?? 0;
+    }
+
+    private async Task LoadItems()
+    {
+        try 
+        {
+            var client = CreateClient();
+            var response = await client.GetStringAsync("api/ItemMaster/getallitems");
+            if (string.IsNullOrWhiteSpace(response)) return;
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            try 
+            {
+                var direct = JsonSerializer.Deserialize<List<inventory_item_master>>(response, options);
+                ItemList = direct ?? new();
+            } 
+            catch 
+            {
+                var wrapped = JsonSerializer.Deserialize<ServiceResponse<List<inventory_item_master>>>(response, options);
+                ItemList = wrapped?.data ?? new();
+            }
+        } 
+        catch { }
+    }
+
+    private async Task LoadWarehouses()
+    {
+        try 
+        {
+            var client = CreateClient();
+            var response = await client.GetStringAsync("api/ItemMaster/getallwarehouse");
+            if (string.IsNullOrWhiteSpace(response)) return;
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            try 
+            {
+                var direct = JsonSerializer.Deserialize<List<warehouse_master>>(response, options);
+                WarehouseList = (direct ?? new()).Where(w => !w.isdeleted && w.isactive).OrderBy(w => w.orderno).ToList();
+            } 
+            catch 
+            {
+                var wrapped = JsonSerializer.Deserialize<ServiceResponse<List<warehouse_master>>>(response, options);
+                WarehouseList = (wrapped?.data ?? new()).Where(w => !w.isdeleted && w.isactive).OrderBy(w => w.orderno).ToList();
+            }
+        } 
+        catch { }
+    }
+
+    private async Task OpenApproval(indent_master master)
+    {
+        IsLoading = true;
+        try 
+        {
+            var client = CreateClient();
+            var url = $"api/ItemMaster/getindentbycode?indentcode={master.indentcode}&tenantcode={DefaultTenant}";
+            var responseString = await client.GetStringAsync(url);
+            
+            var loaded = ParseIndentRequest(responseString);
+            if (loaded != null) 
+            {
+                CurrentRequest = loaded;
+                CurrentRequest.master.tenantcode = DefaultTenant;
+                
+                var isAlreadyApproved = string.Equals(CurrentRequest.master.approvalstatus, "APPROVED", StringComparison.OrdinalIgnoreCase);
+                if (!isAlreadyApproved)
+                {
+                    CurrentRequest.master.approvalstatus = "";
+                }
+                CurrentRequest.master.approvedby ??= 101;
+                CurrentRequest.master.approveddate ??= DateTime.Now;
+                
+                // Default approved and issued quantities to 0 so they are typed by the approver ONLY if new approval
+                foreach (var detail in CurrentRequest.details)
+                {
+                    if (!isAlreadyApproved)
+                    {
+                        detail.approvedqty = 0;
+                        detail.issuedqty = 0;
+                    }
+                }
+            }
+            else 
+            {
+                CurrentRequest = new indent_request 
+                {
+                    master = master,
+                    details = new List<indent_detail>()
+                };
+                ToastService.ShowError("Unable to load request item details.");
+                return;
+            }
+            ShowModal = true;
+        } 
+        catch (Exception ex) 
+        {
+            ToastService.ShowError($"Load Error: {ex.Message}");
+        }
+        finally
+        {
+            IsLoading = false;
+        }
+    }
+
+    private indent_request? ParseIndentRequest(string json)
+    {
+        var options = new JsonSerializerOptions 
+        { 
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        try 
+        {
+            var wrappedList = JsonSerializer.Deserialize<ServiceResponse<List<indent_request>>>(json, options);
+            if (wrappedList?.data != null && wrappedList.data.Any()) 
+            {
+                return wrappedList.data.First();
+            }
+        } 
+        catch { }
+
+        try 
+        {
+            var directList = JsonSerializer.Deserialize<List<indent_request>>(json, options);
+            if (directList != null && directList.Any()) 
+            {
+                return directList.First();
+            }
+        } 
+        catch { }
+
+        try 
+        {
+            var wrapped = JsonSerializer.Deserialize<ServiceResponse<indent_request>>(json, options);
+            if (wrapped?.data != null && wrapped.data.master != null) return wrapped.data;
+        } 
+        catch { }
+
+        try 
+        {
+            var direct = JsonSerializer.Deserialize<indent_request>(json, options);
+            if (direct != null && direct.master != null) return direct;
+        } 
+        catch { }
+
+        return null;
+    }
+
+    private void OnStatusChanged(ChangeEventArgs e)
+    {
+        var status = e.Value?.ToString() ?? "";
+        CurrentRequest.master.approvalstatus = status;
+        
+        if (status == "REJECTED")
+        {
+            foreach (var d in CurrentRequest.details)
+            {
+                d.approvedqty = 0;
+                d.issuedqty = 0;
+            }
+        }
+        else if (status == "APPROVED")
+        {
+            // Do not pre-populate quantities; let them be entered by the approver
+        }
+        else // Empty/Unselected
+        {
+            foreach (var d in CurrentRequest.details)
+            {
+                d.approvedqty = 0;
+                d.issuedqty = 0;
+            }
+        }
+    }
+
+    private async Task SaveApproval()
+    {
+        if (string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))
+        {
+            ToastService.ShowWarning("Please select an Approval Status decision.");
+            return;
+        }
+
+        IsSaving = true;
+        try 
+        {
+            var client = CreateClient();
+            
+            CurrentRequest.master.tenantcode = DefaultTenant;
+            CurrentRequest.master.isactive = true;
+            CurrentRequest.master.deleted = false;
+
+            var options = new JsonSerializerOptions 
+            {
+                PropertyNamingPolicy = null 
+            };
+            
+            var response = await client.PostAsJsonAsync("api/ItemMaster/updateindent", CurrentRequest, options);
+
+            if (response.IsSuccessStatusCode) 
+            {
+                ToastService.ShowSuccess($"Indent approved/status updated successfully");
+                ShowModal = false;
+                await LoadIndents();
+            } 
+            else 
+            {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Approval Decision Submission Failed: {errorBody}");
+            }
+        } 
+        catch (Exception ex) 
+        {
+            ToastService.ShowError($"Approval Save Error: {ex.Message}");
+        } 
+        finally 
+        {
+            IsSaving = false;
+        }
+    }
+
+    private string GetStoreName(long? code)
+    {
+        if (code == null) return "N/A";
+        var store = WarehouseList.FirstOrDefault(w => w.warehousecode == code);
+        return store?.warehousename ?? $"Store #{code}";
+    }
+
+    private string GetItemName(long itemCode)
+    {
+        var item = ItemList.FirstOrDefault(i => i.itemcode == itemCode);
+        return item?.itemname ?? $"Item #{itemCode}";
+    }
+
+    private void ChangePage(int page)
+    {
+        if (page >= 1 && page <= TotalPages)
+        {
+            CurrentPage = page;
+        }
+    }
+
+    private void SetView(bool isCard)
+    {
+        IsCardView = isCard;
+        CurrentPage = 1;
+    }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        SearchQuery = e.Value?.ToString() ?? string.Empty;
+        CurrentPage = 1;
+    }
+
+    private void CloseModal()
+    {
+        ShowModal = false;
+    }
+
+    public class ServiceResponse<T>
+    {
+        public T? data { get; set; }
+    }
+}
