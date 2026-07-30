@@ -1,5 +1,6 @@
 @page "/vitals"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IDisposable
 @using Booking.Models
 @using Medico_Backend.Model
 @using SharedComponents.Rcl.Models
@@ -268,7 +269,7 @@
                                     }
                                 </td>
                                 <td class="text-center">
-                                    @if (HasInvestigation(item, "ecg_and_echo"))
+                                    @if (HasInvestigation(item, "ecg-echo"))
                                     {
                                         <select class="@GetStatusDropdownClass(GetEcgEchoStatus(item))"
                                                 value="@(NormalizeStatus(GetEcgEchoStatus(item)))"
@@ -463,7 +464,7 @@
                                 <option value="doctor">Doctor</option>
                                 <option value="lab">Lab</option>
                                 <option value="scan">Scan</option>
-                                <option value="ecg_and_echo">ECG & Echo</option>
+                                <option value="ecg-echo">ECG & Echo</option>
                             </select>
                         </div>
 
@@ -475,14 +476,14 @@
                                     <option value="doctor">Doctor</option>
                                     <option value="lab">Lab</option>
                                     <option value="scan">Scan</option>
-                                    <option value="ecg_and_echo">ECG & Echo</option>
+                                    <option value="ecg-echo">ECG & Echo</option>
                                 </select>
                                 <select @bind="currentVital.in3" class="cm-input" style="flex: 1;">
                                     <option value="">Slot 3</option>
                                     <option value="doctor">Doctor</option>
                                     <option value="lab">Lab</option>
                                     <option value="scan">Scan</option>
-                                    <option value="ecg_and_echo">ECG & Echo</option>
+                                    <option value="ecg-echo">ECG & Echo</option>
                                 </select>
                             </div>
                         </div>
@@ -590,10 +591,20 @@
     private List<LabResultEntryModel> labResultList = new();
     private List<ScanResultEntryModel> scanResultList = new();
     private VitalsModel currentVital = new();
+    private System.Threading.Timer? _timer;
 
     protected override async Task OnInitializedAsync()
     {
         await LoadDataAsync();
+        
+        // Start polling every second
+        _timer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await BackgroundLoadDataAsync();
+            });
+        }, null, 1000, 1000);
     }
 
     private List<CustomerModel> allCustomersList = new();
@@ -638,12 +649,50 @@
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error loading vitals data: {ex.Message}");
+            Console.WriteLine($"Error loading data: {ex.Message}");
+            ToastService.ShowError("Error loading data.");
         }
         finally
         {
             isLoading = false;
+        }
+    }
+
+    private async Task BackgroundLoadDataAsync()
+    {
+        try
+        {
+            var allVitals = await VitalsService.GetVitalsAsync() ?? new();
+            vitalsList = allVitals.Where(v => v.entered_date.Date == DateTime.Today).ToList();
+
+            var todayStr = DateTime.Now.ToString("yyyy-MM-dd");
+            var consultList = await OGService.GetConsultationListAsync(todayStr) ?? new();
+            var labScanList = await OGService.GetLabScanListAsync(todayStr) ?? new();
+            consultationList = consultList.Concat(labScanList).ToList();
+
+            if (allCustomersList.Count > 0)
+            {
+                foreach (var v in vitalsList)
+                {
+                    if (string.IsNullOrWhiteSpace(v.patient_name) && !string.IsNullOrWhiteSpace(v.custcode))
+                    {
+                        var match = allCustomersList.FirstOrDefault(c =>
+                            string.Equals(c.custcode, v.custcode, StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(c.tenantcustcode, v.custcode, StringComparison.OrdinalIgnoreCase) ||
+                            c.custid.ToString() == v.custcode);
+                        if (match != null && !string.IsNullOrWhiteSpace(match.name))
+                        {
+                            v.patient_name = match.name;
+                        }
+                    }
+                }
+            }
+
             StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in background data reload: {ex.Message}");
         }
     }
 
@@ -1158,7 +1207,7 @@
         {
             return val == "scan" || val.Contains("scan");
         }
-        if (cat == "ecg_and_echo" || cat == "ecg-echo" || cat == "ecg" || cat == "echo")
+        if (cat == "ecg-echo" || cat == "ecg-echo" || cat == "ecg" || cat == "echo")
         {
             return val.Contains("ecg") || val.Contains("echo");
         }
@@ -1200,7 +1249,7 @@
             return matches.FirstOrDefault(c => string.Equals(c.entry_type, "scan", StringComparison.OrdinalIgnoreCase))
                 ?? matches.FirstOrDefault(c => c.entry_type != null && c.entry_type.ToLower().Contains("scan"));
         }
-        else if (cat == "ecg_and_echo" || cat == "ecg" || cat == "echo")
+        else if (cat == "ecg-echo" || cat == "ecg" || cat == "echo")
         {
             return matches.FirstOrDefault(c => string.Equals(c.entry_type, "ecg", StringComparison.OrdinalIgnoreCase) || string.Equals(c.entry_type, "echo", StringComparison.OrdinalIgnoreCase))
                 ?? matches.FirstOrDefault(c => c.entry_type != null && (c.entry_type.ToLower().Contains("ecg") || c.entry_type.ToLower().Contains("echo")));
@@ -1235,7 +1284,7 @@
     private string? GetDoctorStatus(VitalsModel record) => GetCategorySlotStatus(record, "doctor");
     private string? GetLabStatus(VitalsModel record) => GetCategorySlotStatus(record, "lab");
     private string? GetScanStatus(VitalsModel record) => GetCategorySlotStatus(record, "scan");
-    private string? GetEcgEchoStatus(VitalsModel record) => GetCategorySlotStatus(record, "ecg_and_echo");
+    private string? GetEcgEchoStatus(VitalsModel record) => GetCategorySlotStatus(record, "ecg-echo");
 
     private async Task UpdateCategorySlotStatus(VitalsModel record, string categoryKey, string? newStatus)
     {
@@ -1304,5 +1353,10 @@
     private Task UpdateDoctorStatus(VitalsModel record, string? newStatus) => UpdateCategorySlotStatus(record, "doctor", newStatus);
     private Task UpdateLabStatus(VitalsModel record, string? newStatus) => UpdateCategorySlotStatus(record, "lab", newStatus);
     private Task UpdateScanStatus(VitalsModel record, string? newStatus) => UpdateCategorySlotStatus(record, "scan", newStatus);
-    private Task UpdateVitalStatus(VitalsModel record, string? newStatus) => UpdateCategorySlotStatus(record, "ecg_and_echo", newStatus);
+    private Task UpdateVitalStatus(VitalsModel record, string? newStatus) => UpdateCategorySlotStatus(record, "ecg-echo", newStatus);
+
+    public void Dispose()
+    {
+        _timer?.Dispose();
+    }
 }
