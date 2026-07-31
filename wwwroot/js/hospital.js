@@ -137,12 +137,17 @@ window.hospitalAudio = {
         });
     },
 
-    playBilingualNextPatientAnnouncement: async function (tokenNumber) {
+    playBilingualNextPatientAnnouncement: async function (tokenNumber, roomNumber) {
         if (!('speechSynthesis' in window)) return;
         window.speechSynthesis.cancel();
 
-        const engText = `Next token number ${tokenNumber}.`;
-        const tamText = `டோக்கன் ${tokenNumber}, தயவுசெய்து ஆலோசனை அறைக்கு வரவும். நீங்கள் அடுத்த நோயாளி.`;
+        let engText = `Next token number ${tokenNumber}.`;
+        let tamText = `டோக்கன் ${tokenNumber}, தயவுசெய்து ஆலோசனை அறைக்கு வரவும்.`;
+
+        if (roomNumber && String(roomNumber).trim() !== '' && String(roomNumber).trim().toLowerCase() !== 'null') {
+            engText = `Next token number ${tokenNumber}, Room number ${roomNumber}.`;
+            tamText = `டோக்கன் எண் ${tokenNumber}, தயவுசெய்து அறை எண் ${roomNumber} க்கு வரவும்.`;
+        }
 
         const voices = await this.getVoicesAsync();
 
