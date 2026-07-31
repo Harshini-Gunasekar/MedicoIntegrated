@@ -48,9 +48,7 @@ namespace Booking.Helpers
 
         public static TimeOnly ToIndianTime(this TimeOnly time)
         {
-            var todayUtc = DateTime.SpecifyKind(DateTime.Today.Add(time.ToTimeSpan()), DateTimeKind.Utc);
-            var istDt = TimeZoneInfo.ConvertTimeFromUtc(todayUtc, IndianTimeZone);
-            return TimeOnly.FromDateTime(istDt);
+            return time.Add(TimeSpan.FromHours(5.5));
         }
 
         public static TimeOnly? ToIndianTime(this TimeOnly? time)
@@ -80,9 +78,7 @@ namespace Booking.Helpers
 
         public static TimeOnly ToUtcFromIndianTime(this TimeOnly time)
         {
-            var dtIst = new DateTime(DateTime.Today.Year, DateTime.Today.Month, DateTime.Today.Day, time.Hour, time.Minute, time.Second);
-            var dtUtc = TimeZoneInfo.ConvertTimeToUtc(dtIst, IndianTimeZone);
-            return TimeOnly.FromDateTime(dtUtc);
+            return time.Add(TimeSpan.FromHours(-5.5));
         }
 
         public static TimeOnly? ToUtcFromIndianTime(this TimeOnly? time)

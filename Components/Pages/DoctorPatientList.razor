@@ -6,6 +6,8 @@
 @using SharedComponents.Rcl.Models
 @inject AppointmentBookingService BookingService
 @inject DoctorService DoctorService
+@inject DoctorCurrentStatusService StatusService
+@inject DoctorSpecialtyMasterService SpecialtyService
 @inject ToastService ToastService
 @inject CaseSheetService CaseSheetService
 @inject IHttpClientFactory ClientFactory
@@ -302,6 +304,221 @@
         </div>
     </div>
 }
+
+<!-- Doctor Status Update Popup Modal -->
+@if (showDoctorStatusModal)
+{
+    <div class="doc-status-modal-backdrop" @onclick="CloseDoctorStatusModal"></div>
+    <div class="doc-status-popup-modal" @onclick:stopPropagation>
+        <div class="doc-status-popup-header">
+            <div class="doc-status-popup-title">
+                <i class="bi bi-pencil-square"></i>
+                <span>Update Doctor Status</span>
+            </div>
+            <button type="button" class="doc-status-close-btn" @onclick="CloseDoctorStatusModal" title="Close">&times;</button>
+        </div>
+
+        <div class="doc-status-popup-body">
+            <!-- Searchable Doctor Select Input -->
+            <div class="doc-status-form-group">
+                <label class="doc-status-label">SEARCH / SELECT DOCTOR <span class="text-danger">*</span></label>
+                <div class="doc-status-search-wrapper">
+                    <i class="bi bi-search doc-status-search-icon"></i>
+                    <input type="text"
+                           class="doc-status-search-input @(isStatusDocDropdownOpen ? "dropdown-open" : "")"
+                           placeholder="Type doctor name or specialty..."
+                           value="@statusDocSearchQuery"
+                           @oninput="OnStatusDocSearchInput"
+                           @onfocus="() => isStatusDocDropdownOpen = true"
+                           @onblur="OnStatusDocSearchBlur" />
+
+                    @if (statusModalDcode > 0 || !string.IsNullOrEmpty(statusDocSearchQuery))
+                    {
+                        <button type="button" class="doc-status-clear-btn" @onclick="ClearStatusModalDoctor" title="Clear selection">
+                            <i class="bi bi-x-circle-fill"></i>
+                        </button>
+                    }
+                    else
+                    {
+                        <i class="bi bi-chevron-down doc-status-arrow-icon"></i>
+                    }
+
+                    @if (isStatusDocDropdownOpen)
+                    {
+                        <div class="doc-status-dropdown-list" @mousedown:preventDefault>
+                            @{
+                                var matchDocs = GetMatchingDoctorsForStatusModal();
+                            }
+                            @if (!matchDocs.Any())
+                            {
+                                <div class="doc-status-empty-dropdown">
+                                    <i class="bi bi-person-x"></i> No doctor found matching "@statusDocSearchQuery"
+                                </div>
+                            }
+                            else
+                            {
+                                @foreach (var doc in matchDocs)
+                                {
+                                    var stObj = modalStatusMap.GetValueOrDefault(doc.dcode);
+                                    var stKey = NormalizeDoctorStatus(stObj?.status);
+                                    var isSelected = doc.dcode == statusModalDcode;
+
+                                    <div class="doc-status-dropdown-item @(isSelected ? "selected" : "")"
+                                         @onclick="() => SelectDoctorForStatusModal(doc.dcode)">
+                                        <div class="doc-status-item-avatar">
+                                            @if (!string.IsNullOrEmpty(doc.doctorimage))
+                                            {
+                                                <img src="@doc.doctorimage" alt="@doc.name" />
+                                            }
+                                            else
+                                            {
+                                                <span>@GetDocInitials(doc.name ?? doc.doctorfullname)</span>
+                                            }
+                                        </div>
+                                        <div class="doc-status-item-details">
+                                            <div class="doc-status-item-name">@(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</div>
+                                            <div class="doc-status-item-spec">@GetDoctorSpecialtyName(doc.spcode)</div>
+                                        </div>
+                                        <div class="doc-status-item-tag @GetDoctorStatusCssClass(stKey)">
+                                            @GetDoctorStatusLabel(stKey)
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    }
+                </div>
+            </div>
+
+            @if (statusModalDcode > 0)
+            {
+                var activeDoc = doctors.FirstOrDefault(d => d.dcode == statusModalDcode);
+                var currentStatusObj = modalStatusMap.GetValueOrDefault(statusModalDcode);
+                var normalizedCurrent = NormalizeDoctorStatus(currentStatusObj?.status);
+
+                <!-- Selected Doctor Card Preview -->
+                <div class="doc-status-active-preview">
+                    <div class="doc-status-doctor-avatar">
+                        @if (!string.IsNullOrEmpty(activeDoc?.doctorimage))
+                        {
+                            <img src="@activeDoc.doctorimage" alt="@activeDoc.name" />
+                        }
+                        else
+                        {
+                            <span>@GetDocInitials(activeDoc?.name ?? activeDoc?.doctorfullname)</span>
+                        }
+                    </div>
+                    <div class="doc-status-preview-info">
+                        <h4>@(string.IsNullOrWhiteSpace(activeDoc?.name) ? activeDoc?.doctorfullname : activeDoc?.name)</h4>
+                        <span class="doc-status-spec-title">@GetDoctorSpecialtyName(activeDoc?.spcode)</span>
+                        <div class="doc-status-current-tag @GetDoctorStatusCssClass(normalizedCurrent)">
+                            <i class="@GetDoctorStatusIcon(normalizedCurrent)"></i>
+                            @GetDoctorStatusLabel(normalizedCurrent)
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Status Selection Options Grid -->
+                <div class="doc-status-form-group">
+                    <label class="doc-status-label">SELECT AVAILABILITY STATUS</label>
+                    <div class="doc-status-options-grid">
+                        <button type="button" class="doc-status-option-btn @(statusModalEditStatus == "IN_OPD" ? "active in-opd" : "")"
+                                @onclick='() => statusModalEditStatus = "IN_OPD"'>
+                            <i class="bi bi-door-open-fill"></i>
+                            <span>In OPD</span>
+                        </button>
+
+                        <button type="button" class="doc-status-option-btn @(statusModalEditStatus == "ON_DUTY" ? "active on-duty" : "")"
+                                @onclick='() => statusModalEditStatus = "ON_DUTY"'>
+                            <i class="bi bi-check-circle-fill"></i>
+                            <span>On Duty</span>
+                        </button>
+
+                        <button type="button" class="doc-status-option-btn @(statusModalEditStatus == "BREAK" ? "active break" : "")"
+                                @onclick='() => statusModalEditStatus = "BREAK"'>
+                            <i class="bi bi-cup-hot-fill"></i>
+                            <span>On Break</span>
+                        </button>
+
+                        <button type="button" class="doc-status-option-btn @(statusModalEditStatus == "BUSY" ? "active busy" : "")"
+                                @onclick='() => statusModalEditStatus = "BUSY"'>
+                            <i class="bi bi-heart-pulse-fill"></i>
+                            <span>Busy / Surgery</span>
+                        </button>
+
+                        <button type="button" class="doc-status-option-btn @(statusModalEditStatus == "ON_LEAVE" ? "active leave" : "")"
+                                @onclick='() => statusModalEditStatus = "ON_LEAVE"'>
+                            <i class="bi bi-airplane-fill"></i>
+                            <span>On Leave</span>
+                        </button>
+
+                        <button type="button" class="doc-status-option-btn @(statusModalEditStatus == "OFF_DUTY" ? "active off-duty" : "")"
+                                @onclick='() => statusModalEditStatus = "OFF_DUTY"'>
+                            <i class="bi bi-power"></i>
+                            <span>Off Duty</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Expected Return Time -->
+                <div class="doc-status-form-group">
+                    <label class="doc-status-label">EXPECTED RETURN TIME (OPTIONAL)</label>
+                    <div class="doc-status-chips">
+                        <button type="button" class="doc-status-chip-btn" @onclick='() => AddModalReturnMinutes(15)'>+15m</button>
+                        <button type="button" class="doc-status-chip-btn" @onclick='() => AddModalReturnMinutes(30)'>+30m</button>
+                        <button type="button" class="doc-status-chip-btn" @onclick='() => AddModalReturnMinutes(60)'>+1 hour</button>
+                        <button type="button" class="doc-status-chip-btn" @onclick='() => AddModalReturnMinutes(120)'>+2 hours</button>
+                        <button type="button" class="doc-status-chip-btn clear" @onclick='() => statusModalExpectedReturnTime = null'>Clear</button>
+                    </div>
+                    <input type="datetime-local" class="doc-status-input" @bind="statusModalExpectedReturnTime" />
+                </div>
+
+                <!-- Remarks / Location Notes -->
+                <div class="doc-status-form-group">
+                    <label class="doc-status-label">REMARKS / LOCATION NOTE</label>
+                    <input type="text" class="doc-status-input" placeholder="e.g. Available in OPD Room 3, Emergency OT..."
+                           @bind="statusModalRemarks" />
+                </div>
+            }
+            else
+            {
+                <div class="doc-status-empty-placeholder">
+                    <i class="bi bi-search"></i>
+                    <p>Search and select a doctor to view and update status details.</p>
+                </div>
+            }
+        </div>
+
+        <div class="doc-status-popup-footer">
+            <button type="button" class="doc-status-btn-cancel" @onclick="CloseDoctorStatusModal">Cancel</button>
+            @if (statusModalDcode > 0)
+            {
+                <button type="button" class="doc-status-btn-save" @onclick="SaveDoctorStatusFromModal" disabled="@isStatusModalSaving">
+                    @if (isStatusModalSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status"></span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-send-check-fill"></i>
+                        <span>Save & Publish Status</span>
+                    }
+                </button>
+            }
+        </div>
+    </div>
+}
+
+<!-- Floating Quick Access Button for Doctor Status Popup -->
+<div class="doctor-status-fab-container">
+    <button type="button" class="doctor-status-fab" @onclick="OpenDoctorStatusModal" title="Quick Access: Update Doctor Availability Status">
+        <div class="fab-icon-pulse">
+            <i class="bi bi-person-badge-fill"></i>
+        </div>
+        <span class="fab-label">Doctor Status</span>
+    </button>
+</div>
 
 @code {
     private string TenantCode = "";
@@ -669,5 +886,223 @@
         {
             isVipSaving = false;
         }
+    }
+
+    // Doctor Status Modal State Fields & Methods
+    private bool showDoctorStatusModal = false;
+    private bool isStatusModalSaving = false;
+    private long statusModalDcode = 0;
+    private string statusDocSearchQuery = string.Empty;
+    private bool isStatusDocDropdownOpen = false;
+    private string statusModalEditStatus = "IN_OPD";
+    private string? statusModalRemarks = string.Empty;
+    private DateTime? statusModalExpectedReturnTime = null;
+    private Dictionary<long, DoctorCurrentStatusModel> modalStatusMap = new();
+    private Dictionary<int, string> doctorSpecialtiesMap = new();
+
+    private async Task OpenDoctorStatusModal()
+    {
+        showDoctorStatusModal = true;
+        try
+        {
+            var specs = await SpecialtyService.GetDoctorSpecialtiesAsync();
+            doctorSpecialtiesMap = specs.ToDictionary(s => s.spcode, s => s.name ?? "General");
+
+            var statuses = await StatusService.GetAllStatusesAsync();
+            modalStatusMap = statuses.GroupBy(s => s.dcode).ToDictionary(
+                g => g.Key,
+                g => g.OrderByDescending(s => s.updated_at != default ? s.updated_at : s.created_at).First()
+            );
+
+            if (selectedDoctorDcode.HasValue && selectedDoctorDcode.Value > 0)
+            {
+                SelectDoctorForStatusModal(selectedDoctorDcode.Value);
+            }
+            else if (doctors.Any())
+            {
+                SelectDoctorForStatusModal(doctors.First().dcode);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DoctorStatusModal] Init error: {ex.Message}");
+        }
+    }
+
+    private void CloseDoctorStatusModal()
+    {
+        showDoctorStatusModal = false;
+        isStatusDocDropdownOpen = false;
+    }
+
+    private void OnStatusDocSearchInput(ChangeEventArgs e)
+    {
+        statusDocSearchQuery = e.Value?.ToString() ?? string.Empty;
+        isStatusDocDropdownOpen = true;
+    }
+
+    private async Task OnStatusDocSearchBlur()
+    {
+        await Task.Delay(200);
+        isStatusDocDropdownOpen = false;
+    }
+
+    private List<DoctorMasterModel> GetMatchingDoctorsForStatusModal()
+    {
+        if (string.IsNullOrWhiteSpace(statusDocSearchQuery)) return doctors;
+        var q = statusDocSearchQuery.Trim().ToLower();
+        return doctors.Where(d =>
+            (d.name != null && d.name.ToLower().Contains(q)) ||
+            (d.doctorfullname != null && d.doctorfullname.ToLower().Contains(q)) ||
+            (GetDoctorSpecialtyName(d.spcode).ToLower().Contains(q))
+        ).ToList();
+    }
+
+    private void SelectDoctorForStatusModal(long dcode)
+    {
+        statusModalDcode = dcode;
+        var doc = doctors.FirstOrDefault(d => d.dcode == dcode);
+        if (doc != null)
+        {
+            var name = string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name;
+            statusDocSearchQuery = $"{name} ({GetDoctorSpecialtyName(doc.spcode)})";
+        }
+        isStatusDocDropdownOpen = false;
+
+        if (modalStatusMap.TryGetValue(dcode, out var existingStatus))
+        {
+            statusModalEditStatus = NormalizeDoctorStatus(existingStatus.status);
+            statusModalRemarks = existingStatus.remarks ?? "";
+            statusModalExpectedReturnTime = existingStatus.expected_return_time;
+        }
+        else
+        {
+            statusModalEditStatus = "IN_OPD";
+            statusModalRemarks = "";
+            statusModalExpectedReturnTime = null;
+        }
+    }
+
+    private void ClearStatusModalDoctor()
+    {
+        statusModalDcode = 0;
+        statusDocSearchQuery = string.Empty;
+        isStatusDocDropdownOpen = true;
+    }
+
+    private void AddModalReturnMinutes(int minutes)
+    {
+        var baseTime = statusModalExpectedReturnTime ?? DateTime.Now;
+        if (baseTime < DateTime.Now) baseTime = DateTime.Now;
+        statusModalExpectedReturnTime = baseTime.AddMinutes(minutes);
+    }
+
+    private async Task SaveDoctorStatusFromModal()
+    {
+        if (statusModalDcode <= 0)
+        {
+            ToastService.ShowWarning("Please select a doctor.");
+            return;
+        }
+
+        isStatusModalSaving = true;
+        try
+        {
+            var normStatus = NormalizeDoctorStatus(statusModalEditStatus);
+            var model = new DoctorCurrentStatusModel
+            {
+                dcode = statusModalDcode,
+                status = normStatus,
+                remarks = statusModalRemarks,
+                expected_return_time = statusModalExpectedReturnTime,
+                tenant_code = TenantCode,
+                updated_at = DateTime.Now
+            };
+
+            modalStatusMap[statusModalDcode] = model;
+
+            var success = await StatusService.SetStatusAsync(model);
+            if (success)
+            {
+                var docObj = doctors.FirstOrDefault(d => d.dcode == statusModalDcode);
+                var docName = string.IsNullOrWhiteSpace(docObj?.name) ? docObj?.doctorfullname ?? "Doctor" : docObj.name;
+                ToastService.ShowSuccess($"Status set to '{GetDoctorStatusLabel(normStatus)}' for {docName}");
+                showDoctorStatusModal = false;
+            }
+            else
+            {
+                ToastService.ShowError("Failed to update status on server.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error updating status: {ex.Message}");
+        }
+        finally
+        {
+            isStatusModalSaving = false;
+        }
+    }
+
+    private string NormalizeDoctorStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return "OFF_DUTY";
+        var s = status.Trim().ToUpperInvariant().Replace(" ", "_").Replace("-", "_");
+
+        if (s.Contains("OPD")) return "IN_OPD";
+        if (s.Contains("BREAK")) return "BREAK";
+        if (s.Contains("BUSY") || s.Contains("SURGERY") || s.Contains("OT")) return "BUSY";
+        if (s.Contains("LEAVE")) return "ON_LEAVE";
+        if (s.Contains("DUTY") && !s.Contains("OFF")) return "ON_DUTY";
+        if (s.Contains("OFF")) return "OFF_DUTY";
+
+        return s;
+    }
+
+    private string GetDoctorSpecialtyName(int? spcode)
+    {
+        if (!spcode.HasValue) return "General";
+        return doctorSpecialtiesMap.TryGetValue(spcode.Value, out var name) ? name : "General";
+    }
+
+    private string GetDoctorStatusLabel(string? status) => NormalizeDoctorStatus(status) switch
+    {
+        "IN_OPD" => "In OPD",
+        "ON_DUTY" => "On Duty",
+        "BREAK" => "On Break",
+        "BUSY" => "Busy / Surgery",
+        "ON_LEAVE" => "On Leave",
+        "OFF_DUTY" => "Off Duty",
+        _ => "Off Duty"
+    };
+
+    private string GetDoctorStatusCssClass(string? status) => NormalizeDoctorStatus(status) switch
+    {
+        "IN_OPD" => "badge-in-opd",
+        "ON_DUTY" => "badge-on-duty",
+        "BREAK" => "badge-break",
+        "BUSY" => "badge-busy",
+        "ON_LEAVE" => "badge-leave",
+        "OFF_DUTY" => "badge-off-duty",
+        _ => "badge-off-duty"
+    };
+
+    private string GetDoctorStatusIcon(string? status) => NormalizeDoctorStatus(status) switch
+    {
+        "IN_OPD" => "bi bi-door-open-fill",
+        "ON_DUTY" => "bi bi-check-circle-fill",
+        "BREAK" => "bi bi-cup-hot-fill",
+        "BUSY" => "bi bi-heart-pulse-fill",
+        "ON_LEAVE" => "bi bi-airplane-fill",
+        "OFF_DUTY" => "bi bi-power",
+        _ => "bi bi-power"
+    };
+
+    private string GetDocInitials(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "DR";
+        var parts = name.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
+        return $"{parts[0][0]}{parts[1][0]}".ToUpper();
     }
 }

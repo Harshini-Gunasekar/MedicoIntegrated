@@ -112,6 +112,7 @@ builder.Services.AddScoped<Booking.Services.FloorMasterService>();
 builder.Services.AddScoped<Booking.Services.OGScreenService>();
 builder.Services.AddScoped<Booking.Services.DashboardService>();
 builder.Services.AddScoped<Booking.Services.AppointmentPreBookingService>();
+builder.Services.AddScoped<Booking.Services.DoctorCurrentStatusService>();
 builder.Services.AddScoped<LabCare.Services.TestService>(sp =>
 {
     var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi");

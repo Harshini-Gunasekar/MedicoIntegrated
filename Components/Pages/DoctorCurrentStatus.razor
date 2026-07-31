@@ -1,0 +1,931 @@
+@page "/doctor-status"
+@page "/booking/doctor-status"
+@using Booking.Models
+@using Booking.Services
+@using Booking.Helpers
+@using SharedComponents.Rcl.Services
+
+@inject DoctorCurrentStatusService StatusService
+@inject DoctorService DoctorService
+@inject DoctorSpecialtyMasterService SpecialtyService
+@inject ToastService ToastService
+@inject NavigationManager NavigationManager
+@inject TenantSessionState TenantState
+
+<PageTitle>Doctor Availability & Current Status</PageTitle>
+
+<div class="animated-background">
+    <div class="floating-blob blob-1"></div>
+    <div class="floating-blob blob-2"></div>
+</div>
+
+<div class="status-dashboard-container">
+    <DnaLoader IsLoading="@loading" Message="Fetching doctor availability..." />
+
+    <!-- Top Header -->
+    <div class="dashboard-header">
+        <div class="header-left">
+            <div class="header-badge">
+                <i class="bi bi-person-badge-fill"></i> Clinical Availability
+            </div>
+            <h1>Doctor Current Status</h1>
+            <p>Real-time doctor presence tracking, OPD availability, break status, surgery/busy schedules, and leave tracking.</p>
+        </div>
+        <div class="header-actions">
+            <button class="btn-action-outline" @onclick="RefreshDataAsync" disabled="@loading">
+                <i class="bi bi-arrow-clockwise @(loading ? "spin-icon" : "")"></i> Refresh Status
+            </button>
+        </div>
+    </div>
+
+    @if (!IsUserAuthorized())
+    {
+        <!-- Access Restricted State -->
+        <div class="restricted-card">
+            <div class="restricted-icon">
+                <i class="bi bi-shield-lock-fill"></i>
+            </div>
+            <h2>Access Restricted</h2>
+            <p>This page is accessible exclusively to Receptionists and Doctors.</p>
+            <button class="btn-primary-action" @onclick='() => NavigationManager.NavigateTo("/home")'>
+                <i class="bi bi-house-door-fill"></i> Return to Overview
+            </button>
+        </div>
+    }
+    else
+    {
+        <!-- Stats KPI Grid -->
+        <div class="stats-grid">
+            <div class="stat-card blue">
+                <div class="stat-icon-wrapper">
+                    <i class="bi bi-people-fill"></i>
+                </div>
+                <div class="stat-details">
+                    <span class="stat-number">@allDoctors.Count</span>
+                    <span class="stat-label">Total Doctors</span>
+                </div>
+            </div>
+
+            <div class="stat-card green">
+                <div class="stat-icon-wrapper">
+                    <i class="bi bi-check-circle-fill"></i>
+                </div>
+                <div class="stat-details">
+                    <span class="stat-number">@GetCountByStatus("ON_DUTY")</span>
+                    <span class="stat-label">On Duty</span>
+                </div>
+            </div>
+
+            <div class="stat-card cyan">
+                <div class="stat-icon-wrapper">
+                    <i class="bi bi-door-open-fill"></i>
+                </div>
+                <div class="stat-details">
+                    <span class="stat-number">@GetCountByStatus("IN_OPD")</span>
+                    <span class="stat-label">In OPD / Consulting</span>
+                </div>
+            </div>
+
+            <div class="stat-card amber">
+                <div class="stat-icon-wrapper">
+                    <i class="bi bi-cup-hot-fill"></i>
+                </div>
+                <div class="stat-details">
+                    <span class="stat-number">@GetCountByStatus("BREAK")</span>
+                    <span class="stat-label">On Break</span>
+                </div>
+            </div>
+
+            <div class="stat-card rose">
+                <div class="stat-icon-wrapper">
+                    <i class="bi bi-heart-pulse-fill"></i>
+                </div>
+                <div class="stat-details">
+                    <span class="stat-number">@GetCountByStatus("BUSY")</span>
+                    <span class="stat-label">Busy / Surgery</span>
+                </div>
+            </div>
+
+            <div class="stat-card purple">
+                <div class="stat-icon-wrapper">
+                    <i class="bi bi-airplane-fill"></i>
+                </div>
+                <div class="stat-details">
+                    <span class="stat-number">@GetCountByStatus("ON_LEAVE")</span>
+                    <span class="stat-label">On Leave</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Content Area: Status Updater Panel + Doctor Board -->
+        <div class="dashboard-content-layout">
+            <!-- Left: Update Status Panel -->
+            <div class="panel-card update-panel">
+                <div class="panel-header">
+                    <h3><i class="bi bi-pencil-square"></i> Update Doctor Status</h3>
+                    <span class="panel-subtitle">Change live presence, return time & remarks</span>
+                </div>
+
+                <div class="panel-body">
+                    <!-- Searchable Doctor Selection Box -->
+                    <div class="form-group">
+                        <label class="form-label">Search / Select Doctor <span class="required">*</span></label>
+                        <div class="searchable-select-wrapper">
+                            <i class="bi bi-search search-select-icon"></i>
+                            <input type="text"
+                                   class="search-select-input @(isDoctorDropdownOpen ? "dropdown-open" : "")"
+                                   placeholder="Type doctor name or specialty to search..."
+                                   value="@doctorSearchQuery"
+                                   @oninput="OnDoctorSearchInput"
+                                   @onfocus="OpenDoctorDropdown"
+                                   @onblur="OnDoctorSearchBlur" />
+                            
+                            @if (selectedDcode > 0 || !string.IsNullOrWhiteSpace(doctorSearchQuery))
+                            {
+                                <button type="button" class="btn-clear-select" @onclick="ClearSelectedDoctor" title="Clear selection">
+                                    <i class="bi bi-x-circle-fill"></i>
+                                </button>
+                            }
+                            else
+                            {
+                                <i class="bi bi-chevron-down dropdown-arrow-icon"></i>
+                            }
+
+                            @if (isDoctorDropdownOpen)
+                            {
+                                <div class="search-select-dropdown" @mousedown:preventDefault>
+                                    @{
+                                        var matchingDoctors = GetMatchingDoctorsForSelect();
+                                    }
+                                    @if (!matchingDoctors.Any())
+                                    {
+                                        <div class="dropdown-empty-state">
+                                            <i class="bi bi-person-x"></i> No doctor matching "@doctorSearchQuery"
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var doc in matchingDoctors)
+                                        {
+                                            var statusObj = statusMap.GetValueOrDefault(doc.dcode);
+                                            var statusKey = NormalizeStatus(statusObj?.status);
+                                            var isCurrent = doc.dcode == selectedDcode;
+
+                                            <div class="dropdown-item @(isCurrent ? "selected" : "")"
+                                                 @onclick="() => SelectDoctorFromSearch(doc.dcode)">
+                                                <div class="item-avatar">
+                                                    @if (!string.IsNullOrEmpty(doc.doctorimage))
+                                                    {
+                                                        <img src="@doc.doctorimage" alt="@doc.name" />
+                                                    }
+                                                    else
+                                                    {
+                                                        <span>@GetInitials(doc.name)</span>
+                                                    }
+                                                </div>
+                                                <div class="item-details">
+                                                    <div class="item-name">@doc.name</div>
+                                                    <div class="item-spec">@GetSpecialtyName(doc.spcode)</div>
+                                                </div>
+                                                <div class="item-status-tag @GetStatusCssClass(statusKey)">
+                                                    @GetStatusLabel(statusKey)
+                                                </div>
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    @if (selectedDcode > 0)
+                    {
+                        var activeDoc = allDoctors.FirstOrDefault(d => d.dcode == selectedDcode);
+                        var currentStatusObj = statusMap.GetValueOrDefault(selectedDcode);
+                        var normalizedCurrent = NormalizeStatus(currentStatusObj?.status);
+
+                        <div class="active-doctor-preview">
+                            <div class="doctor-avatar">
+                                @if (!string.IsNullOrEmpty(activeDoc?.doctorimage))
+                                {
+                                    <img src="@activeDoc.doctorimage" alt="@activeDoc.name" />
+                                }
+                                else
+                                {
+                                    <span>@GetInitials(activeDoc?.name)</span>
+                                }
+                            </div>
+                            <div class="doctor-preview-info">
+                                <h4>@activeDoc?.name</h4>
+                                <span class="doc-specialty">@GetSpecialtyName(activeDoc?.spcode)</span>
+                                <div class="current-status-tag @GetStatusCssClass(normalizedCurrent)">
+                                    <i class="@GetStatusIcon(normalizedCurrent)"></i>
+                                    @GetStatusLabel(normalizedCurrent)
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Status Selection Options -->
+                        <div class="form-group">
+                            <label class="form-label">Select Availability Status</label>
+                            <div class="status-options-grid">
+                                <button type="button" class="status-option-btn @(editStatus == "IN_OPD" ? "active in-opd" : "")"
+                                        @onclick='() => SetStatusValue("IN_OPD")'>
+                                    <i class="bi bi-door-open-fill"></i>
+                                    <span>In OPD</span>
+                                </button>
+
+                                <button type="button" class="status-option-btn @(editStatus == "ON_DUTY" ? "active on-duty" : "")"
+                                        @onclick='() => SetStatusValue("ON_DUTY")'>
+                                    <i class="bi bi-check-circle-fill"></i>
+                                    <span>On Duty</span>
+                                </button>
+
+                                <button type="button" class="status-option-btn @(editStatus == "BREAK" ? "active break" : "")"
+                                        @onclick='() => SetStatusValue("BREAK")'>
+                                    <i class="bi bi-cup-hot-fill"></i>
+                                    <span>On Break</span>
+                                </button>
+
+                                <button type="button" class="status-option-btn @(editStatus == "BUSY" ? "active busy" : "")"
+                                        @onclick='() => SetStatusValue("BUSY")'>
+                                    <i class="bi bi-heart-pulse-fill"></i>
+                                    <span>Busy / Surgery</span>
+                                </button>
+
+                                <button type="button" class="status-option-btn @(editStatus == "ON_LEAVE" ? "active leave" : "")"
+                                        @onclick='() => SetStatusValue("ON_LEAVE")'>
+                                    <i class="bi bi-airplane-fill"></i>
+                                    <span>On Leave</span>
+                                </button>
+
+                                <button type="button" class="status-option-btn @(editStatus == "OFF_DUTY" ? "active off-duty" : "")"
+                                        @onclick='() => SetStatusValue("OFF_DUTY")'>
+                                    <i class="bi bi-power"></i>
+                                    <span>Off Duty</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <!-- Expected Return Time -->
+                        <div class="form-group">
+                            <label class="form-label">Expected Return Time (Optional)</label>
+                            <div class="quick-chips">
+                                <button type="button" class="chip-btn" @onclick='() => AddReturnMinutes(15)'>+15m</button>
+                                <button type="button" class="chip-btn" @onclick='() => AddReturnMinutes(30)'>+30m</button>
+                                <button type="button" class="chip-btn" @onclick='() => AddReturnMinutes(60)'>+1 hour</button>
+                                <button type="button" class="chip-btn" @onclick='() => AddReturnMinutes(120)'>+2 hours</button>
+                                <button type="button" class="chip-btn clear" @onclick='() => editExpectedReturnTime = null'>Clear</button>
+                            </div>
+                            <input type="datetime-local" class="custom-input" @bind="editExpectedReturnTime" />
+                        </div>
+
+                        <!-- Remarks / Location Notes -->
+                        <div class="form-group">
+                            <label class="form-label">Remarks / Location Note</label>
+                            <input type="text" class="custom-input" placeholder="e.g. Available in OPD Room 3, Emergency OT, Lunch break..."
+                                   @bind="editRemarks" />
+                        </div>
+
+                        <!-- Submit Button -->
+                        <button class="btn-submit-status" @onclick="SubmitStatusUpdateAsync" disabled="@saving">
+                            @if (saving)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status"></span>
+                                <span>Updating Status...</span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-send-check-fill"></i>
+                                <span>Save & Publish Status</span>
+                            }
+                        </button>
+                    }
+                    else
+                    {
+                        <div class="empty-selection-placeholder">
+                            <i class="bi bi-search"></i>
+                            <p>Use the search box above to find and select a doctor to view and update their status details.</p>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <!-- Right: Doctor Availability Board -->
+            <div class="panel-card board-panel">
+                <div class="board-top-bar">
+                    <div class="search-box">
+                        <i class="bi bi-search"></i>
+                        <input type="text" placeholder="Search doctor, specialty, remarks..." @bind="searchQuery" @bind:event="oninput" />
+                    </div>
+
+                    <div class="view-toggle">
+                        <button type="button" class="toggle-btn @(viewMode == "GRID" ? "active" : "")" @onclick='() => viewMode = "GRID"' title="Grid View">
+                            <i class="bi bi-grid-fill"></i>
+                        </button>
+                        <button type="button" class="toggle-btn @(viewMode == "TABLE" ? "active" : "")" @onclick='() => viewMode = "TABLE"' title="Table View">
+                            <i class="bi bi-list-task"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Filter Tabs -->
+                <div class="filter-tabs">
+                    <button class="tab-btn @(selectedTab == "ALL" ? "active" : "")" @onclick='() => selectedTab = "ALL"'>
+                        All Doctors (@allDoctors.Count)
+                    </button>
+                    <button class="tab-btn @(selectedTab == "IN_OPD" ? "active" : "")" @onclick='() => selectedTab = "IN_OPD"'>
+                        In OPD (@GetCountByStatus("IN_OPD"))
+                    </button>
+                    <button class="tab-btn @(selectedTab == "ON_DUTY" ? "active" : "")" @onclick='() => selectedTab = "ON_DUTY"'>
+                        On Duty (@GetCountByStatus("ON_DUTY"))
+                    </button>
+                    <button class="tab-btn @(selectedTab == "BREAK" ? "active" : "")" @onclick='() => selectedTab = "BREAK"'>
+                        On Break (@GetCountByStatus("BREAK"))
+                    </button>
+                    <button class="tab-btn @(selectedTab == "BUSY" ? "active" : "")" @onclick='() => selectedTab = "BUSY"'>
+                        Busy / Surgery (@GetCountByStatus("BUSY"))
+                    </button>
+                    <button class="tab-btn @(selectedTab == "ON_LEAVE" ? "active" : "")" @onclick='() => selectedTab = "ON_LEAVE"'>
+                        On Leave (@GetCountByStatus("ON_LEAVE"))
+                    </button>
+                    <button class="tab-btn @(selectedTab == "OFF_DUTY" ? "active" : "")" @onclick='() => selectedTab = "OFF_DUTY"'>
+                        Off Duty (@GetCountByStatus("OFF_DUTY"))
+                    </button>
+                </div>
+
+                <!-- Doctor Cards Grid / Table -->
+                @{
+                    var displayedDocs = GetFilteredDoctors();
+                }
+
+                @if (!displayedDocs.Any())
+                {
+                    <div class="no-records-card">
+                        <i class="bi bi-journal-x"></i>
+                        <h4>No Doctors Found</h4>
+                        <p>No doctor matching the current filter criteria was found.</p>
+                    </div>
+                }
+                else if (viewMode == "GRID")
+                {
+                    <div class="doctor-cards-grid">
+                        @foreach (var doc in displayedDocs)
+                        {
+                            var statusObj = statusMap.GetValueOrDefault(doc.dcode);
+                            var currentStatus = NormalizeStatus(statusObj?.status);
+                            var isSelected = doc.dcode == selectedDcode;
+
+                            <div class="doctor-card @(isSelected ? "selected-card" : "") @GetStatusBorderClass(currentStatus)">
+                                <div class="card-top">
+                                    <div class="card-avatar">
+                                        @if (!string.IsNullOrEmpty(doc.doctorimage))
+                                        {
+                                            <img src="@doc.doctorimage" alt="@doc.name" />
+                                        }
+                                        else
+                                        {
+                                            <span>@GetInitials(doc.name)</span>
+                                        }
+                                    </div>
+                                    <div class="card-title-group">
+                                        <h4>@doc.name</h4>
+                                        <span class="card-specialty">@GetSpecialtyName(doc.spcode)</span>
+                                    </div>
+                                    <div class="card-status-pill @GetStatusCssClass(currentStatus)">
+                                        <i class="@GetStatusIcon(currentStatus)"></i>
+                                        @GetStatusLabel(currentStatus)
+                                    </div>
+                                </div>
+
+                                <div class="card-body">
+                                    @if (!string.IsNullOrWhiteSpace(statusObj?.remarks))
+                                    {
+                                        <div class="info-row remarks">
+                                            <i class="bi bi-chat-left-text-fill"></i>
+                                            <span>@statusObj.remarks</span>
+                                        </div>
+                                    }
+
+                                    @if (statusObj?.expected_return_time != null && (currentStatus == "BREAK" || currentStatus == "BUSY" || currentStatus == "OFF_DUTY" || currentStatus == "ON_LEAVE"))
+                                    {
+                                        <div class="info-row return-time">
+                                            <i class="bi bi-clock-history"></i>
+                                            <span>Expected: <strong>@statusObj.expected_return_time.Value.ToString("hh:mm tt")</strong> (@GetFormattedTimeRemaining(statusObj.expected_return_time.Value))</span>
+                                        </div>
+                                    }
+
+                                    @if (statusObj != null && statusObj.updated_at != default)
+                                    {
+                                        <div class="info-row updated">
+                                            <i class="bi bi-arrow-repeat"></i>
+                                            <span>Updated @GetTimeAgo(statusObj.updated_at)</span>
+                                        </div>
+                                    }
+                                </div>
+
+                                <!-- Quick Change Status Dropdown & Action Buttons on Card -->
+                                <div class="card-quick-actions-bar">
+                                    <div class="quick-status-selector">
+                                        <label class="quick-label">Quick Status:</label>
+                                        <select class="quick-status-dropdown @GetStatusCssClass(currentStatus)"
+                                                value="@currentStatus"
+                                                @onchange='(e) => QuickSetStatusAsync(doc.dcode, e.Value?.ToString() ?? "OFF_DUTY")'>
+                                            <option value="IN_OPD">🚪 In OPD</option>
+                                            <option value="ON_DUTY">✅ On Duty</option>
+                                            <option value="BREAK">☕ On Break</option>
+                                            <option value="BUSY">💉 Busy / Surgery</option>
+                                            <option value="ON_LEAVE">✈️ On Leave</option>
+                                            <option value="OFF_DUTY">🔌 Off Duty</option>
+                                        </select>
+                                    </div>
+                                    <button type="button" class="btn-card-edit" @onclick="() => SelectForEdit(doc.dcode)" title="Edit Remarks & Return Time">
+                                        <i class="bi bi-pencil-square"></i> Edit
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="custom-status-table">
+                            <thead>
+                                <tr>
+                                    <th>Doctor Name</th>
+                                    <th>Specialty</th>
+                                    <th>Current Status</th>
+                                    <th>Change Status</th>
+                                    <th>Remarks</th>
+                                    <th>Expected Return</th>
+                                    <th>Last Updated</th>
+                                    <th class="text-end">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var doc in displayedDocs)
+                                {
+                                    var statusObj = statusMap.GetValueOrDefault(doc.dcode);
+                                    var currentStatus = NormalizeStatus(statusObj?.status);
+
+                                    <tr class="@(doc.dcode == selectedDcode ? "active-row" : "")">
+                                        <td>
+                                            <div class="table-doctor-info">
+                                                <div class="mini-avatar">
+                                                    @if (!string.IsNullOrEmpty(doc.doctorimage))
+                                                    {
+                                                        <img src="@doc.doctorimage" alt="@doc.name" />
+                                                    }
+                                                    else
+                                                    {
+                                                        <span>@GetInitials(doc.name)</span>
+                                                    }
+                                                </div>
+                                                <span class="doc-name">@doc.name</span>
+                                            </div>
+                                        </td>
+                                        <td><span class="spec-badge">@GetSpecialtyName(doc.spcode)</span></td>
+                                        <td>
+                                            <span class="card-status-pill @GetStatusCssClass(currentStatus)">
+                                                <i class="@GetStatusIcon(currentStatus)"></i>
+                                                @GetStatusLabel(currentStatus)
+                                            </span>
+                                        </td>
+                                        <td>
+                                            <select class="table-status-dropdown @GetStatusCssClass(currentStatus)"
+                                                    value="@currentStatus"
+                                                    @onchange='(e) => QuickSetStatusAsync(doc.dcode, e.Value?.ToString() ?? "OFF_DUTY")'>
+                                                <option value="IN_OPD">In OPD</option>
+                                                <option value="ON_DUTY">On Duty</option>
+                                                <option value="BREAK">On Break</option>
+                                                <option value="BUSY">Busy / Surgery</option>
+                                                <option value="ON_LEAVE">On Leave</option>
+                                                <option value="OFF_DUTY">Off Duty</option>
+                                            </select>
+                                        </td>
+                                        <td><span class="remarks-text">@(statusObj?.remarks ?? "--")</span></td>
+                                        <td>
+                                            @if (statusObj?.expected_return_time != null)
+                                            {
+                                                <span class="return-text"><i class="bi bi-clock"></i> @statusObj.expected_return_time.Value.ToString("hh:mm tt, dd MMM")</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-muted">--</span>
+                                            }
+                                        </td>
+                                        <td><span class="text-muted font-12">@(statusObj != null && statusObj.updated_at != default ? GetTimeAgo(statusObj.updated_at) : "--")</span></td>
+                                        <td class="text-end">
+                                            <button class="btn-sm-action edit" @onclick="() => SelectForEdit(doc.dcode)" title="Edit Details">
+                                                <i class="bi bi-pencil-square"></i> Edit
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private bool loading = true;
+    private bool saving = false;
+
+    private List<DoctorMasterModel> allDoctors = new();
+    private Dictionary<int, string> specialtiesMap = new();
+    private Dictionary<long, DoctorCurrentStatusModel> statusMap = new();
+
+    private long selectedDcode = 0;
+    private string doctorSearchQuery = string.Empty;
+    private bool isDoctorDropdownOpen = false;
+
+    private string editStatus = "IN_OPD";
+    private string? editRemarks = string.Empty;
+    private DateTime? editExpectedReturnTime = null;
+
+    private string searchQuery = string.Empty;
+    private string selectedTab = "ALL";
+    private string viewMode = "GRID";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private bool IsUserAuthorized()
+    {
+        if (!TenantState.IsAuthenticated) return true;
+        var user = TenantState.UserData;
+        if (user == null) return true;
+
+        var role = user.Role ?? "";
+        if (string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(role, "Doctor", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(role, "Reception", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(role, "Receptionist", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return true;
+    }
+
+    private async Task LoadDataAsync()
+    {
+        loading = true;
+        try
+        {
+            var docsTask = DoctorService.GetDoctorsAsync();
+            var specsTask = SpecialtyService.GetDoctorSpecialtiesAsync();
+            var statusesTask = StatusService.GetAllStatusesAsync();
+
+            await Task.WhenAll(docsTask, specsTask, statusesTask);
+
+            allDoctors = docsTask.Result.Where(d => !d.deleted).OrderBy(d => d.name).ToList();
+            specialtiesMap = specsTask.Result.ToDictionary(s => s.spcode, s => s.name ?? "General");
+
+            var statusList = statusesTask.Result ?? new List<DoctorCurrentStatusModel>();
+            
+            statusMap = statusList
+                .GroupBy(s => s.dcode)
+                .ToDictionary(
+                    g => g.Key, 
+                    g => g.OrderByDescending(s => s.updated_at != default ? s.updated_at : s.created_at)
+                          .ThenByDescending(s => s.status_id)
+                          .First()
+                );
+
+            if (selectedDcode == 0 && allDoctors.Any())
+            {
+                var firstDoc = allDoctors.First();
+                selectedDcode = firstDoc.dcode;
+                doctorSearchQuery = $"{firstDoc.name} ({GetSpecialtyName(firstDoc.spcode)})";
+                OnDoctorSelected();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DoctorCurrentStatus] Load error: {ex.Message}");
+            ToastService.ShowError($"Failed to load doctor availability: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task RefreshDataAsync()
+    {
+        await LoadDataAsync();
+        ToastService.ShowSuccess("Doctor availability refreshed.");
+    }
+
+    private void OpenDoctorDropdown()
+    {
+        isDoctorDropdownOpen = true;
+    }
+
+    private async Task OnDoctorSearchBlur()
+    {
+        await Task.Delay(200);
+        isDoctorDropdownOpen = false;
+    }
+
+    private void OnDoctorSearchInput(ChangeEventArgs e)
+    {
+        doctorSearchQuery = e.Value?.ToString() ?? string.Empty;
+        isDoctorDropdownOpen = true;
+    }
+
+    private List<DoctorMasterModel> GetMatchingDoctorsForSelect()
+    {
+        if (string.IsNullOrWhiteSpace(doctorSearchQuery))
+        {
+            return allDoctors;
+        }
+
+        var q = doctorSearchQuery.Trim().ToLower();
+        return allDoctors.Where(d =>
+            (d.name != null && d.name.ToLower().Contains(q)) ||
+            (GetSpecialtyName(d.spcode).ToLower().Contains(q))
+        ).ToList();
+    }
+
+    private void SelectDoctorFromSearch(long dcode)
+    {
+        selectedDcode = dcode;
+        var doc = allDoctors.FirstOrDefault(d => d.dcode == dcode);
+        if (doc != null)
+        {
+            doctorSearchQuery = $"{doc.name} ({GetSpecialtyName(doc.spcode)})";
+        }
+        isDoctorDropdownOpen = false;
+        OnDoctorSelected();
+    }
+
+    private void ClearSelectedDoctor()
+    {
+        selectedDcode = 0;
+        doctorSearchQuery = string.Empty;
+        isDoctorDropdownOpen = true;
+    }
+
+    private void OnDoctorSelected()
+    {
+        if (selectedDcode <= 0) return;
+
+        if (statusMap.TryGetValue(selectedDcode, out var existingStatus))
+        {
+            editStatus = NormalizeStatus(existingStatus.status);
+            editRemarks = existingStatus.remarks ?? "";
+            editExpectedReturnTime = existingStatus.expected_return_time;
+        }
+        else
+        {
+            editStatus = "IN_OPD";
+            editRemarks = "";
+            editExpectedReturnTime = null;
+        }
+    }
+
+    private void SelectForEdit(long dcode)
+    {
+        selectedDcode = dcode;
+        var doc = allDoctors.FirstOrDefault(d => d.dcode == dcode);
+        if (doc != null)
+        {
+            doctorSearchQuery = $"{doc.name} ({GetSpecialtyName(doc.spcode)})";
+        }
+        OnDoctorSelected();
+    }
+
+    private void SetStatusValue(string status)
+    {
+        editStatus = NormalizeStatus(status);
+    }
+
+    private void AddReturnMinutes(int minutes)
+    {
+        var baseTime = editExpectedReturnTime ?? DateTime.Now;
+        if (baseTime < DateTime.Now) baseTime = DateTime.Now;
+        editExpectedReturnTime = baseTime.AddMinutes(minutes);
+    }
+
+    private async Task SubmitStatusUpdateAsync()
+    {
+        if (selectedDcode <= 0)
+        {
+            ToastService.ShowWarning("Please select a doctor to update status.");
+            return;
+        }
+
+        saving = true;
+        try
+        {
+            var normStatus = NormalizeStatus(editStatus);
+            var model = new DoctorCurrentStatusModel
+            {
+                dcode = selectedDcode,
+                status = normStatus,
+                remarks = editRemarks,
+                expected_return_time = editExpectedReturnTime,
+                tenant_code = TenantState.TenantCode,
+                updated_by = TenantState.UserCode > 0 ? TenantState.UserCode : 1,
+                updated_at = DateTime.Now
+            };
+
+            statusMap[selectedDcode] = model;
+            StateHasChanged();
+
+            var success = await StatusService.SetStatusAsync(model);
+            if (success)
+            {
+                var docName = allDoctors.FirstOrDefault(d => d.dcode == selectedDcode)?.name ?? "Doctor";
+                ToastService.ShowSuccess($"Status set to '{GetStatusLabel(normStatus)}' for {docName}");
+            }
+            else
+            {
+                ToastService.ShowError("Failed to update status on server.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error updating status: {ex.Message}");
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private async Task QuickSetStatusAsync(long dcode, string status)
+    {
+        try
+        {
+            var normStatus = NormalizeStatus(status);
+            var existing = statusMap.GetValueOrDefault(dcode) ?? new DoctorCurrentStatusModel { dcode = dcode };
+            existing.dcode = dcode;
+            existing.status = normStatus;
+            existing.updated_at = DateTime.Now;
+            existing.updated_by = TenantState.UserCode > 0 ? TenantState.UserCode : 1;
+
+            statusMap[dcode] = existing;
+            if (selectedDcode == dcode)
+            {
+                editStatus = normStatus;
+            }
+
+            StateHasChanged();
+
+            var success = await StatusService.SetStatusAsync(existing);
+            if (success)
+            {
+                var docName = allDoctors.FirstOrDefault(d => d.dcode == dcode)?.name ?? "Doctor";
+                ToastService.ShowSuccess($"Status set to '{GetStatusLabel(normStatus)}' for {docName}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed quick update: {ex.Message}");
+        }
+    }
+
+    private List<DoctorMasterModel> GetFilteredDoctors()
+    {
+        var query = allDoctors.AsEnumerable();
+
+        if (!string.IsNullOrWhiteSpace(searchQuery))
+        {
+            var q = searchQuery.Trim().ToLower();
+            query = query.Where(d =>
+                (d.name != null && d.name.ToLower().Contains(q)) ||
+                (GetSpecialtyName(d.spcode).ToLower().Contains(q)) ||
+                (statusMap.TryGetValue(d.dcode, out var s) && s.remarks != null && s.remarks.ToLower().Contains(q))
+            );
+        }
+
+        if (selectedTab != "ALL")
+        {
+            var normTab = NormalizeStatus(selectedTab);
+            if (normTab == "OFF_DUTY")
+            {
+                query = query.Where(d => !statusMap.ContainsKey(d.dcode) || NormalizeStatus(statusMap[d.dcode].status) == "OFF_DUTY");
+            }
+            else
+            {
+                query = query.Where(d => statusMap.TryGetValue(d.dcode, out var s) && NormalizeStatus(s.status) == normTab);
+            }
+        }
+
+        return query.ToList();
+    }
+
+    private int GetCountByStatus(string statusKey)
+    {
+        var normKey = NormalizeStatus(statusKey);
+        if (normKey == "OFF_DUTY")
+        {
+            int explicitOff = statusMap.Values.Count(s => NormalizeStatus(s.status) == "OFF_DUTY");
+            int unset = allDoctors.Count(d => !statusMap.ContainsKey(d.dcode));
+            return explicitOff + unset;
+        }
+
+        return statusMap.Values.Count(s => NormalizeStatus(s.status) == normKey);
+    }
+
+    private string NormalizeStatus(string? status)
+    {
+        if (string.IsNullOrWhiteSpace(status)) return "OFF_DUTY";
+        var s = status.Trim().ToUpperInvariant().Replace(" ", "_").Replace("-", "_");
+
+        if (s.Contains("OPD")) return "IN_OPD";
+        if (s.Contains("BREAK")) return "BREAK";
+        if (s.Contains("BUSY") || s.Contains("SURGERY") || s.Contains("OT")) return "BUSY";
+        if (s.Contains("LEAVE")) return "ON_LEAVE";
+        if (s.Contains("DUTY") && !s.Contains("OFF")) return "ON_DUTY";
+        if (s.Contains("OFF")) return "OFF_DUTY";
+
+        return s;
+    }
+
+    private string GetSpecialtyName(int? spcode)
+    {
+        if (!spcode.HasValue) return "General";
+        return specialtiesMap.TryGetValue(spcode.Value, out var name) ? name : "General";
+    }
+
+    private string GetStatusLabel(string? status) => NormalizeStatus(status) switch
+    {
+        "IN_OPD" => "In OPD",
+        "ON_DUTY" => "On Duty",
+        "BREAK" => "On Break",
+        "BUSY" => "Busy / Surgery",
+        "ON_LEAVE" => "On Leave",
+        "OFF_DUTY" => "Off Duty",
+        _ => "Off Duty"
+    };
+
+    private string GetStatusCssClass(string? status) => NormalizeStatus(status) switch
+    {
+        "IN_OPD" => "badge-in-opd",
+        "ON_DUTY" => "badge-on-duty",
+        "BREAK" => "badge-break",
+        "BUSY" => "badge-busy",
+        "ON_LEAVE" => "badge-leave",
+        "OFF_DUTY" => "badge-off-duty",
+        _ => "badge-off-duty"
+    };
+
+    private string GetStatusBorderClass(string? status) => NormalizeStatus(status) switch
+    {
+        "IN_OPD" => "border-in-opd",
+        "ON_DUTY" => "border-on-duty",
+        "BREAK" => "border-break",
+        "BUSY" => "border-busy",
+        "ON_LEAVE" => "border-leave",
+        _ => "border-off-duty"
+    };
+
+    private string GetStatusIcon(string? status) => NormalizeStatus(status) switch
+    {
+        "IN_OPD" => "bi bi-door-open-fill",
+        "ON_DUTY" => "bi bi-check-circle-fill",
+        "BREAK" => "bi bi-cup-hot-fill",
+        "BUSY" => "bi bi-heart-pulse-fill",
+        "ON_LEAVE" => "bi bi-airplane-fill",
+        "OFF_DUTY" => "bi bi-power",
+        _ => "bi bi-power"
+    };
+
+    private string GetInitials(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "DR";
+        var parts = name.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
+        return $"{parts[0][0]}{parts[1][0]}".ToUpper();
+    }
+
+    private string GetTimeAgo(DateTime dt)
+    {
+        var diff = DateTime.Now - dt;
+        if (diff.TotalSeconds < 60) return "just now";
+        if (diff.TotalMinutes < 60) return $"{(int)diff.TotalMinutes}m ago";
+        if (diff.TotalHours < 24) return $"{(int)diff.TotalHours}h ago";
+        return dt.ToString("dd MMM hh:mm tt");
+    }
+
+    private string GetFormattedTimeRemaining(DateTime returnTime)
+    {
+        var diff = returnTime - DateTime.Now;
+        if (diff.TotalSeconds <= 0) return "Due back now";
+        if (diff.TotalMinutes < 60) return $"in {(int)diff.TotalMinutes} mins";
+        return $"in {(int)diff.TotalHours} hrs {(int)diff.Minutes} mins";
+    }
+}

@@ -31,7 +31,7 @@
             <div style="display: flex; gap: 1rem; align-items: center;">
                 <div class="billing-form-group" style="width: 220px;">
                     <label>Branch</label>
-                    <select class="billing-select" value="@billModel.enteredbhcode" @onchange="OnBranchChanged">
+                    <select class="billing-select" @bind="billModel.enteredbhcode" @bind:after="OnBranchSelectionChanged">
                         <option value="0">Select Branch</option>
                         @foreach (var bh in branchesList)
                         {
@@ -43,7 +43,7 @@
                     <label>Counter</label>
                     <select class="billing-select" @bind="billModel.cntcode">
                         <option value="0">Select Counter</option>
-                        @foreach (var c in countersList.Where(x => x.bhcode == billModel.enteredbhcode))
+                        @foreach (var c in GetFilteredCounters())
                         {
                             <option value="@((int)c.cntcode)">@c.name</option>
                         }
@@ -714,18 +714,22 @@
         }
     }
 
+
     private HttpClient CreateClient(bool isLabCare = false)
     {
         var clientName = isLabCare ? "LabCareUrl" : "DoctorApi";
         var client = ClientFactory.CreateClient(clientName);
-        if (!string.IsNullOrEmpty(TenantCode))
+        var tCode = !string.IsNullOrEmpty(TenantCode) ? TenantCode : TenantState.TenantCode;
+        var token = !string.IsNullOrEmpty(AuthToken) ? AuthToken : TenantState.AuthToken;
+
+        if (!string.IsNullOrEmpty(tCode))
         {
             client.DefaultRequestHeaders.Remove("tenant_code");
-            client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            client.DefaultRequestHeaders.Add("tenant_code", tCode);
         }
-        if (!string.IsNullOrEmpty(AuthToken))
+        if (!string.IsNullOrEmpty(token))
         {
-            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
         }
         return client;
     }
@@ -741,23 +745,46 @@
                 var json = await response.Content.ReadAsStringAsync();
                 branchesList = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
                 branchesList = branchesList.Where(b => !b.deleted).ToList();
+            }
 
-                await FilterBranchesByUserAccessAsync();
-
-                if (branchesList.Any() && (billModel.enteredbhcode <= 1 || !branchesList.Any(b => b.bh_code == billModel.enteredbhcode)))
+            if (branchesList == null || !branchesList.Any())
+            {
+                using var doctorClient = CreateClient(false);
+                var docRes = await doctorClient.GetAsync("api/Branch/get");
+                if (docRes.IsSuccessStatusCode)
                 {
-                    billModel.enteredbhcode = branchesList.First().bh_code;
+                    var docJson = await docRes.Content.ReadAsStringAsync();
+                    branchesList = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(docJson) ?? new();
+                    branchesList = branchesList.Where(b => !b.deleted).ToList();
                 }
             }
-            else
+
+            await FilterBranchesByUserAccessAsync();
+
+            if (branchesList == null || !branchesList.Any())
             {
-                var err = await response.Content.ReadAsStringAsync();
-                Console.Error.WriteLine($"Error loading branches: {response.StatusCode} - {err}");
+                branchesList = new List<Booking.Models.BranchModel>
+                {
+                    new() { bh_code = 1, name = "Main Branch" }
+                };
+            }
+
+            if (branchesList.Any() && (billModel.enteredbhcode <= 0 || !branchesList.Any(b => b.bh_code == billModel.enteredbhcode)))
+            {
+                billModel.enteredbhcode = branchesList.First().bh_code;
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error loading branches: {ex.Message}");
+            if (branchesList == null || !branchesList.Any())
+            {
+                branchesList = new List<Booking.Models.BranchModel>
+                {
+                    new() { bh_code = 1, name = "Main Branch" }
+                };
+                billModel.enteredbhcode = 1;
+            }
         }
     }
 
@@ -772,22 +799,33 @@
             }
 
             var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-            if (userDetailsResult.Success && userDetailsResult.Value != null && userDetailsResult.Value.UserCode == 0)
+            if (userDetailsResult.Success && userDetailsResult.Value != null)
             {
-                return;
-            }
-
-            if (userDetailsResult.Success && userDetailsResult.Value?.Branches != null && userDetailsResult.Value.Branches.Any())
-            {
-                var allowedCodes = userDetailsResult.Value.Branches
-                    .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
-                    .Where(code => code > 0)
-                    .ToHashSet();
-
-                if (allowedCodes.Any())
+                var ud = userDetailsResult.Value;
+                if (ud.UserCode == 0 || ud.UserCode == 1 ||
+                    string.Equals(ud.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ud.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ud.Role, "Owner", StringComparison.OrdinalIgnoreCase))
                 {
-                    branchesList = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
-                    return;
+                    return; // Admins/Owners see all branches
+                }
+
+                if (ud.Branches != null && ud.Branches.Any())
+                {
+                    var allowedCodes = ud.Branches
+                        .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                        .Where(code => code > 0)
+                        .ToHashSet();
+
+                    if (allowedCodes.Any())
+                    {
+                        var filtered = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                        if (filtered.Any())
+                        {
+                            branchesList = filtered;
+                            return;
+                        }
+                    }
                 }
             }
 
@@ -795,7 +833,11 @@
             if (branchCodesResult.Success && branchCodesResult.Value != null && branchCodesResult.Value.Any())
             {
                 var allowedCodes = branchCodesResult.Value.ToHashSet();
-                branchesList = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                var filtered = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                if (filtered.Any())
+                {
+                    branchesList = filtered;
+                }
             }
         }
         catch (Exception ex)
@@ -809,10 +851,70 @@
         try
         {
             countersList = await CounterMasterService.GetCountersAsync();
+            if (countersList == null || !countersList.Any())
+            {
+                using var client = CreateClient(false);
+                var res = await client.GetAsync("api/CounterMaster/get");
+                if (res.IsSuccessStatusCode)
+                {
+                    var json = await res.Content.ReadAsStringAsync();
+                    countersList = JsonConvert.DeserializeObject<List<CounterMasterModel>>(json) ?? new();
+                }
+            }
+
+            if (countersList == null || !countersList.Any())
+            {
+                countersList = new List<CounterMasterModel>
+                {
+                    new() { cntcode = 1, bhcode = billModel.enteredbhcode > 0 ? billModel.enteredbhcode : 1, name = "Main Counter" }
+                };
+            }
+
+            if (billModel.cntcode <= 0 && countersList.Any())
+            {
+                var available = GetFilteredCounters();
+                if (available.Any())
+                {
+                    billModel.cntcode = (int)available.First().cntcode;
+                }
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error loading counters: {ex.Message}");
+            if (countersList == null || !countersList.Any())
+            {
+                countersList = new List<CounterMasterModel>
+                {
+                    new() { cntcode = 1, bhcode = billModel.enteredbhcode > 0 ? billModel.enteredbhcode : 1, name = "Main Counter" }
+                };
+                billModel.cntcode = 1;
+            }
+        }
+    }
+
+    private IEnumerable<CounterMasterModel> GetFilteredCounters()
+    {
+        if (countersList == null || !countersList.Any()) return Enumerable.Empty<CounterMasterModel>();
+
+        var filtered = countersList.Where(x => x.bhcode == billModel.enteredbhcode || x.bhcode == 0 || x.bhcode == null || billModel.enteredbhcode == 0).ToList();
+        if (!filtered.Any())
+        {
+            filtered = countersList.ToList();
+        }
+        return filtered;
+    }
+
+    private void OnBranchSelectionChanged()
+    {
+        var availableCounters = GetFilteredCounters();
+        if (availableCounters.Any())
+        {
+            billModel.cntcode = (int)availableCounters.First().cntcode;
+        }
+        else
+        {
+            billModel.cntcode = 0;
         }
     }
 
@@ -927,6 +1029,9 @@
 
     private async Task LoadLookupDataAsync()
     {
+        await LoadBranchesAsync();
+        await LoadCountersAsync();
+
         try
         {
             doctorsCache = await DoctorService.GetDoctorsAsync() ?? new();

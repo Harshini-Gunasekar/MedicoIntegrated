@@ -21,7 +21,13 @@ namespace Booking.Services
             try
             {
                 var response = await _http.GetFromJsonAsync<List<AvailableSlotModel>>($"api/AppointmentBooking/get-available-slots?dcode={dcode}&appointment_date={appointmentDate:yyyy-MM-dd}");
-                return response ?? new List<AvailableSlotModel>();
+                var slots = response ?? new List<AvailableSlotModel>();
+                foreach (var s in slots)
+                {
+                    s.slot_start_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(s.slot_start_time);
+                    s.slot_end_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(s.slot_end_time);
+                }
+                return slots;
             }
             catch (Exception ex)
             {
@@ -34,7 +40,43 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.PostAsJsonAsync("api/AppointmentBooking/book", booking);
+                // Convert slot times to UTC for backend API requirement
+                var apiPayload = new AppointmentBookingModel
+                {
+                    booking_id = booking.booking_id,
+                    booking_no = booking.booking_no,
+                    custid = booking.custid,
+                    dcode = booking.dcode,
+                    slot_detail_id = booking.slot_detail_id,
+                    slot_master_id = booking.slot_master_id,
+                    appointment_date = booking.appointment_date,
+                    slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(booking.slot_start_time),
+                    slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(booking.slot_end_time),
+                    token_no = booking.token_no,
+                    booking_type = booking.booking_type,
+                    booking_status = booking.booking_status,
+                    rescheduled_from = booking.rescheduled_from,
+                    reschedule_reason = booking.reschedule_reason,
+                    cancel_reason = booking.cancel_reason,
+                    cancelled_at = booking.cancelled_at,
+                    notes = booking.notes,
+                    tenant_code = booking.tenant_code,
+                    isdeleted = booking.isdeleted,
+                    created_at = booking.created_at,
+                    updated_at = booking.updated_at,
+                    patient_name = booking.patient_name,
+                    mobile = booking.mobile,
+                    isvip = booking.isvip,
+                    is_vip = booking.is_vip,
+                    viprole = booking.viprole
+                };
+
+                var jsonPayload = Newtonsoft.Json.JsonConvert.SerializeObject(apiPayload, Newtonsoft.Json.Formatting.Indented);
+                Console.WriteLine("=================== POST api/AppointmentBooking/book PAYLOAD (UTC) ===================");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("======================================================================================");
+
+                var response = await _http.PostAsJsonAsync("api/AppointmentBooking/book", apiPayload);
                 var result = await response.Content.ReadAsStringAsync();
                 return result;
             }
@@ -50,7 +92,13 @@ namespace Booking.Services
             try
             {
                 var response = await _http.GetFromJsonAsync<List<AppointmentBookingModel>>("api/AppointmentBooking/get-all");
-                return response ?? new List<AppointmentBookingModel>();
+                var bookings = response ?? new List<AppointmentBookingModel>();
+                foreach (var b in bookings)
+                {
+                    b.slot_start_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(b.slot_start_time);
+                    b.slot_end_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(b.slot_end_time);
+                }
+                return bookings;
             }
             catch (Exception ex)
             {
@@ -64,7 +112,13 @@ namespace Booking.Services
             try
             {
                 var response = await _http.GetFromJsonAsync<List<AppointmentBookingModel>>($"api/AppointmentBooking/get-by-date?appointment_date={appointmentDate:yyyy-MM-dd}");
-                return response ?? new List<AppointmentBookingModel>();
+                var bookings = response ?? new List<AppointmentBookingModel>();
+                foreach (var b in bookings)
+                {
+                    b.slot_start_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(b.slot_start_time);
+                    b.slot_end_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(b.slot_end_time);
+                }
+                return bookings;
             }
             catch (Exception ex)
             {
@@ -105,6 +159,11 @@ namespace Booking.Services
         {
             try
             {
+                if (request?.new_booking != null)
+                {
+                    request.new_booking.slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_start_time);
+                    request.new_booking.slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_end_time);
+                }
                 var response = await _http.PostAsJsonAsync("api/AppointmentBooking/reschedule", request);
                 return response.IsSuccessStatusCode;
             }
@@ -147,6 +206,11 @@ namespace Booking.Services
         {
             try
             {
+                if (request?.new_booking != null)
+                {
+                    request.new_booking.slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_start_time);
+                    request.new_booking.slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_end_time);
+                }
                 var response = await _http.PostAsJsonAsync("api/AppointmentBooking/patient-reschedule", request);
                 return response.IsSuccessStatusCode;
             }

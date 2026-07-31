@@ -50,5 +50,52 @@ namespace Booking.Services
                 return false;
             }
         }
+
+        public async Task<bool> InsertLabSettingAsync(LabSettingModel model)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/LabSetting/insert", model);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error inserting LabSetting: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<bool> UpdateLabSettingAsync(LabSettingModel model)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/LabSetting/update", model);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating LabSetting: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<bool> SoftDeleteLabSettingAsync(Guid lsid)
+        {
+            try
+            {
+                var response = await _http.PostAsync($"api/LabSetting/delete?lsid={lsid}", null);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting LabSetting: {ex.Message}");
+                return false;
+            }
+        }
+
+        public async Task<LabSettingModel?> GetLabSettingsAsync()
+        {
+            return await GetLabSettingAsync();
+        }
     }
 }

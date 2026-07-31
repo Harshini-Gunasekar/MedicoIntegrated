@@ -68,6 +68,10 @@ namespace Booking.Services
                 }
                 return new List<OgQueueFrontendDto>();
             }
+            catch (ObjectDisposedException)
+            {
+                return new List<OgQueueFrontendDto>(); // Suppress exception silently on disposal
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"[OGScreenService] Error loading consultation list: {ex.Message}");
@@ -86,6 +90,10 @@ namespace Booking.Services
                     return Newtonsoft.Json.JsonConvert.DeserializeObject<List<OgQueueFrontendDto>>(json) ?? new List<OgQueueFrontendDto>();
                 }
                 return new List<OgQueueFrontendDto>();
+            }
+            catch (ObjectDisposedException)
+            {
+                return new List<OgQueueFrontendDto>(); // Suppress exception silently on disposal
             }
             catch (Exception ex)
             {

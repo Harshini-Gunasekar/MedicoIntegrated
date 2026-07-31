@@ -24,6 +24,10 @@ namespace Booking.Services
                 var response = await _http.GetFromJsonAsync<List<VitalsModel>>("api/Vitals/get");
                 return response ?? new List<VitalsModel>();
             }
+            catch (ObjectDisposedException)
+            {
+                return new List<VitalsModel>(); // Suppress exception silently on disposal
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error getting vitals: {ex.Message}");
