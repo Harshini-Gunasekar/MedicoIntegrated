@@ -16,7 +16,7 @@ namespace Booking.Handlers
 
         public UniIdentityRouteHandler(IConfiguration config, TenantSessionState session)
         {
-            _baseUrl = config["ApiBaseUrl"] ?? "http://medicoapi.iscansoft.com";
+            _baseUrl = config["ApiBaseUrl"] ?? "https://localhost:7234";
             _uniIdentityBaseUrl = config["UserRightUrl"] ?? "https://ridoapi.iscansoft.com/api/";
             _session = session;
             
@@ -90,24 +90,42 @@ namespace Booking.Handlers
                 response = await base.SendAsync(request, cancellationToken);
                 
                 // Log the request and response details
-                var logStr = $"[{DateTime.Now}] Intercepted:\n" +
-                             $"  Method: {request.Method}\n" +
-                             $"  Original URL: {originalUrl}\n" +
-                             $"  Rewritten URL: {request.RequestUri}\n" +
-                             $"  Headers:\n" +
-                             string.Join("\n", request.Headers.Select(h => $"    {h.Key}: {string.Join(", ", h.Value)}")) + "\n" +
-                             $"  Response: {response.StatusCode}\n" +
-                             $"  Response Body: {await (response.Content?.ReadAsStringAsync() ?? Task.FromResult(""))}\n\n";
-                System.IO.File.AppendAllText(@"d:\Iscan\Medico\route_debug.txt", logStr);
+                try
+                {
+                    var logDir = @"d:\Iscan\Medico";
+                    if (!System.IO.Directory.Exists(logDir))
+                    {
+                        System.IO.Directory.CreateDirectory(logDir);
+                    }
+                    var logStr = $"[{DateTime.Now}] Intercepted:\n" +
+                                 $"  Method: {request.Method}\n" +
+                                 $"  Original URL: {originalUrl}\n" +
+                                 $"  Rewritten URL: {request.RequestUri}\n" +
+                                 $"  Headers:\n" +
+                                 string.Join("\n", request.Headers.Select(h => $"    {h.Key}: {string.Join(", ", h.Value)}")) + "\n" +
+                                 $"  Response: {response.StatusCode}\n" +
+                                 $"  Response Body: {await (response.Content?.ReadAsStringAsync() ?? Task.FromResult(""))}\n\n";
+                    System.IO.File.AppendAllText(System.IO.Path.Combine(logDir, "route_debug.txt"), logStr);
+                }
+                catch { /* Ignore log file write errors */ }
             }
             catch (Exception ex)
             {
-                var logStr = $"[{DateTime.Now}] Failed:\n" +
-                             $"  Method: {request.Method}\n" +
-                             $"  Original URL: {originalUrl}\n" +
-                             $"  Rewritten URL: {request.RequestUri}\n" +
-                             $"  Exception: {ex}\n\n";
-                System.IO.File.AppendAllText(@"d:\Iscan\Medico\route_debug.txt", logStr);
+                try
+                {
+                    var logDir = @"d:\Iscan\Medico";
+                    if (!System.IO.Directory.Exists(logDir))
+                    {
+                        System.IO.Directory.CreateDirectory(logDir);
+                    }
+                    var logStr = $"[{DateTime.Now}] Failed:\n" +
+                                 $"  Method: {request.Method}\n" +
+                                 $"  Original URL: {originalUrl}\n" +
+                                 $"  Rewritten URL: {request.RequestUri}\n" +
+                                 $"  Exception: {ex}\n\n";
+                    System.IO.File.AppendAllText(System.IO.Path.Combine(logDir, "route_debug.txt"), logStr);
+                }
+                catch { /* Ignore log file write errors */ }
                 throw;
             }
             return response;

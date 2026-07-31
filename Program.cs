@@ -106,6 +106,8 @@ builder.Services.AddScoped<Booking.Services.BedStatusService>();
 builder.Services.AddScoped<Booking.Services.NurseMasterService>();
 builder.Services.AddScoped<Booking.Services.BlockMasterService>();
 builder.Services.AddScoped<Booking.Services.IpRegistrationService>();
+builder.Services.AddScoped<Booking.Services.DischargeSummaryService>();
+builder.Services.AddScoped<Booking.Services.LabSettingService>();
 builder.Services.AddScoped<Booking.Services.FloorMasterService>();
 builder.Services.AddScoped<Booking.Services.OGScreenService>();
 builder.Services.AddScoped<Booking.Services.DashboardService>();
