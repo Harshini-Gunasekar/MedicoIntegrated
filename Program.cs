@@ -51,6 +51,26 @@ builder.Services.AddHttpClient("InventoryApi", client =>
     client.BaseAddress = new Uri(baseUrl + "api/");
 });
 
+builder.Services.AddHttpClient("Medico", client => 
+{
+    var baseUrl = builder.Configuration["ApiBaseUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("ApiBaseUrl is not configured in appsettings.json");
+    if (!baseUrl.EndsWith("/")) baseUrl += "/";
+    client.BaseAddress = new Uri(baseUrl);
+})
+.AddHttpMessageHandler<TenantHeaderHandler>()
+.AddHttpMessageHandler<UniIdentityRouteHandler>();
+
+builder.Services.AddHttpClient("MedicoAPI", client => 
+{
+    var baseUrl = builder.Configuration["ApiBaseUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("ApiBaseUrl is not configured in appsettings.json");
+    if (!baseUrl.EndsWith("/")) baseUrl += "/";
+    client.BaseAddress = new Uri(baseUrl);
+})
+.AddHttpMessageHandler<TenantHeaderHandler>()
+.AddHttpMessageHandler<UniIdentityRouteHandler>();
+
 builder.Services.AddScoped(sp => 
 {
     var tenantHandler = sp.GetRequiredService<TenantHeaderHandler>();
@@ -68,7 +88,9 @@ builder.Services.AddScoped(sp =>
 });
 builder.Services.AddScoped<Booking.Services.DoctorService>();
 builder.Services.AddScoped<Booking.Services.DoctorProfileService>();
+builder.Services.AddScoped<Booking.Services.LabResultService>();
 builder.Services.AddScoped<Booking.Services.SlotService>();
+builder.Services.AddScoped<Booking.Services.OpChargeSlabService>();
 builder.Services.AddScoped<Booking.Services.DoctorAppointmentSlotTypeService>();
 builder.Services.AddScoped<Booking.Services.DoctorTypeMasterService>();
 builder.Services.AddScoped<Booking.Services.DoctorSpecialtyMasterService>();
@@ -147,9 +169,9 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Error", createScopeForErrors: true);
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
+    app.UseHttpsRedirection();
 }
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
-app.UseHttpsRedirection();
 
 app.UseAntiforgery();
 

@@ -110,6 +110,7 @@ namespace Medico_Backend.Model
         public string? status { get; set; }
         public DateTime entered_date { get; set; }
         public DateTime updated_at { get; set; }
+        public string SlotKey { get; set; } = "";
     }
 
     public class LabStatusUpdateRequest
@@ -131,6 +132,7 @@ namespace Medico_Backend.Model
         public string? status { get; set; }
         public DateTime entered_date { get; set; }
         public DateTime updated_at { get; set; }
+        public string SlotKey { get; set; } = "";
     }
 
     public class ScanStatusUpdateRequest

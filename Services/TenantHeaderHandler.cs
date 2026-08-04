@@ -20,6 +20,23 @@ namespace Booking.Services
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
         {
+            if (request.RequestUri != null)
+            {
+                var uriStr = request.RequestUri.ToString();
+                if (uriStr.Contains("/api/api/", StringComparison.OrdinalIgnoreCase))
+                {
+                    uriStr = uriStr.Replace("/api/api/", "/api/", StringComparison.OrdinalIgnoreCase);
+                    request.RequestUri = new Uri(uriStr);
+                }
+                else if (request.RequestUri.Host.Equals("medicoapi.iscansoft.com", StringComparison.OrdinalIgnoreCase) &&
+                         !request.RequestUri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var builder = new UriBuilder(request.RequestUri);
+                    builder.Path = "/api" + (builder.Path.StartsWith("/") ? builder.Path : "/" + builder.Path);
+                    request.RequestUri = builder.Uri;
+                }
+            }
+
             var requestPath = request.RequestUri?.AbsolutePath ?? "";
             bool isAnonymousRegister = request.Headers.Contains("X-Anonymous-Register");
             if (isAnonymousRegister)

@@ -1,4 +1,4 @@
-using Booking.Models;
+using medico_backend.Model;
 using SharedComponents.Rcl.Services;
 using System;
 using System.Collections.Generic;
@@ -10,18 +10,18 @@ namespace Booking.Services
 {
     public class LabResultService
     {
-        private readonly IHttpClientFactory _clientFactory;
+        private readonly HttpClient _client;
         private readonly TenantSessionState _tenantState;
 
-        public LabResultService(IHttpClientFactory clientFactory, TenantSessionState tenantState)
+        public LabResultService(HttpClient client, TenantSessionState tenantState)
         {
-            _clientFactory = clientFactory;
+            _client = client;
             _tenantState = tenantState;
         }
 
         private HttpClient CreateClient()
         {
-            var client = _clientFactory.CreateClient("DoctorApi");
+            var client = _client;
             if (!string.IsNullOrEmpty(_tenantState.AuthToken) && !client.DefaultRequestHeaders.Contains("Authorization"))
             {
                 client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _tenantState.AuthToken);
@@ -56,7 +56,7 @@ namespace Booking.Services
             try
             {
                 var client = CreateClient();
-                var response = await client.GetAsync($"api/labresult/loadtestresultentry?requestguid={requestGuid}");
+                var response = await client.GetAsync($"api/LabResult/LoadResultEntry?requestguid={requestGuid}");
                 if (response.IsSuccessStatusCode)
                 {
                     return await response.Content.ReadFromJsonAsync<ResultEntryModel>();
@@ -76,6 +76,16 @@ namespace Booking.Services
                 if (request.lab_result_master != null && string.IsNullOrEmpty(request.lab_result_master.tenant_code))
                 {
                     request.lab_result_master.tenant_code = _tenantState.TenantCode;
+                }
+                if (request.lab_result_details != null)
+                {
+                    foreach (var detail in request.lab_result_details)
+                    {
+                        if (string.IsNullOrEmpty(detail.tenant_code))
+                        {
+                            detail.tenant_code = _tenantState.TenantCode;
+                        }
+                    }
                 }
                 var client = CreateClient();
                 var response = await client.PostAsJsonAsync("api/labresult/saveresultentry", request);
