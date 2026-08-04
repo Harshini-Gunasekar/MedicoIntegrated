@@ -258,6 +258,25 @@ namespace Booking.Services
             }
         }
 
+        public async Task<string> DeleteBillNoConfigAsync(int bncode, int usercode)
+        {
+            try
+            {
+                var payload = new BillNoDeleteRequest { bncode = bncode, usercode = usercode };
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/delete", payload);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"--- BillNo Delete Response (bncode={bncode}) ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("------------------------------------------------");
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting bill no config: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
         public async Task<List<CounterTimingDto>> GetOpenCountersAsync()
         {
             try

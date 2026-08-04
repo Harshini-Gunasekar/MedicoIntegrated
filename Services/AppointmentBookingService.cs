@@ -273,6 +273,32 @@ namespace Booking.Services
             }
         }
 
+        public async Task<string> DressingRegistrationAsync(OPRegistrationModel.DressingRegistrationRequest request)
+        {
+            try
+            {
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- DRESSING REGISTRATION PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("-----------------------------");
+
+                var response = await _http.PostAsJsonAsync("api/OpRegistration/dressing", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- DRESSING REGISTRATION RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("------------------------------");
+
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error doing dressing registration: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
         public async Task<bool> SaveOpVitalsAsync(OPRegistrationModel.PatientVitalsModel request)
         {
             try

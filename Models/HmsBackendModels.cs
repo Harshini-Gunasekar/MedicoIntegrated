@@ -164,6 +164,12 @@ namespace Booking.Models
         public List<BillNoConfig> data { get; set; } = new();
     }
 
+    public class BillNoDeleteRequest
+    {
+        public int bncode { get; set; }
+        public int usercode { get; set; }
+    }
+
     public class CounterTimingDto
     {
         public Guid cnttid { get; set; }

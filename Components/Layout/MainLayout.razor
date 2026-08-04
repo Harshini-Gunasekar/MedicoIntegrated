@@ -257,7 +257,7 @@
                             <NavLink href="/sample-master" class="nav-submenu-item" @onclick="CloseSidebar" title="Configure specimen/sample collection types">
                                 <span>Specimen Master</span>
                             </NavLink>
-                            <NavLink href="/uom-master" class="nav-submenu-item" @onclick="CloseSidebar" title="Configure units of measurement for lab results">
+                            <NavLink href="/uommaster" class="nav-submenu-item" @onclick="CloseSidebar" title="Configure units of measurement for lab results">
                                 <span>UOM Master</span>
                             </NavLink>
                             <NavLink href="/machine-master" class="nav-submenu-item" @onclick="CloseSidebar" title="Configure medical analyzers and device connections">
@@ -582,6 +582,7 @@
             <div class="operating-branch-form-group">
                 <label class="operating-branch-label">ACTIVE BRANCH</label>
                 <select class="operating-branch-select" @bind="selectedBranchId">
+                    <option value="0">-- Select a Branch --</option>
                     @foreach (var br in sessionBranches)
                     {
                         <option value="@br.bh_code">@br.name.ToUpper()</option>
@@ -690,7 +691,7 @@
             new SidebarMenuItemModel { Title = "Group Master", Href = "/group-master", Icon = "bi-folder", Category = "Lab Masters" },
             new SidebarMenuItemModel { Title = "Report Methods", Href = "/reportmethodmaster", Icon = "bi-file-earmark-text", Category = "Lab Masters" },
             new SidebarMenuItemModel { Title = "Specimen Master", Href = "/sample-master", Icon = "bi-droplet", Category = "Lab Masters" },
-            new SidebarMenuItemModel { Title = "UOM Master", Href = "/uom-master", Icon = "bi-rulers", Category = "Lab Masters" },
+            new SidebarMenuItemModel { Title = "UOM Master", Href = "/uommaster", Icon = "bi-rulers", Category = "Lab Masters" },
             new SidebarMenuItemModel { Title = "Machine Master", Href = "/machine-master", Icon = "bi-cpu", Category = "Lab Masters" },
             new SidebarMenuItemModel { Title = "Doctor Group Master", Href = "/doctor-group-master", Icon = "bi-people", Category = "Lab Masters" },
             new SidebarMenuItemModel { Title = "Billing Portal", Href = "/billing", Icon = "bi-receipt", Category = "Billing" },
@@ -813,7 +814,7 @@
             case "machine-master":
                 targetModule = "Machine_Master";
                 break;
-            case "uom-master":
+            case "uommaster":
             case "uoms":
             case "unit-master":
                 targetModule = "Uom_Master";
@@ -1106,7 +1107,7 @@
             case "sample-master":
             case "samples":
                 return HasRight("Configuration", "Specimen_Master");
-            case "uom-master":
+            case "uommaster":
             case "uoms":
             case "unit-master":
                 return HasRight("Configuration", "Uom_Master");
@@ -1230,7 +1231,7 @@
             case "group-master": return "Group Master";
             case "reportmethodmaster": return "Report Methods";
             case "sample-master": return "Specimen Master";
-            case "uom-master": return "UOM Master";
+            case "uommaster": return "UOM Master";
             case "machine-master": return "Machine Master";
             case "branchmaster": return "Branch Master";
             case "counter-master": return "Counter Master";
@@ -1297,7 +1298,7 @@
         {
             isDoctorMastersOpen = true;
         }
-        if (path.Contains("test-master") || path.Contains("test-fee") || path.Contains("test-type") || path.Contains("group-master") || path.Contains("reportmethod") || path.Contains("sample-master") || path.Contains("uom-master") || path.Contains("machine-master"))
+        if (path.Contains("test-master") || path.Contains("test-fee") || path.Contains("test-type") || path.Contains("group-master") || path.Contains("reportmethod") || path.Contains("sample-master") || path.Contains("uommaster") || path.Contains("machine-master"))
         {
             isLabMastersOpen = true;
         }
@@ -1446,6 +1447,62 @@
         return (parts[0][0].ToString() + parts[parts.Length - 1][0].ToString()).ToUpper();
     }
 
+    private bool IsAdminOrPowerUser()
+    {
+        if (IsAdmin()) return true;
+
+        var role = TenantState.UserData?.Role;
+        var userCode = TenantState.UserData?.UserCode;
+
+        if (userCode == 0 || userCode == 1) return true;
+
+        if (!string.IsNullOrEmpty(role) && (
+            role.Contains("Power", StringComparison.OrdinalIgnoreCase) ||
+            role.Contains("Admin", StringComparison.OrdinalIgnoreCase) ||
+            role.Contains("Owner", StringComparison.OrdinalIgnoreCase) ||
+            role.Contains("Manager", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        // Check JWT token claims for power_user flag
+        var token = TenantState.AuthToken;
+        if (!string.IsNullOrEmpty(token))
+        {
+            try
+            {
+                var segments = token.Split('.');
+                if (segments.Length >= 2)
+                {
+                    var payload = segments[1];
+                    switch (payload.Length % 4)
+                    {
+                        case 2: payload += "=="; break;
+                        case 3: payload += "="; break;
+                    }
+                    var jsonBytes = Convert.FromBase64String(payload);
+                    var claimsDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
+                    if (claimsDict != null)
+                    {
+                        object? pVal = null;
+                        if (claimsDict.TryGetValue("power_user", out pVal) || 
+                            claimsDict.TryGetValue("is_power_user", out pVal) || 
+                            claimsDict.TryGetValue("poweruser", out pVal))
+                        {
+                            if (pVal?.ToString()?.ToLower() == "true" || pVal?.ToString() == "1")
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+        }
+
+        return false;
+    }
+
     private async Task CheckBranchSelectionAsync()
     {
         var relativePath = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
@@ -1462,8 +1519,17 @@
             return;
         }
 
-        // Branch code not selected yet, load branches and show modal
+        // Branch code not selected yet, load branches
         await LoadBranchesForSelectionAsync();
+
+        // If there's only 1 branch option available, auto-select it and bypass the modal dialog
+        if (sessionBranches.Count == 1)
+        {
+            selectedBranchId = sessionBranches.First().bh_code;
+            await ConfirmBranchAsync();
+            return;
+        }
+
         showBranchModal = true;
         StateHasChanged();
     }
@@ -1474,21 +1540,9 @@
         {
             sessionBranches.Clear();
 
-            // 1. If staff user and has branches assigned, use them
-            if (TenantState.UserData?.Branches != null && TenantState.UserData.Branches.Any())
-            {
-                foreach (var b in TenantState.UserData.Branches)
-                {
-                    sessionBranches.Add(new SharedComponents.Rcl.Models.BranchModel
-                    {
-                        bh_code = b.bh_code,
-                        name = b.name
-                    });
-                }
-            }
-
-            // 2. If no branches are present (e.g. Administrator), fetch all branches from DB
-            if (!sessionBranches.Any())
+            // Fetch all active branches from DB
+            List<Booking.Models.BranchModel> allDbBranches = new();
+            try
             {
                 var client = ClientFactory.CreateClient("LabCareUrl");
                 if (!string.IsNullOrEmpty(TenantState.TenantCode))
@@ -1505,21 +1559,58 @@
                 if (response.IsSuccessStatusCode)
                 {
                     var json = await response.Content.ReadAsStringAsync();
-                    var list = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
-                    foreach (var b in list.Where(b => !b.deleted))
+                    allDbBranches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                }
+            }
+            catch (Exception apiEx)
+            {
+                Console.WriteLine($"Error fetching branches from DB: {apiEx.Message}");
+            }
+
+            // 1. If staff user and has branches assigned (and NOT admin/power user), use them and resolve names from DB list
+            if (!IsAdminOrPowerUser() && TenantState.UserData?.Branches != null && TenantState.UserData.Branches.Any())
+            {
+                foreach (var b in TenantState.UserData.Branches)
+                {
+                    var dbBranch = allDbBranches.FirstOrDefault(x => x.bh_code == b.bh_code);
+                    string actualName = dbBranch != null && !string.IsNullOrWhiteSpace(dbBranch.name) 
+                        ? dbBranch.name 
+                        : b.name;
+
+                    sessionBranches.Add(new SharedComponents.Rcl.Models.BranchModel
                     {
-                        sessionBranches.Add(new SharedComponents.Rcl.Models.BranchModel
-                        {
-                            bh_code = b.bh_code,
-                            name = b.name
-                        });
-                    }
+                        bh_code = b.bh_code,
+                        name = actualName
+                    });
+                }
+            }
+
+            // 2. If no branches are present (e.g. Administrator/Power User), use all active branches from DB
+            if (!sessionBranches.Any())
+            {
+                foreach (var b in allDbBranches.Where(b => !b.deleted))
+                {
+                    sessionBranches.Add(new SharedComponents.Rcl.Models.BranchModel
+                    {
+                        bh_code = b.bh_code,
+                        name = b.name
+                    });
                 }
             }
 
             if (sessionBranches.Any())
             {
-                selectedBranchId = sessionBranches.First().bh_code;
+                // Exclude any test/dummy "SAMPLE BRANCH" options and remove duplicate branch options by code
+                sessionBranches = sessionBranches
+                    .Where(b => !string.Equals(b.name, "SAMPLE BRANCH", StringComparison.OrdinalIgnoreCase))
+                    .GroupBy(b => b.bh_code)
+                    .Select(g => g.First())
+                    .ToList();
+
+                if (sessionBranches.Any())
+                {
+                    selectedBranchId = 0; // Default to SELECT BRANCH option initially
+                }
             }
         }
         catch (Exception ex)

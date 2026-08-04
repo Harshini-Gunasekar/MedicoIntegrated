@@ -34,6 +34,7 @@ namespace Booking.Models
             public int? duty_dcode { get; set; }
             public int? transferred_to_dcode { get; set; }
             public string? transfer_reason { get; set; }
+            public bool is_dressing { get; set; } = false;
 
             [Write(false)]
             public string? patient_name { get; set; }
@@ -153,6 +154,14 @@ namespace Booking.Models
             public string? booking_status { get; set; }
             public string? booking_type { get; set; }
 
+            public string? notes { get; set; }
+        }
+        public class DressingRegistrationRequest
+        {
+            public decimal custid { get; set; }
+            public int dcode { get; set; }
+            public int? department_code { get; set; }
+            public Guid? slot_detail_id { get; set; }
             public string? notes { get; set; }
         }
     } 

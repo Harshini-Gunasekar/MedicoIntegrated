@@ -38,6 +38,7 @@ namespace Booking.Models
         public bool? isvip { get; set; }
         public bool? is_vip { get; set; }
         public string? viprole { get; set; }
+        public bool is_dressing { get; set; } = false;
     }
 
     public class CancelAppointmentRequest
