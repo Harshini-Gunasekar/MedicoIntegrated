@@ -14,15 +14,31 @@ namespace Booking.Services
 
         public async Task<List<UomMasterModel>> GetUomMastersAsync()
         {
+            var list = new List<UomMasterModel>();
             try
             {
                 var response = await _http.GetFromJsonAsync<List<UomMasterModel>>("api/UomMaster/get");
-                return response ?? new List<UomMasterModel>();
+                if (response != null && response.Any()) list.AddRange(response);
             }
-            catch
+            catch { }
+
+            try
             {
-                return new List<UomMasterModel>();
+                var uomResp = await _http.GetFromJsonAsync<List<UomMasterModel>>("Uom/get");
+                if (uomResp != null && uomResp.Any())
+                {
+                    foreach (var item in uomResp)
+                    {
+                        if (!list.Any(x => x.ucode == item.ucode || (x.name != null && item.name != null && x.name.Trim().Equals(item.name.Trim(), StringComparison.OrdinalIgnoreCase))))
+                        {
+                            list.Add(item);
+                        }
+                    }
+                }
             }
+            catch { }
+
+            return list;
         }
 
         public async Task<bool> InsertUomMasterAsync(UomMasterModel uom)
