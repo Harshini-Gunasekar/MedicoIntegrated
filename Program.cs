@@ -135,6 +135,10 @@ builder.Services.AddScoped<Booking.Services.OGScreenService>();
 builder.Services.AddScoped<Booking.Services.DashboardService>();
 builder.Services.AddScoped<Booking.Services.AppointmentPreBookingService>();
 builder.Services.AddScoped<Booking.Services.DoctorCurrentStatusService>();
+builder.Services.AddScoped<MedicoAi.Services.UserSessionState>();
+builder.Services.AddScoped<MedicoAi.Services.MedicoApiService>();
+builder.Services.AddScoped<MedicoAi.Services.VitalsSignalRService>();
+builder.Services.AddScoped<MedicoAi.Services.OllamaAiService>();
 builder.Services.AddScoped<LabCare.Services.TestService>(sp =>
 {
     var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi");
