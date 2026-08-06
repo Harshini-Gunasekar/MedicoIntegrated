@@ -863,6 +863,14 @@ else if (!string.IsNullOrEmpty(saveMessage))
 
 
 
+@if (isBilledLocked)
+{
+    <div style="margin: 10px 20px; padding: 12px 18px; background: #fffbebf5; border: 1.5px solid #fef3c7; color: #b45309; border-radius: 10px; display: flex; align-items: center; gap: 12px; font-weight: 600;">
+        <i class="fas fa-lock" style="font-size: 1.2rem; color: #d97706;"></i>
+        <span>@billedStatusMessage</span>
+    </div>
+}
+
 <!-- Fixed Footer Bar -->
 <div class="re-footer-bar re-footer-centered">
     <button class="re-btn-action" id="btn-clear-entry" @onclick="ClearEntry">
@@ -873,8 +881,8 @@ else if (!string.IsNullOrEmpty(saveMessage))
         <!-- Save Button -->
         <button class="re-btn-action re-btn-action-primary @(isSaving && currentSavingLevel == 0 ? "re-btn-saving" : "")" id="btn-save-entry"
                 @onclick="() => SaveResults(0)" 
-                disabled="@(isSaving || isviewer)"
-                title="Save Entered Results">
+                disabled="@(isSaving || isviewer || isBilledLocked)"
+                title="@(isBilledLocked ? "Result entry locked until bill is paid" : "Save Entered Results")">
             @if (isSaving && currentSavingLevel == 0)
             {
                 <span class="re-save-spinner"></span>
@@ -890,8 +898,8 @@ else if (!string.IsNullOrEmpty(saveMessage))
         <!-- Authorize 1 Button -->
         <button class="re-btn-action re-btn-action-info @(isSaving && currentSavingLevel == 1 ? "re-btn-saving" : "")" id="btn-auth1-entry"
                 @onclick="() => SaveResults(1)" 
-                disabled="@(isSaving || isviewer)"
-                title="Authorize Level 1 Results">
+                disabled="@(isSaving || isviewer || isBilledLocked)"
+                title="@(isBilledLocked ? "Result entry locked until bill is paid" : "Authorize Level 1 Results")">
             @if (isSaving && currentSavingLevel == 1)
             {
                 <span class="re-save-spinner"></span>
@@ -907,8 +915,8 @@ else if (!string.IsNullOrEmpty(saveMessage))
         <!-- Authorize 2 Button -->
         <button class="re-btn-action re-btn-action-success @(isSaving && currentSavingLevel == 2 ? "re-btn-saving" : "")" id="btn-auth2-entry"
                 @onclick="() => TriggerSaveResults(2)" 
-                disabled="@(isSaving || isviewer)"
-                title="Authorize Level 2 Results">
+                disabled="@(isSaving || isviewer || isBilledLocked)"
+                title="@(isBilledLocked ? "Result entry locked until bill is paid" : "Authorize Level 2 Results")">
             @if (isSaving && currentSavingLevel == 2)
             {
                 <span class="re-save-spinner"></span>
@@ -970,21 +978,21 @@ else if (!string.IsNullOrEmpty(saveMessage))
             }
         </button>
 
-        <!-- Print Report Button -->
-        <button class="re-btn-action" id="btn-print-entry" 
-                style="background: #2563eb; color: white; border: none; font-weight: 700; box-shadow: 0 2px 4px rgba(37, 99, 235, 0.2);"
-                @onclick="PrintReportViaApp"
-                disabled="@(isSaving || isPrintingViaApp || string.IsNullOrEmpty(RequestGuid))"
-                title="Print Lab Report PDF">
-            @if (isPrintingViaApp)
+        <!-- Download PDF Button -->
+        <button class="re-btn-action" id="btn-download-entry" 
+                style="background: #16a34a; color: white; border: none; font-weight: 700; box-shadow: 0 2px 4px rgba(22, 163, 74, 0.2);"
+                @onclick="DownloadReportPdf"
+                disabled="@(isSaving || isDownloadingPdf || string.IsNullOrEmpty(RequestGuid))"
+                title="Download Lab Report PDF file directly">
+            @if (isDownloadingPdf)
             {
                 <span class="re-save-spinner"></span>
-                <span>Printing...</span>
+                <span>Downloading...</span>
             }
             else
             {
-                <i class="fas fa-print"></i>
-                <span>Print Report</span>
+                <i class="fas fa-file-download"></i>
+                <span>Download PDF</span>
             }
         </button>
 
@@ -3281,6 +3289,100 @@ else if (!string.IsNullOrEmpty(saveMessage))
         return s.Trim();
     }
 
+    private string _resolvedBilledGuid = "";
+    private bool isBilledLocked = false;
+    private string billedStatusMessage = "";
+
+    private async Task<string> ResolveBilledRequestGuidAsync(bool forceRefresh = false)
+    {
+        if (!forceRefresh && !string.IsNullOrEmpty(_resolvedBilledGuid) && _resolvedBilledGuid != RequestGuid)
+        {
+            return _resolvedBilledGuid;
+        }
+
+        string effectiveCustCode = !string.IsNullOrEmpty(CustCode) ? CustCode : (lre1?.FirstOrDefault(x => !string.IsNullOrEmpty(x.custcode))?.custcode ?? "");
+        string targetGuid = RequestGuid ?? "";
+
+        try
+        {
+            var searchPayloads = new List<object>();
+            if (!string.IsNullOrEmpty(effectiveCustCode))
+            {
+                searchPayloads.Add(new { page = 1, pagesize = 100, search = effectiveCustCode });
+            }
+            if (!string.IsNullOrEmpty(targetGuid))
+            {
+                searchPayloads.Add(new { page = 1, pagesize = 100, search = targetGuid });
+            }
+            searchPayloads.Add(new { page = 1, pagesize = 100 });
+
+            string targetEffectiveTenant = !string.IsNullOrEmpty(tenantCode) ? tenantCode : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010");
+
+            foreach (var pObj in searchPayloads)
+            {
+                try
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Post, "api/HmsBilling/list-bills")
+                    {
+                        Content = new StringContent(JsonConvert.SerializeObject(pObj), System.Text.Encoding.UTF8, "application/json")
+                    };
+                    if (!string.IsNullOrEmpty(token)) req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                    if (!string.IsNullOrEmpty(targetEffectiveTenant)) req.Headers.Add("tenant_code", targetEffectiveTenant);
+
+                    var res = await ClientFactory.CreateClient("Medico").SendAsync(req, SafeToken);
+                    if (res.IsSuccessStatusCode)
+                    {
+                        var jsonStr = await res.Content.ReadAsStringAsync(SafeToken);
+                        var listResp = JsonConvert.DeserializeObject<HmsBillListResponse>(jsonStr);
+                        if (listResp?.data != null && listResp.data.Any())
+                        {
+                            var matchedBill = listResp.data.FirstOrDefault(b =>
+                                (!string.IsNullOrEmpty(b.opvisitid) && b.opvisitid.Equals(targetGuid, StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrEmpty(b.requestguid) && b.requestguid.Equals(targetGuid, StringComparison.OrdinalIgnoreCase))
+                            );
+
+                            if (matchedBill == null && !string.IsNullOrEmpty(effectiveCustCode))
+                            {
+                                matchedBill = listResp.data.FirstOrDefault(b =>
+                                    (b.custid.HasValue && b.custid.Value.ToString() == effectiveCustCode) ||
+                                    (!string.IsNullOrEmpty(b.custcode) && b.custcode.Equals(effectiveCustCode, StringComparison.OrdinalIgnoreCase)) ||
+                                    (!string.IsNullOrEmpty(b.requestguid) && b.requestguid.Contains(effectiveCustCode, StringComparison.OrdinalIgnoreCase))
+                                );
+                            }
+
+                            if (matchedBill == null)
+                            {
+                                matchedBill = listResp.data.FirstOrDefault(b => !string.IsNullOrEmpty(b.requestguid));
+                            }
+
+                            if (matchedBill != null && !string.IsNullOrEmpty(matchedBill.requestguid))
+                            {
+                                _resolvedBilledGuid = matchedBill.requestguid;
+                                isBilledLocked = false;
+                                billedStatusMessage = "";
+                                RequestGuid = _resolvedBilledGuid;
+                                Console.WriteLine($"[RESOLVE-GUID] Resolved billed requestguid from list-bills: {_resolvedBilledGuid}");
+                                return _resolvedBilledGuid;
+                            }
+                        }
+                    }
+                }
+                catch (Exception pEx)
+                {
+                    Console.WriteLine($"[RESOLVE-GUID] list-bills query notice: {pEx.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RESOLVE-GUID] Error resolving billed requestguid: {ex.Message}");
+        }
+
+        isBilledLocked = true;
+        billedStatusMessage = "⚠️ Patient Bill Not Paid / Not Billed Yet. Result entry is locked until the bill is settled in HMS Billing.";
+        return targetGuid;
+    }
+
     private async Task<string> FetchReportBase64()
     {
         if (string.IsNullOrEmpty(RequestGuid)) return "";
@@ -3295,26 +3397,6 @@ else if (!string.IsNullOrEmpty(saveMessage))
         var nameAuth1 = usermaster?.FirstOrDefault(x => x.usercode == auth1Id)?.name ?? (auth1Id == 1 ? "Admin" : (auth1Id > 0 ? $"Staff ({auth1Id})" : ""));
         var nameAuth2 = usermaster?.FirstOrDefault(x => x.usercode == auth2Id)?.name ?? (auth2Id == 1 ? "Admin" : (auth2Id > 0 ? $"Staff ({auth2Id})" : ""));
 
-        var reportPayload = new
-        {
-            ClientID = tenantCode ?? "",
-            DataSource = "DataSet3",
-            ReportName = "LabReport.rdlc",
-            RequestGUID = RequestGuid,
-            TCode = "",
-            IsAuthorized2Finished = isAuth2Finished,
-            QueryString = $"SampleID={RequestGuid}",
-            Parameters = new List<ReportParameterDto>
-            {
-                new ReportParameterDto { Name = "RequestGUID", Values = new List<string> { RequestGuid } },
-                new ReportParameterDto { Name = "tcode", Values = new List<string> { "" } },
-                new ReportParameterDto { Name = "IsLetterHead", Values = new List<string> { isLetterHead ? "true" : "false" } },
-                new ReportParameterDto { Name = "EnteredBy", Values = new List<string> { nameEnt } },
-                new ReportParameterDto { Name = "AuthorizedBy1", Values = new List<string> { nameAuth1 } },
-                new ReportParameterDto { Name = "AuthorizedBy2", Values = new List<string> { nameAuth2 } }
-            }
-        };
-
         var effectiveTenantCode = !string.IsNullOrEmpty(tenantCode) ? tenantCode : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010");
 
         void AttachHeaders(HttpRequestMessage req)
@@ -3325,16 +3407,60 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 req.Headers.Add("tenant_code", effectiveTenantCode);
         }
 
-        string jsonPayload = JsonConvert.SerializeObject(reportPayload);
+        string billedRequestGuid = await ResolveBilledRequestGuidAsync();
+        string activeGuid = !string.IsNullOrEmpty(billedRequestGuid) ? billedRequestGuid : RequestGuid;
 
-        // Attempt 1: GET api/report/labreport (Matching LabResultSearch implementation)
+        // Load latest entered test results via api/labresult/loadtestresultentry?requestguid={}
         try
         {
-            string url1 = $"api/report/labreport?requestguid={RequestGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            string loadUrl = $"api/labresult/loadtestresultentry?requestguid={activeGuid}&custcode={CustCode}";
+            var loadReq = new HttpRequestMessage(HttpMethod.Get, loadUrl);
+            AttachHeaders(loadReq);
+            var loadRes = await ClientFactory.CreateClient("Medico").SendAsync(loadReq);
+            if (loadRes.IsSuccessStatusCode)
+            {
+                var loadJson = await loadRes.Content.ReadAsStringAsync();
+                var freshModel = JsonConvert.DeserializeObject<ResultEntryModel>(loadJson);
+                if (freshModel?.results?.Any() == true)
+                {
+                    Console.WriteLine($"[FETCH-REPORT] Loaded updated test results via api/labresult/loadtestresultentry for {activeGuid}");
+                }
+            }
+        }
+        catch (Exception loadEx)
+        {
+            Console.WriteLine($"[FETCH-REPORT] api/labresult/loadtestresultentry fetch notice: {loadEx.Message}");
+        }
+
+        var reportPayload = new
+        {
+            ClientID = effectiveTenantCode,
+            DataSource = "DataSet3",
+            ReportName = "LabReport.rdlc",
+            RequestGUID = activeGuid,
+            TCode = "",
+            IsAuthorized2Finished = isAuth2Finished,
+            QueryString = $"SampleID={activeGuid}",
+            Parameters = new List<ReportParameterDto>
+            {
+                new ReportParameterDto { Name = "RequestGUID", Values = new List<string> { activeGuid } },
+                new ReportParameterDto { Name = "tcode", Values = new List<string> { "" } },
+                new ReportParameterDto { Name = "IsLetterHead", Values = new List<string> { isLetterHead ? "true" : "false" } },
+                new ReportParameterDto { Name = "EnteredBy", Values = new List<string> { nameEnt } },
+                new ReportParameterDto { Name = "AuthorizedBy1", Values = new List<string> { nameAuth1 } },
+                new ReportParameterDto { Name = "AuthorizedBy2", Values = new List<string> { nameAuth2 } }
+            }
+        };
+        string jsonPayload = JsonConvert.SerializeObject(reportPayload);
+
+        // Attempt 1: GET api/report/labreport?requestguid={activeGuid}
+        try
+        {
+            string url1 = $"api/report/labreport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
             var req1 = new HttpRequestMessage(HttpMethod.Get, url1);
             AttachHeaders(req1);
             var res1 = await ClientFactory.CreateClient("Medico").SendAsync(req1);
-            if (res1.IsSuccessStatusCode)
+            if (res1.IsSuccessStatusCode && res1.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
                 var raw = await res1.Content.ReadAsStringAsync();
                 string cleaned = CleanBase64String(raw);
@@ -3346,16 +3472,14 @@ else if (!string.IsNullOrEmpty(saveMessage))
             Console.WriteLine($"[FETCH-REPORT] Attempt 1 GET api/report/labreport failed: {ex.Message}");
         }
 
-        // Attempt 2: POST api/report/labreport (RDLC JSON Payload)
+        // Attempt 2: GET api/Report/LabReport?requestguid={activeGuid}
         try
         {
-            var req2 = new HttpRequestMessage(HttpMethod.Post, "api/report/labreport")
-            {
-                Content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json")
-            };
+            string url2 = $"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            var req2 = new HttpRequestMessage(HttpMethod.Get, url2);
             AttachHeaders(req2);
             var res2 = await ClientFactory.CreateClient("Medico").SendAsync(req2);
-            if (res2.IsSuccessStatusCode)
+            if (res2.IsSuccessStatusCode && res2.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
                 var raw = await res2.Content.ReadAsStringAsync();
                 string cleaned = CleanBase64String(raw);
@@ -3364,17 +3488,19 @@ else if (!string.IsNullOrEmpty(saveMessage))
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[FETCH-REPORT] Attempt 2 POST api/report/labreport failed: {ex.Message}");
+            Console.WriteLine($"[FETCH-REPORT] Attempt 2 GET api/Report/LabReport failed: {ex.Message}");
         }
 
-        // Attempt 3: GET api/Report/LabReport
+        // Attempt 3: POST api/report/labreport (RDLC JSON Payload with activeGuid)
         try
         {
-            string url3 = $"api/Report/LabReport?requestguid={RequestGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
-            var req3 = new HttpRequestMessage(HttpMethod.Get, url3);
+            var req3 = new HttpRequestMessage(HttpMethod.Post, "api/report/labreport")
+            {
+                Content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json")
+            };
             AttachHeaders(req3);
             var res3 = await ClientFactory.CreateClient("Medico").SendAsync(req3);
-            if (res3.IsSuccessStatusCode)
+            if (res3.IsSuccessStatusCode && res3.StatusCode != System.Net.HttpStatusCode.NoContent)
             {
                 var raw = await res3.Content.ReadAsStringAsync();
                 string cleaned = CleanBase64String(raw);
@@ -3383,7 +3509,113 @@ else if (!string.IsNullOrEmpty(saveMessage))
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[FETCH-REPORT] Attempt 3 GET api/Report/LabReport failed: {ex.Message}");
+            Console.WriteLine($"[FETCH-REPORT] Attempt 3 POST api/report/labreport failed: {ex.Message}");
+        }
+
+        // Attempt 4: GET api/Report/LabReport with activeGuid
+        try
+        {
+            string url3 = $"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            var req3 = new HttpRequestMessage(HttpMethod.Get, url3);
+            AttachHeaders(req3);
+            var res3 = await ClientFactory.CreateClient("Medico").SendAsync(req3);
+            if (res3.IsSuccessStatusCode && res3.StatusCode != System.Net.HttpStatusCode.NoContent)
+            {
+                var raw = await res3.Content.ReadAsStringAsync();
+                string cleaned = CleanBase64String(raw);
+                if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50) return cleaned;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FETCH-REPORT] Attempt 4 GET api/Report/LabReport failed: {ex.Message}");
+        }
+
+        // Attempt 5: GET api/report/labreport?op_id=...
+        try
+        {
+            string url4 = $"api/report/labreport?op_id={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            var req4 = new HttpRequestMessage(HttpMethod.Get, url4);
+            AttachHeaders(req4);
+            var res4 = await ClientFactory.CreateClient("Medico").SendAsync(req4);
+            if (res4.IsSuccessStatusCode && res4.StatusCode != System.Net.HttpStatusCode.NoContent)
+            {
+                var raw = await res4.Content.ReadAsStringAsync();
+                string cleaned = CleanBase64String(raw);
+                if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50) return cleaned;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FETCH-REPORT] Attempt 5 GET api/report/labreport?op_id failed: {ex.Message}");
+        }
+
+        // Attempt 6: GET api/report/getopcasesheet?op_id=...
+        try
+        {
+            string url5 = $"api/report/getopcasesheet?op_id={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            var req5 = new HttpRequestMessage(HttpMethod.Get, url5);
+            AttachHeaders(req5);
+            var res5 = await ClientFactory.CreateClient("Medico").SendAsync(req5);
+            if (res5.IsSuccessStatusCode && res5.StatusCode != System.Net.HttpStatusCode.NoContent)
+            {
+                var raw = await res5.Content.ReadAsStringAsync();
+                string cleaned = CleanBase64String(raw);
+                if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50) return cleaned;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FETCH-REPORT] Attempt 6 GET api/report/getopcasesheet?op_id failed: {ex.Message}");
+        }
+
+        bool hasCultureTest = lre1 != null && lre1.Any(x => 
+            x.resulttype == "CU" || 
+            x.resulttype == "L" || 
+            (x.resultvaluetype != null && (x.resultvaluetype.Contains("Culture", StringComparison.OrdinalIgnoreCase) || x.resultvaluetype.Contains("Microbiology", StringComparison.OrdinalIgnoreCase))) ||
+            (x.groupname != null && (x.groupname.Contains("Culture", StringComparison.OrdinalIgnoreCase) || x.groupname.Contains("Microbiology", StringComparison.OrdinalIgnoreCase))) ||
+            (x.testname != null && (x.testname.Contains("Culture", StringComparison.OrdinalIgnoreCase) || x.testname.Contains("Microbiology", StringComparison.OrdinalIgnoreCase)))
+        );
+
+        if (hasCultureTest)
+        {
+            // Attempt 7: GET api/report/culture-report?requestguid=... (For Culture tests)
+            try
+            {
+                string url7 = $"api/report/culture-report?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+                var req7 = new HttpRequestMessage(HttpMethod.Get, url7);
+                AttachHeaders(req7);
+                var res7 = await ClientFactory.CreateClient("Medico").SendAsync(req7);
+                if (res7.IsSuccessStatusCode && res7.StatusCode != System.Net.HttpStatusCode.NoContent)
+                {
+                    var raw = await res7.Content.ReadAsStringAsync();
+                    string cleaned = CleanBase64String(raw);
+                    if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50) return cleaned;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[FETCH-REPORT] Attempt 7 GET api/report/culture-report?requestguid failed: {ex.Message}");
+            }
+
+            // Attempt 8: GET api/report/culture-report?op_id=...
+            try
+            {
+                string url8 = $"api/report/culture-report?op_id={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+                var req8 = new HttpRequestMessage(HttpMethod.Get, url8);
+                AttachHeaders(req8);
+                var res8 = await ClientFactory.CreateClient("Medico").SendAsync(req8);
+                if (res8.IsSuccessStatusCode && res8.StatusCode != System.Net.HttpStatusCode.NoContent)
+                {
+                    var raw = await res8.Content.ReadAsStringAsync();
+                    string cleaned = CleanBase64String(raw);
+                    if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50) return cleaned;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[FETCH-REPORT] Attempt 8 GET api/report/culture-report?op_id failed: {ex.Message}");
+            }
         }
 
         return "";
@@ -3438,18 +3670,18 @@ else if (!string.IsNullOrEmpty(saveMessage))
         }
     }
 
-    private async Task PrintReportExternal()
+    private bool isDownloadingPdf = false;
+
+    private async Task DownloadReportPdf()
     {
         if (string.IsNullOrEmpty(RequestGuid)) return;
 
         try
         {
-            isPrinting = true;
+            isDownloadingPdf = true;
             saveError = false;
             saveMessage = "";
             StateHasChanged();
-
-            await EnsureSampleCollectionAndReceive();
 
             bool isAdminUser = userCode == 1 || (isentered && isauthorized1 && isauthorized2);
             int saveLevel = (isauthorized1 || isauthorized2 || isAdminUser) ? 1 : 0;
@@ -3465,7 +3697,55 @@ else if (!string.IsNullOrEmpty(saveMessage))
 
             if (!string.IsNullOrEmpty(base64) && base64.Length >= 50)
             {
-                await JSRuntime.InvokeVoidAsync("openPdfPreview", base64, "Report Preview");
+                await JSRuntime.InvokeVoidAsync("downloadPdfFile", base64, $"Lab_Report_{RequestGuid}.pdf");
+                Toast.ShowSuccess("Report PDF downloaded successfully!");
+            }
+            else
+            {
+                saveError = true;
+                saveMessage = "Download failed: Report generation returned empty data.";
+                Toast.ShowError(saveMessage);
+            }
+        }
+        catch (Exception ex)
+        {
+            saveError = true;
+            saveMessage = $"Download error: {ex.Message}";
+            Toast.ShowError(saveMessage);
+        }
+        finally
+        {
+            isDownloadingPdf = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PrintReportExternal()
+    {
+        if (string.IsNullOrEmpty(RequestGuid)) return;
+
+        try
+        {
+            isPrinting = true;
+            saveError = false;
+            saveMessage = "";
+            StateHasChanged();
+
+            await EnsureSampleCollectionAndReceive();
+
+            try
+            {
+                bool isAdminUser = userCode == 1 || (isentered && isauthorized1 && isauthorized2);
+                int saveLevel = (isauthorized1 || isauthorized2 || isAdminUser) ? 1 : 0;
+                await SaveResults(saveLevel);
+            }
+            catch { }
+
+            string base64 = await FetchReportBase64();
+
+            if (!string.IsNullOrEmpty(base64) && base64.Length >= 50)
+            {
+                await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64, "Lab Report Preview");
             }
             else
             {
@@ -3882,6 +4162,20 @@ else if (!string.IsNullOrEmpty(saveMessage))
             if (auth1Id == 0) auth1Id = lre1.Max(x => x.resultauthorizedby);
             if (auth2Id == 0) auth2Id = lre1.Max(x => x.resultauthorizedby2);
 
+            // Boolean flag fallbacks if user ID was 0 but row was authorized/entered
+            if (auth1Id == 0 && lre1.Any(x => x.isauthorized1))
+            {
+                auth1Id = userCode > 0 ? userCode : 1;
+            }
+            if (auth2Id == 0 && lre1.Any(x => x.isauthorized2))
+            {
+                auth2Id = userCode > 0 ? userCode : 1;
+            }
+            if (entId == 0 && lre1.Any(x => !string.IsNullOrEmpty(x.enteredresult)))
+            {
+                entId = userCode > 0 ? userCode : 1;
+            }
+
             // Queue background resolution for missing user details
             if (entId > 1) EnsureUserLoaded(entId);
             if (auth1Id > 1) EnsureUserLoaded(auth1Id);
@@ -3964,21 +4258,30 @@ else if (!string.IsNullOrEmpty(saveMessage))
         {
         var ct = SafeToken;
         var effectiveTenantCode = !string.IsNullOrEmpty(tenantCode) ? tenantCode : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010");
-        var url = $"api/LabResult/LoadResultEntry?requestguid={RequestGuid}&custcode={CustCode}";
-        var request = new HttpRequestMessage(HttpMethod.Get, url);
-        if (!string.IsNullOrEmpty(token))
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        request.Headers.Add("tenant_code", effectiveTenantCode);
+        
+        string resolvedGuid = await ResolveBilledRequestGuidAsync();
+        string activeLoadGuid = !string.IsNullOrEmpty(resolvedGuid) ? resolvedGuid : RequestGuid;
 
-        var res = await ClientFactory.CreateClient("Medico").SendAsync(request, ct);
-        if (!res.IsSuccessStatusCode)
+        var loadUrls = new List<string>();
+        if (!string.IsNullOrEmpty(resolvedGuid) && resolvedGuid != RequestGuid)
         {
-            var fallbackUrl = $"labresult/loadresultentry?requestGuid={RequestGuid}&custcode={CustCode}&t={DateTime.Now.Ticks}";
-            var fallbackReq = new HttpRequestMessage(HttpMethod.Get, fallbackUrl);
+            loadUrls.Add($"api/labresult/loadtestresultentry?requestguid={resolvedGuid}&custcode={CustCode}");
+            loadUrls.Add($"api/LabResult/LoadResultEntry?requestguid={resolvedGuid}&custcode={CustCode}");
+        }
+        loadUrls.Add($"api/labresult/loadtestresultentry?requestguid={RequestGuid}&custcode={CustCode}");
+        loadUrls.Add($"api/LabResult/LoadResultEntry?requestguid={RequestGuid}&custcode={CustCode}");
+        loadUrls.Add($"labresult/loadresultentry?requestGuid={RequestGuid}&custcode={CustCode}&t={DateTime.Now.Ticks}");
+
+        HttpResponseMessage res = new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest);
+        foreach (var lUrl in loadUrls)
+        {
+            var req = new HttpRequestMessage(HttpMethod.Get, lUrl);
             if (!string.IsNullOrEmpty(token))
-                fallbackReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            fallbackReq.Headers.Add("tenant_code", effectiveTenantCode);
-            res = await ClientFactory.CreateClient("Medico").SendAsync(fallbackReq, ct);
+                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            req.Headers.Add("tenant_code", effectiveTenantCode);
+
+            res = await ClientFactory.CreateClient("Medico").SendAsync(req, ct);
+            if (res.IsSuccessStatusCode) break;
         }
         if (res.IsSuccessStatusCode)
         {
@@ -4010,19 +4313,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
             // Skip secondary ReportMethod HTTP calls to keep strictly to 3 allowed endpoints
 
             var rawResults = re.results != null ? Newtonsoft.Json.JsonConvert.DeserializeObject<List<LabResultEntry>>(Newtonsoft.Json.JsonConvert.SerializeObject(re.results)) : new List<LabResultEntry>();
-            var cultureTestCodes = rawResults
-                .Where(x => 
-                    (x.testname != null && (x.testname.Contains("Culture", StringComparison.OrdinalIgnoreCase) || x.testname.Contains("Sensitivity", StringComparison.OrdinalIgnoreCase))) ||
-                    (x.groupname != null && (x.groupname.Contains("Culture", StringComparison.OrdinalIgnoreCase) || x.groupname.Contains("Sensitivity", StringComparison.OrdinalIgnoreCase))) ||
-                    x.resulttype == "L" || 
-                    x.resulttype == "CU" ||
-                    (x.resultvaluetype != null && (x.resultvaluetype.Contains("Culture", StringComparison.OrdinalIgnoreCase) || x.resultvaluetype.Contains("Sensitivity", StringComparison.OrdinalIgnoreCase)))
-                )
-                .Select(x => x.tcode)
-                .Distinct()
-                .ToHashSet();
-
-            lre1 = rawResults.Where(x => !cultureTestCodes.Contains(x.tcode)).ToList();
+            lre1 = rawResults;
             lre1 = lre1.GroupBy(x => x.testresultid).Select(g => g.First()).ToList();
             lre1 = lre1
                 .OrderBy(x => x.grouporder > 0 ? x.grouporder : 9999)
@@ -4032,7 +4323,122 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 .ThenBy(x => x.fromtcode > 0 ? (long)x.fromtcode : (long)x.tcode)
                 .ThenBy(x => x.fromtcode > 0 ? 1 : 0)
                 .ToList();
-            
+
+            if (lre1 == null || !lre1.Any())
+            {
+                try
+                {
+                    var csCandidates = new[]
+                    {
+                        $"api/CaseSheet/investigation?op_id={RequestGuid}",
+                        $"api/CaseSheet/investigation?ip_id={RequestGuid}"
+                    };
+
+                    CaseSheetInvestigationDetailDto? csObj = null;
+
+                    foreach (var endpoint in csCandidates)
+                    {
+                        var csReq = new HttpRequestMessage(HttpMethod.Get, endpoint);
+                        if (!string.IsNullOrEmpty(token)) csReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                        csReq.Headers.Add("tenant_code", effectiveTenantCode);
+
+                        var csRes = await ClientFactory.CreateClient("Medico").SendAsync(csReq, ct);
+                        if (csRes.IsSuccessStatusCode)
+                        {
+                            var csJson = await csRes.Content.ReadAsStringAsync(ct);
+                            var parsed = JsonConvert.DeserializeObject<CaseSheetInvestigationDetailDto>(csJson);
+                            if (parsed?.tests != null && parsed.tests.Any())
+                            {
+                                csObj = parsed;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (csObj?.tests != null && csObj.tests.Any())
+                    {
+                        var caseSheetEntries = new List<LabResultEntry>();
+                        int slnoCounter = 1;
+                        foreach (var test in csObj.tests)
+                        {
+                            int tcodeVal = test.test_code ?? 0;
+                            string tName = test.test_name ?? "Test";
+
+                            var testMasterConfig = tcodeVal > 0 ? await TestSvc.GetTestResultAsync(tcodeVal) : null;
+
+                            if (testMasterConfig?.ResultRows != null && testMasterConfig.ResultRows.Any())
+                            {
+                                foreach (var subRow in testMasterConfig.ResultRows)
+                                {
+                                    var rm = subRow.ResultMaster;
+                                    var rmProp = subRow.ResultProperties;
+                                    Guid trId = rm?.testresultid ?? Guid.NewGuid();
+
+                                    string nVal = "";
+                                    if (rmProp?.fromnormalvalue != null && rmProp?.tonormalvalue != null)
+                                    {
+                                        nVal = $"{rmProp.fromnormalvalue}-{rmProp.tonormalvalue}";
+                                    }
+
+                                    string uName = "";
+                                    if (rmProp?.defaultunitscode > 0 && uom != null && uom.Any())
+                                    {
+                                        uName = uom.FirstOrDefault(u => u.ucode == rmProp.defaultunitscode.Value)?.name ?? "";
+                                    }
+
+                                    caseSheetEntries.Add(new LabResultEntry
+                                    {
+                                        requestguid = RequestGuid,
+                                        inv_det_id = test.inv_det_id,
+                                        slno = slnoCounter++,
+                                        tcode = tcodeVal,
+                                        testname = tName,
+                                        groupname = tName,
+                                        col2 = rm?.col2 ?? tName,
+                                        enteredresult = test.result_value ?? "",
+                                        normalvalue = nVal,
+                                        unitname = uName,
+                                        defaultunitvalue = rmProp?.defaultvalue ?? "",
+                                        resultvaluetype = rmProp?.resultvaluetype ?? "Text",
+                                        testresultid = trId,
+                                        status = test.result_status == "COMPLETED" || test.result_status == "FINISHED",
+                                        isauthorized1 = false,
+                                        isauthorized2 = false
+                                    });
+                                }
+                            }
+                            else
+                            {
+                                caseSheetEntries.Add(new LabResultEntry
+                                {
+                                    requestguid = RequestGuid,
+                                    inv_det_id = test.inv_det_id,
+                                    slno = slnoCounter++,
+                                    tcode = tcodeVal,
+                                    testname = tName,
+                                    groupname = tName,
+                                    col2 = tName,
+                                    enteredresult = test.result_value ?? "",
+                                    normalvalue = "",
+                                    unitname = "",
+                                    defaultunitvalue = "",
+                                    resultvaluetype = "Text",
+                                    testresultid = Guid.NewGuid(),
+                                    status = test.result_status == "COMPLETED" || test.result_status == "FINISHED",
+                                    isauthorized1 = false,
+                                    isauthorized2 = false
+                                });
+                            }
+                        }
+                        lre1 = caseSheetEntries;
+                    }
+                }
+                catch (Exception csEx)
+                {
+                    Console.WriteLine($"[LOAD-RESULTS] CaseSheet fallback error: {csEx.Message}");
+                }
+            }
+
             // Pre-load test configurations (including sub-parameter fromtcodes) to get units, normal values, and methods
             if (lre1 != null && lre1.Any())
             {
@@ -5129,6 +5535,18 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
             }
 
+            // Resolve actual billed requestguid via POST api/HmsBilling/list-bills FIRST before building save payloads
+            string effectiveCustCode = !string.IsNullOrEmpty(CustCode) ? CustCode : (lre1.FirstOrDefault(x => !string.IsNullOrEmpty(x.custcode))?.custcode ?? "");
+            string saveTargetGuid = await ResolveBilledRequestGuidAsync();
+            if (string.IsNullOrEmpty(saveTargetGuid)) saveTargetGuid = RequestGuid;
+
+            if (lre1 != null)
+            {
+                foreach (var r in lre1)
+                {
+                    r.requestguid = saveTargetGuid;
+                }
+            }
 
             var savePayload = lre1.Select(row =>
             {
@@ -5158,7 +5576,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 return new
                 {
                     // â”€â”€ All-Lowercase Properties matching backend LabResultEntry model â”€â”€
-                    requestguid = RequestGuid ?? "", // Always use URL RequestGuid, never stale row.requestguid
+                    requestguid = saveTargetGuid,
                     slno = row.slno,
                     tcode = row.tcode,
                     testname = row.testname ?? "",
@@ -5472,12 +5890,26 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
             }
             catch (Exception dumpEx) { Console.WriteLine($"[PAYLOAD] File dump failed: {dumpEx.Message}"); }
             Console.WriteLine($"---------------------------------");
-            string effectiveCustCode = !string.IsNullOrEmpty(CustCode) ? CustCode : (lre1.FirstOrDefault(x => !string.IsNullOrEmpty(x.custcode))?.custcode ?? "");
-            var saveUrl = $"labresult/saveresultentry?requestguid={RequestGuid}&custcode={effectiveCustCode}";
+
+            var candidateSaveUrls = new List<string>
+            {
+                "api/labresult/saveresultentry",
+                "api/LabResult/SaveResultEntry",
+                $"api/labresult/saveresultentry?requestguid={saveTargetGuid}&custcode={effectiveCustCode}",
+                $"api/LabResult/SaveResultEntry?requestguid={saveTargetGuid}&custcode={effectiveCustCode}",
+                "labresult/saveresultentry"
+            };
+
+            if (saveTargetGuid != RequestGuid)
+            {
+                candidateSaveUrls.Add($"api/labresult/saveresultentry?requestguid={RequestGuid}&custcode={effectiveCustCode}");
+                candidateSaveUrls.Add($"api/LabResult/SaveResultEntry?requestguid={RequestGuid}&custcode={effectiveCustCode}");
+            }
+            var saveUrl = candidateSaveUrls[0];
 
             // Build DTO matching LabResultSaveRequest model structure as secondary payload format
-            Guid requestGuidParsed = Guid.TryParse(RequestGuid, out var gParsed) ? gParsed : Guid.Empty;
-            string resultGuidStr = RequestGuid; // Always use URL RequestGuid as authoritative
+            Guid requestGuidParsed = Guid.TryParse(saveTargetGuid, out var gParsed) ? gParsed : Guid.Empty;
+            string resultGuidStr = saveTargetGuid;
 
             var masterModel = new lab_result_master
             {
@@ -5594,7 +6026,7 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                     string p = $"entries[{i}]";
 
                     // 1. Core entry fields (EXACT fields matching backend form-data specification)
-                    content.Add(new StringContent(RequestGuid ?? ""), $"{p}.requestguid"); // Always use URL RequestGuid
+                    content.Add(new StringContent(!string.IsNullOrEmpty(saveTargetGuid) ? saveTargetGuid : (RequestGuid ?? "")), $"{p}.requestguid");
                     content.Add(new StringContent(row.slno.ToString()), $"{p}.slno");
                     content.Add(new StringContent(row.tcode.ToString()), $"{p}.tcode");
                     content.Add(new StringContent(row.testname ?? ""), $"{p}.testname");
@@ -5795,134 +6227,210 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                 return content;
             };
 
-            // ── Primary Save Endpoint: POST labresult/saveresultentry (Matches Postman save request) ──
-            Console.WriteLine($"[SAVE] Target DB Save URL: {saveUrl}");
+            HttpResponseMessage res = new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest);
+            string resBody = "";
+            bool isBackendSuccess = false;
 
-            // 1. PRIMARY: Indexed multipart form-data POST (entries[0].field=value format)
-            //    Postman confirmed this format actually saves to the DB.
-            //    JSON POST returns 200 OK but the backend silently ignores it — form-data is what the API expects.
-            Console.WriteLine("[SAVE] Sending primary indexed form-data POST payload...");
-            var formRequest1 = new HttpRequestMessage(HttpMethod.Post, saveUrl)
+            foreach (var targetUrl in candidateSaveUrls)
             {
-                Content = createIndexedFormData()
-            };
-            if (!string.IsNullOrEmpty(token))
-                formRequest1.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            if (!string.IsNullOrEmpty(tenantCode))
-                formRequest1.Headers.Add("tenant_code", tenantCode);
-
-            var res = await ClientFactory.CreateClient("Medico").SendAsync(formRequest1, SafeToken);
-            string primaryBody = "";
-            try { primaryBody = await res.Content.ReadAsStringAsync(); } catch { }
-            Console.WriteLine($"[SAVE] Form-Data Response: {(int)res.StatusCode} {res.StatusCode} | Body: {primaryBody}");
-
-            // 2. Fallback: Direct JSON array POST (only if form-data failed)
-            if (!res.IsSuccessStatusCode && res.StatusCode != System.Net.HttpStatusCode.Unauthorized)
-            {
-                Console.WriteLine("[SAVE] Form-data returned non-success, trying direct JSON array POST...");
-                var jsonContent = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-                var jsonRequest = new HttpRequestMessage(HttpMethod.Post, saveUrl)
+                try
                 {
-                    Content = jsonContent
-                };
-                if (!string.IsNullOrEmpty(token))
-                    jsonRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-                if (!string.IsNullOrEmpty(tenantCode))
-                    jsonRequest.Headers.Add("tenant_code", tenantCode);
-
-                res = await ClientFactory.CreateClient("Medico").SendAsync(jsonRequest, SafeToken);
-                Console.WriteLine($"[SAVE] Direct JSON Response: {(int)res.StatusCode} {res.StatusCode}");
-            }
-
-
-            // 3. DTO wrapper JSON POST to saveresultentry
-            if (!res.IsSuccessStatusCode && res.StatusCode != System.Net.HttpStatusCode.Unauthorized)
-            {
-                Console.WriteLine("[SAVE] Trying DTO wrapper POST payload...");
-                var dtoRequest = new HttpRequestMessage(HttpMethod.Post, saveUrl)
-                {
-                    Content = new StringContent(dtoObjectJson, System.Text.Encoding.UTF8, "application/json")
-                };
-                if (!string.IsNullOrEmpty(token))
-                    dtoRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-                if (!string.IsNullOrEmpty(tenantCode))
-                    dtoRequest.Headers.Add("tenant_code", tenantCode);
-
-                res = await ClientFactory.CreateClient("Medico").SendAsync(dtoRequest, SafeToken);
-                Console.WriteLine($"[SAVE] DTO JSON Response: {(int)res.StatusCode} {res.StatusCode}");
-            }
-
-            // 4. MultipartFormDataContent fallback to saveresultentry
-            if (!res.IsSuccessStatusCode && res.StatusCode != System.Net.HttpStatusCode.Unauthorized)
-            {
-                Console.WriteLine("[SAVE] Direct JSON attempts failed, trying MultipartFormDataContent fallback...");
-                var formData = new MultipartFormDataContent();
-                formData.Add(new StringContent(json, System.Text.Encoding.UTF8, "application/json"), "results");
-                formData.Add(new StringContent(json, System.Text.Encoding.UTF8, "application/json"), "payload");
-                formData.Add(new StringContent(json, System.Text.Encoding.UTF8, "application/json"), "data");
-                formData.Add(new StringContent(dtoObjectJson, System.Text.Encoding.UTF8, "application/json"), "saveRequest");
-
-                if (!string.IsNullOrEmpty(reportImageBase64))
-                {
-                    try
+                    // 1. Try indexed form-data payload (matching report/labreport specification)
+                    Console.WriteLine($"[SAVE] Trying Target DB Save URL (Form Data): {targetUrl}");
+                    var req1 = new HttpRequestMessage(HttpMethod.Post, targetUrl)
                     {
-                        string rawBase64 = reportImageBase64.Contains(",") 
-                            ? reportImageBase64.Split(',')[1] 
-                            : reportImageBase64;
-                        byte[] imgBytes = Convert.FromBase64String(rawBase64);
-                        string filename = string.IsNullOrEmpty(reportImageFileName) ? "report_attachment.jpg" : reportImageFileName;
-                        string mime = reportImageBase64.StartsWith("data:application/pdf") ? "application/pdf" : "image/jpeg";
+                        Content = createIndexedFormData()
+                    };
+                    if (!string.IsNullOrEmpty(token)) req1.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                    if (!string.IsNullOrEmpty(tenantCode)) req1.Headers.Add("tenant_code", tenantCode);
 
-                        var c1 = new ByteArrayContent(imgBytes);
-                        c1.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mime);
-                        formData.Add(c1, "file", filename);
-
-                        var c2 = new ByteArrayContent(imgBytes);
-                        c2.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(mime);
-                        formData.Add(c2, "image_file", filename);
+                    res = await ClientFactory.CreateClient("Medico").SendAsync(req1, SafeToken);
+                    resBody = await res.Content.ReadAsStringAsync();
+                    string tb = resBody?.Trim().ToLower() ?? "";
+                    if (res.IsSuccessStatusCode && tb != "false" && tb != "0" && !tb.Contains("\"success\":false") && !tb.Contains("\"status\":false") && !tb.Contains("\"error\""))
+                    {
+                        isBackendSuccess = true;
+                        Console.WriteLine($"[SAVE] Form Data save succeeded on URL: {targetUrl}");
+                        break;
                     }
-                    catch (Exception ex)
+
+                    // 2. Try JSON Array payload (matching savePayload)
+                    Console.WriteLine($"[SAVE] Trying Target DB Save URL (JSON Array): {targetUrl}");
+                    var req2 = new HttpRequestMessage(HttpMethod.Post, targetUrl)
                     {
-                        Console.WriteLine($"[SAVE] Image conversion error: {ex.Message}");
+                        Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json")
+                    };
+                    if (!string.IsNullOrEmpty(token)) req2.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                    if (!string.IsNullOrEmpty(tenantCode)) req2.Headers.Add("tenant_code", tenantCode);
+
+                    res = await ClientFactory.CreateClient("Medico").SendAsync(req2, SafeToken);
+                    resBody = await res.Content.ReadAsStringAsync();
+                    tb = resBody?.Trim().ToLower() ?? "";
+                    if (res.IsSuccessStatusCode && tb != "false" && tb != "0" && !tb.Contains("\"success\":false") && !tb.Contains("\"status\":false") && !tb.Contains("\"error\""))
+                    {
+                        isBackendSuccess = true;
+                        Console.WriteLine($"[SAVE] JSON Array save succeeded on URL: {targetUrl}");
+                        break;
+                    }
+
+                    // 3. Fallback to DTO JSON object payload
+                    Console.WriteLine($"[SAVE] Trying Target DB Save URL (JSON DTO): {targetUrl}");
+                    var req3 = new HttpRequestMessage(HttpMethod.Post, targetUrl)
+                    {
+                        Content = new StringContent(dtoObjectJson, System.Text.Encoding.UTF8, "application/json")
+                    };
+                    if (!string.IsNullOrEmpty(token)) req3.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                    if (!string.IsNullOrEmpty(tenantCode)) req3.Headers.Add("tenant_code", tenantCode);
+
+                    res = await ClientFactory.CreateClient("Medico").SendAsync(req3, SafeToken);
+                    resBody = await res.Content.ReadAsStringAsync();
+                    tb = resBody?.Trim().ToLower() ?? "";
+                    if (res.IsSuccessStatusCode && tb != "false" && tb != "0" && !tb.Contains("\"success\":false") && !tb.Contains("\"status\":false") && !tb.Contains("\"error\""))
+                    {
+                        isBackendSuccess = true;
+                        Console.WriteLine($"[SAVE] DTO JSON save succeeded on URL: {targetUrl}");
+                        break;
                     }
                 }
-
-                var formRequest = new HttpRequestMessage(HttpMethod.Post, saveUrl)
+                catch (Exception exCandidate)
                 {
-                    Content = formData
-                };
-                if (!string.IsNullOrEmpty(token))
-                    formRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-                if (!string.IsNullOrEmpty(tenantCode))
-                    formRequest.Headers.Add("tenant_code", tenantCode);
-
-                res = await ClientFactory.CreateClient("Medico").SendAsync(formRequest, SafeToken);
-                Console.WriteLine($"[SAVE] FormData Response: {(int)res.StatusCode} {res.StatusCode}");
+                    Console.WriteLine($"[SAVE] Candidate URL '{targetUrl}' exception: {exCandidate.Message}");
+                }
             }
-            string resBody = "";
+
+            // Sync to CaseSheet investigation result API conditionally
+            bool csSyncSuccess = false;
             try
             {
-                resBody = await res.Content.ReadAsStringAsync();
-                Console.WriteLine($"[SAVE] Response Body: {resBody}");
+                if (lre1 != null && lre1.Any())
+                {
+                    var csMap = new Dictionary<int, string>();
+                    try
+                    {
+                        var csCandidates = new[]
+                        {
+                            $"api/CaseSheet/investigation?op_id={RequestGuid}",
+                            $"api/CaseSheet/investigation?ip_id={RequestGuid}"
+                        };
+                        foreach (var ep in csCandidates)
+                        {
+                            var csReq = new HttpRequestMessage(HttpMethod.Get, ep);
+                            if (!string.IsNullOrEmpty(token)) csReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                            if (!string.IsNullOrEmpty(tenantCode)) csReq.Headers.Add("tenant_code", tenantCode);
+                            var csRes = await ClientFactory.CreateClient("Medico").SendAsync(csReq, SafeToken);
+                            if (csRes.IsSuccessStatusCode)
+                            {
+                                var csJson = await csRes.Content.ReadAsStringAsync();
+                                var csObj = JsonConvert.DeserializeObject<CaseSheetInvestigationDetailDto>(csJson);
+                                if (csObj?.tests != null)
+                                {
+                                    foreach (var t in csObj.tests)
+                                    {
+                                        if (!string.IsNullOrEmpty(t.inv_det_id) && t.test_code.HasValue && t.test_code.Value > 0)
+                                        {
+                                            csMap[t.test_code.Value] = t.inv_det_id;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+
+                    var groups = lre1.GroupBy(x => {
+                        if (!string.IsNullOrEmpty(x.inv_det_id)) return x.inv_det_id;
+                        int parentTCode = x.fromtcode > 0 ? x.fromtcode : x.tcode;
+                        if (csMap.TryGetValue(parentTCode, out var mappedInvDetId)) return mappedInvDetId;
+                        if (csMap.TryGetValue(x.tcode, out var mappedTCodeInvDetId)) return mappedTCodeInvDetId;
+                        return x.testresultid != Guid.Empty ? x.testresultid.ToString() : (parentTCode > 0 ? parentTCode.ToString() : Guid.NewGuid().ToString());
+                    });
+
+                    foreach (var grp in groups)
+                    {
+                        var entriesWithResult = grp.Where(x => !string.IsNullOrWhiteSpace(x.enteredresult)).ToList();
+                        if (!entriesWithResult.Any()) continue;
+
+                        string targetInvDetId = grp.FirstOrDefault(x => !string.IsNullOrEmpty(x.inv_det_id))?.inv_det_id;
+                        if (string.IsNullOrEmpty(targetInvDetId) && Guid.TryParse(grp.Key, out _))
+                        {
+                            targetInvDetId = grp.Key;
+                        }
+
+                        if (string.IsNullOrEmpty(targetInvDetId) || !Guid.TryParse(targetInvDetId, out _))
+                        {
+                            continue;
+                        }
+
+                        var parts = new List<string>();
+                        foreach (var entry in entriesWithResult)
+                        {
+                            string val = entry.enteredresult?.Trim() ?? "";
+                            string unit = entry.unitname?.Trim() ?? "";
+                            string pName = !string.IsNullOrWhiteSpace(entry.col2) ? entry.col2.Trim() : (!string.IsNullOrWhiteSpace(entry.testname) ? entry.testname.Trim() : "");
+
+                            if (grp.Count() > 1 || (!string.IsNullOrWhiteSpace(entry.col2) && entry.col2.Trim() != (grp.FirstOrDefault()?.testname?.Trim() ?? "")))
+                            {
+                                if (!string.IsNullOrEmpty(pName))
+                                {
+                                    parts.Add(!string.IsNullOrEmpty(unit) ? $"{pName}: {val} {unit}" : $"{pName}: {val}");
+                                }
+                                else
+                                {
+                                    parts.Add(!string.IsNullOrEmpty(unit) ? $"{val} {unit}" : val);
+                                }
+                            }
+                            else
+                            {
+                                parts.Add(!string.IsNullOrEmpty(unit) ? $"{val} {unit}" : val);
+                            }
+                        }
+
+                        string combinedResultValue = string.Join(", ", parts);
+                        string notes = grp.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.footermessage))?.footermessage 
+                                    ?? grp.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.conclusionforfixedtext))?.conclusionforfixedtext 
+                                    ?? "";
+
+                        var payload = new
+                        {
+                            inv_det_id = targetInvDetId,
+                            result_value = combinedResultValue,
+                            result_notes = notes,
+                            result_status = "COMPLETED"
+                        };
+
+                        var csResultReq = new HttpRequestMessage(HttpMethod.Post, "api/CaseSheet/investigation/result")
+                        {
+                            Content = new StringContent(JsonConvert.SerializeObject(payload), System.Text.Encoding.UTF8, "application/json")
+                        };
+                        if (!string.IsNullOrEmpty(token)) csResultReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                        if (!string.IsNullOrEmpty(tenantCode)) csResultReq.Headers.Add("tenant_code", tenantCode);
+                        var csResOut = await ClientFactory.CreateClient("Medico").SendAsync(csResultReq, SafeToken);
+                        if (csResOut.IsSuccessStatusCode)
+                        {
+                            csSyncSuccess = true;
+                        }
+                    }
+                }
             }
-            catch (Exception ex)
+            catch (Exception csSyncEx)
             {
-                Console.WriteLine($"[SAVE] Failed to read response body: {ex.Message}");
+                Console.WriteLine($"[SAVE] CaseSheet result sync error: {csSyncEx.Message}");
             }
 
-            string trimmedBody = resBody?.Trim().ToLower() ?? "";
-            bool isBackendSuccess = res.IsSuccessStatusCode && 
-                                    trimmedBody != "false" && 
-                                    trimmedBody != "0" && 
-                                    !trimmedBody.Contains("\"success\":false") && 
-                                    !trimmedBody.Contains("\"status\":false") && 
-                                    !trimmedBody.Contains("\"error\"");
-
-            if (isBackendSuccess)
+            if (isBackendSuccess || csSyncSuccess)
             {
                 saveError = false;
-                saveMessage = "âœ“ Results saved successfully!";
+                saveMessage = "✓ Results saved successfully!";
                 Toast.ShowSuccess("Results saved successfully!");
+
+                if (!string.IsNullOrEmpty(saveTargetGuid))
+                {
+                    RequestGuid = saveTargetGuid;
+                    _resolvedBilledGuid = saveTargetGuid;
+                }
+
+                // Reload latest saved data from backend DB using the billed requestguid
+                await LoadResults();
 
                 UpdateUserNames();
                 await RunCalculations();
@@ -6127,6 +6635,7 @@ public class test_result_properties {
 public class LabResultEntry
     {
         public string requestguid { get; set; } = string.Empty;
+        public string? inv_det_id { get; set; }
         public string? custcode { get; set; }
         public int slno { get; set; }
         public int tcode { get; set; }
@@ -6227,6 +6736,40 @@ public class User_Master {
 public class UserMasterWrapper {
     [Newtonsoft.Json.JsonProperty("user")]
     public User_Master User { get; set; }
+}
+
+public class CaseSheetInvestigationDetailDto
+{
+    public string? inv_id { get; set; }
+    public string? inv_code { get; set; }
+    public DateTimeOffset? inv_date { get; set; }
+    public string? notes { get; set; }
+    public bool? is_urgent { get; set; }
+    public string? status { get; set; }
+    public List<CaseSheetTestDto>? tests { get; set; }
+}
+
+public class CaseSheetTestDto
+{
+    public string? inv_det_id { get; set; }
+    public string? inv_id { get; set; }
+    public string? diag_id { get; set; }
+    public int? sno { get; set; }
+    public string? test_name { get; set; }
+    public int? test_code { get; set; }
+    public string? test_category { get; set; }
+    public decimal? quantity { get; set; }
+    public decimal? rate { get; set; }
+    public decimal? amount { get; set; }
+    public string? result_status { get; set; }
+    public string? result_value { get; set; }
+    public DateTimeOffset? result_date { get; set; }
+    public string? result_notes { get; set; }
+    public bool? is_billed { get; set; }
+    public string? tenant_code { get; set; }
+    public bool? isdeleted { get; set; }
+    public DateTimeOffset? created_at { get; set; }
+    public DateTimeOffset? updated_at { get; set; }
 }
 
 }

@@ -168,6 +168,7 @@ namespace Booking.Models
     public class LabResultEntry
     {
         public string requestguid { get; set; } = string.Empty;
+        public string? inv_det_id { get; set; }
         public int slno { get; set; }
         public int tcode { get; set; }
         public string? testname { get; set; }

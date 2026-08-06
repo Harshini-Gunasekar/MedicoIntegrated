@@ -4,6 +4,7 @@
 @using SharedComponents.Rcl.Models
 @using UserDetailsModel = SharedComponents.Rcl.Models.UserDetailsModel;
 @using LIMS_Backend.Model
+@using ResultEntryModel = medico_backend.Model.ResultEntryModel;
 @rendermode @(new InteractiveServerRenderMode(prerender:false))
 
 @using LabCare.Models
@@ -17,6 +18,7 @@
 @inject ProtectedSessionStorage _sessionStorage
 @inject Booking.Services.ToastService Toast
 @inject TenantSessionState TenantState
+@inject Booking.Services.HmsBillingService HmsBillingService
 
 <PageTitle>Result Search - LIMS</PageTitle>
 
@@ -673,6 +675,7 @@
                                 <th style="color: white; border: none; padding: 16px; font-size: 0.75rem; letter-spacing: 0.05em;">PATIENT NAME</th>
                                 <th style="color: white; border: none; padding: 16px; font-size: 0.75rem; letter-spacing: 0.05em;">REFERRED BY</th>
                                 <th style="color: white; border: none; padding: 16px; font-size: 0.75rem; letter-spacing: 0.05em; text-align: center;">STATUS</th>
+                                <th style="color: white; border: none; padding: 16px; font-size: 0.75rem; letter-spacing: 0.05em; text-align: center;">BILLING STATUS</th>
                                 <th style="color: white; border: none; padding: 16px; font-size: 0.75rem; letter-spacing: 0.05em;">PATH. NO</th>
                             </tr>
                         </thead>
@@ -717,6 +720,30 @@
                                                 @(isPending ? "IN PROGRESS" : "FINISHED")
                                             </span>
                                         </td>
+                                        <td style="text-align: center;">
+                                            @{
+                                                bool isBilled = false;
+                                                string key1 = item.opvisitid ?? "";
+                                                string key2 = item.requestguid != Guid.Empty ? item.requestguid.ToString() : "";
+                                                string key3 = item.custcode ?? "";
+
+                                                if (!string.IsNullOrEmpty(key1) && unbilledStatusDict.TryGetValue(key1, out var b1))
+                                                {
+                                                    isBilled = b1;
+                                                }
+                                                else if (!string.IsNullOrEmpty(key2) && unbilledStatusDict.TryGetValue(key2, out var b2))
+                                                {
+                                                    isBilled = b2;
+                                                }
+                                                else if (!string.IsNullOrEmpty(key3) && unbilledStatusDict.TryGetValue(key3, out var b3))
+                                                {
+                                                    isBilled = b3;
+                                                }
+                                            }
+                                            <span style="font-size: 0.65rem; font-weight: 800; padding: 4px 10px; border-radius: 6px; border: 1.5px solid @(isBilled ? "#86efac" : "#fca5a5"); color: @(isBilled ? "#16a34a" : "#dc2626"); background: @(isBilled ? "#f0fdf4" : "#fef2f2"); text-transform: uppercase;">
+                                                @(isBilled ? "PAID" : "UNPAID")
+                                            </span>
+                                        </td>
                                         <td style="color: #cbd5e1; font-weight: 600; font-size: 0.75rem;">@(string.IsNullOrEmpty(item.billnoprint) ? "PATH-2026-000" : item.billnoprint)</td>
                                     </tr>
                                 }
@@ -724,7 +751,7 @@
                             else
                             {
                                 <tr>
-                                    <td colspan="8" class="re-empty-state">
+                                    <td colspan="9" class="re-empty-state">
                                         <div class="re-empty-icon"><i class="fas fa-flask"></i></div>
                                         <p>@(isLoading ? "Searching..." : "No results found. Adjust filters and try again.")</p>
                                     </td>
@@ -1077,6 +1104,243 @@
     private PatientStatusDto? patientStatusFlow;
     private bool isLoadingFlow = false;
     private bool _isFallbackAttempt = false;
+    private System.Collections.Concurrent.ConcurrentDictionary<string, bool> unbilledStatusDict = new();
+
+    private async Task LoadUnbilledStatusAsync()
+    {
+        try
+        {
+            var unbilledList = await HmsBillingService.GetAllUnbilledChargesAsync();
+            if (unbilledList != null && unbilledList.Any())
+            {
+                foreach (var charge in unbilledList)
+                {
+                    bool isBilled = charge.billedstatus ?? false;
+                    
+                    if (!string.IsNullOrEmpty(charge.opvisitid))
+                    {
+                        unbilledStatusDict.AddOrUpdate(charge.opvisitid, isBilled, (k, v) => v || isBilled);
+                    }
+                    if (!string.IsNullOrEmpty(charge.entryid))
+                    {
+                        unbilledStatusDict.AddOrUpdate(charge.entryid, isBilled, (k, v) => v || isBilled);
+                    }
+                }
+            }
+        }
+        catch { }
+
+        // Query api/UnbilledCharges/by-visit?opvisitid= for each visit in filteredResults
+        if (filteredResults != null && filteredResults.Any())
+        {
+            try
+            {
+                string userToken = token;
+                string effectiveTenantCode = "0010";
+
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null)
+                    {
+                        if (!string.IsNullOrEmpty(userResult.Value.TenantCode)) effectiveTenantCode = userResult.Value.TenantCode;
+                        if (!string.IsNullOrEmpty(userResult.Value.AuthToken)) userToken = userResult.Value.AuthToken;
+                    }
+                }
+                catch { }
+
+                void AttachHeaders(HttpRequestMessage req)
+                {
+                    if (!string.IsNullOrEmpty(userToken))
+                        req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userToken);
+                    if (!string.IsNullOrEmpty(effectiveTenantCode))
+                        req.Headers.Add("tenant_code", effectiveTenantCode);
+                }
+
+                var client = ClientFactory.CreateClient("Medico");
+
+                var distinctVisits = filteredResults
+                    .Select(x => !string.IsNullOrEmpty(x.opvisitid) ? x.opvisitid : (x.requestguid != Guid.Empty ? x.requestguid.ToString() : (x.custcode ?? "")))
+                    .Where(k => !string.IsNullOrEmpty(k))
+                    .Distinct()
+                    .Take(50)
+                    .ToList();
+
+                foreach (var visitId in distinctVisits)
+                {
+                    try
+                    {
+                        var req = new HttpRequestMessage(HttpMethod.Get, $"api/UnbilledCharges/by-visit?opvisitid={visitId}");
+                        AttachHeaders(req);
+                        var res = await client.SendAsync(req);
+                        if (res.IsSuccessStatusCode && res.StatusCode != System.Net.HttpStatusCode.NoContent)
+                        {
+                            var jsonStr = await res.Content.ReadAsStringAsync();
+                            if (!string.IsNullOrWhiteSpace(jsonStr))
+                            {
+                                bool isBilled = false;
+                                var trimmed = jsonStr.Trim();
+                                if (trimmed.StartsWith("["))
+                                {
+                                    var list = JsonConvert.DeserializeObject<List<Newtonsoft.Json.Linq.JObject>>(trimmed);
+                                    if (list != null && list.Any())
+                                    {
+                                        isBilled = list.Any(x => (bool?)x["billedstatus"] == true || (bool?)x["isbilled"] == true || (bool?)x["is_billed"] == true);
+                                    }
+                                }
+                                else if (trimmed.StartsWith("{"))
+                                {
+                                    var jObj = Newtonsoft.Json.Linq.JObject.Parse(trimmed);
+                                    isBilled = (bool?)jObj["billedstatus"] == true || (bool?)jObj["isbilled"] == true || (bool?)jObj["is_billed"] == true;
+                                }
+
+                                unbilledStatusDict[visitId] = isBilled;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                await InvokeAsync(StateHasChanged);
+            }
+            catch { }
+        }
+    }
+
+    private async Task HydrateResultsWithEntryDataAsync(List<ViewResultSearch> results)
+    {
+        if (results == null || !results.Any()) return;
+
+        string userToken = token;
+        string effectiveTenantCode = "0010";
+
+        try
+        {
+            var userResult = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
+            if (userResult.Success && userResult.Value != null)
+            {
+                if (!string.IsNullOrEmpty(userResult.Value.TenantCode)) effectiveTenantCode = userResult.Value.TenantCode;
+                if (!string.IsNullOrEmpty(userResult.Value.AuthToken)) userToken = userResult.Value.AuthToken;
+            }
+        }
+        catch { }
+
+        void AttachHeaders(HttpRequestMessage req)
+        {
+            if (!string.IsNullOrEmpty(userToken))
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userToken);
+            if (!string.IsNullOrEmpty(effectiveTenantCode))
+                req.Headers.Add("tenant_code", effectiveTenantCode);
+        }
+
+        var client = ClientFactory.CreateClient("Medico");
+        bool updatedAny = false;
+
+        var distinctItems = results.Where(r => r.requestguid != Guid.Empty || !string.IsNullOrEmpty(r.custcode)).ToList();
+
+        foreach (var item in distinctItems)
+        {
+            try
+            {
+                string rawGuid = item.requestguid != Guid.Empty ? item.requestguid.ToString() : "";
+                string custCode = item.custcode ?? "";
+                string activeGuid = rawGuid;
+
+                // Resolve billed requestguid via list-bills (the GUID used for saving)
+                try
+                {
+                    var searchPayload = new { page = 1, pagesize = 100, search = !string.IsNullOrEmpty(custCode) ? custCode : rawGuid };
+                    var listReq = new HttpRequestMessage(HttpMethod.Post, "api/HmsBilling/list-bills")
+                    {
+                        Content = new StringContent(JsonConvert.SerializeObject(searchPayload), System.Text.Encoding.UTF8, "application/json")
+                    };
+                    AttachHeaders(listReq);
+                    var listRes = await client.SendAsync(listReq);
+                    if (listRes.IsSuccessStatusCode)
+                    {
+                        var listJson = await listRes.Content.ReadAsStringAsync();
+                        var listResp = JsonConvert.DeserializeObject<HmsBillListResponse>(listJson);
+                        if (listResp?.data != null && listResp.data.Any())
+                        {
+                            var matched = listResp.data.FirstOrDefault(b =>
+                                (!string.IsNullOrEmpty(b.opvisitid) && b.opvisitid.Equals(rawGuid, StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrEmpty(b.requestguid) && b.requestguid.Equals(rawGuid, StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrEmpty(b.custcode) && b.custcode.Equals(custCode, StringComparison.OrdinalIgnoreCase)) ||
+                                (b.custid.HasValue && b.custid.Value.ToString() == custCode)
+                            );
+                            if (matched != null && !string.IsNullOrEmpty(matched.requestguid))
+                            {
+                                activeGuid = matched.requestguid;
+                            }
+                        }
+                    }
+                }
+                catch { }
+
+                if (string.IsNullOrEmpty(activeGuid)) continue;
+
+                var candidateUrls = new List<string>
+                {
+                    $"api/labresult/loadtestresultentry?requestguid={activeGuid}&custcode={custCode}",
+                    $"api/labresult/loadtestresultentry?requestguid={activeGuid}",
+                    $"api/labresult/loadtestresultentry?request_id={activeGuid}&custcode={custCode}",
+                    $"api/labresult/loadtestresultentry?request_id={activeGuid}"
+                };
+
+                if (!string.IsNullOrEmpty(rawGuid) && rawGuid != activeGuid)
+                {
+                    candidateUrls.Add($"api/labresult/loadtestresultentry?requestguid={rawGuid}&custcode={custCode}");
+                    candidateUrls.Add($"api/labresult/loadtestresultentry?request_id={rawGuid}&custcode={custCode}");
+                }
+
+                foreach (var cUrl in candidateUrls)
+                {
+                    try
+                    {
+                        var req = new HttpRequestMessage(HttpMethod.Get, cUrl);
+                        AttachHeaders(req);
+                        var res = await client.SendAsync(req);
+                        if (res.IsSuccessStatusCode && res.StatusCode != System.Net.HttpStatusCode.NoContent)
+                        {
+                            var jsonStr = await res.Content.ReadAsStringAsync();
+                            if (!string.IsNullOrWhiteSpace(jsonStr))
+                            {
+                                var entryModel = JsonConvert.DeserializeObject<ResultEntryModel>(jsonStr);
+                                if (entryModel != null)
+                                {
+                                    bool isEnteredInDb = entryModel.results != null && entryModel.results.Any(x => 
+                                        !string.IsNullOrWhiteSpace(x.enteredresult) || 
+                                        x.resultenteredby > 0 || 
+                                        x.isauthorized1 || 
+                                        x.isauthorized2
+                                    );
+
+                                    if (isEnteredInDb)
+                                    {
+                                        item.resultstatus = true;
+                                        item.requestresultstatus = true;
+                                        item.isentered = true;
+                                        item.hasresults = true;
+                                        item.status = 1;
+                                        item.enteredresultcount = (item.enteredresultcount ?? 0) + 1;
+                                        updatedAny = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        if (updatedAny)
+        {
+            await InvokeAsync(StateHasChanged);
+        }
+    }
 
     // Local model for test details
     public class TestDetailItem
@@ -1304,27 +1568,8 @@
             selectedTestDetails.Clear();
             StateHasChanged();
 
-            string sd = fromDate.ToString("yyyy-MM-dd");
-            string ed = toDate.ToString("yyyy-MM-dd");
-
-            string apiUrl = $"api/labresult/viewresultsearch?fromdate={Uri.EscapeDataString(sd)}&todate={Uri.EscapeDataString(ed)}&t={DateTime.Now.Ticks}";
-
-            if (branchID != 0)
-            {
-                apiUrl += $"&enteredbhcode={branchID}&bhcode={branchID}";
-            }
-
-            if (selectedDoctorCode != 0)
-            {
-                apiUrl += $"&refcode={selectedDoctorCode}";
-            }
-
-            if (!string.IsNullOrWhiteSpace(testNameSearch))
-            {
-                apiUrl += $"&testname={Uri.EscapeDataString(testNameSearch.TrimEnd('.'))}";
-            }
-
-            var request = new HttpRequestMessage(HttpMethod.Get, apiUrl);
+            // Use /api/CaseSheet/investigation/all for getting custid, patient name and doctor name
+            var request = new HttpRequestMessage(HttpMethod.Get, "api/CaseSheet/investigation/all");
 
             // Pass authentication and tenant headers explicitly
             try {
@@ -1344,7 +1589,6 @@
                         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", user.AuthToken);
                     }
 
-                    // Force bhcode header to match selected branchID to override global session handler
                     if (branchID > 0)
                     {
                         if (request.Headers.Contains("bhcode")) request.Headers.Remove("bhcode");
@@ -1357,48 +1601,142 @@
             if (res.IsSuccessStatusCode && !token.IsCancellationRequested)
             {
                 var content = await res.Content.ReadAsStringAsync(token);
-                var bills = JsonConvert.DeserializeObject<List<ViewResultSearch>>(content);
+                var investigations = JsonConvert.DeserializeObject<List<CaseSheetInvestigationAllDto>>(content);
 
-                if (bills != null && bills.Any() && !token.IsCancellationRequested)
+                if (investigations != null && investigations.Any() && !token.IsCancellationRequested)
                 {
-                    allResults = bills.ToList();
-                    ApplyFilters();
-                }
-                else if (!token.IsCancellationRequested)
-                {
-                    if (!_isFallbackAttempt && (toDate - fromDate).TotalDays < 30)
+                    var newResultsList = new List<ViewResultSearch>();
+
+                    // Fetch individual test names for each investigation via /api/CaseSheet/investigation?op_id=...
+                    var detailTasks = investigations.Select(async invHeader =>
                     {
-                        _isFallbackAttempt = true;
-                        string fallbackSd = toDate.AddDays(-90).ToString("yyyy-MM-dd");
-                        string fallbackUrl = $"api/labresult/viewresultsearch?fromdate={Uri.EscapeDataString(fallbackSd)}&todate={Uri.EscapeDataString(ed)}&t={DateTime.Now.Ticks}";
-                        if (branchID != 0) fallbackUrl += $"&enteredbhcode={branchID}&bhcode={branchID}";
-                        if (selectedDoctorCode != 0) fallbackUrl += $"&refcode={selectedDoctorCode}";
-                        
-                        var fallbackReq = new HttpRequestMessage(HttpMethod.Get, fallbackUrl);
+                        string opId = invHeader.op_id ?? "";
+                        string ipId = invHeader.ip_id ?? "";
+                        if (string.IsNullOrEmpty(opId) && string.IsNullOrEmpty(ipId))
+                        {
+                            return (Header: invHeader, Tests: (List<CaseSheetTestDto>?)null);
+                        }
+
+                        string queryParam = !string.IsNullOrEmpty(opId) ? $"op_id={Uri.EscapeDataString(opId)}" : $"ip_id={Uri.EscapeDataString(ipId)}";
+                        var detailReq = new HttpRequestMessage(HttpMethod.Get, $"api/CaseSheet/investigation?{queryParam}");
                         try {
                             var userResult = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
                             if (userResult.Success && userResult.Value != null)
                             {
-                                if (!string.IsNullOrEmpty(userResult.Value.TenantCode)) fallbackReq.Headers.Add("tenant_code", userResult.Value.TenantCode);
-                                if (!string.IsNullOrEmpty(userResult.Value.AuthToken)) fallbackReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userResult.Value.AuthToken);
+                                if (!string.IsNullOrEmpty(userResult.Value.TenantCode)) detailReq.Headers.Add("tenant_code", userResult.Value.TenantCode);
+                                if (!string.IsNullOrEmpty(userResult.Value.AuthToken)) detailReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userResult.Value.AuthToken);
                             }
                         } catch {}
 
-                        var fallbackRes = await ClientFactory.CreateClient("Medico").SendAsync(fallbackReq, token);
-                        if (fallbackRes.IsSuccessStatusCode)
-                        {
-                            var fbContent = await fallbackRes.Content.ReadAsStringAsync(token);
-                            var fbBills = JsonConvert.DeserializeObject<List<ViewResultSearch>>(fbContent);
-                            if (fbBills != null && fbBills.Any())
+                        try {
+                            var detailRes = await ClientFactory.CreateClient("Medico").SendAsync(detailReq, token);
+                            if (detailRes.IsSuccessStatusCode)
                             {
-                                fromDate = toDate.AddDays(-90);
-                                allResults = fbBills.ToList();
-                                ApplyFilters();
-                                return;
+                                var detailContent = await detailRes.Content.ReadAsStringAsync(token);
+                                var detailObj = JsonConvert.DeserializeObject<CaseSheetInvestigationDetailDto>(detailContent);
+                                return (Header: invHeader, Tests: detailObj?.tests);
                             }
+                        } catch {}
+
+                        return (Header: invHeader, Tests: (List<CaseSheetTestDto>?)null);
+                    });
+
+                    var detailedResults = await Task.WhenAll(detailTasks);
+
+                    int snoCounter = 1;
+                    foreach (var item in detailedResults)
+                    {
+                        var invHeader = item.Header;
+                        var tests = item.Tests;
+                        Guid reqGuid = Guid.Empty;
+                        if (!string.IsNullOrEmpty(invHeader.op_id) && Guid.TryParse(invHeader.op_id, out var parsedOp))
+                        {
+                            reqGuid = parsedOp;
+                        }
+                        else if (!string.IsNullOrEmpty(invHeader.ip_id) && Guid.TryParse(invHeader.ip_id, out var parsedIp))
+                        {
+                            reqGuid = parsedIp;
+                        }
+                        else if (!string.IsNullOrEmpty(invHeader.inv_id) && Guid.TryParse(invHeader.inv_id, out var parsedInv))
+                        {
+                            reqGuid = parsedInv;
+                        }
+                        string pCustCode = !string.IsNullOrEmpty(invHeader.custcode) ? invHeader.custcode : (invHeader.custid?.ToString() ?? "");
+                        string pName = invHeader.patient_name ?? "";
+                        string pMobile = invHeader.mobile ?? "";
+                        string dName = invHeader.name ?? "";
+                        int dCode = invHeader.dcode ?? 0;
+                        DateTimeOffset reqDate = invHeader.inv_date ?? DateTimeOffset.Now;
+                        int currSno = snoCounter++;
+
+                        if (tests != null && tests.Any())
+                        {
+                            foreach (var test in tests)
+                            {
+                                bool hasVal = !string.IsNullOrWhiteSpace(test.result_value);
+                                bool isFin = test.result_status == "COMPLETED" || test.result_status == "FINISHED" || test.result_status == "ENTERED" || test.result_status == "SAVED" || hasVal;
+
+                                var vrs = new ViewResultSearch
+                                {
+                                    requestsno = currSno,
+                                    requestguid = reqGuid,
+                                    custcode = pCustCode,
+                                    opvisitid = invHeader.op_id,
+                                    name = pName,
+                                    mobile = pMobile,
+                                    dcode = dCode,
+                                    doctor = dName,
+                                    doctorfullname = dName,
+                                    testname = test.test_name,
+                                    tcode = test.test_code?.ToString(),
+                                    requestdatetime = reqDate,
+                                    billnoprint = invHeader.inv_code,
+                                    resultstatus = isFin,
+                                    requestresultstatus = (invHeader.report_status == "COMPLETED" || invHeader.report_status == "FINISHED" || invHeader.report_status == "ENTERED" || isFin),
+                                    status = isFin ? 1 : 0,
+                                    hasresults = isFin,
+                                    isentered = isFin,
+                                    enteredresultcount = isFin ? 1 : 0
+                                };
+                                newResultsList.Add(vrs);
+                            }
+                        }
+                        else
+                        {
+                            bool isHeaderDone = (invHeader.report_status == "COMPLETED" || invHeader.report_status == "FINISHED" || invHeader.report_status == "ENTERED");
+
+                            var vrs = new ViewResultSearch
+                            {
+                                requestsno = currSno,
+                                requestguid = reqGuid,
+                                custcode = pCustCode,
+                                opvisitid = invHeader.op_id,
+                                name = pName,
+                                mobile = pMobile,
+                                dcode = dCode,
+                                doctor = dName,
+                                doctorfullname = dName,
+                                testname = "Investigation Request",
+                                requestdatetime = reqDate,
+                                billnoprint = invHeader.inv_code,
+                                resultstatus = isHeaderDone,
+                                requestresultstatus = isHeaderDone,
+                                status = isHeaderDone ? 1 : 0,
+                                hasresults = isHeaderDone,
+                                isentered = isHeaderDone,
+                                enteredresultcount = isHeaderDone ? 1 : 0
+                            };
+                            newResultsList.Add(vrs);
                         }
                     }
 
+                    allResults = newResultsList;
+                    await LoadUnbilledStatusAsync();
+                    ApplyFilters();
+                    _ = HydrateResultsWithEntryDataAsync(allResults);
+                }
+                else if (!token.IsCancellationRequested)
+                {
                     allResults = new();
                     filteredResults = new();
                 }
@@ -1407,7 +1745,7 @@
         catch (TaskCanceledException) { }
         catch (Exception ex)
         {
-            /* Console.WriteLine($"Error searching results: {ex.Message}") */;
+            Console.WriteLine($"Error searching results via CaseSheet API: {ex.Message}");
         }
         finally
         {
@@ -1495,13 +1833,18 @@
 
     private bool IsRecordPending(ViewResultSearch item)
     {
-        bool isDone = item.resultstatus == true || item.isauthorized1 == true || item.isauthorized2 == true || item.requestresultstatus == true;
-        return !isDone;
+        return !IsRecordFinished(item);
     }
 
     private bool IsRecordFinished(ViewResultSearch item)
     {
-        return item.resultstatus == true || item.isauthorized1 == true || item.isauthorized2 == true || item.requestresultstatus == true;
+        if (item == null) return false;
+        return item.resultstatus == true || 
+               item.isauthorized1 == true || 
+               item.isauthorized2 == true || 
+               item.requestresultstatus == true || 
+               item.isentered == true || 
+               item.enteredresultcount > 0;
     }
 
     private string GetRecordStatus(ViewResultSearch item)
@@ -1762,14 +2105,79 @@
     {
         await SaveFilterStateAsync();
 
+        string targetGuid = item.requestguid != Guid.Empty ? item.requestguid.ToString() : "";
+        string custCode = item.custcode ?? "";
+        string activeGuid = targetGuid;
+
+        try
+        {
+            var searchPayload = new { page = 1, pagesize = 100, search = !string.IsNullOrEmpty(custCode) ? custCode : targetGuid };
+            var listReq = new HttpRequestMessage(HttpMethod.Post, "api/HmsBilling/list-bills")
+            {
+                Content = new StringContent(JsonConvert.SerializeObject(searchPayload), System.Text.Encoding.UTF8, "application/json")
+            };
+            var userResult = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
+            if (userResult.Success && userResult.Value != null)
+            {
+                if (!string.IsNullOrEmpty(userResult.Value.TenantCode)) listReq.Headers.Add("tenant_code", userResult.Value.TenantCode);
+                if (!string.IsNullOrEmpty(userResult.Value.AuthToken)) listReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userResult.Value.AuthToken);
+            }
+            var listRes = await ClientFactory.CreateClient("Medico").SendAsync(listReq);
+            if (listRes.IsSuccessStatusCode)
+            {
+                var listJson = await listRes.Content.ReadAsStringAsync();
+                var listResp = JsonConvert.DeserializeObject<HmsBillListResponse>(listJson);
+                if (listResp?.data != null && listResp.data.Any())
+                {
+                    var matched = listResp.data.FirstOrDefault(b =>
+                        (!string.IsNullOrEmpty(b.opvisitid) && b.opvisitid.Equals(targetGuid, StringComparison.OrdinalIgnoreCase)) ||
+                        (!string.IsNullOrEmpty(b.requestguid) && b.requestguid.Equals(targetGuid, StringComparison.OrdinalIgnoreCase)) ||
+                        (!string.IsNullOrEmpty(b.custcode) && b.custcode.Equals(custCode, StringComparison.OrdinalIgnoreCase)) ||
+                        (b.custid.HasValue && b.custid.Value.ToString() == custCode)
+                    );
+                    if (matched != null && !string.IsNullOrEmpty(matched.requestguid))
+                    {
+                        activeGuid = matched.requestguid;
+                    }
+                }
+            }
+        }
+        catch { }
+
         if (reportType == "Culture")
         {
-            NavigationManager.NavigateTo($"/culture-result-entry?requestGuid={item.requestguid}&custcode={item.custcode}");
+            NavigationManager.NavigateTo($"/culture-result-entry?requestGuid={activeGuid}&custcode={custCode}");
         }
         else
         {
-            NavigationManager.NavigateTo($"/result-entry?requestGuid={item.requestguid}&custcode={item.custcode}");
+            NavigationManager.NavigateTo($"/result-entry?requestGuid={activeGuid}&custcode={custCode}");
         }
+    }
+
+    private string CleanBase64String(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var s = raw.Trim();
+        if (s.StartsWith("\"") && s.EndsWith("\""))
+        {
+            try { s = JsonConvert.DeserializeObject<string>(s) ?? s.Trim('"'); }
+            catch { s = s.Trim('"'); }
+        }
+        if (s.StartsWith("{") && s.EndsWith("}"))
+        {
+            try
+            {
+                var jObj = Newtonsoft.Json.Linq.JObject.Parse(s);
+                var token = jObj["data"] ?? jObj["result"] ?? jObj["pdf"] ?? jObj["report"] ?? jObj["file"];
+                if (token != null) s = token.ToString();
+            }
+            catch { }
+        }
+        if (s.StartsWith("data:application/pdf;base64,"))
+        {
+            s = s.Substring("data:application/pdf;base64,".Length);
+        }
+        return s.Trim();
     }
 
     private async Task PreviewReportBase64(string endpointWithParams)
@@ -1778,31 +2186,183 @@
         {
             isLoading = true;
             StateHasChanged();
-            
-            var request = new HttpRequestMessage(HttpMethod.Get, $"api/{endpointWithParams}");
-            
-            // Pass authentication and tenant headers explicitly
+
+            string userToken = "";
+            string effectiveTenantCode = "0010";
+
             var userResult = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
             if (userResult.Success && userResult.Value != null)
             {
                 var user = userResult.Value;
-                if (!string.IsNullOrEmpty(user.TenantCode))
-                    request.Headers.Add("tenant_code", user.TenantCode);
-                if (!string.IsNullOrEmpty(user.AuthToken))
-                    request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", user.AuthToken);
+                if (!string.IsNullOrEmpty(user.TenantCode)) effectiveTenantCode = user.TenantCode;
+                if (!string.IsNullOrEmpty(user.AuthToken)) userToken = user.AuthToken;
             }
 
-            var resp = await ClientFactory.CreateClient("Medico").SendAsync(request);
-            if (!resp.IsSuccessStatusCode)
+            void AttachHeaders(HttpRequestMessage req)
             {
-                var err = await resp.Content.ReadAsStringAsync();
-                Toast.ShowError($"Preview failed: {err}");
-                return;
+                if (!string.IsNullOrEmpty(userToken))
+                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", userToken);
+                if (!string.IsNullOrEmpty(effectiveTenantCode))
+                    req.Headers.Add("tenant_code", effectiveTenantCode);
             }
 
-            var raw = await resp.Content.ReadAsStringAsync();
-            var base64 = raw.Trim().Trim('"');
-            await JSRuntime.InvokeVoidAsync("openPdfPreview", base64);
+            // Extract target row item if available
+            string targetGuid = "";
+            string targetCustCode = "";
+            if (selectedRowIndex >= 0 && selectedRowIndex < filteredResults.Count)
+            {
+                var selectedItem = filteredResults[selectedRowIndex];
+                targetGuid = selectedItem.requestguid != null ? selectedItem.requestguid.ToString() : "";
+                targetCustCode = selectedItem.custcode ?? "";
+            }
+
+            // Resolve billed requestguid via list-bills FIRST
+            string billedGuid = "";
+            if (!string.IsNullOrEmpty(targetCustCode) || !string.IsNullOrEmpty(targetGuid))
+            {
+                try
+                {
+                    var searchPayloads = new List<object>();
+                    if (!string.IsNullOrEmpty(targetCustCode))
+                        searchPayloads.Add(new { page = 1, pagesize = 100, search = targetCustCode });
+                    if (!string.IsNullOrEmpty(targetGuid))
+                        searchPayloads.Add(new { page = 1, pagesize = 100, search = targetGuid });
+
+                    foreach (var pObj in searchPayloads)
+                    {
+                        var listReq = new HttpRequestMessage(HttpMethod.Post, "api/HmsBilling/list-bills")
+                        {
+                            Content = new StringContent(JsonConvert.SerializeObject(pObj), System.Text.Encoding.UTF8, "application/json")
+                        };
+                        AttachHeaders(listReq);
+                        var listRes = await ClientFactory.CreateClient("Medico").SendAsync(listReq);
+                        if (listRes.IsSuccessStatusCode)
+                        {
+                            var listJson = await listRes.Content.ReadAsStringAsync();
+                            var listResp = JsonConvert.DeserializeObject<HmsBillListResponse>(listJson);
+                            if (listResp?.data != null && listResp.data.Any())
+                            {
+                                var matched = listResp.data.FirstOrDefault(b =>
+                                    (!string.IsNullOrEmpty(b.opvisitid) && b.opvisitid.Equals(targetGuid, StringComparison.OrdinalIgnoreCase)) ||
+                                    (!string.IsNullOrEmpty(b.requestguid) && b.requestguid.Equals(targetGuid, StringComparison.OrdinalIgnoreCase)) ||
+                                    (!string.IsNullOrEmpty(b.custcode) && b.custcode.Equals(targetCustCode, StringComparison.OrdinalIgnoreCase))
+                                );
+                                if (matched != null && !string.IsNullOrEmpty(matched.requestguid))
+                                {
+                                    billedGuid = matched.requestguid;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            string activeGuid = !string.IsNullOrEmpty(billedGuid) ? billedGuid : targetGuid;
+
+            // Trigger pre-fetch of loadtestresultentry to hydrate backend report dataset
+            if (!string.IsNullOrEmpty(activeGuid))
+            {
+                try
+                {
+                    var preReq = new HttpRequestMessage(HttpMethod.Get, $"api/labresult/loadtestresultentry?requestguid={activeGuid}&custcode={targetCustCode}");
+                    AttachHeaders(preReq);
+                    await ClientFactory.CreateClient("Medico").SendAsync(preReq);
+                }
+                catch { }
+            }
+
+            var candidateUrls = new List<string>();
+
+            string cleanEp = !string.IsNullOrEmpty(endpointWithParams) 
+                ? (endpointWithParams.StartsWith("api/", StringComparison.OrdinalIgnoreCase) ? endpointWithParams : $"api/{endpointWithParams}") 
+                : "";
+
+            if (!string.IsNullOrEmpty(cleanEp))
+            {
+                candidateUrls.Add(cleanEp);
+            }
+
+            if (!string.IsNullOrEmpty(activeGuid))
+            {
+                bool isLetterheadVal = isLetterhead;
+                candidateUrls.Add($"api/report/labreport?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}");
+                candidateUrls.Add($"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}");
+                candidateUrls.Add($"api/report/culture-report?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}");
+                candidateUrls.Add($"api/report/labreport?op_id={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}");
+                candidateUrls.Add($"api/report/getopcasesheet?op_id={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}");
+            }
+
+            string base64Result = "";
+            foreach (var cUrl in candidateUrls)
+            {
+                try
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Get, cUrl);
+                    AttachHeaders(req);
+                    var resp = await ClientFactory.CreateClient("Medico").SendAsync(req);
+                    if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent)
+                    {
+                        var raw = await resp.Content.ReadAsStringAsync();
+                        string cleaned = CleanBase64String(raw);
+                        if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
+                        {
+                            base64Result = cleaned;
+                            break;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrEmpty(base64Result) && !string.IsNullOrEmpty(activeGuid))
+            {
+                try
+                {
+                    var reportPayload = new
+                    {
+                        ClientID = effectiveTenantCode,
+                        DataSource = "DataSet3",
+                        ReportName = "LabReport.rdlc",
+                        RequestGUID = activeGuid,
+                        TCode = "",
+                        IsAuthorized2Finished = false,
+                        QueryString = $"SampleID={activeGuid}",
+                        Parameters = new List<object>
+                        {
+                            new { Name = "RequestGUID", Values = new List<string> { activeGuid } },
+                            new { Name = "tcode", Values = new List<string> { "" } },
+                            new { Name = "IsLetterHead", Values = new List<string> { isLetterhead ? "true" : "false" } }
+                        }
+                    };
+                    var postReq = new HttpRequestMessage(HttpMethod.Post, "api/report/labreport")
+                    {
+                        Content = new StringContent(JsonConvert.SerializeObject(reportPayload), System.Text.Encoding.UTF8, "application/json")
+                    };
+                    AttachHeaders(postReq);
+                    var postRes = await ClientFactory.CreateClient("Medico").SendAsync(postReq);
+                    if (postRes.IsSuccessStatusCode && postRes.StatusCode != System.Net.HttpStatusCode.NoContent)
+                    {
+                        var raw = await postRes.Content.ReadAsStringAsync();
+                        string cleaned = CleanBase64String(raw);
+                        if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
+                        {
+                            base64Result = cleaned;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (!string.IsNullOrEmpty(base64Result) && base64Result.Length >= 50)
+            {
+                await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64Result, "Lab Report Preview");
+            }
+            else
+            {
+                Toast.ShowError("Preview failed: Report generation returned empty data.");
+            }
         }
         catch (Exception ex)
         {
@@ -2027,6 +2587,9 @@ public class ViewResultSearch
     public bool? isscan { get; set; }
     public bool? isculture { get; set; }
     public int? branchid { get; set; }
+    public string? opvisitid { get; set; }
+    public bool? isentered { get; set; }
+    public int? enteredresultcount { get; set; }
 
     public bool? isinvestigation { get; set; }
     public bool? istextreport { get; set; }
@@ -2068,4 +2631,56 @@ public class Doctor_Master { public int code { get; set; } public int dcode { ge
 public class DepartmentMasterModel { public int dcode { get; set; } public string? departmentname { get; set; } public List<int>? gcode { get; set; } }
 public class UserDepartmentMaster { public int? gcode { get; set; } public string? departmentname { get; set; } }
 public class GetUser { public dynamic? user { get; set; } public List<UserDepartmentMaster>? department { get; set; } }
+
+public class CaseSheetInvestigationAllDto
+{
+    public string? inv_id { get; set; }
+    public string? inv_code { get; set; }
+    public DateTimeOffset? inv_date { get; set; }
+    public string? report_status { get; set; }
+    public string? sheet_status { get; set; }
+    public long? custid { get; set; }
+    public string? patient_name { get; set; }
+    public string? mobile { get; set; }
+    public string? custcode { get; set; }
+    public int? dcode { get; set; }
+    public string? name { get; set; }
+    public string? op_id { get; set; }
+    public string? ip_id { get; set; }
+    public int? total_tests { get; set; }
+}
+
+public class CaseSheetInvestigationDetailDto
+{
+    public string? inv_id { get; set; }
+    public string? inv_code { get; set; }
+    public DateTimeOffset? inv_date { get; set; }
+    public string? notes { get; set; }
+    public bool? is_urgent { get; set; }
+    public string? status { get; set; }
+    public List<CaseSheetTestDto>? tests { get; set; }
+}
+
+public class CaseSheetTestDto
+{
+    public string? inv_det_id { get; set; }
+    public string? inv_id { get; set; }
+    public string? diag_id { get; set; }
+    public int? sno { get; set; }
+    public string? test_name { get; set; }
+    public int? test_code { get; set; }
+    public string? test_category { get; set; }
+    public decimal? quantity { get; set; }
+    public decimal? rate { get; set; }
+    public decimal? amount { get; set; }
+    public string? result_status { get; set; }
+    public string? result_value { get; set; }
+    public DateTimeOffset? result_date { get; set; }
+    public string? result_notes { get; set; }
+    public bool? is_billed { get; set; }
+    public string? tenant_code { get; set; }
+    public bool? isdeleted { get; set; }
+    public DateTimeOffset? created_at { get; set; }
+    public DateTimeOffset? updated_at { get; set; }
+}
 }

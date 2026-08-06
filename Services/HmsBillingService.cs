@@ -88,7 +88,26 @@ namespace Booking.Services
         {
             try
             {
+                // Sanitize paymode codes: if 0, convert to null
+                if (request.pmc1.HasValue && request.pmc1.Value == 0) request.pmc1 = null;
+                if (request.pmc2.HasValue && request.pmc2.Value == 0) request.pmc2 = null;
+                if (request.pmc3.HasValue && request.pmc3.Value == 0) request.pmc3 = null;
+
+                // Zero out amount if corresponding pmc is null
+                if (!request.pmc1.HasValue) request.pmc1_amount = null;
+                if (!request.pmc2.HasValue) request.pmc2_amount = null;
+                if (!request.pmc3.HasValue) request.pmc3_amount = null;
+
+                // Ensure reference_no and bank_name are non-null strings
+                request.reference_no ??= "";
+                request.bank_name ??= "";
+
                 var response = await _http.PostAsJsonAsync("api/HmsBilling/add-payment", request);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errText = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine($"[AddPaymentAsync] Failed ({response.StatusCode}): {errText}");
+                }
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
@@ -317,6 +336,31 @@ namespace Booking.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"Error fetching unbilled charges: {ex.Message}");
+                return new List<UnbilledChargeSummary>();
+            }
+        }
+
+        public async Task<List<UnbilledChargeSummary>> GetAllUnbilledChargesAsync(string? op_id = null, string? ip_id = null)
+        {
+            try
+            {
+                var queryParams = new List<string>();
+                if (!string.IsNullOrEmpty(ip_id))
+                {
+                    queryParams.Add($"ip_id={Uri.EscapeDataString(ip_id)}");
+                }
+                if (!string.IsNullOrEmpty(op_id))
+                {
+                    queryParams.Add($"op_id={Uri.EscapeDataString(op_id)}");
+                }
+
+                var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
+                var rawJson = await _http.GetStringAsync($"api/UnbilledCharges/get-all{queryString}");
+                return ParseUnbilledChargeSummaryList(rawJson);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching all unbilled charges: {ex.Message}");
                 return new List<UnbilledChargeSummary>();
             }
         }

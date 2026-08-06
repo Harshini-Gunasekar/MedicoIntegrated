@@ -590,8 +590,118 @@
         })();
     };
 
-    window.openPdfPreview = function (base64String) {
-        openPdfInNewTab(base64String);
+    window.openPdfPreviewModal = function (base64String, title) {
+        try {
+            if (!base64String) return false;
+            if (base64String.startsWith('data:application/pdf;base64,')) {
+                base64String = base64String.substring('data:application/pdf;base64,'.length);
+            }
+            const cleanBase64 = base64String.trim().replace(/\s/g, '');
+            const byteCharacters = atob(cleanBase64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'application/pdf' });
+            const blobUrl = URL.createObjectURL(blob);
+
+            // Remove existing modal if present
+            let existingModal = document.getElementById('pdfPreviewInPageModal');
+            if (existingModal) existingModal.remove();
+
+            const modal = document.createElement('div');
+            modal.id = 'pdfPreviewInPageModal';
+            modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.75);backdrop-filter:blur(6px);animation:fadeIn 0.2s ease-in-out;';
+
+            const modalContent = document.createElement('div');
+            modalContent.style.cssText = 'background:#ffffff;border-radius:16px;width:92vw;max-width:1100px;height:90vh;display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4);overflow:hidden;border:1px solid #cbd5e1;';
+
+            const header = document.createElement('div');
+            header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;';
+            header.innerHTML = `
+                <div style="display:flex;align-items:center;gap:12px;">
+                    <span style="font-size:22px;color:#4f46e5;">📄</span>
+                    <div>
+                        <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">${title || 'Lab Report Preview'}</h3>
+                        <p style="margin:0;font-size:12px;color:#64748b;">Medical Laboratory Results</p>
+                    </div>
+                </div>
+                <div style="display:flex;align-items:center;gap:10px;">
+                    <button id="pdfModalDownloadBtn" style="padding:7px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.15s;">
+                        <span>⬇️ Download</span>
+                    </button>
+                    <button id="pdfModalCloseBtn" style="width:34px;height:34px;border-radius:8px;border:1px solid #cbd5e1;background:#fff;color:#64748b;font-weight:bold;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all 0.15s;">
+                        ✕
+                    </button>
+                </div>`;
+            modalContent.appendChild(header);
+
+            const iframe = document.createElement('iframe');
+            iframe.src = blobUrl;
+            iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%;background:#525659;';
+            modalContent.appendChild(iframe);
+
+            modal.appendChild(modalContent);
+            document.body.appendChild(modal);
+
+            document.getElementById('pdfModalCloseBtn').onclick = () => {
+                modal.remove();
+                URL.revokeObjectURL(blobUrl);
+            };
+            document.getElementById('pdfModalDownloadBtn').onclick = () => {
+                window.downloadPdfFile(cleanBase64, 'Lab_Report.pdf');
+            };
+            modal.onclick = (e) => {
+                if (e.target === modal) {
+                    modal.remove();
+                    URL.revokeObjectURL(blobUrl);
+                }
+            };
+            document.addEventListener('keydown', function escListener(e) {
+                if (e.key === 'Escape') {
+                    modal.remove();
+                    URL.revokeObjectURL(blobUrl);
+                    document.removeEventListener('keydown', escListener);
+                }
+            });
+
+            return true;
+        } catch (err) {
+            console.error('openPdfPreviewModal failed:', err);
+            return false;
+        }
+    };
+
+    window.openPdfPreview = function (base64String, title) {
+        return window.openPdfPreviewModal(base64String, title);
+    };
+
+    window.downloadPdfFile = function (base64String, fileName) {
+        try {
+            if (!base64String) return;
+            if (base64String.startsWith('data:application/pdf;base64,')) {
+                base64String = base64String.substring('data:application/pdf;base64,'.length);
+            }
+            const cleanBase64 = base64String.trim().replace(/\s/g, '');
+            const byteCharacters = atob(cleanBase64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'application/pdf' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = fileName || 'Lab_Report.pdf';
+            document.body.appendChild(link);
+            link.click();
+            setTimeout(function() {
+                if (document.body.contains(link)) document.body.removeChild(link);
+            }, 500);
+        } catch (err) {
+            console.error('downloadPdfFile failed:', err);
+        }
     };
 
     window.previewBillPdf = async function (billDataJson) {

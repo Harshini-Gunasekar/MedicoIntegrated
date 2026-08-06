@@ -23,6 +23,8 @@ namespace Booking.Models
     public class HmsBillSummary
     {
         public string? requestguid { get; set; }
+        public decimal? custid { get; set; }
+        public string? custcode { get; set; }
         public Guid? ip_id { get; set; }
         public string? bill_no { get; set; }
         public string? patient_name { get; set; }
