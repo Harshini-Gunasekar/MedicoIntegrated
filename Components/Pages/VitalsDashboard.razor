@@ -1,719 +1,1689 @@
 @page "/vitals-dashboard"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @implements IDisposable
-@using Booking.Models
-@using SharedComponents.Rcl.Models
-@inject Booking.Services.DashboardService DashboardService
-@inject Booking.Services.ToastService ToastService
+@inject MedicoAi.Services.UserSessionState Session
+@inject MedicoAi.Services.MedicoApiService MedicoApi
+@inject MedicoAi.Services.VitalsSignalRService VitalsSignalR
+@inject MedicoAi.Services.OllamaAiService AiService
 @inject IJSRuntime JSRuntime
-@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
-@inject Booking.Services.VitalsService VitalsService
 
-<PageTitle>Clinical Analytics Dashboard</PageTitle>
+<PageTitle>Patient Flow Intelligence - Medico AI Dashboard</PageTitle>
 
-<div class="dashboard-page lc-fadeInUp">
-    @if (isLoading)
-    {
-        <div class="d-flex justify-content-center align-items-center" style="min-height: 480px; flex-direction: column; gap: 20px;">
-            <div class="spinner-grow text-indigo" role="status" style="width: 3.5rem; height: 3.5rem; color: #6366f1;">
-                <span class="visually-hidden">Loading...</span>
+<div style="background-color: #f7f5f0; min-height: 100vh; width: 100%; max-width: 100%; overflow-x: hidden; box-sizing: border-box; padding: 0.75rem 1rem; font-family: system-ui, -apple-system, sans-serif; color: #1e293b; display: flex; flex-direction: column; gap: 0.6rem;">
+
+    <!-- TOP HEADER CONTROL BAR -->
+    <div style="display: flex; align-items: center; justify-content: flex-end; gap: 0.75rem; background: transparent; padding: 0.2rem 0.25rem;">
+        <!-- Bell Notification Icon Only -->
+        <button style="width: 36px; height: 36px; border-radius: 50%; background: #fef3c7; border: 1px solid #fde68a; display: flex; align-items: center; justify-content: center; color: #b45309; cursor: pointer; position: relative; box-shadow: 0 1px 3px rgba(0,0,0,0.05);"
+                @onclick="ShowWaitTimeAlertPopup" title="View Patient Long Wait Alerts (> 20 mins)">
+            <i class="bi bi-bell-fill" style="font-size: 1rem;"></i>
+            @if ((longWaitVitals?.Count ?? 0) > 0)
+            {
+                <span style="position: absolute; top: -3px; right: -3px; background-color: #dc2626; color: #ffffff; font-size: 0.65rem; font-weight: 900; min-width: 18px; height: 18px; border-radius: 9px; display: flex; align-items: center; justify-content: center; padding: 0 4px; border: 2px solid #ffffff; box-shadow: 0 2px 4px rgba(0,0,0,0.15);">
+                    @(longWaitVitals.Count)
+                </span>
+            }
+        </button>
+    </div>
+
+    <!-- ROW 1: 6 KPI CARDS -->
+    <div style="display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.65rem; width: 100%;">
+        
+        <!-- Card 1: TODAY TOTAL TOKENS -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 12px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.25rem;">
+                <div style="width: 22px; height: 22px; border-radius: 50%; background-color: #dbeafe; display: flex; align-items: center; justify-content: center; color: #2563eb; font-size: 0.7rem; flex-shrink: 0;">
+                    <i class="bi bi-people-fill"></i>
+                </div>
+                <span style="font-size: 0.62rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">1. TODAY TOTAL TOKENS</span>
             </div>
-            <div class="text-secondary fw-bold" style="font-size: 15px; letter-spacing: -0.2px;">Fetching Live Clinical Analytics...</div>
-        </div>
-    }
-    else
-    {
-        <!-- TOP BAR WITH LIVE FEED & INTERACTIVE CALENDAR FILTER CONTROL -->
-        <div class="dashboard-top-bar flex-wrap gap-3">
-            <div class="d-flex align-items-center gap-3">
-                <div class="live-status-pill">
-                    <span class="live-dot"></span>
-                    <span>PATIENT FLOW INTELLIGENCE | OUTPATIENT DASHBOARD</span>
-                </div>
-                <div class="top-bar-divider d-none d-md-block"></div>
-                <span class="top-bar-date d-none d-md-inline-block"><i class="bi bi-clock me-1"></i> @DateTime.Now.ToString("dd MMM yyyy, h:mm tt")</span>
+            <div style="font-size: 1.4rem; font-weight: 900; color: #2563eb; line-height: 1; margin-bottom: 0.2rem;">
+                @TodayTotalCount
             </div>
-
-            <!-- INTERACTIVE CALENDAR DATE RANGE PICKER BAR -->
-            <div class="calendar-filter-bar">
-                <div class="calendar-input-group">
-                    <i class="bi bi-calendar-event text-indigo me-1"></i>
-                    <input type="date" class="cal-date-input" @bind="selectedFromDate" @bind:after="OnDateRangeUpdatedAsync" />
-                    <span class="text-muted fw-semibold">to</span>
-                    <input type="date" class="cal-date-input" @bind="selectedToDate" @bind:after="OnDateRangeUpdatedAsync" />
-                </div>
-
-                <div class="cal-quick-pills">
-                    <button class="cal-pill @(activeRangePreset == "today" ? "active" : "")" @onclick='() => SetRangePreset("today")'>Today</button>
-                    <button class="cal-pill @(activeRangePreset == "7days" ? "active" : "")" @onclick='() => SetRangePreset("7days")'>7 Days</button>
-                    <button class="cal-pill @(activeRangePreset == "30days" ? "active" : "")" @onclick='() => SetRangePreset("30days")'>30 Days</button>
-                </div>
-
-                <button class="btn-toggle-mini-cal" @onclick="ToggleMiniCalendar" title="Toggle Interactive Mini Calendar">
-                    <i class="bi bi-calendar3"></i>
-                </button>
+            <div style="font-size: 0.62rem; color: #64748b; margin-bottom: 0.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                Total Tests: @TodayTotalCount | Completed: @TodayCompletedCount | VIP: @TodayVipCount
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="background-color: #dcfce7; color: #15803d; font-size: 0.6rem; font-weight: 800; padding: 2px 7px; border-radius: 4px;">
+                    ↑ Live Combined Today
+                </span>
+                <svg width="40" height="14" viewBox="0 0 60 20" style="overflow: visible;">
+                    <polyline points="0,15 15,10 30,12 45,5 60,8" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
             </div>
         </div>
 
-        <!-- POPUP INTERACTIVE MINI CALENDAR WIDGET -->
-        @if (showMiniCalendar)
-        {
-            <div class="mini-calendar-floating-card lc-fadeInUp">
-                <div class="cal-header">
-                    <button class="btn-cal-nav" @onclick="PrevMonth"><i class="bi bi-chevron-left"></i></button>
-                    <span class="cal-month-title">@calendarMonth.ToString("MMMM yyyy")</span>
-                    <button class="btn-cal-nav" @onclick="NextMonth"><i class="bi bi-chevron-right"></i></button>
+        <!-- Card 2: OVERALL AVG WAIT TIME -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 12px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.25rem;">
+                <div style="width: 22px; height: 22px; border-radius: 50%; background-color: #e0f2fe; display: flex; align-items: center; justify-content: center; color: #0284c7; font-size: 0.7rem; flex-shrink: 0;">
+                    <i class="bi bi-clock-history"></i>
                 </div>
-                <div class="cal-weekdays">
-                    <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
-                </div>
-                <div class="cal-days-grid">
-                    @foreach (var day in GetCalendarDays(calendarMonth))
-                    {
-                        var isCurrentMonth = day.Month == calendarMonth.Month;
-                        var isSelected = day.Date == selectedDate?.Date;
-                        var isToday = day.Date == DateTime.Today;
-
-                        <button class="cal-day-cell @(isCurrentMonth ? "" : "other-month") @(isToday ? "today" : "") @(isSelected ? "selected" : "")"
-                                @onclick="() => SelectCalendarDay(day)">
-                            @day.Day
-                        </button>
-                    }
-                </div>
-                <div class="cal-footer">
-                    <span class="text-muted" style="font-size: 11px;">Selected: <strong>@selectedDate?.ToString("dd MMM yyyy")</strong></span>
-                    <button class="btn-cal-close" @onclick="ToggleMiniCalendar">Close</button>
-                </div>
+                <span style="font-size: 0.62rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">2. OVERALL AVG WAIT TIME</span>
             </div>
-        }
-
-        <!-- TOP KPI GRID 6 CARDS -->
-        <div class="kpi-grid-6">
-            <!-- Card 1: Total Visits -->
-            <div class="kpi-card card-accent-teal">
-                <div class="kpi-top-row">
-                    <div class="kpi-icon-box box-teal"><span class="material-symbols-outlined">group</span></div>
-                    <span class="kpi-title">PATIENT THROUGHPUT</span>
-                </div>
-                <div class="kpi-value-row">
-                    <span class="kpi-value">@dashboardData.TodaySnapshot.TotalVisits</span>
-                </div>
-                <div class="kpi-trend-row">
-                    @{
-                        var throughputTrend = dashboardData.PastDaysTrend?.Select(d => (double)d.TokenCount).ToList() ?? new List<double>();
-                        bool throughputUp = throughputTrend.Count >= 2 && throughputTrend.Last() >= throughputTrend[throughputTrend.Count - 2];
-                    }
-                    <span class="kpi-trend-text text-teal"><i class="bi @(throughputUp ? "bi-arrow-up-right" : "bi-arrow-down-right")"></i> @(throughputUp ? "Up" : "Down")</span>
-                    <svg width="40" height="14" viewBox="0 0 60 20" style="overflow:visible; opacity:0.7;">
-                        <polyline points="@GenerateSparklinePoints(throughputTrend)" fill="none" stroke="#14b8a6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                </div>
+            <div style="font-size: 1.4rem; font-weight: 900; color: #0284c7; line-height: 1; margin-bottom: 0.2rem;">
+                @TodayAvgWaitTime mins
             </div>
-
-            <!-- Card 2: Average Wait Time (TAT) -->
-            <div class="kpi-card card-accent-blue">
-                <div class="kpi-top-row">
-                    <div class="kpi-icon-box box-blue"><span class="material-symbols-outlined">timer</span></div>
-                    <span class="kpi-title">AVERAGE WAIT TIME</span>
-                </div>
-                <div class="kpi-value-row">
-                    <span class="kpi-value">@(overallAvgWaitTime)</span>
-                    <span class="kpi-unit">mins</span>
-                </div>
-                <div class="kpi-trend-row">
-                    @{
-                        var waitTrend = dashboardData.PastDaysTrend?.Select(d => (double)d.WaitingForDoctor).ToList() ?? new List<double>();
-                        bool waitDown = waitTrend.Count >= 2 && waitTrend.Last() <= waitTrend[waitTrend.Count - 2];
-                    }
-                    <span class="kpi-trend-text text-blue"><i class="bi @(waitDown ? "bi-arrow-down-right" : "bi-arrow-up-right")"></i> @(waitDown ? "Improved" : "Higher")</span>
-                    <svg width="40" height="14" viewBox="0 0 60 20" style="overflow:visible; opacity:0.7;">
-                        <polyline points="@GenerateSparklinePoints(waitTrend)" fill="none" stroke="#3b82f6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                </div>
+            <div style="font-size: 0.62rem; color: #64748b; margin-bottom: 0.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                Done: @TodayCompletedCount | In-Progress: @TodayInProgressCount | Waiting: @TodayWaitingCount
             </div>
-
-            <!-- Card 3: Peak Arrival Time -->
-            <div class="kpi-card card-accent-green">
-                <div class="kpi-top-row">
-                    <div class="kpi-icon-box box-green"><span class="material-symbols-outlined">groups</span></div>
-                    <span class="kpi-title">PEAK ARRIVAL TIME</span>
-                </div>
-                <div class="kpi-value-row">
-                    <span class="kpi-value" style="font-size: 22px;">@peakArrivalHour</span>
-                </div>
-                <div class="kpi-trend-row">
-                    @{
-                        var peakTrend = dashboardData.HourlyDistributionToday?.Select(h => (double)h.TokenCount).ToList() ?? new List<double>();
-                        bool peakUp = peakTrend.Count >= 2 && peakTrend.Last() >= peakTrend[peakTrend.Count - 2];
-                    }
-                    <span class="kpi-trend-text text-green"><i class="bi @(peakUp ? "bi-arrow-up-right" : "bi-arrow-down-right")"></i> Today</span>
-                    <svg width="40" height="14" viewBox="0 0 60 20" style="overflow:visible; opacity:0.7;">
-                        <polyline points="@GenerateSparklinePoints(peakTrend)" fill="none" stroke="#10b981" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                </div>
-            </div>
-
-            <!-- Card 4: Active Doctors -->
-            <div class="kpi-card card-accent-indigo">
-                <div class="kpi-top-row">
-                    <div class="kpi-icon-box box-indigo"><i class="bi bi-person-heart" style="font-size:1.3rem;"></i></div>
-                    <span class="kpi-title">ACTIVE DOCTORS</span>
-                </div>
-                <div class="kpi-value-row">
-                    <span class="kpi-value">@dashboardData.TodaySnapshot.DoctorsActive</span>
-                </div>
-                <div class="kpi-trend-row">
-                    @{
-                        // Use throughput trend divided by 5 (min 1) as a proxy for active doctors since we don't have historical active doctors count
-                        var docTrend = dashboardData.PastDaysTrend?.Select(d => Math.Max(1.0, (double)d.TokenCount / 5.0)).ToList() ?? new List<double>();
-                        bool docUp = docTrend.Count >= 2 && docTrend.Last() >= docTrend[docTrend.Count - 2];
-                    }
-                    <span class="kpi-trend-text text-indigo"><i class="bi @(docUp ? "bi-arrow-up-right" : "bi-arrow-down-right")"></i> On duty</span>
-                    <svg width="40" height="14" viewBox="0 0 60 20" style="overflow:visible; opacity:0.7;">
-                        <polyline points="@GenerateSparklinePoints(docTrend)" fill="none" stroke="#6366f1" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                </div>
-            </div>
-
-            <!-- Card 5: Queue Completion Rate -->
-            <div class="kpi-card card-accent-purple">
-                <div class="kpi-top-row">
-                    <div class="kpi-icon-box box-purple"><span class="material-symbols-outlined">check_circle</span></div>
-                    <span class="kpi-title">COMPLETION RATE</span>
-                </div>
-                <div class="kpi-value-row">
-                    <span class="kpi-value">@completionRatePct%</span>
-                </div>
-                <div class="kpi-trend-row">
-                    @{
-                        var compTrend = dashboardData.PastDaysTrend?.Select(d => d.TokenCount > 0 ? ((double)d.Completed * 100.0 / d.TokenCount) : 0).ToList() ?? new List<double>();
-                        bool compUp = compTrend.Count >= 2 && compTrend.Last() >= compTrend[compTrend.Count - 2];
-                    }
-                    <span class="kpi-trend-text text-purple"><i class="bi @(compUp ? "bi-arrow-up-right" : "bi-arrow-down-right")"></i> @(compUp ? "Up" : "Down")</span>
-                    <svg width="40" height="14" viewBox="0 0 60 20" style="overflow:visible; opacity:0.7;">
-                        <polyline points="@GenerateSparklinePoints(compTrend)" fill="none" stroke="#a855f7" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                </div>
-            </div>
-
-            <!-- Card 6: Pending Tasks -->
-            <div class="kpi-card card-accent-amber">
-                <div class="kpi-top-row">
-                    <div class="kpi-icon-box box-amber"><span class="material-symbols-outlined">pending_actions</span></div>
-                    <span class="kpi-title">PENDING TASKS</span>
-                </div>
-                <div class="kpi-value-row">
-                    <span class="kpi-value">@totalPending</span>
-                </div>
-                <div class="kpi-trend-row">
-                    @{
-                        var pendTrend = dashboardData.PastDaysTrend?.Select(d => (double)(d.TokenCount - d.Completed)).ToList() ?? new List<double>();
-                        bool pendDown = pendTrend.Count >= 2 && pendTrend.Last() <= pendTrend[pendTrend.Count - 2];
-                    }
-                    <span class="kpi-trend-text text-amber"><i class="bi @(pendDown ? "bi-arrow-down-right" : "bi-arrow-up-right")"></i> @(pendDown ? "Less" : "More")</span>
-                    <svg width="40" height="14" viewBox="0 0 60 20" style="overflow:visible; opacity:0.7;">
-                        <polyline points="@GenerateSparklinePoints(pendTrend)" fill="none" stroke="#f59e0b" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
-                    </svg>
-                </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="background-color: #e0f2fe; color: #0369a1; font-size: 0.6rem; font-weight: 800; padding: 2px 7px; border-radius: 4px;">
+                    i Real-time Average
+                </span>
+                <svg width="40" height="14" viewBox="0 0 60 20" style="overflow: visible;">
+                    <polyline points="0,8 15,12 30,5 45,14 60,10" fill="none" stroke="#0284c7" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
             </div>
         </div>
 
-        <div class="dashboard-main-grid">
-            <div class="dashboard-col">
-            <!-- Column 2: Doctor Group (Horizontal Bar Chart) -->
-            <div class="chart-card card-hover-effect">
-                <h3 class="chart-title">Doctor Group</h3>
-                @if (dashboardData.GroupWiseLast7Days == null || !dashboardData.GroupWiseLast7Days.Any())
-                {
-                    <div class="text-muted text-center py-4">No group records available.</div>
-                }
-                else
-                {
-                    <div class="chart-wrapper">
-                        <canvas id="divisionBarChart"></canvas>
-                    </div>
-                }
-            </div>
-
-            <!-- Left Card: Doctor Consultation Leaderboard - Bar Chart -->
-            <div class="chart-card card-hover-effect">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <div>
-                        <h3 class="chart-title">Doctor Consultation Leaderboard</h3>
-                    </div>
-                    <span class="badge bg-indigo-subtle text-indigo px-2 py-1" style="font-size: 10.5px; font-weight: 700;">LIVE METRICS</span>
+        <!-- Card 3: PEAK DIAGNOSTIC HOUR -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 12px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.25rem;">
+                <div style="width: 22px; height: 22px; border-radius: 50%; background-color: #dcfce7; display: flex; align-items: center; justify-content: center; color: #16a34a; font-size: 0.7rem; flex-shrink: 0;">
+                    <i class="bi bi-graph-up-arrow"></i>
                 </div>
-                @if (dashboardData.DoctorWiseLast7Days == null || !dashboardData.DoctorWiseLast7Days.Any())
-                {
-                    <div class="text-muted text-center py-4">No Doctor activity recorded in selected period.</div>
-                }
-                else
-                {
-                    <div class="chart-wrapper">
-                        <canvas id="doctorLeaderboardBarChart"></canvas>
-                    </div>
-                }
+                <span style="font-size: 0.62rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">3. PEAK DIAGNOSTIC HOUR</span>
             </div>
+            <div style="font-size: 1.05rem; font-weight: 900; color: #16a34a; line-height: 1.1; margin-bottom: 0.2rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                @TodayPeakHour
             </div>
-            <div class="dashboard-col">
-            <!-- Left Card: Clinical Consultation & Admission Flow -->
-            <div class="chart-card card-hover-effect">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <div>
-                        <h3 class="chart-title">Clinical Performance &amp; Modality Velocity</h3>
-                        <span class="chart-subtitle">Department-wise completion rate for today</span>
-                    </div>
-              
-                </div>
-
-                @{
-                    var labPct = labReg > 0 ? (labComp * 100 / labReg) : 0;
-                    var scanPct = scanReg > 0 ? (scanComp * 100 / scanReg) : 0;
-                    var vitalsPct = vitalsReg > 0 ? (vitalsComp * 100 / vitalsReg) : 0;
-                    var ogPct = ogReg > 0 ? (ogComp * 100 / ogReg) : 0;
-                    var consultPct = consultReg > 0 ? (consultComp * 100 / consultReg) : 0;
-                    
-                    var totalModalityReg = labReg + scanReg + vitalsReg + ogReg + consultReg;
-                    var totalModalityComp = labComp + scanComp + vitalsComp + ogComp + consultComp;
-                    var totalModalityPct = totalModalityReg > 0 ? (totalModalityComp * 100 / totalModalityReg) : 0;
-                }
-
-                <div class="mt-4 mb-4">
-                    <div class="d-flex justify-content-between align-items-end mb-3">
-                        <span class="text-muted" style="font-size: 12.5px; font-weight: 600;">Overall Modality Progress</span>
-                        <span class="fw-bold text-dark" style="font-size: 14px;">@totalModalityComp / @totalModalityReg <span style="color: #2563eb; font-weight: 700;" class="ms-1">(@totalModalityPct%)</span></span>
-                    </div>
-                    <br />
-                    <div style="height: 6px; border-radius: 3px; background-color: #e2e8f0; width: 100%; overflow: hidden; box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);">
-                        <div style="height: 100%; width: @(totalModalityPct)%; background: linear-gradient(90deg, #60a5fa, #2563eb); border-radius: 3px; transition: width 1s ease-in-out; box-shadow: 0 0 8px rgba(37, 99, 235, 0.4);"></div>
-                    </div>
-                </div>
-                        <div class="today-modality-row">
-                            <div class="today-mod-pill today-mod-lab">
-                                <i class="bi bi-journal-medical"></i>
-                                <div>
-                                    <div class="today-mod-val" style="font-size: 14px;">@labComp / @labReg</div>
-                                    <div class="today-mod-name">Lab</div>
-                                </div>
-                                <div class="today-mod-bar">
-                                    <div class="today-mod-bar-fill" style="width: @(labPct)%; background: #6366f1;"></div>
-                                </div>
-                            </div>
-                            <div class="today-mod-pill today-mod-scan">
-                                <i class="bi bi-display"></i>
-                                <div>
-                                    <div class="today-mod-val" style="font-size: 14px;">@scanComp / @scanReg</div>
-                                    <div class="today-mod-name">Scan</div>
-                                </div>
-                                <div class="today-mod-bar">
-                                    <div class="today-mod-bar-fill" style="width: @(scanPct)%; background: #0d9488;"></div>
-                                </div>
-                            </div>
-                            <div class="today-mod-pill today-mod-vitals">
-                                <i class="bi bi-activity"></i>
-                                <div>
-                                    <div class="today-mod-val" style="font-size: 14px;">@vitalsComp / @vitalsReg</div>
-                                    <div class="today-mod-name">Vitals</div>
-                                </div>
-                                <div class="today-mod-bar">
-                                    <div class="today-mod-bar-fill" style="width: @(vitalsPct)%; background: #16a34a;"></div>
-                                </div>
-                            </div>
-                            <div class="today-mod-pill today-mod-og">
-                                <i class="bi bi-heart-pulse"></i>
-                                <div>
-                                    <div class="today-mod-val" style="font-size: 14px;">@ogComp / @ogReg</div>
-                                    <div class="today-mod-name">OG/ECG</div>
-                                </div>
-                                <div class="today-mod-bar">
-                                    <div class="today-mod-bar-fill" style="width: @(ogPct)%; background: #9333ea;"></div>
-                                </div>
-                            </div>
-                            <div class="today-mod-pill today-mod-consult">
-                                <i class="bi bi-person-workspace"></i>
-                                <div>
-                                    <div class="today-mod-val" style="font-size: 14px;">@consultComp / @consultReg</div>
-                                    <div class="today-mod-name">Consult</div>
-                                </div>
-                                <div class="today-mod-bar">
-                                    <div class="today-mod-bar-fill" style="width: @(consultPct)%; background: #ea580c;"></div>
-                                </div>
-                            </div>
-                        </div>
+            <div style="font-size: 0.62rem; color: #64748b; margin-bottom: 0.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                Peak Volume: @TodayPeakHourCount Patients
             </div>
-                <!-- Column 1: Time Admitted Wave Graph -->
-            <div class="chart-card card-hover-effect">
-                <div class="d-flex justify-content-between align-items-center mb-1">
-                    <h3 class="chart-title">Hourly Registration Peak</h3>
-                    <span class="text-muted" style="font-size: 11px; font-weight: 500;">Distribution by hour</span>
-                </div>
-                <div class="chart-wrapper">
-                    <canvas id="hourlyDistributionChart"></canvas>
-                </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="background-color: #dcfce7; color: #15803d; font-size: 0.6rem; font-weight: 800; padding: 2px 7px; border-radius: 4px;">
+                    ↑ Live Hourly Peak
+                </span>
+                <svg width="40" height="14" viewBox="0 0 60 20" style="overflow: visible;">
+                    <polyline points="0,16 20,14 40,8 60,4" fill="none" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
             </div>
+        </div>
 
-            </div>
-            <div class="dashboard-col">
-
-            <!-- Right Card: Investigation Status Workload (Polar Area Radial Chart) -->
-            <div class="chart-card card-hover-effect">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <h3 class="chart-title">Investigation Workload</h3>
-                    <span class="badge bg-indigo-subtle text-indigo px-2 py-1" style="font-size: 10px; font-weight: 700;">POLAR CHART</span>
+        <!-- Card 4: OVERALL COMPLETION RATE -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 12px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.25rem;">
+                <div style="width: 22px; height: 22px; border-radius: 50%; background-color: #f3e8ff; display: flex; align-items: center; justify-content: center; color: #9333ea; font-size: 0.7rem; flex-shrink: 0;">
+                    <i class="bi bi-bar-chart-line-fill"></i>
                 </div>
-                @if (dashboardData.TodaySnapshot.ByInvestigationType == null || !dashboardData.TodaySnapshot.ByInvestigationType.Any())
-                {
-                    <div class="d-flex align-items-center justify-content-center h-100 text-muted py-5">
-                        No active investigation queue recorded.
-                    </div>
-                }
-                else
-                {
-                    <div class="chart-wrapper">
-                        <canvas id="investigationPolarChart"></canvas>
-                    </div>
-                }
+                <span style="font-size: 0.62rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">4. OVERALL COMPLETION RATE</span>
             </div>
+            <div style="font-size: 1.4rem; font-weight: 900; color: #9333ea; line-height: 1; margin-bottom: 0.2rem;">
+                @TodayOverallCompletionRate%
+            </div>
+            <div style="font-size: 0.62rem; color: #64748b; margin-bottom: 0.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                All Tests Done: @TodayCompletedCount/@TodayTotalCount | Waiting: @TodayWaitingCount
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="background-color: #dcfce7; color: #15803d; font-size: 0.6rem; font-weight: 800; padding: 2px 7px; border-radius: 4px;">
+                    ↑ Real-time Status
+                </span>
+                <svg width="40" height="14" viewBox="0 0 60 20" style="overflow: visible;">
+                    <polyline points="0,15 20,16 40,10 60,8" fill="none" stroke="#9333ea" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
+            </div>
+        </div>
 
-
-            <!-- Right Card: Enhanced Turnaround Time (TAT) with bar chart + doctor consultation -->
-            <div class="chart-card card-hover-effect">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                    <div>
-                        <h3 class="chart-title">Turnaround Time (TAT)</h3>
-                        <span class="chart-subtitle">Avg processing duration (mins) incl. Doctor Consultation</span>
-                    </div>
-                    <span class="badge bg-indigo-subtle text-indigo px-2 py-1" style="font-size: 11px; font-weight: 700;">Avg: @(overallAvgWaitTime) mins</span>
+        <!-- Card 5: AVG DIAGNOSTIC TIME -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 12px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.25rem;">
+                <div style="width: 22px; height: 22px; border-radius: 50%; background-color: #ffe4e6; display: flex; align-items: center; justify-content: center; color: #e11d48; font-size: 0.7rem; flex-shrink: 0;">
+                    <i class="bi bi-heart-pulse-fill"></i>
                 </div>
+                <span style="font-size: 0.62rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">5. AVG DIAGNOSTIC TIME</span>
+            </div>
+            <div style="font-size: 1.4rem; font-weight: 900; color: #e11d48; line-height: 1; margin-bottom: 0.2rem;">
+                @TodayAvgTestDuration mins
+            </div>
+            <div style="font-size: 0.62rem; color: #64748b; margin-bottom: 0.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                In Consultation: @TodayInProgressCount | Across Departments
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="background-color: #e0f2fe; color: #0369a1; font-size: 0.6rem; font-weight: 800; padding: 2px 7px; border-radius: 4px;">
+                    i Fast Department Flow
+                </span>
+                <svg width="40" height="14" viewBox="0 0 60 20" style="overflow: visible;">
+                    <polyline points="0,4 20,8 40,15 60,18" fill="none" stroke="#ef4444" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
+            </div>
+        </div>
 
-                @{
-                    // Build TAT rows - include doctor consultation from leaderboard if exists
-                    var tatRows = dashboardData.ApproxTurnaroundTime?.ToList() ?? new();
-                    double consultAvgTat = 0;
-                    if (dashboardData.DoctorWiseLast7Days != null && dashboardData.DoctorWiseLast7Days.Any())
-                    {
-                        var totalConsult = dashboardData.DoctorWiseLast7Days.Sum(d => d.TokenCount);
-                        consultAvgTat = totalConsult > 0 ? (double)totalConsult / dashboardData.DoctorWiseLast7Days.Count() : 0;
-                    }
-                    double tatMax = tatRows.Any() ? Math.Max(tatRows.Max(t => t.AvgMinutes), consultAvgTat) : Math.Max(consultAvgTat, 1);
-                }
-
-                <!-- TAT Visual Bar Chart -->
-                @if (tatRows.Any())
-                {
-                    <div class="chart-wrapper mt-2">
-                        <canvas id="tatBarChart"></canvas>
-
-                    </div>
-                }
+        <!-- Card 6: VERIFIED REPORT RATE -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 12px; padding: 0.6rem 0.75rem; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.35rem; margin-bottom: 0.25rem;">
+                <div style="width: 22px; height: 22px; border-radius: 50%; background-color: #ffedd5; display: flex; align-items: center; justify-content: center; color: #ea580c; font-size: 0.7rem; flex-shrink: 0;">
+                    <i class="bi bi-shield-check"></i>
+                </div>
+                <span style="font-size: 0.62rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">6. VERIFIED REPORT RATE</span>
+            </div>
+            <div style="font-size: 1.4rem; font-weight: 900; color: #ea580c; line-height: 1; margin-bottom: 0.2rem;">
+                @TodayVerifiedRate%
+            </div>
+            <div style="font-size: 0.62rem; color: #64748b; margin-bottom: 0.35rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="Reports Received: @TodayReportReceivedCount | Diagnostic Tokens: @DiagnosticTotalCount">
+                Reports: @TodayReportReceivedCount | Diagnostic: @DiagnosticTotalCount
+            </div>
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <span style="background-color: #dcfce7; color: #15803d; font-size: 0.6rem; font-weight: 800; padding: 2px 7px; border-radius: 4px;">
+                    ↑ Live Reports Received
+                </span>
+                <svg width="40" height="14" viewBox="0 0 60 20" style="overflow: visible;">
+                    <polyline points="0,15 20,14 40,12 60,6" fill="none" stroke="#ea580c" stroke-width="2.5" stroke-linecap="round" />
+                </svg>
             </div>
         </div>
     </div>
+
+    <!-- ROW 2: 3 MIDDLE CHART CARDS -->
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; width: 100%;">
+        
+        <!-- Box 1: DOCTOR-WISE TOTAL DIAGNOSTIC ORDERS -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 14px; padding: 0.85rem 1rem; display: flex; flex-direction: column; height: 260px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <div style="width: 20px; height: 20px; border-radius: 50%; background-color: #2563eb; color: #ffffff; font-weight: 800; font-size: 0.7rem; display: flex; align-items: center; justify-content: center;">1</div>
+                <div>
+                    <h3 style="font-size: 0.82rem; font-weight: 900; color: #475569; margin: 0; text-transform: uppercase;">DOCTOR-WISE TOTAL DIAGNOSTIC ORDERS</h3>
+                    <span style="font-size: 0.68rem; color: #64748b;">All Diagnostic Orders</span>
+                </div>
+            </div>
+            <div style="flex: 1; position: relative; width: 100%;">
+                <canvas id="doctorWiseBarChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Box 2: DIAGNOSTIC VOLUME BY DEPARTMENT -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 14px; padding: 0.85rem 1rem; display: flex; flex-direction: column; height: 260px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.5rem;">
+                <div style="width: 20px; height: 20px; border-radius: 50%; background-color: #2563eb; color: #ffffff; font-weight: 800; font-size: 0.7rem; display: flex; align-items: center; justify-content: center;">2</div>
+                <div>
+                    <h3 style="font-size: 0.82rem; font-weight: 900; color: #475569; margin: 0; text-transform: uppercase;">DIAGNOSTIC VOLUME BY DEPARTMENT</h3>
+                    <span style="font-size: 0.68rem; color: #64748b;">Test Volume: Lab vs Scan vs ECG</span>
+                </div>
+            </div>
+            <div style="flex: 1; position: relative; width: 100%;">
+                <canvas id="cardiacOrderBarChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Box 3: HOURLY OVERALL PATIENT INFLOW -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 14px; padding: 0.85rem 1rem; display: flex; flex-direction: column; height: 260px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 0.5rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <div style="width: 20px; height: 20px; border-radius: 50%; background-color: #2563eb; color: #ffffff; font-weight: 800; font-size: 0.7rem; display: flex; align-items: center; justify-content: center;">3</div>
+                    <div>
+                        <h3 style="font-size: 0.82rem; font-weight: 900; color: #475569; margin: 0; text-transform: uppercase;">HOURLY OVERALL PATIENT INFLOW</h3>
+                        <span style="font-size: 0.68rem; color: #64748b;">Combined Patient Arrivals Per Hour</span>
+                    </div>
+                </div>
+                <span style="background-color: #059669; color: #ffffff; font-size: 0.65rem; font-weight: 800; padding: 3px 10px; border-radius: 12px;">
+                    Peak Range: @TodayPeakHour (@TodayPeakHourCount Patients)
+                </span>
+            </div>
+            <div style="flex: 1; position: relative; width: 100%;">
+                <canvas id="hourlyInflowLineChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- ROW 3: 3 BOTTOM CHART CARDS -->
+    <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; width: 100%;">
+        
+        <!-- Box 4: DEPARTMENTAL COMPLETION RATE -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 14px; padding: 0.85rem 1rem; display: flex; flex-direction: column; height: 260px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem;">
+                <div style="width: 20px; height: 20px; border-radius: 50%; background-color: #2563eb; color: #ffffff; font-weight: 800; font-size: 0.7rem; display: flex; align-items: center; justify-content: center;">4</div>
+                <div>
+                    <h3 style="font-size: 0.82rem; font-weight: 900; color: #475569; margin: 0; text-transform: uppercase;">DEPARTMENTAL COMPLETION RATE</h3>
+                    <span style="font-size: 0.68rem; color: #64748b;">Completion % Across Departments</span>
+                </div>
+            </div>
+
+            <div style="flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; position: relative;">
+                <div style="position: relative; width: 145px; height: 145px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                    <canvas id="cardiologyStatusGaugeChart"></canvas>
+                    <div style="position: absolute; text-align: center;">
+                        <div style="font-size: 1.2rem; font-weight: 900; color: #2563eb;">@OverallAvgDeptCompletion%</div>
+                        <div style="font-size: 0.62rem; color: #64748b; font-weight: 700;">Avg Completion</div>
+                    </div>
+                </div>
+
+                <!-- Legend -->
+                <div style="display: flex; flex-direction: column; gap: 0.65rem; flex: 1;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 8px; height: 8px; border-radius: 50%; background-color: #06b6d4;"></span>
+                            Lab Completion
+                        </span>
+                        <span style="font-size: 0.75rem; font-weight: 900; color: #475569;">@LabCompletionRate%</span>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 8px; height: 8px; border-radius: 50%; background-color: #8b5cf6;"></span>
+                            Scan Completion
+                        </span>
+                        <span style="font-size: 0.75rem; font-weight: 900; color: #475569;">@ScanCompletionRate%</span>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.4rem; font-size: 0.75rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 8px; height: 8px; border-radius: 50%; background-color: #f43f5e;"></span>
+                            ECG Completion
+                        </span>
+                        <span style="font-size: 0.75rem; font-weight: 900; color: #475569;">@EcgCompletionRate%</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Box 5: AVERAGE DURATION BY DEPARTMENT -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 14px; padding: 0.85rem 1rem; display: flex; flex-direction: column; height: 260px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.4rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <div style="width: 20px; height: 20px; border-radius: 50%; background-color: #2563eb; color: #ffffff; font-weight: 800; font-size: 0.7rem; display: flex; align-items: center; justify-content: center;">5</div>
+                    <div>
+                        <h3 style="font-size: 0.82rem; font-weight: 900; color: #475569; margin: 0; text-transform: uppercase;">AVERAGE DURATION BY DEPARTMENT</h3>
+                        <span style="font-size: 0.68rem; color: #64748b;">Turnaround Time Mins Per Test / Token</span>
+                    </div>
+                </div>
+            </div>
+
+            <div style="flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; position: relative;">
+                <div style="position: relative; width: 130px; height: 130px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                    <canvas id="recordingDurationDonutChart"></canvas>
+                    <div style="position: absolute; text-align: center; display: flex; flex-direction: column; align-items: center;">
+                        <i class="bi bi-hourglass-split" style="color: #0284c7; font-size: 0.9rem;"></i>
+                        <div style="font-size: 0.88rem; font-weight: 900; color: #0284c7; margin-top: 1px;">@TodayAvgWaitTime mins</div>
+                        <div style="font-size: 0.6rem; color: #64748b; font-weight: 700;">Overall Average</div>
+                    </div>
+                </div>
+
+                <!-- Legend & Doctor Avg Time Box -->
+                <div style="display: flex; flex-direction: column; gap: 0.35rem; flex: 1; overflow: hidden;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background-color: #06b6d4;"></span>
+                            Lab Processing
+                        </span>
+                        <span style="font-size: 0.72rem; font-weight: 900; color: #475569;">@LabAvgDuration mins</span>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background-color: #8b5cf6;"></span>
+                            Scan Imaging
+                        </span>
+                        <span style="font-size: 0.72rem; font-weight: 900; color: #475569;">@ScanAvgDuration mins</span>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.72rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background-color: #f43f5e;"></span>
+                            ECG Recording
+                        </span>
+                        <span style="font-size: 0.72rem; font-weight: 900; color: #475569;">@EcgAvgDuration mins</span>
+                    </div>
+
+                    <!-- Doctor Avg Time per Token breakdown -->
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.3rem 0.45rem; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.2rem; max-height: 75px; overflow-y: auto;">
+                        <div style="font-size: 0.62rem; font-weight: 800; color: #2563eb; display: flex; align-items: center; gap: 0.25rem;">
+                            <i class="bi bi-person-badge"></i> Doctor Avg Time / Token:
+                        </div>
+                        @if (DoctorAvgTimes.Any())
+                        {
+                            @foreach (var doc in DoctorAvgTimes)
+                            {
+                                <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.63rem;">
+                                    <span style="color: #64748b; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 110px;">@doc.DoctorName</span>
+                                    <span style="font-weight: 900; color: #475569;">@doc.AvgMins mins</span>
+                                </div>
+                            }
+                        }
+                        else
+                        {
+                            <div style="font-size: 0.6rem; color: #94a3b8; font-style: italic;">No doctor token time data</div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Box 6: OVERALL DIAGNOSTICS -->
+        <div style="background: #ffffff; border: 1px solid #eae7e1; border-radius: 14px; padding: 0.85rem 1rem; display: flex; flex-direction: column; height: 260px; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+            <div style="display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 0.4rem;">
+                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                    <div style="width: 20px; height: 20px; border-radius: 50%; background-color: #10b981; color: #ffffff; font-weight: 800; font-size: 0.7rem; display: flex; align-items: center; justify-content: center;">6</div>
+                    <div>
+                        <h3 style="font-size: 0.82rem; font-weight: 900; color: #475569; margin: 0; text-transform: uppercase;">OVERALL DIAGNOSTICS</h3>
+                        <span style="font-size: 0.65rem; color: #64748b;">Combined Summary · Lab: @LabTotalCount | Scan: @ScanTotalCount | ECG: @EcgTotalCount</span>
+                    </div>
+                </div>
+
+                <!-- Department Tabs -->
+                <div style="display: flex; gap: 0.2rem; background-color: #f1f5f9; padding: 2px; border-radius: 6px;">
+                    <span @onclick='() => SelectDepartmentTab("LAB")' style="font-size: 0.58rem; font-weight: 800; padding: 2px 6px; border-radius: 4px; cursor: pointer; @(selectedDepartmentTab == "LAB" ? "background-color: #2563eb; color: #ffffff;" : "color: #64748b;")">LAB</span>
+                    <span @onclick='() => SelectDepartmentTab("SCAN")' style="font-size: 0.58rem; font-weight: 800; padding: 2px 6px; border-radius: 4px; cursor: pointer; @(selectedDepartmentTab == "SCAN" ? "background-color: #0284c7; color: #ffffff;" : "color: #64748b;")">SCAN</span>
+                    <span @onclick='() => SelectDepartmentTab("ECG")' style="font-size: 0.58rem; font-weight: 800; padding: 2px 6px; border-radius: 4px; cursor: pointer; @(selectedDepartmentTab == "ECG" ? "background-color: #dc2626; color: #ffffff;" : "color: #64748b;")">ECG/ECHO</span>
+                    <span @onclick='() => SelectDepartmentTab("OVERALL")' style="font-size: 0.58rem; font-weight: 800; padding: 2px 6px; border-radius: 4px; cursor: pointer; @(selectedDepartmentTab == "OVERALL" ? "background-color: #10b981; color: #ffffff;" : "color: #64748b;")">OVERALL</span>
+                </div>
+            </div>
+
+            <div style="flex: 1; display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; position: relative;">
+                <div style="position: relative; width: 140px; height: 140px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                    <canvas id="ecgStatusDonutChart"></canvas>
+                    <div style="position: absolute; text-align: center; display: flex; flex-direction: column; align-items: center;">
+                        <i class="bi bi-pie-chart-fill" style="color: #10b981; font-size: 0.9rem;"></i>
+                        <div style="font-size: 0.88rem; font-weight: 900; color: #10b981; margin-top: 1px;">@(selectedDepartmentTab == "OVERALL" ? TodayVerifiedRate : SelectedDeptVerifiedRate)%</div>
+                        <div style="font-size: 0.6rem; color: #64748b; font-weight: 700;">Completed</div>
+                    </div>
+                </div>
+
+                <!-- Legend Box -->
+                <div style="display: flex; flex-direction: column; gap: 0.3rem; flex: 1; overflow: hidden;">
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.68rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background-color: #10b981;"></span>
+                            Completed (Done)
+                        </span>
+                        <span style="font-size: 0.68rem; font-weight: 900; color: #10b981;">
+                            @(selectedDepartmentTab == "OVERALL" ? TodayCompletedCount : SelectedDeptCompletedCount)
+                            (@(selectedDepartmentTab == "OVERALL" ? TodayOverallCompletionRate : SelectedDeptVerifiedRate)%)
+                        </span>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.68rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background-color: #f59e0b;"></span>
+                            In Consultation
+                        </span>
+                        <span style="font-size: 0.68rem; font-weight: 900; color: #f59e0b;">
+                            @(selectedDepartmentTab == "OVERALL" ? TodayInProgressCount : SelectedDeptInProgressCount)
+                        </span>
+                    </div>
+                    <div style="display: flex; align-items: center; justify-content: space-between;">
+                        <span style="display: flex; align-items: center; gap: 0.35rem; font-size: 0.68rem; font-weight: 700; color: #64748b;">
+                            <span style="width: 7px; height: 7px; border-radius: 50%; background-color: #f43f5e;"></span>
+                            Pending (Waiting)
+                        </span>
+                        <span style="font-size: 0.68rem; font-weight: 900; color: #f43f5e;">
+                            @(selectedDepartmentTab == "OVERALL" ? TodayWaitingCount : SelectedDeptWaitingCount)
+                        </span>
+                    </div>
+
+                    <!-- Doctor Status Breakdown Box -->
+                    <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 0.25rem 0.4rem; margin-top: 0.1rem; display: flex; flex-direction: column; gap: 0.15rem; max-height: 70px; overflow-y: auto;">
+                        <div style="font-size: 0.6rem; font-weight: 800; color: #2563eb; display: flex; align-items: center; justify-content: space-between;">
+                            <span><i class="bi bi-person-badge"></i> Doctor Status:</span>
+                            <span style="color: #64748b; font-size: 0.58rem; font-weight: 700;">Done | Pending</span>
+                        </div>
+                        @if (DoctorStatusBreakdown.Any())
+                        {
+                            @foreach (var doc in DoctorStatusBreakdown)
+                            {
+                                <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.6rem;">
+                                    <span style="color: #475569; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100px;">@doc.DoctorName</span>
+                                    <span>
+                                        <span style="color: #10b981; font-weight: 900;">@doc.CompletedCount Done</span>
+                                        <span style="color: #cbd5e1; margin: 0 2px;">|</span>
+                                        <span style="color: #f43f5e; font-weight: 900;">@doc.PendingCount Pending</span>
+                                    </span>
+                                </div>
+                            }
+                        }
+                        else
+                        {
+                            <div style="font-size: 0.58rem; color: #94a3b8; font-style: italic;">No doctor status data</div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+
+
+    <!-- PATIENT LONG WAIT TIME ALERT RIGHT-SIDE SLIDE-OVER DRAWER (TRANSPARENT GLASSMORPHISM LIST) -->
+    @if (showWaitAlertModal)
+    {
+        <!-- Transparent Backdrop Overlay for Outside-Click Closing -->
+        <div style="position: fixed; inset: 0; z-index: 10004; background: rgba(15, 23, 42, 0.08); cursor: pointer;"
+             @onclick="CloseWaitAlertModal"></div>
+
+        <!-- Right-Side Transparent Glass Panel (No Container Solid Color) -->
+        <div style="position: fixed; top: 0; right: 0; bottom: 0; width: 440px; max-width: 95vw; height: 100vh; z-index: 10005; background: rgba(255, 255, 255, 0.45); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px); box-shadow: -15px 0 45px rgba(15, 23, 42, 0.12); border-left: 1px solid rgba(255, 255, 255, 0.6); display: flex; flex-direction: column; animation: slideInRight 0.3s cubic-bezier(0.4, 0, 0.2, 1); color: #0f172a;">
+            
+            <!-- Drawer Header (No Background Color - Fully Transparent) -->
+            <div style="background: transparent; padding: 1.15rem 1.3rem; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(0, 0, 0, 0.08);">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <div style="width: 38px; height: 38px; border-radius: 50%; background: rgba(220, 38, 38, 0.12); color: #dc2626; display: flex; align-items: center; justify-content: center; font-size: 1.2rem;">
+                        <i class="bi bi-bell-fill"></i>
+                    </div>
+                    <div>
+                        <div style="font-size: 0.95rem; font-weight: 900; color: #991b1b; text-transform: uppercase; letter-spacing: 0.4px; line-height: 1.2;">PATIENT WAIT ALERTS</div>
+                        <span style="font-size: 0.72rem; color: #475569; font-weight: 700;">Wait Time > 20 Mins (@(longWaitVitals?.Count ?? 0) Patients)</span>
+                    </div>
+                </div>
+                <button style="background: rgba(0, 0, 0, 0.06); border: 1px solid rgba(0, 0, 0, 0.1); color: #475569; width: 34px; height: 34px; border-radius: 50%; font-size: 1.1rem; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: background 0.2s;"
+                        @onclick="CloseWaitAlertModal" title="Close Panel (Click Outside)">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+
+            <!-- Drawer Body Alert List (No Background Color - Clean Text List) -->
+            <div style="padding: 1.1rem 1.3rem; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem; background: transparent;">
+                @if (longWaitVitals != null && longWaitVitals.Any())
+                {
+                    @foreach (var item in longWaitVitals)
+                    {
+                        <div style="display: flex; flex-direction: column; gap: 0.45rem; padding-bottom: 1rem; border-bottom: 1px solid rgba(0, 0, 0, 0.08); transition: background 0.2s;">
+                            <!-- Top Info Row -->
+                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                                <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                    <span style="background: rgba(254, 226, 226, 0.85); color: #991b1b; font-size: 0.72rem; font-weight: 900; padding: 3px 9px; border-radius: 6px; border: 1px solid #fca5a5;">
+                                        <i class="bi bi-ticket-perforated me-1"></i> TOKEN: @(string.IsNullOrEmpty(item.token_no) ? $"00{item.vitalentryid ?? 1}" : item.token_no)
+                                    </span>
+                                    @if (item.isvip == true || item.is_vip == true)
+                                    {
+                                        <span style="background: rgba(254, 240, 138, 0.9); color: #854d0e; font-size: 0.62rem; font-weight: 800; padding: 2px 7px; border-radius: 4px; border: 1px solid #fde047;">VIP</span>
+                                    }
+                                </div>
+                                <span style="background: rgba(241, 245, 249, 0.85); color: #475569; font-size: 0.68rem; font-weight: 800; padding: 3px 9px; border-radius: 10px; border: 1px solid #cbd5e1;">
+                                    @(string.IsNullOrEmpty(item.in1_status) ? "waiting_for_test" : item.in1_status)
+                                </span>
+                            </div>
+
+                            <!-- Patient Name & Wait Time Row -->
+                            <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 2px;">
+                                <span style="font-size: 1.05rem; font-weight: 900; color: #0f172a; letter-spacing: 0.3px;">
+                                    @(string.IsNullOrEmpty(item.patient_name) ? "Abitha" : item.patient_name)
+                                </span>
+                                <span style="font-size: 0.8rem; color: #dc2626; font-weight: 900; display: flex; align-items: center; gap: 0.3rem; background: rgba(254, 226, 226, 0.85); padding: 3px 8px; border-radius: 6px; border: 1px solid #fca5a5;">
+                                    <i class="bi bi-clock-history"></i> @item.CalculateWaitTime()
+                                </span>
+                            </div>
+                            
+                            <!-- Doctor & Test Text Details -->
+                            <div style="font-size: 0.78rem; color: #475569; display: flex; align-items: center; gap: 1.2rem; margin-top: 1px;">
+                                <span><i class="bi bi-person-badge me-1" style="color: #2563eb;"></i> Dr: <strong style="color: #0f172a;">@(string.IsNullOrEmpty(item.doctor_name) ? "muguthan" : item.doctor_name)</strong></span>
+                                <span><i class="bi bi-file-medical me-1" style="color: #4f46e5;"></i> Test: <strong style="color: #0f172a;">@(string.IsNullOrEmpty(item.in1) ? "scan" : item.in1)</strong></span>
+                            </div>
+
+                            <!-- Created Timestamp -->
+                            <div style="font-size: 0.65rem; color: #64748b; font-weight: 600;">
+                                Created: @(string.IsNullOrEmpty(item.created_at) ? item.entered_date : item.created_at)
+                            </div>
+                        </div>
+                    }
+                }
+                else
+                {
+                    <div style="text-align: center; padding: 4rem 1rem; color: #64748b;">
+                        <i class="bi bi-check-circle-fill text-success" style="font-size: 3rem;"></i>
+                        <p style="margin-top: 0.85rem; font-weight: 800; color: #0f172a; font-size: 0.95rem;">No long wait alerts right now!</p>
+                        <span style="font-size: 0.78rem; color: #64748b;">All patients are being attended within 20 minutes.</span>
+                    </div>
+                }
+            </div>
+
+            <!-- Drawer Footer (No Background Color - Transparent Glass Footer) -->
+            <div style="background: transparent; border-top: 1px solid rgba(0, 0, 0, 0.08); padding: 0.9rem 1.3rem; display: flex; align-items: center; justify-content: space-between;">
+                <span style="font-size: 0.75rem; color: #64748b; font-weight: 700;">
+                    <i class="bi bi-arrow-repeat me-1 text-primary"></i> Live Auto Sync
+                </span>
+                <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <button style="background: #ef4444; color: #ffffff; border: none; border-radius: 8px; padding: 0.5rem 1rem; font-size: 0.8rem; font-weight: 800; cursor: pointer; box-shadow: 0 2px 6px rgba(239,68,68,0.25); display: flex; align-items: center; gap: 0.35rem;"
+                            @onclick="ClearWaitAlerts" title="Clear all wait alerts">
+                        <i class="bi bi-trash3-fill"></i> Clear Alerts
+                    </button>
+                    <button style="background: #0f172a; color: #ffffff; border: none; border-radius: 8px; padding: 0.5rem 1.2rem; font-size: 0.8rem; font-weight: 800; cursor: pointer; box-shadow: 0 2px 6px rgba(15,23,42,0.15);"
+                            @onclick="CloseWaitAlertModal">
+                        Close Panel
+                    </button>
+                </div>
+            </div>
+        </div>
     }
+
+    <!-- TOP-RIGHT LIVE SIGNALR TOAST NOTIFICATIONS -->
+    <div style="position: fixed; top: 20px; right: 20px; z-index: 11000; display: flex; flex-direction: column; gap: 0.65rem; width: 380px; max-width: 90vw; pointer-events: none;">
+        @foreach (var toast in toastNotifications.Take(5))
+        {
+            <div style="pointer-events: auto; background: #ffffff; border-radius: 12px; padding: 0.85rem 1rem; box-shadow: 0 10px 30px rgba(15,23,42,0.15), 0 2px 8px rgba(0,0,0,0.06); border: 1px solid @(toast.Type == "wait_30m" ? "#fecaca" : toast.Type == "wait_20m" ? "#fde68a" : "#bbf7d0"); border-left: 5px solid @(toast.Type == "wait_30m" ? "#dc2626" : toast.Type == "wait_20m" ? "#d97706" : "#16a34a"); animation: slideInRight 0.35s ease-out; display: flex; flex-direction: column; gap: 0.4rem;">
+                
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="display: flex; align-items: center; gap: 0.4rem;">
+                        @if (toast.Type == "wait_30m")
+                        {
+                            <span style="background-color: #fee2e2; color: #dc2626; font-size: 0.68rem; font-weight: 900; padding: 2px 8px; border-radius: 12px;">🚨 30+ MIN WAIT ALERT</span>
+                        }
+                        else if (toast.Type == "wait_20m")
+                        {
+                            <span style="background-color: #fef3c7; color: #d97706; font-size: 0.68rem; font-weight: 900; padding: 2px 8px; border-radius: 12px;">⚠️ 20+ MIN WAIT ALERT</span>
+                        }
+                        else if (toast.Type == "new_token")
+                        {
+                            <span style="background-color: #dcfce7; color: #16a34a; font-size: 0.68rem; font-weight: 900; padding: 2px 8px; border-radius: 12px;">🆕 NEW TOKEN GENERATED</span>
+                        }
+                        else
+                        {
+                            <span style="background-color: #dbeafe; color: #2563eb; font-size: 0.68rem; font-weight: 900; padding: 2px 8px; border-radius: 12px;">ℹ️ SIGNALR UPDATE</span>
+                        }
+                        <span style="font-size: 0.65rem; color: #94a3b8; font-weight: 600;">@toast.CreatedAt.ToString("hh:mm:ss tt")</span>
+                    </div>
+
+                    <button style="background: transparent; border: none; color: #94a3b8; font-size: 0.9rem; cursor: pointer; padding: 0 4px;" @onclick="() => DismissToast(toast.Id)">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                    <div style="font-size: 0.88rem; font-weight: 900; color: #0f172a;">
+                        Token #@(string.IsNullOrEmpty(toast.TokenNo) ? "001" : toast.TokenNo): @toast.PatientName
+                    </div>
+                </div>
+
+                <div style="font-size: 0.76rem; color: #475569; display: flex; align-items: center; gap: 0.75rem;">
+                    <span><i class="bi bi-person-badge text-primary me-1"></i> Doctor: <strong>@toast.DoctorName</strong></span>
+                    <span><i class="bi bi-heart-pulse text-indigo me-1"></i> Test: <strong>@toast.TestName</strong></span>
+                </div>
+
+                @if (toast.Type == "wait_20m" || toast.Type == "wait_30m")
+                {
+                    <div style="display: flex; align-items: center; justify-content: space-between; margin-top: 4px; padding-top: 4px; border-top: 1px dashed #e2e8f0;">
+                        <span style="font-size: 0.72rem; font-weight: 800; color: #dc2626;">Waiting Time: @toast.Message</span>
+                        @if (toast.VitalItem != null)
+                        {
+                            <button style="background: #dc2626; color: #ffffff; border: none; border-radius: 6px; padding: 3px 10px; font-size: 0.7rem; font-weight: 800; cursor: pointer;"
+                                    @onclick="() => { NotifyDoctor(toast.VitalItem); DismissToast(toast.Id); }">
+                                <i class="bi bi-bell me-1"></i> Notify Doctor
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <style>
+        @@keyframes slideInRight {
+            from { transform: translateX(120%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        @@keyframes slideInUp {
+            from { transform: translateY(15px); opacity: 0; }
+            to { transform: translateY(0); opacity: 1; }
+        }
+
+        @@keyframes pulseGlow {
+            0% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+            70% { box-shadow: 0 0 0 12px rgba(99, 102, 241, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0); }
+        }
+
+        @@keyframes micWave {
+            0% { transform: scale(1); opacity: 0.8; }
+            50% { transform: scale(1.15); opacity: 0.4; }
+            100% { transform: scale(1); opacity: 0.8; }
+        }
+
+        @@keyframes freqBar1 {
+            0%,100% { height: 8px; } 25% { height: 32px; } 50% { height: 16px; } 75% { height: 40px; }
+        }
+        @@keyframes freqBar2 {
+            0%,100% { height: 20px; } 25% { height: 48px; } 50% { height: 10px; } 75% { height: 28px; }
+        }
+        @@keyframes freqBar3 {
+            0%,100% { height: 36px; } 25% { height: 14px; } 50% { height: 52px; } 75% { height: 18px; }
+        }
+        @@keyframes freqBar4 {
+            0%,100% { height: 14px; } 25% { height: 44px; } 50% { height: 22px; } 75% { height: 54px; }
+        }
+        @@keyframes freqBar5 {
+            0%,100% { height: 44px; } 25% { height: 18px; } 50% { height: 38px; } 75% { height: 10px; }
+        }
+        @@keyframes freqBar6 {
+            0%,100% { height: 10px; } 25% { height: 38px; } 50% { height: 50px; } 75% { height: 22px; }
+        }
+        @@keyframes freqBar7 {
+            0%,100% { height: 28px; } 25% { height: 10px; } 50% { height: 42px; } 75% { height: 34px; }
+        }
+
+        .freq-bars-container {
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            gap: 5px;
+            height: 60px;
+        }
+
+        .freq-bar {
+            width: 5px;
+            border-radius: 3px;
+            background: linear-gradient(to top, #ec4899, #a855f7, #6366f1);
+            transition: height 0.1s ease;
+        }
+
+        .freq-bar.idle {
+            height: 6px !important;
+            animation: none !important;
+            opacity: 0.3;
+        }
+
+        .freq-bar.b1 { animation: freqBar1 0.7s ease-in-out infinite; }
+        .freq-bar.b2 { animation: freqBar2 0.55s ease-in-out infinite; }
+        .freq-bar.b3 { animation: freqBar3 0.8s ease-in-out infinite; }
+        .freq-bar.b4 { animation: freqBar4 0.6s ease-in-out infinite; }
+        .freq-bar.b5 { animation: freqBar5 0.75s ease-in-out infinite; }
+        .freq-bar.b6 { animation: freqBar6 0.5s ease-in-out infinite; }
+        .freq-bar.b7 { animation: freqBar7 0.65s ease-in-out infinite; }
+
+        @@keyframes breathGlow {
+            0%,100% { box-shadow: 0 0 0 0 rgba(168,85,247,0.5), 0 0 30px rgba(99,102,241,0.3); }
+            50% { box-shadow: 0 0 0 22px rgba(168,85,247,0), 0 0 60px rgba(99,102,241,0.6); }
+        }
+
+        .medico-floating-ai-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+        }
+
+        .medico-floating-ai-btn {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #4338ca 100%);
+            color: #ffffff;
+            border: 2px solid rgba(165, 180, 252, 0.4);
+            border-radius: 50px;
+            padding: 0.65rem 1.35rem;
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            box-shadow: 0 10px 25px -5px rgba(67, 56, 202, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+            cursor: pointer;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            animation: pulseGlow 3s infinite;
+        }
+
+        .medico-floating-ai-btn:hover {
+            transform: translateY(-4px) scale(1.03);
+            box-shadow: 0 16px 32px -4px rgba(99, 102, 241, 0.6);
+            border-color: #818cf8;
+        }
+
+        .floating-ai-icon {
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #6366f1, #a855f7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1.2rem;
+            box-shadow: inset 0 2px 4px rgba(255,255,255,0.4);
+        }
+
+        .floating-ai-text {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-start;
+            text-align: left;
+        }
+
+        .floating-ai-title {
+            font-size: 0.88rem;
+            font-weight: 800;
+            letter-spacing: -0.01em;
+            color: #ffffff;
+            line-height: 1.1;
+        }
+
+        .floating-ai-sub {
+            font-size: 0.7rem;
+            color: #c7d2fe;
+            font-weight: 500;
+        }
+
+        .floating-voice-badge {
+            background: rgba(236, 72, 153, 0.25);
+            border: 1px solid rgba(244, 114, 182, 0.5);
+            color: #f472b6;
+            font-size: 0.68rem;
+            font-weight: 700;
+            padding: 0.2rem 0.55rem;
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            gap: 0.25rem;
+        }
+    </style>
+
+    <!-- FLOATING AI ASSISTANT MODAL WIDGET (TEXT & VOICE MODE) -->
+    @if (showAiModal)
+    {
+        @if (aiInteractionMode == "voice")
+        {
+            <!-- VOICE MODE: FLOATING TRANSPARENT GLASS CARD AT TOP-RIGHT -->
+            <div style="position: fixed; top: 24px; right: 24px; width: 440px; max-width: 90vw; background: rgba(15, 23, 42, 0.70); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.15); border-radius: 24px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.4); z-index: 10000; padding: 1.5rem 1.25rem; display: flex; flex-direction: column; align-items: center; justify-content: center; animation: fadeInDown 0.25s ease-out;">
+
+                <!-- Top bar: mode switch + close -->
+                <div style="width: 100%; display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.25rem;">
+                    <div style="display: flex; background: rgba(255,255,255,0.08); padding: 3px; border-radius: 10px; gap: 3px; backdrop-filter: blur(8px);">
+                        <button title="Text Chat" style="padding: 0.4rem 0.65rem; border: none; border-radius: 7px; font-size: 0.9rem; cursor: pointer; background: transparent; color: rgba(255,255,255,0.45);"
+                                @onclick='() => SetAiInteractionMode("text")'>
+                            <i class="bi bi-chat-left-text-fill"></i>
+                        </button>
+                        <button title="Voice AI" style="padding: 0.4rem 0.65rem; border: none; border-radius: 7px; font-size: 0.9rem; cursor: pointer; background: linear-gradient(135deg, #ec4899, #a855f7); color: #ffffff;">
+                            <i class="bi bi-mic-fill"></i>
+                        </button>
+                    </div>
+                    <button style="background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.15); color: #ffffff; width: 34px; height: 34px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.9rem; cursor: pointer;"
+                            @onclick="ToggleAiModal">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+
+                <!-- MIC + LEFT/RIGHT FREQUENCY BARS -->
+                <div style="display: flex; align-items: center; justify-content: center; gap: 1.2rem; margin-bottom: 1.5rem;">
+
+                    <!-- LEFT BARS -->
+                    <div style="display: flex; align-items: flex-end; gap: 4px; height: 70px; flex-direction: row-reverse;">
+                        <div class="freq-bar @(isListeningVoice ? "b1" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b4" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b2" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b6" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b3" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b7" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b5" : "idle")"></div>
+                    </div>
+
+                    <!-- CENTER MIC BUTTON -->
+                    <div style="position: relative; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                        @if (isListeningVoice)
+                        {
+                            <div style="position: absolute; width: 140px; height: 140px; border-radius: 50%; background: rgba(168,85,247,0.15); animation: micWave 1.2s ease-in-out infinite;"></div>
+                            <div style="position: absolute; width: 114px; height: 114px; border-radius: 50%; background: rgba(236,72,153,0.12); animation: micWave 1.6s ease-in-out infinite 0.4s;"></div>
+                        }
+                        <button @onclick="ToggleVoiceListening"
+                                style="width: 90px; height: 90px; border-radius: 50%; background: @(isListeningVoice ? "linear-gradient(135deg, #ec4899 0%, #ef4444 100%)" : "linear-gradient(135deg, #6366f1 0%, #a855f7 100%)"); color: #ffffff; border: 3px solid @(isListeningVoice ? "rgba(244,114,182,0.7)" : "rgba(165,180,252,0.4)"); font-size: 2.3rem; display: flex; align-items: center; justify-content: center; cursor: pointer; animation: breathGlow 2.5s ease-in-out infinite; transition: all 0.35s cubic-bezier(0.4,0,0.2,1); position: relative; z-index: 2;">
+                            <i class="bi @(isListeningVoice ? "bi-mic-fill" : "bi-mic")"></i>
+                        </button>
+                    </div>
+
+                    <!-- RIGHT BARS -->
+                    <div style="display: flex; align-items: flex-end; gap: 4px; height: 70px;">
+                        <div class="freq-bar @(isListeningVoice ? "b5" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b7" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b3" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b6" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b2" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b4" : "idle")"></div>
+                        <div class="freq-bar @(isListeningVoice ? "b1" : "idle")"></div>
+                    </div>
+                </div>
+
+                <!-- Status + auto-send countdown -->
+                <div style="font-size: 1rem; font-weight: 800; color: #ffffff; letter-spacing: 0.5px; margin-bottom: 0.3rem; text-align: center;">
+                    @(isListeningVoice ? "🎙️ Listening..." : "Tap Mic to Speak")
+                </div>
+
+                @if (voiceAutoSendCountdown > 0)
+                {
+                    <div style="font-size: 0.82rem; color: #ec4899; font-weight: 700; margin-bottom: 0.5rem;">
+                        ⏱ Auto-sending in @voiceAutoSendCountdown sec...
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(speechTranscript))
+                {
+                    <div style="width: 100%; max-width: 380px; background: rgba(255,255,255,0.07); border: 1px dashed rgba(165,180,252,0.3); border-radius: 12px; padding: 0.65rem 0.85rem; font-size: 0.82rem; color: #e0e7ff; margin-bottom: 0.75rem; text-align: center;">
+                        "@speechTranscript"
+                    </div>
+                }
+
+                @if (!string.IsNullOrEmpty(lastAiVoiceResponse))
+                {
+                    <div style="width: 100%; max-width: 400px; background: rgba(15,23,42,0.8); border: 1px solid rgba(255,255,255,0.1); border-radius: 14px; padding: 0.75rem 0.9rem; text-align: left;">
+                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.35rem;">
+                            <span style="font-size: 0.68rem; font-weight: 800; color: #38bdf8;">Medico AI:</span>
+                            <button style="background: rgba(255,255,255,0.1); border: none; color: #ffffff; border-radius: 6px; padding: 2px 8px; font-size: 0.68rem; cursor: pointer;"
+                                    @onclick="() => SpeakText(lastAiVoiceResponse)">
+                                <i class="bi bi-volume-up-fill"></i> Replay
+                            </button>
+                        </div>
+                        <div style="font-size: 0.8rem; color: #f1f5f9; line-height: 1.45; max-height: 140px; overflow-y: auto;">
+                            @((MarkupString)FormattedMessageText(lastAiVoiceResponse))
+                        </div>
+                    </div>
+                }
+
+            </div>
+        }
+        else
+        {
+            <!-- TEXT MODE: Frameless Ultra-Transparent Glass Widget -->
+            <div style="position: fixed; bottom: 24px; right: 24px; width: 420px; max-width: 90vw; height: 560px; max-height: 78vh; background: rgba(15, 23, 42, 0.45); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); border: 1px solid rgba(255, 255, 255, 0.18); border-radius: 24px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.3), 0 0 25px rgba(99, 102, 241, 0.2); z-index: 10000; display: flex; flex-direction: column; overflow: hidden; animation: slideInUp 0.25s ease-out;">
+
+                <!-- TOP MINIMAL CONTROLS (Preset Pills & Close Button) -->
+                <div style="padding: 0.75rem 1rem 0.25rem 1rem; display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;">
+                    <div style="display: flex; gap: 0.35rem; flex-wrap: wrap;">
+                        <button style="background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; padding: 0.25rem 0.65rem; font-size: 0.72rem; font-weight: 700; color: #ffffff; cursor: pointer; backdrop-filter: blur(8px);"
+                                @onclick='() => PresetQuery("இன்றைய மொத்த டோக்கன் எண்ணிக்கை எவ்வளவு?")'>
+                            📊 இன்றைய டோக்கன்கள்
+                        </button>
+                        <button style="background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; padding: 0.25rem 0.65rem; font-size: 0.72rem; font-weight: 700; color: #ffffff; cursor: pointer; backdrop-filter: blur(8px);"
+                                @onclick='() => PresetQuery("இந்த டேஷ்போர்டு டேட்டாவை அனலைஸ் பண்ணி தமிழ்ல அறிக்கை குடு")'>
+                            📝 தமிழ் அனாலிசிஸ்
+                        </button>
+                        <button style="background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); border-radius: 20px; padding: 0.25rem 0.65rem; font-size: 0.72rem; font-weight: 700; color: #ffffff; cursor: pointer; backdrop-filter: blur(8px);"
+                                @onclick='() => PresetQuery("Who is the highest token volume doctor today?")'>
+                            🏆 Top Doctor
+                        </button>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 0.4rem; flex-shrink: 0;">
+                        <button title="Switch to Voice AI" style="background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); color: #f472b6; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; cursor: pointer;"
+                                @onclick='() => SetAiInteractionMode("voice")'>
+                            <i class="bi bi-mic-fill"></i>
+                        </button>
+                        <button title="Close" style="background: rgba(255,255,255,0.12); border: 1px solid rgba(255,255,255,0.2); color: #ffffff; width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; cursor: pointer;"
+                                @onclick="ToggleAiModal">
+                            <i class="bi bi-x-lg"></i>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- CHAT MESSAGES (Scrollable Transparent Area) -->
+                <div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem 1rem; background: transparent;">
+                    @foreach (var msg in chatMessages)
+                    {
+                        <div style="display: flex; flex-direction: column; align-items: @(msg.Sender == "User" ? "flex-end" : "flex-start"); gap: 0.2rem;">
+                            <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                <span style="font-size: 0.65rem; font-weight: 700; color: #cbd5e1;">@msg.Sender • @msg.Timestamp.ToString("hh:mm tt")</span>
+                                @if (msg.Sender != "User")
+                                {
+                                    <button style="background: transparent; border: none; color: #38bdf8; font-size: 0.78rem; cursor: pointer; padding: 0;"
+                                            @onclick="() => SpeakText(msg.Text)" title="Audio Replay">
+                                        <i class="bi bi-volume-up-fill"></i>
+                                    </button>
+                                }
+                            </div>
+                            <div style="background: @(msg.Sender == "User" ? "linear-gradient(135deg, rgba(37,99,235,0.85), rgba(79,70,229,0.85))" : "rgba(15, 23, 42, 0.60)"); color: #ffffff; padding: 0.7rem 0.9rem; border-radius: @(msg.Sender == "User" ? "16px 16px 4px 16px" : "16px 16px 16px 4px"); font-size: 0.84rem; max-width: 88%; line-height: 1.45; box-shadow: 0 4px 12px rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.18); backdrop-filter: blur(12px);">
+                                @((MarkupString)FormattedMessageText(msg.Text))
+                            </div>
+                        </div>
+                    }
+                    @if (isAiThinking)
+                    {
+                        <div style="font-size: 0.78rem; font-style: italic; color: #38bdf8; display: flex; align-items: center; gap: 0.5rem; background: rgba(15, 23, 42, 0.60); padding: 0.6rem 0.85rem; border-radius: 14px; border: 1px solid rgba(255,255,255,0.18); backdrop-filter: blur(10px);">
+                            <div class="spinner-border spinner-border-sm text-info" role="status"></div>
+                            <span>Gemini AI is analyzing live hospital stats...</span>
+                        </div>
+                    }
+                </div>
+
+                <!-- TEXT INPUT (Bottom-Right Transparent Bar) -->
+                <div style="padding: 0.75rem 0.9rem; background: rgba(15, 23, 42, 0.60); border-top: 1px solid rgba(255, 255, 255, 0.15); backdrop-filter: blur(12px); display: flex; gap: 0.55rem; align-items: center;">
+                    <input type="text" style="flex: 1; background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.22); border-radius: 12px; padding: 0.65rem 0.95rem; font-size: 0.85rem; color: #ffffff; outline: none; backdrop-filter: blur(6px); transition: border 0.2s;"
+                           placeholder="Ask dashboard questions..." @bind="userPromptInput" @bind:event="oninput" @onkeydown="HandleKeyDown" />
+                    <button style="width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(135deg, #6366f1, #a855f7); color: #ffffff; border: none; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 0.95rem; cursor: pointer; box-shadow: 0 4px 14px rgba(99,102,241,0.4); flex-shrink: 0; transition: transform 0.2s;"
+                            @onclick="SubmitAiQuery" disabled="@isAiThinking" title="Send Question">
+                        <i class="bi bi-send-fill"></i>
+                    </button>
+                </div>
+            </div>
+        }
+    }
+
+    <!-- FLOATING RIGHT SIDE BOTTOM AI ASSISTANT BUTTON & MODE SELECTOR MENU -->
+    <div style="position: fixed; bottom: 24px; right: 24px; z-index: 9999; display: flex; flex-direction: column; align-items: center; gap: 0.6rem;">
+
+        <!-- ICON-ONLY POPUP BUTTONS (Text + Voice) -->
+        @if (showAiModeMenu && !showAiModal)
+        {
+            <!-- Voice Icon Button -->
+            <button title="Voice AI Assistant"
+                    style="width: 46px; height: 46px; border-radius: 50%; background: linear-gradient(135deg, #ec4899, #a855f7); color: #ffffff; border: none; display: flex; align-items: center; justify-content: center; font-size: 1.2rem; cursor: pointer; box-shadow: 0 6px 18px rgba(236,72,153,0.35); animation: slideInUp 0.15s ease-out; transition: transform 0.2s;"
+                    @onclick='() => OpenAiModalWithMode("voice")'>
+                <i class="bi bi-mic-fill"></i>
+            </button>
+
+            <!-- Text Chat Icon Button -->
+            <button title="Text Chat Mode"
+                    style="width: 46px; height: 46px; border-radius: 50%; background: linear-gradient(135deg, #4f46e5, #6366f1); color: #ffffff; border: none; display: flex; align-items: center; justify-content: center; font-size: 1.1rem; cursor: pointer; box-shadow: 0 6px 18px rgba(99,102,241,0.35); animation: slideInUp 0.1s ease-out; transition: transform 0.2s;"
+                    @onclick='() => OpenAiModalWithMode("text")'>
+                <i class="bi bi-chat-left-text-fill"></i>
+            </button>
+        }
+
+        <!-- MAIN TRANSPARENT GLASS ROBOT ICON BUTTON -->
+        <button style="width: 54px; height: 54px; border-radius: 50%; background: rgba(255, 255, 255, 0.75); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); color: #4f46e5; border: 1.5px solid rgba(99, 102, 241, 0.4); display: flex; align-items: center; justify-content: center; font-size: 1.55rem; cursor: pointer; box-shadow: 0 10px 25px rgba(99, 102, 241, 0.22), 0 4px 10px rgba(0,0,0,0.05); transition: all 0.3s cubic-bezier(0.4,0,0.2,1); animation: pulseGlow 3s infinite;"
+                @onclick="ToggleAiModeMenu" title="Medico AI – Text or Voice">
+            <i class="bi bi-robot"></i>
+        </button>
+    </div>
+
 </div>
 
 @code {
-    private bool isLoading = true;
-    private bool showMiniCalendar = false;
-    private int trendDays = 30;
-        private int totalPending = 0;
-    private int completionRatePct = 0;
-    private DashboardFullResponse dashboardData = new();
+    public class ToastAlertItem
+    {
+        public string Id { get; set; } = Guid.NewGuid().ToString();
+        public string Title { get; set; } = string.Empty;
+        public string Message { get; set; } = string.Empty;
+        public string PatientName { get; set; } = string.Empty;
+        public string TokenNo { get; set; } = string.Empty;
+        public string DoctorName { get; set; } = string.Empty;
+        public string TestName { get; set; } = string.Empty;
+        public string Type { get; set; } = "info"; // new_token, wait_20m, wait_30m
+        public DateTime CreatedAt { get; set; } = DateTime.Now;
+        public MedicoAi.Models.VitalsItem? VitalItem { get; set; }
+    }
+
+    private bool isAiThinking = false;
+    private bool showAiModal = false;
+    private bool showAiModeMenu = false;
+    private bool showWaitAlertModal = false;
+
+    private void ToggleAiModeMenu()
+    {
+        showAiModeMenu = !showAiModeMenu;
+    }
+
+    private void OpenAiModalWithMode(string mode)
+    {
+        aiInteractionMode = mode;
+        showAiModal = true;
+        showAiModeMenu = false;
+    }
+    private int totalTokens = 1;
+    private string lastUpdatedTime = DateTime.Now.ToString("h:mm tt");
+    private string userPromptInput = string.Empty;
+
+    private List<ChatMessage> chatMessages = new();
+    private MedicoAi.Models.DashboardFullResponse dashboardData = new();
+    private List<OgQueueItem> rawQueueItems = new();
+    private List<MedicoAi.Models.VitalsItem> longWaitVitals = new();
+    private List<ToastAlertItem> toastNotifications = new();
+    private HashSet<string> knownTokenKeys = new();
+    private bool isInitialSignalRFetch = true;
+
+    private string selectedDepartmentTab = "ECG";
+    private System.Threading.Timer? _tabAutoRotateTimer;
+    private System.Threading.Timer? _autoAlertTimer;
     private readonly CancellationTokenSource _cts = new();
-    // Modality breakdown variables
-    private int labReg = 0, labComp = 0, labPend = 0;
-    private int scanReg = 0, scanComp = 0, scanPend = 0;
-    private int vitalsReg = 0, vitalsComp = 0, vitalsPend = 0;
-    private int ogReg = 0, ogComp = 0, ogPend = 0;
-        private int consultReg = 0, consultComp = 0, consultPend = 0;
-    
-    private double overallAvgWaitTime = 0;
-    private string peakArrivalHour = "N/A";
 
-    private void ComputeModalityBreakdowns()
+    private HashSet<string> acknowledged20MinTokenIds = new();
+    private HashSet<string> acknowledged30MinTokenIds = new();
+
+    private void AddToastNotification(ToastAlertItem toast)
     {
-        labReg = labComp = labPend = 0;
-        scanReg = scanComp = scanPend = 0;
-        vitalsReg = vitalsComp = vitalsPend = 0;
-        ogReg = ogComp = ogPend = 0;
-        consultReg = consultComp = consultPend = 0;
-
-        if (dashboardData.TodaySnapshot?.ByInvestigationType != null)
+        toastNotifications.Insert(0, toast);
+        if (toastNotifications.Count > 10)
         {
-            foreach (var inv in dashboardData.TodaySnapshot.ByInvestigationType)
+            toastNotifications.RemoveAt(toastNotifications.Count - 1);
+        }
+
+        // Play notification audio alert chime
+        _ = Task.Run(async () =>
+        {
+            try
             {
-                var t = inv.InvestigationType.ToLower();
-                if (t.Contains("lab"))
-                {
-                    labPend += inv.Pending;
-                    labComp += inv.Completed;
-                    labReg += inv.Pending + inv.Completed;
-                }
-                else if (t.Contains("scan"))
-                {
-                    scanPend += inv.Pending;
-                    scanComp += inv.Completed;
-                    scanReg += inv.Pending + inv.Completed;
-                }
-                else if (t.Contains("ecg") || t.Contains("echo") || t.Contains("og"))
-                {
-                    ogPend += inv.Pending;
-                    ogComp += inv.Completed;
-                    ogReg += inv.Pending + inv.Completed;
-                }
-                else if (t.Contains("doc") || t.Contains("consult"))
-                {
-                    consultPend += inv.Pending;
-                    consultComp += inv.Completed;
-                    consultReg += inv.Pending + inv.Completed;
-                }
+                await JSRuntime.InvokeVoidAsync("playAlertSound", toast.Type);
             }
-        }
+            catch { }
+        });
 
-        if (dashboardData.StatusFunnelToday?.VitalsStatus != null)
+        _ = Task.Run(async () =>
         {
-            foreach (var v in dashboardData.StatusFunnelToday.VitalsStatus)
+            await Task.Delay(8000);
+            await InvokeAsync(() =>
             {
-                vitalsReg += v.Count;
-                if (v.Status.ToUpper().Contains("COMPLET"))
-                    vitalsComp += v.Count;
-                else
-                    vitalsPend += v.Count;
-            }
-        }
+                toastNotifications.RemoveAll(t => t.Id == toast.Id);
+                StateHasChanged();
+            });
+        });
     }
 
-    // Calendar state
-    private DateTime selectedFromDate = DateTime.Today;
-    private DateTime selectedToDate = DateTime.Today;
-    private DateTime calendarMonth = DateTime.Today;
-    private DateTime? selectedDate = DateTime.Today;
-    private string activeRangePreset = "today";
+    private string peakInflowTime = "Peak 10:00 AM";
 
-    protected override async Task OnInitializedAsync()
+    private int GetVitalsHour(MedicoAi.Models.VitalsItem v)
     {
-        await LoadDashboardDataAsync(isSilent: false);
-        _ = StartRealTimeSignalRPollingAsync(_cts.Token);
-    }
-
-    private void ToggleMiniCalendar()
-    {
-        showMiniCalendar = !showMiniCalendar;
-    }
-
-    private void PrevMonth()
-    {
-        calendarMonth = calendarMonth.AddMonths(-1);
-    }
-
-    private void NextMonth()
-    {
-        calendarMonth = calendarMonth.AddMonths(1);
-    }
-
-    private async Task SelectCalendarDay(DateTime date)
-    {
-        selectedDate = date;
-        selectedFromDate = date;
-        selectedToDate = date;
-        activeRangePreset = "custom";
-        await TriggerCalendarFilterUpdateAsync();
-    }
-
-    private async Task OnDateRangeUpdatedAsync()
-    {
-        activeRangePreset = "custom";
-        await TriggerCalendarFilterUpdateAsync();
-    }
-
-    private async Task SetRangePreset(string preset)
-    {
-        activeRangePreset = preset;
-        switch (preset)
+        if (!string.IsNullOrEmpty(v.arrival_time))
         {
-            case "today":
-                selectedFromDate = DateTime.Today;
-                selectedToDate = DateTime.Today;
-                trendDays = 1;
-                break;
-            case "7days":
-                selectedFromDate = DateTime.Today.AddDays(-7);
-                selectedToDate = DateTime.Today;
-                trendDays = 7;
-                break;
-            case "30days":
-                selectedFromDate = DateTime.Today.AddDays(-30);
-                selectedToDate = DateTime.Today;
-                trendDays = 30;
-                break;
-            case "month":
-                selectedFromDate = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
-                selectedToDate = DateTime.Today;
-                trendDays = (DateTime.Today - selectedFromDate).Days + 1;
-                break;
+            if (DateTime.TryParse(v.arrival_time, out var dtArr))
+                return dtArr.Hour;
         }
-
-        await TriggerCalendarFilterUpdateAsync();
+        if (!string.IsNullOrEmpty(v.created_at))
+        {
+            if (DateTimeOffset.TryParse(v.created_at, out var dtoCreated))
+                return dtoCreated.LocalDateTime.Hour;
+        }
+        if (!string.IsNullOrEmpty(v.entered_date))
+        {
+            if (DateTimeOffset.TryParse(v.entered_date, out var dtoEntered))
+                return dtoEntered.LocalDateTime.Hour;
+        }
+        return -1;
     }
 
-    private async Task TriggerCalendarFilterUpdateAsync()
+    private void DismissToast(string id)
     {
-        trendDays = (selectedToDate - selectedFromDate).Days + 1;
-        if (trendDays <= 0) trendDays = 1;
-        await LoadDashboardDataAsync(isSilent: true);
-        await RenderChartsAsync();
+        toastNotifications.RemoveAll(t => t.Id == id);
         StateHasChanged();
     }
 
-    private List<DateTime> GetCalendarDays(DateTime month)
+    private List<MedicoAi.Models.VitalsItem> TodayVitals =>
+        VitalsSignalR.LatestVitals?.Where(v => v != null && v.IsTodayToken()).ToList() ?? new List<MedicoAi.Models.VitalsItem>();
+
+    private bool IsLabItem(MedicoAi.Models.VitalsItem v)
     {
-        var firstDayOfMonth = new DateTime(month.Year, month.Month, 1);
-        var daysInMonth = DateTime.DaysInMonth(month.Year, month.Month);
-        int dayOfWeek = (int)firstDayOfMonth.DayOfWeek;
-
-        var days = new List<DateTime>();
-        // Add previous month filler days
-        for (int i = dayOfWeek - 1; i >= 0; i--)
-        {
-            days.Add(firstDayOfMonth.AddDays(-i - 1));
-        }
-
-        // Add current month days
-        for (int i = 1; i <= daysInMonth; i++)
-        {
-            days.Add(new DateTime(month.Year, month.Month, i));
-        }
-
-        // Add next month filler days to complete grid (42 cells)
-        int remainingCells = 42 - days.Count;
-        var lastDay = new DateTime(month.Year, month.Month, daysInMonth);
-        for (int i = 1; i <= remainingCells; i++)
-        {
-            days.Add(lastDay.AddDays(i));
-        }
-
-        return days;
+        var combined = $"{v.in1} {v.in2} {v.in3} {v.in4} {v.in5} {v.test_name}".ToLowerInvariant();
+        return combined.Contains("lab") || combined.Contains("blood") || combined.Contains("urine") || combined.Contains("pathology") || combined.Contains("bio");
     }
 
-    private async Task LoadDashboardDataAsync(bool isSilent = false)
+    private bool IsScanItem(MedicoAi.Models.VitalsItem v)
     {
-        if (!isSilent)
+        var combined = $" {v.in1} {v.in2} {v.in3} {v.in4} {v.in5} {v.test_name} ".ToLowerInvariant();
+        if (combined.Contains("scan") || combined.Contains("xray") || combined.Contains("x-ray") || combined.Contains("mri") || combined.Contains("usg") || combined.Contains("ultrasound") || combined.Contains("radiology"))
+            return true;
+
+        if (combined.Contains(" ct ") || combined.Contains("ct-scan") || combined.Contains("ct scan") || combined.Contains("ct_scan"))
+            return true;
+
+        return false;
+    }
+
+    private bool IsEcgItem(MedicoAi.Models.VitalsItem v)
+    {
+        var combined = $"{v.in1} {v.in2} {v.in3} {v.in4} {v.in5} {v.test_name}".ToLowerInvariant();
+        if (combined.Contains("ecg") || combined.Contains("echo") || combined.Contains("tmt") || combined.Contains("cardiac") || combined.Contains("cardio") || combined.Contains("heart") || combined.Contains("vitals"))
+            return true;
+
+        // Fallback: If token has investigation status (in1_status, in2_status...) and is neither LAB nor SCAN
+        if (!IsLabItem(v) && !IsScanItem(v))
         {
-            isLoading = true;
+            bool hasInvestigation = !string.IsNullOrEmpty(v.in1_status) || !string.IsNullOrEmpty(v.in2_status) || !string.IsNullOrEmpty(v.in3_status);
+            if (hasInvestigation && !string.Equals(v.in1, "DOCTOR", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
         }
+        return false;
+    }
 
-        var fromStr = selectedFromDate.ToString("yyyy-MM-dd");
-        var toStr = selectedToDate.ToString("yyyy-MM-dd");
-        var data = await DashboardService.GetFullDashboardAsync(trendDays, fromStr, toStr);
-        if (data != null)
+    public class DoctorAvgTimeInfo
+    {
+        public string DoctorName { get; set; } = string.Empty;
+        public double AvgMins { get; set; }
+        public int TokenCount { get; set; }
+    }
+
+    private List<DoctorAvgTimeInfo> DoctorAvgTimes
+    {
+        get
         {
-            dashboardData = data;
-            if (dashboardData.ApproxTurnaroundTime != null && !dashboardData.ApproxTurnaroundTime.Any(t => t.InvestigationType.ToLower().Contains("consult")))
-            {
-                dashboardData.ApproxTurnaroundTime.Add(new TurnaroundTimeModel
+            var vitals = TodayVitals;
+            if (!vitals.Any()) return new List<DoctorAvgTimeInfo>();
+
+            return vitals
+                .Where(v => !string.IsNullOrEmpty(v.doctor_name))
+                .GroupBy(v => NormalizeDocName(v.doctor_name))
+                .Select(g => new DoctorAvgTimeInfo
                 {
-                    InvestigationType = "DOCTOR CONSULTATION",
-                    AvgMinutes = 18.5,
-                    SampleSize = 25
-                });
-            }
-            totalPending = 0;
-            int totalCompleted = 0;
-            if (dashboardData.TodaySnapshot.ByInvestigationType != null)
-            {
-                foreach (var inv in dashboardData.TodaySnapshot.ByInvestigationType)
-                {
-                    totalPending += inv.Pending;
-                    totalCompleted += inv.Completed;
-                }
-            }
-
-                        int grandTotal = totalPending + totalCompleted;
-            completionRatePct = grandTotal > 0 ? (totalCompleted * 100 / grandTotal) : 0;
-
-            // Calculate overall Avg Wait Time (using Turnaround Time)
-            overallAvgWaitTime = 0;
-            if (dashboardData.ApproxTurnaroundTime != null && dashboardData.ApproxTurnaroundTime.Any())
-            {
-                overallAvgWaitTime = Math.Round(dashboardData.ApproxTurnaroundTime.Average(x => x.AvgMinutes), 1);
-            }
-
-            // Calculate Peak Hour
-            peakArrivalHour = "N/A";
-            if (dashboardData.HourlyDistributionToday != null && dashboardData.HourlyDistributionToday.Any())
-            {
-                var peak = dashboardData.HourlyDistributionToday.OrderByDescending(x => x.TokenCount).FirstOrDefault();
-                if (peak != null)
-                {
-                    var startTime = new DateTime(2000, 1, 1, peak.HourOfDayUtc, 0, 0).AddMinutes(330);
-                    var endTime = startTime.AddHours(1);
-                    peakArrivalHour = $"{startTime:h:mm} - {endTime:h:mm tt}";
-                }
-            }
-
-
-            ComputeModalityBreakdowns();
-
-            // Override vitals with live data from /api/Vitals/get for today
-            try 
-            {
-                var liveVitals = await VitalsService.GetVitalsAsync();
-                var todayDate = DateTime.UtcNow.AddMinutes(330).Date;
-                var todayVitals = liveVitals.Where(v => v.entered_date.AddMinutes(330).Date == todayDate).ToList();
-                
-                vitalsReg = todayVitals.Count;
-                vitalsComp = todayVitals.Count(v => 
-                {
-                    if (string.Equals(v.status, "completed", StringComparison.OrdinalIgnoreCase)) return true;
-                    
-                    var slots = new[] { (n: v.in1, s: v.in1_status), (n: v.in2, s: v.in2_status), (n: v.in3, s: v.in3_status), (n: v.in4, s: v.in4_status), (n: v.in5, s: v.in5_status) };
-                    var docSlot = slots.FirstOrDefault(slot => slot.n != null && slot.n.Contains("doctor", StringComparison.OrdinalIgnoreCase));
-                    
-                    if (docSlot.s != null && string.Equals(docSlot.s, "completed", StringComparison.OrdinalIgnoreCase)) return true;
-                    
-                    return false;
-                });
-                vitalsPend = vitalsReg - vitalsComp;
-            } 
-            catch { /* Ignore if it fails */ }
-        }
-        else if (!isSilent)
-        {
-            ToastService.ShowError("Failed to load live dashboard data. Please try again.");
-        }
-
-        if (!isSilent)
-        {
-            isLoading = false;
+                    DoctorName = g.Key,
+                    AvgMins = Math.Round(g.Average(v => v.GetWaitTimeMinutes()), 1),
+                    TokenCount = g.Count()
+                })
+                .OrderBy(x => x.AvgMins)
+                .ToList();
         }
     }
 
-    private async Task StartRealTimeSignalRPollingAsync(CancellationToken ct)
+    public class DoctorStatusInfo
+    {
+        public string DoctorName { get; set; } = string.Empty;
+        public int CompletedCount { get; set; }
+        public int PendingCount { get; set; }
+        public int TotalCount { get; set; }
+    }
+
+    private List<DoctorStatusInfo> DoctorStatusBreakdown
+    {
+        get
+        {
+            var vitals = SelectedDeptVitals;
+            if (!vitals.Any()) return new List<DoctorStatusInfo>();
+
+            return vitals
+                .Where(v => !string.IsNullOrEmpty(v.doctor_name))
+                .GroupBy(v => NormalizeDocName(v.doctor_name))
+                .Select(g => new DoctorStatusInfo
+                {
+                    DoctorName = g.Key,
+                    CompletedCount = g.Count(v => IsReportReceivedVital(v) || IsTokenCompleted(v)),
+                    PendingCount = g.Count(v => !IsReportReceivedVital(v) && !IsTokenCompleted(v)),
+                    TotalCount = g.Count()
+                })
+                .OrderByDescending(x => x.TotalCount)
+                .ToList();
+        }
+    }
+
+    private static string NormalizeDocName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "Duty Doctor";
+        var clean = name.Trim();
+        if (!clean.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase))
+            return $"Dr. {clean}";
+        return clean;
+    }
+
+    private List<MedicoAi.Models.VitalsItem> LabVitals => TodayVitals.Where(IsLabItem).ToList();
+    private List<MedicoAi.Models.VitalsItem> ScanVitals => TodayVitals.Where(IsScanItem).ToList();
+    private List<MedicoAi.Models.VitalsItem> EcgVitals => TodayVitals.Where(IsEcgItem).ToList();
+
+    private int LabTotalCount => LabVitals.Count;
+    private int ScanTotalCount => ScanVitals.Count;
+    private int EcgTotalCount => EcgVitals.Count;
+
+    private int LabCompletedCount => LabVitals.Count(v => IsReportReceivedVital(v) || IsTokenCompleted(v));
+    private int ScanCompletedCount => ScanVitals.Count(v => IsReportReceivedVital(v) || IsTokenCompleted(v));
+    private int EcgCompletedCount => EcgVitals.Count(v => IsReportReceivedVital(v) || IsTokenCompleted(v));
+
+    private double LabCompletionRate => LabTotalCount > 0 ? Math.Round((double)LabCompletedCount / LabTotalCount * 100.0, 1) : 0.0;
+    private double ScanCompletionRate => ScanTotalCount > 0 ? Math.Round((double)ScanCompletedCount / ScanTotalCount * 100.0, 1) : 0.0;
+    private double EcgCompletionRate => EcgTotalCount > 0 ? Math.Round((double)EcgCompletedCount / EcgTotalCount * 100.0, 1) : 0.0;
+
+    private double OverallAvgDeptCompletion
+    {
+        get
+        {
+            double totalPct = 0;
+            int count = 0;
+            if (LabTotalCount > 0) { totalPct += LabCompletionRate; count++; }
+            if (ScanTotalCount > 0) { totalPct += ScanCompletionRate; count++; }
+            if (EcgTotalCount > 0) { totalPct += EcgCompletionRate; count++; }
+            if (count == 0) return 0.0;
+            return Math.Round(totalPct / count, 1);
+        }
+    }
+
+    private double LabAvgDuration
+    {
+        get
+        {
+            var comp = LabVitals.Where(v => IsReportReceivedVital(v) || IsTokenCompleted(v)).ToList();
+            if (comp.Any()) return Math.Round(comp.Average(v => v.GetWaitTimeMinutes()), 1);
+            if (LabVitals.Any()) return Math.Round(LabVitals.Average(v => v.GetWaitTimeMinutes()), 1);
+            return 0.0;
+        }
+    }
+
+    private double ScanAvgDuration
+    {
+        get
+        {
+            var comp = ScanVitals.Where(v => IsReportReceivedVital(v) || IsTokenCompleted(v)).ToList();
+            if (comp.Any()) return Math.Round(comp.Average(v => v.GetWaitTimeMinutes()), 1);
+            if (ScanVitals.Any()) return Math.Round(ScanVitals.Average(v => v.GetWaitTimeMinutes()), 1);
+            return 0.0;
+        }
+    }
+
+    private double EcgAvgDuration
+    {
+        get
+        {
+            var comp = EcgVitals.Where(v => IsReportReceivedVital(v) || IsTokenCompleted(v)).ToList();
+            if (comp.Any()) return Math.Round(comp.Average(v => v.GetWaitTimeMinutes()), 1);
+            if (EcgVitals.Any()) return Math.Round(EcgVitals.Average(v => v.GetWaitTimeMinutes()), 1);
+            return 0.0;
+        }
+    }
+
+    private List<MedicoAi.Models.VitalsItem> SelectedDeptVitals
+    {
+        get
+        {
+            var allToday = TodayVitals;
+            if (!allToday.Any()) return new List<MedicoAi.Models.VitalsItem>();
+
+            if (selectedDepartmentTab == "LAB")
+            {
+                return allToday.Where(IsLabItem).ToList();
+            }
+            else if (selectedDepartmentTab == "SCAN")
+            {
+                return allToday.Where(IsScanItem).ToList();
+            }
+            else if (selectedDepartmentTab == "ECG")
+            {
+                return allToday.Where(IsEcgItem).ToList();
+            }
+            else // OVERALL
+            {
+                return allToday;
+            }
+        }
+    }
+
+    private int SelectedDeptTotalCount => SelectedDeptVitals.Count;
+
+    private int SelectedDeptCompletedCount => SelectedDeptVitals.Count(v =>
+        string.Equals(v.status, "completed", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(v.in1_status, "completed", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(v.in1_status, "verified", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(v.in2_status, "completed", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(v.in3_status, "completed", StringComparison.OrdinalIgnoreCase)
+    );
+
+    private int SelectedDeptInProgressCount => SelectedDeptVitals.Count(v =>
+        (string.Equals(v.status, "in_progress", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(v.status, "in_consultation", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(v.in1_status, "in_progress", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(v.in2_status, "in_progress", StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(v.in3_status, "in_progress", StringComparison.OrdinalIgnoreCase)) &&
+        !string.Equals(v.status, "completed", StringComparison.OrdinalIgnoreCase) &&
+        !string.Equals(v.in1_status, "completed", StringComparison.OrdinalIgnoreCase)
+    );
+
+    private int SelectedDeptWaitingCount => Math.Max(0, SelectedDeptTotalCount - SelectedDeptCompletedCount - SelectedDeptInProgressCount);
+
+    private double SelectedDeptVerifiedRate => SelectedDeptTotalCount > 0
+        ? Math.Round((double)SelectedDeptCompletedCount / SelectedDeptTotalCount * 100.0, 1)
+        : 0.0;
+
+    private double SelectedDeptAvgDuration
+    {
+        get
+        {
+            var comp = SelectedDeptVitals.Where(v => string.Equals(v.status, "completed", StringComparison.OrdinalIgnoreCase) || string.Equals(v.in1_status, "completed", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (comp.Any())
+            {
+                return Math.Round(comp.Average(v => v.GetWaitTimeMinutes()), 1);
+            }
+            return SelectedDeptTotalCount > 0 ? SelectedDeptVitals.Average(v => v.GetWaitTimeMinutes()) : 0.0;
+        }
+    }
+
+    private async Task SelectDepartmentTab(string dept)
+    {
+        selectedDepartmentTab = dept;
+        await InvokeAsync(StateHasChanged);
+        await RenderChartsAsync();
+    }
+
+    private async Task RotateDepartmentTab()
+    {
+        selectedDepartmentTab = selectedDepartmentTab switch
+        {
+            "LAB" => "SCAN",
+            "SCAN" => "ECG",
+            "ECG" => "OVERALL",
+            "OVERALL" => "LAB",
+            _ => "LAB"
+        };
+        await InvokeAsync(StateHasChanged);
+        await RenderChartsAsync();
+    }
+
+    private async Task RenderDepartmentChartAsync()
     {
         try
         {
-            while (!ct.IsCancellationRequested)
-            {
-                await Task.Delay(3000, ct);
+            int completed = SelectedDeptCompletedCount;
+            int active = SelectedDeptInProgressCount;
+            int waiting = SelectedDeptWaitingCount;
 
-                await InvokeAsync(async () =>
-                {
-                    await LoadDashboardDataAsync(isSilent: true);
-                    StateHasChanged();
-                    await RenderChartsAsync();
-                });
+            if (SelectedDeptTotalCount > 0 && completed == 0 && active == 0)
+            {
+                waiting = SelectedDeptTotalCount;
             }
+
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initFullDonutChart", "ecgStatusDonutChart", completed, active, waiting);
         }
-        catch (TaskCanceledException) { /* Normal on page dispose */ }
         catch (Exception ex)
         {
-            Console.WriteLine($"[SignalR Circuit Polling Error] {ex.Message}");
+            Console.WriteLine($"Error rendering department chart: {ex.Message}");
         }
+    }
+
+    private static bool IsTokenCompleted(MedicoAi.Models.VitalsItem v)
+    {
+        if (v == null) return false;
+
+        static bool CheckStr(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            var clean = s.Trim().ToLowerInvariant();
+            return clean == "completed" ||
+                   clean == "consulted" ||
+                   clean == "finished" ||
+                   clean == "verified" ||
+                   clean.Contains("report received") ||
+                   clean.Contains("report_received") ||
+                   clean.Contains("reportreceived") ||
+                   clean.Contains("received");
+        }
+
+        return CheckStr(v.status) ||
+               CheckStr(v.in1_status) ||
+               CheckStr(v.in2_status) ||
+               CheckStr(v.in3_status) ||
+               CheckStr(v.in4_status) ||
+               CheckStr(v.in5_status);
+    }
+
+    private int TodayTotalCount => TodayVitals.Count;
+    private int TodayCompletedCount => TodayVitals.Count(IsTokenCompleted);
+    private int TodayInProgressCount => TodayVitals.Count(v => string.Equals(v.status, "in_progress", StringComparison.OrdinalIgnoreCase) || string.Equals(v.status, "in_consultation", StringComparison.OrdinalIgnoreCase));
+    private int TodayWaitingCount => Math.Max(0, TodayTotalCount - TodayCompletedCount - TodayInProgressCount);
+    private int TodayVipCount => TodayVitals.Count(v => v.isvip == true || v.is_vip == true);
+    
+    private double TodayAvgWaitTime => TodayVitals.Any() 
+        ? Math.Round(TodayVitals.Average(v => v.GetWaitTimeMinutes()), 1) 
+        : 0.0;
+
+    private double TodayUtilizationRate => TodayTotalCount > 0 
+        ? Math.Round((double)(TodayCompletedCount + TodayInProgressCount) / TodayTotalCount * 100.0, 1) 
+        : 0.0;
+
+    private double TodayOverallCompletionRate => TodayTotalCount > 0 
+        ? Math.Round((double)TodayCompletedCount / TodayTotalCount * 100.0, 1) 
+        : 0.0;
+
+    private double TodayAvgTestDuration
+    {
+        get
+        {
+            var completedList = TodayVitals.Where(v => string.Equals(v.status, "completed", StringComparison.OrdinalIgnoreCase) || string.Equals(v.in1_status, "completed", StringComparison.OrdinalIgnoreCase)).ToList();
+            if (completedList.Any())
+            {
+                return Math.Round(completedList.Average(v => v.GetWaitTimeMinutes()), 1);
+            }
+            return 12.0;
+        }
+    }
+
+    private static bool IsReportReceivedVital(MedicoAi.Models.VitalsItem v)
+    {
+        if (v == null) return false;
+
+        static bool CheckStr(string? s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return false;
+            var clean = s.Trim().ToLowerInvariant();
+            return clean.Contains("report received") ||
+                   clean.Contains("report_received") ||
+                   clean.Contains("reportreceived") ||
+                   clean.Contains("received") ||
+                   clean.Contains("verified");
+        }
+
+        return CheckStr(v.status) ||
+               CheckStr(v.in1_status) ||
+               CheckStr(v.in2_status) ||
+               CheckStr(v.in3_status);
+    }
+
+    private List<MedicoAi.Models.VitalsItem> DiagnosticVitals => TodayVitals.Where(v => IsLabItem(v) || IsScanItem(v) || IsEcgItem(v)).ToList();
+    private int DiagnosticTotalCount => DiagnosticVitals.Count;
+    private int TodayReportReceivedCount => DiagnosticVitals.Count(IsReportReceivedVital);
+
+    private double TodayVerifiedRate
+    {
+        get
+        {
+            if (DiagnosticTotalCount == 0) return 0.0;
+            return Math.Round((double)TodayReportReceivedCount / DiagnosticTotalCount * 100.0, 1);
+        }
+    }
+
+    private (string TimeRange, int PatientCount) CalculatePeakDiagnosticHour()
+    {
+        var vitals = TodayVitals;
+        if (!vitals.Any()) return ("No Tokens", 0);
+
+        var hourGroups = vitals
+            .Select(v => GetVitalsHour(v))
+            .Where(h => h >= 0 && h <= 23)
+            .GroupBy(h => h)
+            .Select(g => new { Hour = g.Key, Count = g.Count() })
+            .OrderByDescending(x => x.Count)
+            .ThenBy(x => x.Hour)
+            .ToList();
+
+        if (!hourGroups.Any()) return ("No Tokens", 0);
+
+        var top = hourGroups.First();
+        int startHr = top.Hour;
+        int endHr = (startHr + 1) % 24;
+        DateTime dtStart = DateTime.Today.AddHours(startHr);
+        DateTime dtEnd = DateTime.Today.AddHours(endHr);
+
+        return ($"{dtStart:hh:00 tt} - {dtEnd:hh:00 tt}", top.Count);
+    }
+
+    private string TodayPeakHour => CalculatePeakDiagnosticHour().TimeRange;
+    private int TodayPeakHourCount => CalculatePeakDiagnosticHour().PatientCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        chatMessages.Add(new ChatMessage
+        {
+            Sender = "Medico AI",
+            Text = $"Welcome, {Session.DoctorName}! I provide answers only from the current Medico dashboard data and live patient flow metrics. Please ask about queue status, doctor activity, department workload, or token counts."
+        });
+
+        VitalsSignalR.OnVitalsUpdated += HandleLiveVitalsUpdated;
+        VitalsSignalR.StartLiveStream(pollIntervalSeconds: 3);
+
+        // Auto-check patient long wait time (> 20-30 mins) every 20 seconds
+        _autoAlertTimer = new System.Threading.Timer(_ =>
+        {
+            InvokeAsync(CheckLongWaitPatients);
+        }, null, 2000, 20000);
+
+        // Auto-rotate LAB -> SCAN -> ECG tabs every 15 seconds
+        _tabAutoRotateTimer = new System.Threading.Timer(_ =>
+        {
+            InvokeAsync(RotateDepartmentTab);
+        }, null, 15000, 15000);
+
+        await LoadDataAsync();
+    }
+
+    private async void HandleLiveVitalsUpdated(List<MedicoAi.Models.VitalsItem> vitals)
+    {
+        lastUpdatedTime = DateTime.Now.ToString("hh:mm:ss tt");
+
+        if (vitals != null && vitals.Any())
+        {
+            var todayList = vitals.Where(v => v != null && v.IsTodayToken()).ToList();
+
+            foreach (var v in todayList)
+            {
+                string key = v.vitalentryid?.ToString() ?? v.token_no ?? v.id ?? "";
+                if (string.IsNullOrEmpty(key)) continue;
+
+                // Detect NEW token generated live via SignalR
+                if (!knownTokenKeys.Contains(key))
+                {
+                    knownTokenKeys.Add(key);
+
+                    if (!isInitialSignalRFetch)
+                    {
+                        AddToastNotification(new ToastAlertItem
+                        {
+                            Title = "New Token Generated",
+                            PatientName = string.IsNullOrEmpty(v.patient_name) ? "Patient" : v.patient_name,
+                            TokenNo = string.IsNullOrEmpty(v.token_no) ? $"00{v.vitalentryid}" : v.token_no,
+                            DoctorName = string.IsNullOrEmpty(v.doctor_name) ? "Doctor" : v.doctor_name,
+                            TestName = string.IsNullOrEmpty(v.in1) ? "General" : v.in1,
+                            Type = "new_token",
+                            VitalItem = v
+                        });
+                    }
+                }
+            }
+            isInitialSignalRFetch = false;
+        }
+
+        CheckLongWaitPatients();
+        await InvokeAsync(StateHasChanged);
+        await RenderChartsAsync();
+    }
+
+    private void CheckLongWaitPatients()
+    {
+        acknowledged20MinTokenIds ??= new();
+        acknowledged30MinTokenIds ??= new();
+        longWaitVitals ??= new();
+
+        var rawVitals = VitalsSignalR.LatestVitals;
+        if (rawVitals != null && rawVitals.Any())
+        {
+            var todayList = rawVitals.Where(v => v != null && v.IsTodayToken()).ToList();
+            var newAlerts = new List<MedicoAi.Models.VitalsItem>();
+
+            foreach (var v in todayList)
+            {
+                if (v == null) continue;
+
+                // FIX: EXCLUDE COMPLETED PATIENTS FROM WAIT ALERTS
+                bool isCompleted = string.Equals(v.status, "completed", StringComparison.OrdinalIgnoreCase) || 
+                                   string.Equals(v.in1_status, "completed", StringComparison.OrdinalIgnoreCase);
+                if (isCompleted) continue;
+
+                bool isWaiting = string.Equals(v.status, "waiting", StringComparison.OrdinalIgnoreCase) || 
+                                 string.Equals(v.in1_status, "waiting_for_test", StringComparison.OrdinalIgnoreCase) ||
+                                 string.Equals(v.status, "in_progress", StringComparison.OrdinalIgnoreCase);
+                if (!isWaiting) continue;
+
+                double waitMins = v.GetWaitTimeMinutes();
+                string key = v.vitalentryid?.ToString() ?? v.token_no ?? v.id ?? "";
+                if (string.IsNullOrEmpty(key)) continue;
+
+                // Check 30-minute threshold first
+                if (waitMins >= 30.0)
+                {
+                    if (!acknowledged30MinTokenIds.Contains(key))
+                    {
+                        newAlerts.Add(v);
+                        AddToastNotification(new ToastAlertItem
+                        {
+                            Title = "Critical 30+ Min Wait Alert",
+                            Message = v.CalculateWaitTime(),
+                            PatientName = string.IsNullOrEmpty(v.patient_name) ? "Patient" : v.patient_name,
+                            TokenNo = string.IsNullOrEmpty(v.token_no) ? $"00{v.vitalentryid}" : v.token_no,
+                            DoctorName = string.IsNullOrEmpty(v.doctor_name) ? "Doctor" : v.doctor_name,
+                            TestName = string.IsNullOrEmpty(v.in1) ? "Test" : v.in1,
+                            Type = "wait_30m",
+                            VitalItem = v
+                        });
+                        acknowledged30MinTokenIds.Add(key);
+                    }
+                }
+                // Check 20-minute threshold
+                else if (waitMins >= 20.0)
+                {
+                    if (!acknowledged20MinTokenIds.Contains(key))
+                    {
+                        newAlerts.Add(v);
+                        AddToastNotification(new ToastAlertItem
+                        {
+                            Title = "Patient 20+ Min Wait Alert",
+                            Message = v.CalculateWaitTime(),
+                            PatientName = string.IsNullOrEmpty(v.patient_name) ? "Patient" : v.patient_name,
+                            TokenNo = string.IsNullOrEmpty(v.token_no) ? $"00{v.vitalentryid}" : v.token_no,
+                            DoctorName = string.IsNullOrEmpty(v.doctor_name) ? "Doctor" : v.doctor_name,
+                            TestName = string.IsNullOrEmpty(v.in1) ? "Test" : v.in1,
+                            Type = "wait_20m",
+                            VitalItem = v
+                        });
+                        acknowledged20MinTokenIds.Add(key);
+                    }
+                }
+            }
+
+            if (newAlerts.Any())
+            {
+                longWaitVitals = newAlerts;
+            }
+        }
+    }
+
+    private void ShowWaitTimeAlertPopup()
+    {
+        var rawVitals = VitalsSignalR.LatestVitals;
+        if (rawVitals != null)
+        {
+            longWaitVitals = rawVitals.Where(v => v != null && v.IsTodayToken() && 
+                !string.Equals(v.status, "completed", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(v.in1_status, "completed", StringComparison.OrdinalIgnoreCase) &&
+                (string.Equals(v.status, "waiting", StringComparison.OrdinalIgnoreCase) || 
+                 string.Equals(v.in1_status, "waiting_for_test", StringComparison.OrdinalIgnoreCase) || 
+                 v.GetWaitTimeMinutes() >= 20.0)).ToList();
+        }
+        showWaitAlertModal = true;
+        try { _ = JSRuntime.InvokeVoidAsync("playAlertSound", "wait_20m"); } catch { }
+        StateHasChanged();
+    }
+
+    private void CloseWaitAlertModal()
+    {
+        if (longWaitVitals != null)
+        {
+            foreach (var item in longWaitVitals)
+            {
+                string key = item.vitalentryid?.ToString() ?? item.token_no ?? item.id ?? "";
+                double mins = item.GetWaitTimeMinutes();
+                if (mins >= 30.0)
+                {
+                    acknowledged30MinTokenIds.Add(key);
+                }
+                if (mins >= 20.0)
+                {
+                    acknowledged20MinTokenIds.Add(key);
+                }
+            }
+        }
+        showWaitAlertModal = false;
+        StateHasChanged();
+    }
+
+    private void ClearWaitAlerts()
+    {
+        if (longWaitVitals != null)
+        {
+            foreach (var item in longWaitVitals)
+            {
+                string key = item.vitalentryid?.ToString() ?? item.token_no ?? item.id ?? "";
+                acknowledged20MinTokenIds.Add(key);
+                acknowledged30MinTokenIds.Add(key);
+            }
+            longWaitVitals.Clear();
+        }
+        StateHasChanged();
+    }
+
+    private void NotifyDoctor(MedicoAi.Models.VitalsItem item)
+    {
+        // Add alert notification message to AI chat assistant
+        chatMessages.Add(new ChatMessage
+        {
+            Sender = "Medico AI",
+            Text = $"🚨 **ALERT SENT TO DOCTOR**: {item.doctor_name}! Patient **{item.patient_name}** (Token #{item.token_no}) has been waiting for **{item.CalculateWaitTime()}** for test `{item.in1}`. High priority consultation requested!"
+        });
+        showAiModal = true;
+        StateHasChanged();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        dashboardData = await MedicoApi.GetFullDashboardAsync(30);
+        rawQueueItems = await MedicoApi.GetOgQueueAsync();
+        lastUpdatedTime = DateTime.Now.ToString("h:mm tt");
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender && !isLoading)
+        if (firstRender)
         {
             await RenderChartsAsync();
         }
@@ -723,115 +1693,247 @@
     {
         try
         {
-            if (dashboardData.PastDaysTrend != null && dashboardData.PastDaysTrend.Any())
+            var todayList = SelectedDeptVitals;
+
+            // 1. Doctor-Wise Diagnostic Orders (All Doctors across TodayVitals)
+            var allDocGroup = TodayVitals.Where(v => !string.IsNullOrEmpty(v.doctor_name))
+                .GroupBy(v => v.doctor_name!.Trim())
+                .Select(g => new { Name = g.Key, Count = (double)g.Count() })
+                .OrderByDescending(x => x.Count)
+                .ToList();
+
+            var docNames = allDocGroup.Any() ? allDocGroup.Select(d => d.Name).ToArray() : new[] { "Duty Doctor" };
+            var docCounts = allDocGroup.Any() ? allDocGroup.Select(d => d.Count).ToArray() : new[] { 0.0 };
+
+            // 2. Doctor-Wise Lab vs Scan vs ECG Breakdown
+            var topDocs = allDocGroup.Select(d => d.Name).Take(6).ToList();
+            if (!topDocs.Any()) topDocs = new List<string> { "Duty Doctor" };
+
+            var labCountsPerDoc = new List<double>();
+            var scanCountsPerDoc = new List<double>();
+            var ecgCountsPerDoc = new List<double>();
+
+            foreach (var doc in topDocs)
             {
-                var days = dashboardData.PastDaysTrend.Select(d => d.Day).ToArray();
-                var tokenCounts = dashboardData.PastDaysTrend.Select(d => d.TokenCount).ToArray();
-                var completedCounts = dashboardData.PastDaysTrend.Select(d => d.Completed).ToArray();
-                await JSRuntime.InvokeVoidAsync("dashboardCharts.initPastDaysTrend", "pastDaysTrendChart", days, tokenCounts, completedCounts);
+                var docTokens = TodayVitals.Where(v => string.Equals(v.doctor_name?.Trim(), doc, StringComparison.OrdinalIgnoreCase)).ToList();
+                labCountsPerDoc.Add(docTokens.Count(IsLabItem));
+                scanCountsPerDoc.Add(docTokens.Count(IsScanItem));
+                ecgCountsPerDoc.Add(docTokens.Count(IsEcgItem));
             }
 
-            await JSRuntime.InvokeVoidAsync("dashboardCharts.initCompletionDonut", "completionDonutChart", completionRatePct);
-
-            var todayHours = dashboardData.HourlyDistributionToday ?? new();
-            var allTimeHours = dashboardData.HourlyDistributionAllTime ?? new();
-            var allUniqueHours = todayHours.Select(h => h.HourOfDayUtc)
-                                    .Concat(allTimeHours.Select(h => h.HourOfDayUtc))
-                                    .Distinct()
-                                    .OrderBy(h => h)
-                                    .ToList();
-
-            if (allUniqueHours.Any())
+            // 3. Hourly Patient Inflow (from Selected Dept Tokens or Today's overall list)
+            var inflowList = todayList.Any() ? todayList : TodayVitals;
+            var hourLabels = new[] { "08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00" };
+            var hourCounts = new double[hourLabels.Length];
+            for (int i = 0; i < hourLabels.Length; i++)
             {
-                var hourLabels = allUniqueHours.Select(h => new DateTime(2000, 1, 1, h, 0, 0).AddMinutes(330).ToString("hh:mm tt")).ToArray();
-                var todayCounts = allUniqueHours.Select(h => todayHours.FirstOrDefault(th => th.HourOfDayUtc == h)?.TokenCount ?? 0).ToArray();
-                await JSRuntime.InvokeVoidAsync("dashboardCharts.initHourlyDistribution", "hourlyDistributionChart", hourLabels, todayCounts);
+                int hr = 8 + i;
+                hourCounts[i] = inflowList.Count(v => GetVitalsHour(v) == hr);
             }
 
-            // 4. Polar Area Radial Chart for Investigation Workload
-            if (dashboardData.TodaySnapshot.ByInvestigationType != null && dashboardData.TodaySnapshot.ByInvestigationType.Any())
+            int maxIdx = 0;
+            double maxVal = 0;
+            for (int i = 0; i < hourCounts.Length; i++)
             {
-                var polarLabels = dashboardData.TodaySnapshot.ByInvestigationType.Select(i => i.InvestigationType.Replace("_", " ").ToUpper()).ToArray();
-                var polarCounts = dashboardData.TodaySnapshot.ByInvestigationType.Select(i => i.Pending + i.Completed).ToArray();
-                var polarColors = dashboardData.TodaySnapshot.ByInvestigationType.Select(i => 
-                      (i.InvestigationType.ToLower().Contains("lab") || i.InvestigationType.ToLower().Contains("path")) ? "rgba(16,185,129,0.85)" : 
-                      i.InvestigationType.ToLower().Contains("scan") ? "rgba(13,148,136,0.85)" : 
-                      (i.InvestigationType.ToLower().Contains("ecg") || i.InvestigationType.ToLower().Contains("og")) ? "rgba(245,158,11,0.85)" : 
-                      (i.InvestigationType.ToLower().Contains("doc") || i.InvestigationType.ToLower().Contains("consult")) ? "rgba(239,68,68,0.85)" : 
-                      "rgba(99,102,241,0.85)"
-                  ).ToArray();
-                  await JSRuntime.InvokeVoidAsync("dashboardCharts.initInvestigationPolarChart", "investigationPolarChart", polarLabels, polarCounts, polarColors);
+                if (hourCounts[i] > maxVal)
+                {
+                    maxVal = hourCounts[i];
+                    maxIdx = i;
+                }
             }
+            peakInflowTime = maxVal > 0 ? $"Peak {hourLabels[maxIdx]}" : "Peak 10:00 AM";
 
-            // 5. Horizontal Bar Chart for Doctor Group
-            if (dashboardData.GroupWiseLast7Days != null && dashboardData.GroupWiseLast7Days.Any())
+            // Render ALL 6 Charts dynamically matching real API endpoint vitals data
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initHorizontalBarChart", "doctorWiseBarChart", docNames, docCounts);
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initVerticalBarChart", "cardiacOrderBarChart", topDocs.ToArray(), labCountsPerDoc.ToArray(), scanCountsPerDoc.ToArray(), ecgCountsPerDoc.ToArray());
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initHourlyPeakLineChart", "hourlyInflowLineChart", hourLabels, hourCounts);
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initSemiGaugeChart", "cardiologyStatusGaugeChart", LabCompletionRate, ScanCompletionRate, EcgCompletionRate);
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initDurationDonutChart", "recordingDurationDonutChart", LabAvgDuration, ScanAvgDuration, EcgAvgDuration);
+            
+            if (selectedDepartmentTab == "OVERALL")
             {
-                var divLabels = dashboardData.GroupWiseLast7Days.Select(g => string.IsNullOrWhiteSpace(g.GroupName) ? "Unassigned" : g.GroupName).ToArray();
-                var divCounts = dashboardData.GroupWiseLast7Days.Select(g => g.TokenCount).ToArray();
-                await JSRuntime.InvokeVoidAsync("dashboardCharts.initDivisionHorizontalBarChart", "divisionBarChart", divLabels, divCounts);
+                await JSRuntime.InvokeVoidAsync("dashboardCharts.initFullDonutChart", "ecgStatusDonutChart", TodayCompletedCount, TodayInProgressCount, TodayWaitingCount);
             }
-
-            // 6. Doctor Leaderboard Horizontal Bar Chart
-            if (dashboardData.DoctorWiseLast7Days != null && dashboardData.DoctorWiseLast7Days.Any())
+            else
             {
-                var docSorted = dashboardData.DoctorWiseLast7Days.OrderByDescending(d => d.TokenCount).Take(6).ToList();
-                var docLabels = docSorted.Select(d => d.DoctorName).ToArray();
-                var docToday  = docSorted.Select(d => d.TodayCount).ToArray();
-                var docTotal  = docSorted.Select(d => d.TokenCount).ToArray();
-                await JSRuntime.InvokeVoidAsync("dashboardCharts.initDoctorLeaderboardBarChart", "doctorLeaderboardBarChart", docLabels, docToday, docTotal);
-            }
-
-            // 7. TAT Bar Chart
-            if (dashboardData.ApproxTurnaroundTime != null && dashboardData.ApproxTurnaroundTime.Any())
-            {
-                var tatLabels = dashboardData.ApproxTurnaroundTime.Select(t => (t.InvestigationType ?? "Unknown").Replace("_", " ").ToUpper()).ToArray();
-                var tatAvg    = dashboardData.ApproxTurnaroundTime.Select(t => t.AvgMinutes).ToArray();
-                var tatColors = dashboardData.ApproxTurnaroundTime.Select(t =>
-                    (t.InvestigationType ?? "").ToLower().Contains("lab")  ? "#6366f1" :
-                    (t.InvestigationType ?? "").ToLower().Contains("scan") ? "#0d9488" : "#f59e0b"
-                ).ToArray();
-                await JSRuntime.InvokeVoidAsync("dashboardCharts.initTatCircularChart", "tatBarChart", tatLabels, tatAvg, tatColors);
+                await JSRuntime.InvokeVoidAsync("dashboardCharts.initFullDonutChart", "ecgStatusDonutChart", SelectedDeptCompletedCount, SelectedDeptInProgressCount, SelectedDeptWaitingCount);
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error rendering dashboard layout charts: {ex.Message}");
+            Console.WriteLine($"Error initializing dashboard charts: {ex.Message}");
         }
     }
 
+    private string aiInteractionMode = "text"; // "text" or "voice"
+    private string selectedVoiceLang = "ta-IN";
+    private bool isListeningVoice = false;
+    private string speechTranscript = string.Empty;
+    private string lastAiVoiceResponse = string.Empty;
+    private int voiceAutoSendCountdown = 0;
+    private DotNetObjectReference<VitalsDashboard>? dotNetHelper;
+
+    private void SetAiInteractionMode(string mode)
+    {
+        aiInteractionMode = mode;
+        StateHasChanged();
+    }
+
+    private void ToggleAiModal() => showAiModal = !showAiModal;
+
+    private async Task ToggleVoiceListening()
+    {
+        if (isListeningVoice)
+        {
+            await StopListening();
+        }
+        else
+        {
+            await StartListening();
+        }
+    }
+
+    private async Task StartListening()
+    {
+        dotNetHelper ??= DotNetObjectReference.Create(this);
+        isListeningVoice = true;
+        speechTranscript = string.Empty;
+        var success = await JSRuntime.InvokeAsync<bool>("MedicoSpeech.startListening", dotNetHelper, selectedVoiceLang);
+        if (!success)
+        {
+            isListeningVoice = false;
+        }
+        StateHasChanged();
+    }
+
+    private async Task StopListening()
+    {
+        isListeningVoice = false;
+        await JSRuntime.InvokeVoidAsync("MedicoSpeech.stopListening");
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void OnSpeechTranscript(string transcript, bool isFinal)
+    {
+        speechTranscript = transcript;
+        userPromptInput = transcript;
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void OnSpeechError(string error)
+    {
+        isListeningVoice = false;
+        StateHasChanged();
+    }
+
+    [JSInvokable]
+    public void OnSpeechEnd()
+    {
+        isListeningVoice = false;
+        StateHasChanged();
+
+        // Auto-send after 5 second countdown if transcript is available
+        if (!string.IsNullOrWhiteSpace(speechTranscript))
+        {
+            _ = Task.Run(async () =>
+            {
+                for (int i = 5; i > 0; i--)
+                {
+                    await InvokeAsync(() => { voiceAutoSendCountdown = i; StateHasChanged(); });
+                    await Task.Delay(1000);
+                }
+                await InvokeAsync(async () =>
+                {
+                    voiceAutoSendCountdown = 0;
+                    if (!string.IsNullOrWhiteSpace(speechTranscript))
+                        await SubmitVoiceQuery();
+                    StateHasChanged();
+                });
+            });
+        }
+    }
+
+    private async Task SubmitVoiceQuery()
+    {
+        if (string.IsNullOrWhiteSpace(speechTranscript)) return;
+        
+        userPromptInput = speechTranscript;
+        await SubmitAiQuery();
+
+        if (chatMessages.Any())
+        {
+            var lastMsg = chatMessages.LastOrDefault(m => m.Sender != "User");
+            if (lastMsg != null)
+            {
+                lastAiVoiceResponse = lastMsg.Text;
+                await SpeakText(lastMsg.Text);
+            }
+        }
+    }
+
+    private async Task SpeakText(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        await JSRuntime.InvokeVoidAsync("MedicoSpeech.speakText", text, selectedVoiceLang);
+    }
+
+    private async Task PresetQuery(string query)
+    {
+        userPromptInput = query;
+        await SubmitAiQuery();
+    }
+
+    private async Task SubmitAiQuery()
+    {
+        if (string.IsNullOrWhiteSpace(userPromptInput) || isAiThinking) return;
+
+        var prompt = userPromptInput.Trim();
+        userPromptInput = string.Empty;
+
+        chatMessages.Add(new ChatMessage { Sender = "User", Text = prompt });
+        isAiThinking = true;
+        StateHasChanged();
+
+        var aiAnswer = await AiService.AskAiAsync(prompt, Session.DoctorName);
+
+        isAiThinking = false;
+        chatMessages.Add(new ChatMessage { Sender = "Medico AI", Text = aiAnswer });
+        StateHasChanged();
+
+        // If in voice mode, automatically read out response
+        if (aiInteractionMode == "voice")
+        {
+            lastAiVoiceResponse = aiAnswer;
+            await SpeakText(aiAnswer);
+        }
+    }
+
+    private async Task HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SubmitAiQuery();
+        }
+    }
+
+    private string FormattedMessageText(string rawText)
+    {
+        if (string.IsNullOrEmpty(rawText)) return string.Empty;
+        var formatted = System.Web.HttpUtility.HtmlEncode(rawText);
+        formatted = formatted.Replace("\n", "<br />");
+        formatted = System.Text.RegularExpressions.Regex.Replace(formatted, @"\*\*(.*?)\*\*", "<strong>$1</strong>");
+        return formatted;
+    }
 
     public void Dispose()
     {
+        dotNetHelper?.Dispose();
+        VitalsSignalR.OnVitalsUpdated -= HandleLiveVitalsUpdated;
+        VitalsSignalR.StopLiveStream();
+        _autoAlertTimer?.Dispose();
+        _tabAutoRotateTimer?.Dispose();
         _cts.Cancel();
-        _cts.Dispose();
-    }
-    private string GenerateSparklinePoints(List<double>? values, double width = 60, double height = 20)
-    {
-        if (values == null || values.Count < 2) return "0,10 60,10";
-        var min = values.Min();
-        var max = values.Max();
-        var range = max - min;
-        if (range == 0) range = 1;
-
-        var points = new List<string>();
-        for (int i = 0; i < values.Count; i++)
-        {
-            var x = (i * width) / (values.Count - 1);
-            var y = height - ((values[i] - min) / range * height);
-            points.Add($"{x.ToString(System.Globalization.CultureInfo.InvariantCulture)},{y.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
-        }
-        return string.Join(" ", points);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-

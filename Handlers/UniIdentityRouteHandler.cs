@@ -40,7 +40,11 @@ namespace Booking.Handlers
                 if (originalUrl.StartsWith(_baseUrl, StringComparison.OrdinalIgnoreCase))
                 {
                     var relativePath = originalUrl.Substring(_baseUrl.Length);
-                    var newUrl = _uniIdentityBaseUrl + relativePath;
+                    var newUrl = (_uniIdentityBaseUrl + relativePath)
+                        .Replace("/api/api/", "/api/")
+                        .Replace("://", "##SCHEME##")
+                        .Replace("//", "/")
+                        .Replace("##SCHEME##", "://");
 
                     // Read tenant code from the header that TenantHeaderHandler already injected.
                     // We do NOT use _session.TenantCode here because DelegatingHandlers are resolved
