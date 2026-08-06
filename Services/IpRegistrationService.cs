@@ -89,7 +89,34 @@ namespace Booking.Services
             {
                 var response = await _http.PostAsJsonAsync("api/IpRegistration/discharge", request);
                 var rawContent = await response.Content.ReadAsStringAsync();
-                var cleaned = rawContent?.Trim().Trim('"') ?? "";
+                var cleaned = rawContent?.Trim() ?? "";
+
+                if (!string.IsNullOrWhiteSpace(cleaned))
+                {
+                    if (cleaned.StartsWith("{") && cleaned.EndsWith("}"))
+                    {
+                        try
+                        {
+                            using var jsonDoc = System.Text.Json.JsonDocument.Parse(cleaned);
+                            if (jsonDoc.RootElement.TryGetProperty("message", out var msgProp))
+                            {
+                                cleaned = msgProp.GetString() ?? cleaned;
+                            }
+                            else if (jsonDoc.RootElement.TryGetProperty("error", out var errProp))
+                            {
+                                cleaned = errProp.GetString() ?? cleaned;
+                            }
+                        }
+                        catch
+                        {
+                            cleaned = cleaned.Trim('"');
+                        }
+                    }
+                    else
+                    {
+                        cleaned = cleaned.Trim('"');
+                    }
+                }
 
                 if (!response.IsSuccessStatusCode)
                 {
