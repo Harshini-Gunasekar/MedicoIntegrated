@@ -13,6 +13,7 @@
 @inject DoctorService DoctorService
 @inject ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject NavigationManager Navigation
 @inject IpRegistrationService IpService
 @inject RoomTypeMasterService RoomTypeService
 @inject IHttpClientFactory ClientFactory
@@ -350,17 +351,20 @@
 
                     <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 0.5rem;">
                         <button class="btn-modal cancel" style="padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="CloseDetails">Cancel</button>
-                        @if (draftAdmission != null)
+                        @if (hasEditRight)
                         {
-                            <button class="btn-modal confirm" style="background-color: #10b981; padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="ConfirmBedAllocation">
-                                Confirm Bed
-                            </button>
-                        }
-                        else
-                        {
-                            <button class="btn-modal confirm" style="background-color: #3b82f6; padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="OpenAdmitModal">
-                                Admit Patient
-                            </button>
+                            @if (draftAdmission != null)
+                            {
+                                <button class="btn-modal confirm" style="background-color: #10b981; padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="ConfirmBedAllocation">
+                                    Confirm Bed
+                                </button>
+                            }
+                            else
+                            {
+                                <button class="btn-modal confirm" style="background-color: #3b82f6; padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="OpenAdmitModal">
+                                    Admit Patient
+                                </button>
+                            }
                         }
                     </div>
                 </div>
@@ -392,9 +396,12 @@
 
                     <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 0.5rem;">
                         <button class="btn-modal cancel" style="padding: 0.5rem 1rem; font-size: 0.8rem;" @onclick="CloseDetails">Cancel</button>
-                        <button class="btn-modal confirm" style="background-color: @(cleaningStatusToggle == "CLEANED" ? "#10b981" : "#f59e0b"); padding: 0.5rem 1rem; font-size: 0.8rem; border: none; color: #ffffff;" @onclick="MarkBedAsCleaned">
-                            <i class="bi bi-stars" style="margin-right: 5px;"></i> Save Status
-                        </button>
+                        @if (hasEditRight)
+                        {
+                            <button class="btn-modal confirm" style="background-color: @(cleaningStatusToggle == "CLEANED" ? "#10b981" : "#f59e0b"); padding: 0.5rem 1rem; font-size: 0.8rem; border: none; color: #ffffff;" @onclick="MarkBedAsCleaned">
+                                <i class="bi bi-stars" style="margin-right: 5px;"></i> Mark as @(cleaningStatusToggle == "CLEANED" ? "Cleaned" : "Under Cleaning")
+                            </button>
+                        }
                     </div>
                 </div>
             }
@@ -462,6 +469,8 @@
     private string TenantCode = "";
     private string AuthToken = "";
     private bool showAdmitModal = false;
+    private bool hasViewRight = true;
+    private bool hasEditRight = true;
 
     protected override async Task OnInitializedAsync()
     {
@@ -489,6 +498,71 @@
 
                 await LoadCustomersAsync();
                 await RefreshDataAsync();
+
+                try
+                {
+                    bool isAdmin = false;
+                    try
+                    {
+                        var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                        if (userResult.Success && userResult.Value != null)
+                        {
+                            isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                      userResult.Value.UserCode == 0 ||
+                                      userResult.Value.UserCode == 1;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error checking user details: {ex.Message}");
+                    }
+
+                    if (isAdmin)
+                    {
+                        hasViewRight = true;
+                        hasEditRight = true;
+                    }
+                    else
+                    {
+                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                        if (rightsResult.Success && rightsResult.Value != null)
+                        {
+                            var bedsRight = rightsResult.Value.FirstOrDefault(r => 
+                                r.ModuleName != null && 
+                                r.ModuleName.Trim().Equals("Available_Beds", StringComparison.OrdinalIgnoreCase));
+                            
+                            if (bedsRight != null)
+                            {
+                                hasViewRight = bedsRight.ToView;
+                                hasEditRight = bedsRight.ToEdit;
+                            }
+                            else
+                            {
+                                hasViewRight = false;
+                                hasEditRight = false;
+                            }
+                        }
+                        else
+                        {
+                            hasViewRight = false;
+                            hasEditRight = false;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking Available_Beds rights: {ex.Message}");
+                    hasViewRight = false;
+                    hasEditRight = false;
+                }
+
+                if (!hasViewRight)
+                {
+                    ToastService.ShowError("You do not have permission to view available beds.");
+                    Navigation.NavigateTo("/home");
+                    return;
+                }
+
                 StateHasChanged();
             }
             catch (Exception ex)
@@ -682,6 +756,12 @@
 
     private async Task ConfirmBedAllocation()
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to allocate beds.");
+            return;
+        }
+        if (selectedBed == null) return;
         if (draftAdmission == null)
         {
             ToastService.ShowError("No registration in progress. Please start from the Admissions dashboard.");
@@ -727,6 +807,11 @@
 
     private void OpenAdmitModal()
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to admit patients from here.");
+            return;
+        }
         if (selectedBed == null) return;
         selectedPatientSearchName = "";
         admitRequest = new IPRegistrationModel.CreateIpRegistrationRequest
@@ -801,6 +886,11 @@
 
     private async Task MarkBedAsCleaned()
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to update cleaning status.");
+            return;
+        }
         if (selectedBed == null) return;
 
         if (cleaningStatusToggle == "DIRTY")

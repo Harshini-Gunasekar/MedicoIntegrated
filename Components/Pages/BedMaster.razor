@@ -39,7 +39,10 @@
                 <input type="text" placeholder="Search beds..." @bind="SearchQuery" @bind:event="oninput" class="lc-rounded-pill-input lc-w-220" />
             </div>
             <div class="search-controls">
-                <button class="btn-new-entry" @onclick="NewBed">+ Add New</button>
+                @if (hasCreateRight)
+                {
+                    <button class="btn-new-entry" @onclick="NewBed">+ Add New</button>
+                }
             </div>
         </div>
     </div>
@@ -77,12 +80,18 @@
                                 <td><span class="font-bold @(b.islaundry == true ? "text-success" : "text-slate-400")">@(b.islaundry == true ? "Yes" : "No")</span></td>
                                 <td class="text-center">
                                     <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 8px;">
-                                        <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditBed(b)" title="Edit">
-                                            <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
-                                        </button>
-                                        <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => PromptDelete(b.bedcode)" title="Delete">
-                                            <span class="material-symbols-outlined font-18 text-slate-400">delete</span>
-                                        </button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditBed(b)" title="Edit">
+                                                <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
+                                            </button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => PromptDelete(b.bedcode)" title="Delete">
+                                                <span class="material-symbols-outlined font-18 text-slate-400">delete</span>
+                                            </button>
+                                        }
                                     </div>
                                 </td>
                             </tr>
@@ -206,7 +215,7 @@
                 <button type="button"
                         class="btn-delete"
                         @onclick="() => PromptDelete(current.bedcode)"
-                        disabled="@(current.bedcode == 0)">
+                        disabled="@(current.bedcode == 0 || !hasDeleteRight)">
                     Delete
                 </button>
                 <button type="button" class="btn-save" @onclick="SaveBed">
@@ -293,6 +302,11 @@
 
     private void NewBed()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add beds.");
+            return;
+        }
         current = new BedMasterModel { 
             deleted = false,
             computercode = 1,
@@ -314,6 +328,11 @@
 
     private void EditBed(BedMasterModel b)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit beds.");
+            return;
+        }
         if (b == null) return;
         current = new BedMasterModel
         {
@@ -342,6 +361,16 @@
 
     private async Task SaveBed()
     {
+        if (isEditMode && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit beds.");
+            return;
+        }
+        if (!isEditMode && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add beds.");
+            return;
+        }
         isSubmitted = true;
         if (string.IsNullOrWhiteSpace(current.bedname))
         {
@@ -397,6 +426,11 @@
 
     private void PromptDelete(int bedcode)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete beds.");
+            return;
+        }
         if (bedcode == 0) return;
         deleteBedCode = bedcode;
         showDeleteConfirm = true;
@@ -410,6 +444,11 @@
 
     private async Task ExecuteDelete()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete beds.");
+            return;
+        }
         if (deleteBedCode == 0) return;
         try
         {
@@ -450,6 +489,9 @@
     private List<Booking.Models.BranchModel> branches = new();
     private string TenantCode = "";
     private string AuthToken = "";
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -464,6 +506,71 @@
                 AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
 
                 await LoadBranchesAsync();
+                await LoadDropdowns();
+                await LoadBeds();
+
+                try
+                {
+                    bool isAdmin = false;
+                    try
+                    {
+                        var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                        if (userResult.Success && userResult.Value != null)
+                        {
+                            isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                      userResult.Value.UserCode == 0 ||
+                                      userResult.Value.UserCode == 1;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error checking user details: {ex.Message}");
+                    }
+
+                    if (isAdmin)
+                    {
+                        hasCreateRight = true;
+                        hasEditRight = true;
+                        hasDeleteRight = true;
+                    }
+                    else
+                    {
+                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                        if (rightsResult.Success && rightsResult.Value != null)
+                        {
+                            var pageRight = rightsResult.Value.FirstOrDefault(r => 
+                                r.ModuleName != null && 
+                                r.ModuleName.Trim().Equals("Bed_Master", StringComparison.OrdinalIgnoreCase));
+                            
+                            if (pageRight != null)
+                            {
+                                hasCreateRight = pageRight.ToAdd;
+                                hasEditRight = pageRight.ToEdit;
+                                hasDeleteRight = pageRight.ToDelete;
+                            }
+                            else
+                            {
+                                hasCreateRight = false;
+                                hasEditRight = false;
+                                hasDeleteRight = false;
+                            }
+                        }
+                        else
+                        {
+                            hasCreateRight = false;
+                            hasEditRight = false;
+                            hasDeleteRight = false;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking Bed_Master rights: {ex.Message}");
+                    hasCreateRight = false;
+                    hasEditRight = false;
+                    hasDeleteRight = false;
+                }
+
                 StateHasChanged();
             }
             catch (Exception ex)

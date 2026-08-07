@@ -35,7 +35,10 @@
                 <input type="text" placeholder="Search nurses..." @bind="SearchQuery" @bind:event="oninput" class="lc-rounded-pill-input lc-w-220" />
             </div>
             <div class="search-controls">
-                <button class="btn-new-entry" @onclick="NewNurse">+ Add Nurse</button>
+                @if (hasCreateRight)
+                {
+                    <button class="btn-new-entry" @onclick="NewNurse">+ Add Nurse</button>
+                }
             </div>
         </div>
     </div>
@@ -71,12 +74,18 @@
                                 <td class="text-slate-400 font-12">@(n.ibsdate.HasValue && n.ibsdate != default ? n.ibsdate.Value.ToString("dd-MM-yyyy hh:mm tt") : "")</td>
                                 <td class="text-center">
                                     <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 8px;">
-                                        <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditNurse(n)" title="Edit">
-                                            <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
-                                        </button>
-                                        <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => PromptDelete(n.ncode)" title="Delete">
-                                            <span class="material-symbols-outlined font-18 text-slate-400">delete</span>
-                                        </button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditNurse(n)" title="Edit">
+                                                <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
+                                            </button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => PromptDelete(n.ncode)" title="Delete">
+                                                <span class="material-symbols-outlined font-18 text-slate-400">delete</span>
+                                            </button>
+                                        }
                                     </div>
                                 </td>
                             </tr>
@@ -148,7 +157,7 @@
                 <button type="button"
                         class="btn-delete"
                         @onclick="() => PromptDelete(current.ncode)"
-                        disabled="@(current.ncode == 0)">
+                        disabled="@(current.ncode == 0 || !hasDeleteRight)">
                     Delete
                 </button>
                 <button type="button" class="btn-save" @onclick="SaveNurse">
@@ -187,6 +196,9 @@
     private string SearchQuery = "";
     private bool showDeleteConfirm = false;
     private int deleteNCode = 0;
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
 
     private string TenantCode = "";
     private string AuthToken = "";
@@ -220,6 +232,69 @@
                 AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
 
                 await LoadNurses();
+
+                try
+                {
+                    bool isAdmin = false;
+                    try
+                    {
+                        var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                        if (userResult.Success && userResult.Value != null)
+                        {
+                            isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                      userResult.Value.UserCode == 0 ||
+                                      userResult.Value.UserCode == 1;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error checking user details: {ex.Message}");
+                    }
+
+                    if (isAdmin)
+                    {
+                        hasCreateRight = true;
+                        hasEditRight = true;
+                        hasDeleteRight = true;
+                    }
+                    else
+                    {
+                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                        if (rightsResult.Success && rightsResult.Value != null)
+                        {
+                            var pageRight = rightsResult.Value.FirstOrDefault(r => 
+                                r.ModuleName != null && 
+                                r.ModuleName.Trim().Equals("Nurse_Master", StringComparison.OrdinalIgnoreCase));
+                            
+                            if (pageRight != null)
+                            {
+                                hasCreateRight = pageRight.ToAdd;
+                                hasEditRight = pageRight.ToEdit;
+                                hasDeleteRight = pageRight.ToDelete;
+                            }
+                            else
+                            {
+                                hasCreateRight = false;
+                                hasEditRight = false;
+                                hasDeleteRight = false;
+                            }
+                        }
+                        else
+                        {
+                            hasCreateRight = false;
+                            hasEditRight = false;
+                            hasDeleteRight = false;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking Nurse_Master rights: {ex.Message}");
+                    hasCreateRight = false;
+                    hasEditRight = false;
+                    hasDeleteRight = false;
+                }
+
                 StateHasChanged();
             }
             catch (Exception ex)
@@ -243,6 +318,11 @@
 
     private void NewNurse()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add nurses.");
+            return;
+        }
         current = new NurseMasterModel { 
             deleted = false,
             computercode = 1,
@@ -260,6 +340,11 @@
 
     private void EditNurse(NurseMasterModel n)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit nurses.");
+            return;
+        }
         if (n == null) return;
         current = new NurseMasterModel
         {
@@ -282,6 +367,16 @@
 
     private async Task SaveNurse()
     {
+        if (isEditMode && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit nurses.");
+            return;
+        }
+        if (!isEditMode && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add nurses.");
+            return;
+        }
         isSubmitted = true;
         if (string.IsNullOrWhiteSpace(current.nursename))
         {
@@ -337,6 +432,11 @@
 
     private void PromptDelete(int ncode)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete nurses.");
+            return;
+        }
         if (ncode == 0) return;
         deleteNCode = ncode;
         showDeleteConfirm = true;
@@ -350,6 +450,11 @@
 
     private async Task ExecuteDelete()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete nurses.");
+            return;
+        }
         if (deleteNCode == 0) return;
         try
         {

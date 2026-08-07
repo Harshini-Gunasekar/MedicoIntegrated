@@ -11,6 +11,7 @@
 @inject NavigationManager NavigationManager
 @inject IHttpClientFactory ClientFactory
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 
 <PageTitle>Scan Result Entry</PageTitle>
 
@@ -81,23 +82,33 @@
                                 <td class="lc-font-mono font-bold text-slate-800">@(GetPatientMobile(item.custcode, item.mobile))</td>
                                 <td class="text-slate-800 font-bold" style="white-space: normal; word-break: break-word;">@(item.test_name ?? "-")</td>
                                 <td class="text-slate-500 font-12">@(item.entered_date == DateTime.MinValue ? "-" : item.entered_date.ToIndianTime().ToString("dd-MM-yyyy hh:mm tt"))</td>
-                                <td>
-                                     <select class="@GetStatusDropdownClass(item.status)" 
-                                             value="@GetOptionValue(item.status)" 
-                                             @onchange="(e) => UpdateScanStatus(item, e.Value?.ToString())">
-                                         <option value="waiting_for_test">Waiting</option>
-                                         <option value="on_going">On going</option>
-                                         <option value="completed">Completed</option>
-                                         <option value="report_received">Report Received</option>
-                                     </select>
-                                </td>
-                                <td class="text-center">
-                                     <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 8px;">
-                                        <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditRecord(item)" title="Result Entry">
-                                            <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
-                                        </button>
-                                    </div>
-                                </td>
+                                 <td>
+                                      @if (hasEditRight)
+                                      {
+                                          <select class="@GetStatusDropdownClass(item.status)" 
+                                                  value="@GetOptionValue(item.status)" 
+                                                  @onchange="(e) => UpdateScanStatus(item, e.Value?.ToString())">
+                                              <option value="waiting_for_test">Waiting</option>
+                                              <option value="on_going">On going</option>
+                                              <option value="completed">Completed</option>
+                                              <option value="report_received">Report Received</option>
+                                          </select>
+                                      }
+                                      else
+                                      {
+                                          <span class="@GetStatusDropdownClass(item.status)" style="display:inline-block;padding:4px 10px;border-radius:8px;">@FormatStatus(item.status)</span>
+                                      }
+                                 </td>
+                                 <td class="text-center">
+                                      <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 8px;">
+                                        @if (hasEditRight)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditRecord(item)" title="Result Entry">
+                                                <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
+                                            </button>
+                                        }
+                                     </div>
+                                 </td>
                             </tr>
                         }
                     }
@@ -267,8 +278,60 @@
         currentPage = page;
     }
 
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+    private bool hasViewRight = true;
+
     protected override async Task OnInitializedAsync()
     {
+        try
+        {
+            bool isAdmin = false;
+            try
+            {
+                var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (userResult.Success && userResult.Value != null)
+                    isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                              userResult.Value.UserCode == 0 || userResult.Value.UserCode == 1;
+            }
+            catch { }
+
+            if (isAdmin)
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+                hasEditRight = true;
+                hasDeleteRight = true;
+            }
+            else
+            {
+                var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                if (rightsResult.Success && rightsResult.Value != null)
+                {
+                    var pageRight = rightsResult.Value.FirstOrDefault(r =>
+                        r.ModuleName != null && r.ModuleName.Trim().Equals("Scan_ResultEnrty", StringComparison.OrdinalIgnoreCase));
+                    if (pageRight != null)
+                    {
+                        hasViewRight = pageRight.ToView;
+                        hasCreateRight = pageRight.ToAdd;
+                        hasEditRight = pageRight.ToEdit;
+                        hasDeleteRight = pageRight.ToDelete;
+                    }
+                    else { hasViewRight = false; hasCreateRight = false; hasEditRight = false; hasDeleteRight = false; }
+                }
+                else { hasViewRight = false; hasCreateRight = false; hasEditRight = false; hasDeleteRight = false; }
+
+                if (!hasViewRight)
+                {
+                    Toast.ShowError("You do not have permission to access Scan Result Entry.");
+                    NavigationManager.NavigateTo("/home");
+                    return;
+                }
+            }
+        }
+        catch { }
+
         await LoadAllCustomersAsync();
         await FetchScanEntriesAsync();
     }
@@ -386,6 +449,11 @@
 
     private async Task UpdateScanStatus(ScanResultEntryModel record, string? newStatus)
     {
+        if (!hasEditRight)
+        {
+            Toast.ShowError("You do not have permission to update status.");
+            return;
+        }
         if (string.IsNullOrEmpty(newStatus)) return;
 
         var request = new UpdateVitalSlotStatusRequest

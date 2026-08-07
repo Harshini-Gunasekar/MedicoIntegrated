@@ -7,6 +7,7 @@
 @inject IJSRuntime JS
 @inject Booking.Services.NotificationService NotificationService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject Booking.Services.ToastService ToastService
 
 <div class="items-page pt-4 pb-3" style="@(IsCardView ? "" : "min-height: auto !important;")">
     <div class="items-shell px-3">
@@ -39,10 +40,13 @@
                         <button type="button" class="@(IsCardView ? "active" : string.Empty)" @onclick="() => SetView(true)"><i class="bi bi-grid-3x3-gap"></i></button>
                     </div>
 
-                    <button class="add-item-btn" @onclick="AddNewItem">
-                        <i class="bi bi-plus-lg"></i>
-                        <span class="ms-1">Add Item</span>
-                    </button>
+                    @if (hasCreateRight)
+                    {
+                        <button class="add-item-btn" @onclick="AddNewItem">
+                            <i class="bi bi-plus-lg"></i>
+                            <span class="ms-1">Add Item</span>
+                        </button>
+                    }
                 </div>
             </div>
 
@@ -108,8 +112,14 @@
                                         <td>₹@row.value.purchaserate.ToString("N2")</td>
                                         <td>₹@row.value.salesrate.ToString("N2")</td>
                                         <td>
-                                            <button class="action-btn btn-edit" @onclick="async () => await EditItem(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
-                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(row.value)" title="Delete"><i class="bi bi-trash"></i></button>
+                                            @if (hasEditRight)
+                                            {
+                                                <button class="action-btn btn-edit" @onclick="async () => await EditItem(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                            }
+                                            @if (hasDeleteRight)
+                                            {
+                                                <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(row.value)" title="Delete"><i class="bi bi-trash"></i></button>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -126,8 +136,14 @@
                                 <div class="item-card-head">
                                     <span><span class="card-item-code">#@item.itemcode</span> <span class="card-item-name">@item.itemname</span></span>
                                     <div>
-                                        <button class="action-btn btn-edit" @onclick="async () => await EditItem(item)" title="Edit"><i class="bi bi-pencil-square"></i></button>
-                                        <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(item)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button class="action-btn btn-edit" @onclick="async () => await EditItem(item)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(item)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        }
                                     </div>
                                 </div>
                                 <div class="item-card-body">
@@ -549,12 +565,91 @@
         CurrentPage = 1;
     }
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
             var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
             DefaultTenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+            
+            try
+            {
+                bool isAdmin = false;
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null)
+                    {
+                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                  userResult.Value.UserCode == 0 ||
+                                  userResult.Value.UserCode == 1;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                }
+
+                if (isAdmin)
+                {
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                    hasEditRight = true;
+                    hasDeleteRight = true;
+                }
+                else
+                {
+                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                    if (rightsResult.Success && rightsResult.Value != null)
+                    {
+                        var pageRight = rightsResult.Value.FirstOrDefault(r => 
+                            r.ModuleName != null && 
+                            r.ModuleName.Trim().Equals("Item_Master", StringComparison.OrdinalIgnoreCase));
+                        
+                        if (pageRight != null)
+                        {
+                            hasViewRight = pageRight.ToView;
+                            hasCreateRight = pageRight.ToAdd;
+                            hasEditRight = pageRight.ToEdit;
+                            hasDeleteRight = pageRight.ToDelete;
+                        }
+                        else
+                        {
+                            hasViewRight = false;
+                            hasCreateRight = false;
+                            hasEditRight = false;
+                            hasDeleteRight = false;
+                        }
+                    }
+                    else
+                    {
+                        hasViewRight = false;
+                        hasCreateRight = false;
+                        hasEditRight = false;
+                        hasDeleteRight = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking Item_Master rights: {ex.Message}");
+                hasViewRight = false;
+                hasCreateRight = false;
+                hasEditRight = false;
+                hasDeleteRight = false;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Item Master.");
+                Nav.NavigateTo("/home");
+                return;
+            }
 
             await LoadItems();
             await LoadUoms();
@@ -824,11 +919,21 @@
 
     private void AddNewItem()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add items.");
+            return;
+        }
         OpenAddModal();
     }
 
     private async Task EditItem(item_master item)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit items.");
+            return;
+        }
         await OpenEditModal(item);
     }
 
@@ -900,6 +1005,16 @@
 
     private async Task SaveItemFromModal()
     {
+        if (IsModalEdit && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit items.");
+            return;
+        }
+        if (!IsModalEdit && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add items.");
+            return;
+        }
         if (!IsMedicineSelected)
         {
             CurrentItem.schedule = "";
@@ -1038,6 +1153,11 @@
 
     private void ConfirmDelete(item_master item)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete items.");
+            return;
+        }
         PendingDeleteItem = item;
         ShowDeleteConfirmPopup = true;
     }
@@ -1051,6 +1171,11 @@
 
     private async Task DeleteConfirmed()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete items.");
+            return;
+        }
         var item = PendingDeleteItem;
         if (item is null)
         {

@@ -144,17 +144,20 @@
                         <!-- Buttons aligned to the right -->
                         <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 30px; margin-bottom: 5px;">
                             <button type="button" class="btn-cancel-modal" @onclick="ResetForm" style="background: #f1f5f9; color: #0f172a; border: none; padding: 0.5rem 1.5rem; border-radius: 12px; font-weight: 700; min-width: 100px; transition: all 0.2s;">Cancel</button>
-                            <button type="button" class="btn-save-premium" @onclick="SubmitReturn" disabled="@IsSaving" style="min-width: 180px; height: 42px; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; border-radius: 10px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: 600; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2); transition: all 0.2s; cursor: pointer;">
-                                @if (IsSaving)
-                                {
-                                    <span class="spinner-border spinner-border-sm me-2" style="width: 1rem; height: 1rem;"></span>
-                                }
-                                else
-                                {
-                                    <i class="bi bi-check2-circle me-2" style="font-size: 1.1rem;"></i>
-                                }
-                                <span>Save Return</span>
-                            </button>
+                            @if (hasCreateRight)
+                            {
+                                <button type="button" class="btn-save-premium" @onclick="SubmitReturn" disabled="@IsSaving" style="min-width: 180px; height: 42px; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; border-radius: 10px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: 600; box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2); transition: all 0.2s; cursor: pointer;">
+                                    @if (IsSaving)
+                                    {
+                                        <span class="spinner-border spinner-border-sm me-2" style="width: 1rem; height: 1rem;"></span>
+                                    }
+                                    else
+                                    {
+                                        <i class="bi bi-check2-circle me-2" style="font-size: 1.1rem;"></i>
+                                    }
+                                    <span>Save Return</span>
+                                </button>
+                            }
                         </div>
                     </EditForm>
                 </div>
@@ -178,6 +181,8 @@
     private string RawLookupJson = "";
 
     private string SelectedItemName { get; set; } = "";
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
     private string SelectedVendorName { get; set; } = "";
     private decimal AvailableQtyInStock { get; set; } = 0;
 
@@ -202,6 +207,70 @@
             var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
             DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
             
+            try
+            {
+                bool isAdmin = false;
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null)
+                    {
+                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                  userResult.Value.UserCode == 0 ||
+                                  userResult.Value.UserCode == 1;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                }
+
+                if (isAdmin)
+                {
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                }
+                else
+                {
+                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                    if (rightsResult.Success && rightsResult.Value != null)
+                    {
+                        var pageRight = rightsResult.Value.FirstOrDefault(r => 
+                            r.ModuleName != null && 
+                            r.ModuleName.Trim().Equals("Purchase_Return", StringComparison.OrdinalIgnoreCase));
+                        
+                        if (pageRight != null)
+                        {
+                            hasViewRight = pageRight.ToView;
+                            hasCreateRight = pageRight.ToAdd;
+                        }
+                        else
+                        {
+                            hasViewRight = false;
+                            hasCreateRight = false;
+                        }
+                    }
+                    else
+                    {
+                        hasViewRight = false;
+                        hasCreateRight = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking Purchase_Return rights: {ex.Message}");
+                hasViewRight = false;
+                hasCreateRight = false;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Purchase Return.");
+                Nav.NavigateTo("/home");
+                return;
+            }
+
             ResetForm();
             await Task.WhenAll(LoadItems(), LoadStocks(), LoadWarehouses(), LoadVendors());
             StateHasChanged();
@@ -474,6 +543,11 @@
 
     private async Task SubmitReturn()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add purchase returns.");
+            return;
+        }
         RecalculateTotals();
 
         if (CurrentReturn.warehousecode == null || CurrentReturn.warehousecode <= 0)

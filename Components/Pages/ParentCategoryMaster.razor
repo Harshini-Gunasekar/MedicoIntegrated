@@ -5,6 +5,8 @@
 @inject IHttpClientFactory ClientFactory
 @inject Booking.Services.NotificationService NotificationService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject Booking.Services.ToastService ToastService
+@inject NavigationManager Nav
 
 <div class="items-page pt-4 pb-3" style="@(IsCardView ? "" : "min-height: auto !important;")">
     <div class="items-shell px-3">
@@ -35,10 +37,13 @@
                         <button type="button" class="@(IsCardView ? "active" : string.Empty)" @onclick="() => SetView(true)"><i class="bi bi-grid-3x3-gap"></i></button>
                     </div>
 
-                    <button class="add-item-btn" @onclick="AddNew">
-                        <i class="bi bi-plus-lg"></i>
-                        <span class="ms-1">Add Parent Category</span>
-                    </button>
+                    @if (hasCreateRight)
+                    {
+                        <button class="add-item-btn" @onclick="AddNew">
+                            <i class="bi bi-plus-lg"></i>
+                            <span class="ms-1">Add Parent Category</span>
+                        </button>
+                    }
                 </div>
             </div>
 
@@ -89,9 +94,15 @@
                                                 <span style="color: #64748b; font-weight: 700; font-size: 0.78rem; text-transform: uppercase;">Inactive</span>
                                             }
                                         </td>
-                                        <td style="text-align: center;">
-                                            <button class="action-btn btn-edit" @onclick="() => Edit(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
-                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(row.value)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        <td>
+                                            @if (hasEditRight)
+                                            {
+                                                <button class="action-btn btn-edit" @onclick="() => Edit(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                            }
+                                            @if (hasDeleteRight)
+                                            {
+                                                <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(row.value)" title="Delete"><i class="bi bi-trash"></i></button>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -108,8 +119,14 @@
                                 <div class="item-card-head">
                                     <span class="card-item-code">#@item.parentcategorycode</span>
                                     <div>
-                                        <button class="action-btn btn-edit" @onclick="() => Edit(item)" title="Edit"><i class="bi bi-pencil-square"></i></button>
-                                        <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(item)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button class="action-btn btn-edit" @onclick="() => Edit(item)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(item)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        }
                                     </div>
                                 </div>
                                 <div class="item-card-body">
@@ -286,12 +303,91 @@
         CurrentPage = 1;
     }
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
             var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
             DefaultTenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+            
+            try
+            {
+                bool isAdmin = false;
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null)
+                    {
+                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                  userResult.Value.UserCode == 0 ||
+                                  userResult.Value.UserCode == 1;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                }
+
+                if (isAdmin)
+                {
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                    hasEditRight = true;
+                    hasDeleteRight = true;
+                }
+                else
+                {
+                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                    if (rightsResult.Success && rightsResult.Value != null)
+                    {
+                        var pageRight = rightsResult.Value.FirstOrDefault(r => 
+                            r.ModuleName != null && 
+                            r.ModuleName.Trim().Equals("Category_Master", StringComparison.OrdinalIgnoreCase));
+                        
+                        if (pageRight != null)
+                        {
+                            hasViewRight = pageRight.ToView;
+                            hasCreateRight = pageRight.ToAdd;
+                            hasEditRight = pageRight.ToEdit;
+                            hasDeleteRight = pageRight.ToDelete;
+                        }
+                        else
+                        {
+                            hasViewRight = false;
+                            hasCreateRight = false;
+                            hasEditRight = false;
+                            hasDeleteRight = false;
+                        }
+                    }
+                    else
+                    {
+                        hasViewRight = false;
+                        hasCreateRight = false;
+                        hasEditRight = false;
+                        hasDeleteRight = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking Category_Master rights: {ex.Message}");
+                hasViewRight = false;
+                hasCreateRight = false;
+                hasEditRight = false;
+                hasDeleteRight = false;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Category Master.");
+                Nav.NavigateTo("/home");
+                return;
+            }
             
             await LoadData();
             StateHasChanged();
@@ -343,6 +439,11 @@
 
     private void AddNew()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add categories.");
+            return;
+        }
         CurrentItem = new parent_category_master { tenantcode = DefaultTenantCode, isactive = true };
         IsEdit = false;
         ShowModal = true;
@@ -350,6 +451,11 @@
 
     private void Edit(parent_category_master item)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit categories.");
+            return;
+        }
         CurrentItem = new parent_category_master
         {
             parentcategorycode = item.parentcategorycode,
@@ -371,6 +477,16 @@
 
     private async Task Save()
     {
+        if (IsEdit && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit categories.");
+            return;
+        }
+        if (!IsEdit && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add categories.");
+            return;
+        }
         if (string.IsNullOrWhiteSpace(CurrentItem.parentcategoryname))
         {
             NotificationService.ShowNotification("Please provide a category name.", NotificationType.Warning);
@@ -414,12 +530,22 @@
 
     private void ConfirmDelete(parent_category_master item)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete categories.");
+            return;
+        }
         PendingDelete = item;
         ShowDeleteConfirm = true;
     }
 
     private async Task DeleteConfirmed()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete categories.");
+            return;
+        }
         var item = PendingDelete;
         if (item is null)
         {

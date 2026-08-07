@@ -80,10 +80,13 @@
                         <button type="button" class="@(IsCardView ? "active" : string.Empty)" @onclick="() => SetView(true)"><i class="bi bi-grid-3x3-gap"></i></button>
                     </div>
 
-                    <button class="add-item-btn" @onclick="AddNewPurchase">
-                        <i class="bi bi-plus-lg"></i>
-                        <span class="ms-1">New Purchase</span>
-                    </button>
+                    @if (hasCreateRight)
+                    {
+                        <button class="add-item-btn" @onclick="AddNewPurchase">
+                            <i class="bi bi-plus-lg"></i>
+                            <span class="ms-1">New Purchase</span>
+                        </button>
+                    }
                 </div>
             </div>
 
@@ -137,8 +140,14 @@
                                             </span>
                                         </td>
                                         <td style="text-align: center;">
-                                            <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
-                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(row.value)" title="Delete"><i class="bi bi-trash"></i></button>
+                                            @if (hasEditRight)
+                                            {
+                                                <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                            }
+                                            @if (hasDeleteRight)
+                                            {
+                                                <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(row.value)" title="Delete"><i class="bi bi-trash"></i></button>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -155,8 +164,14 @@
                                 <div class="item-card-head">
                                     <span class="card-item-code">#@(string.IsNullOrEmpty(p.billno) ? p.purchasecode.ToString() : p.billno)</span>
                                     <div>
-                                        <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(p)" title="Edit"><i class="bi bi-pencil-square"></i></button>
-                                        <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(p)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(p)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(p)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        }
                                     </div>
                                 </div>
                                 <div class="item-card-body">
@@ -825,6 +840,11 @@
 
     private int TotalPages => (int)Math.Ceiling((double)FilteredPurchases.Count() / ItemsPerPage);
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -832,6 +852,80 @@
             var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
             DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
             
+            try
+            {
+                bool isAdmin = false;
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null)
+                    {
+                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                  userResult.Value.UserCode == 0 ||
+                                  userResult.Value.UserCode == 1;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                }
+
+                if (isAdmin)
+                {
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                    hasEditRight = true;
+                    hasDeleteRight = true;
+                }
+                else
+                {
+                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                    if (rightsResult.Success && rightsResult.Value != null)
+                    {
+                        var pageRight = rightsResult.Value.FirstOrDefault(r => 
+                            r.ModuleName != null && 
+                            r.ModuleName.Trim().Equals("Purchase_Purchase", StringComparison.OrdinalIgnoreCase));
+                        
+                        if (pageRight != null)
+                        {
+                            hasViewRight = pageRight.ToView;
+                            hasCreateRight = pageRight.ToAdd;
+                            hasEditRight = pageRight.ToEdit;
+                            hasDeleteRight = pageRight.ToDelete;
+                        }
+                        else
+                        {
+                            hasViewRight = false;
+                            hasCreateRight = false;
+                            hasEditRight = false;
+                            hasDeleteRight = false;
+                        }
+                    }
+                    else
+                    {
+                        hasViewRight = false;
+                        hasCreateRight = false;
+                        hasEditRight = false;
+                        hasDeleteRight = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking Purchase_Purchase rights: {ex.Message}");
+                hasViewRight = false;
+                hasCreateRight = false;
+                hasEditRight = false;
+                hasDeleteRight = false;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Purchase Purchase.");
+                Nav.NavigateTo("/home");
+                return;
+            }
+
             await Task.WhenAll(LoadPurchases(), LoadVendors(), LoadItems(), LoadWarehouses(), LoadManufacturers());
             StateHasChanged();
         }
@@ -1218,6 +1312,11 @@
 
     private void AddNewPurchase()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add purchases.");
+            return;
+        }
         IsEdit = false;
         CurrentRequest = new PurchaseRequest { 
             master = new PurchaseMasterModel { 
@@ -1247,6 +1346,11 @@
 
     private async Task EditPurchase(PurchaseMasterModel master)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit purchases.");
+            return;
+        }
         IsEdit = true;
         // Try multiple ID variations for the fetch
         var ids = new List<string?>();
@@ -1711,6 +1815,16 @@
 
     private async Task SavePurchase()
     {
+        if (IsEdit && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit purchases.");
+            return;
+        }
+        if (!IsEdit && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add purchases.");
+            return;
+        }
         CalculateTotals();
 
         if ((CurrentRequest.master.vendorcode ?? 0) <= 0) {
@@ -1796,12 +1910,22 @@
 
     private void ConfirmDelete(PurchaseMasterModel p)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete purchases.");
+            return;
+        }
         PendingDelete = p;
         ShowDeleteConfirm = true;
     }
 
     private async Task DeleteConfirmed()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete purchases.");
+            return;
+        }
         if (PendingDelete == null) return;
         IsLoading = true;
         try {

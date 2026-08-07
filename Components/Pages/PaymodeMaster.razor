@@ -10,6 +10,7 @@
 @inject IJSRuntime JSRuntime
 @inject NavigationManager Navigation
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -34,7 +35,8 @@
                 <input type="text" placeholder="Search paymodes..." @bind="SearchQuery" @bind:event="oninput" class="lc-rounded-pill-input lc-w-220" />
             </div>
             <div class="search-controls">
-                @if (TenantState.HasActionRight("Configuration", "General", "Create")) {
+                @if (hasCreateRight)
+                {
                     <button class="btn-new-entry" @onclick="NewPaymode">+ Add New</button>
                 }
             </div>
@@ -72,12 +74,14 @@
                                 <td class="text-slate-400 font-12">@(p.entereddate != default ? (DateTimeHelper.ConvertUtcToIst(p.entereddate)?.ToString("dd-MM-yyyy hh:mm tt") ?? "") : "")</td>
                                 <td class="text-center">
                                     <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 8px;">
-                                        @if (TenantState.HasActionRight("Configuration", "General", "Edit")) {
+                                        @if (hasEditRight)
+                                        {
                                             <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditPaymode(p)" title="Edit">
                                                 <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
                                             </button>
                                         }
-                                        @if (TenantState.HasActionRight("Configuration", "General", "Delete")) {
+                                        @if (hasDeleteRight)
+                                        {
                                             <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => DeletePaymode(p.pmcode)" title="Delete">
                                                 <span class="material-symbols-outlined font-18 text-slate-400">delete</span>
                                             </button>
@@ -200,8 +204,60 @@
             (p.shortname != null && p.shortname.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)) ||
             (p.description != null && p.description.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)));
 
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+    private bool hasViewRight = true;
+
     protected override async Task OnInitializedAsync()
     {
+        try
+        {
+            bool isAdmin = false;
+            try
+            {
+                var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (userResult.Success && userResult.Value != null)
+                    isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                              userResult.Value.UserCode == 0 || userResult.Value.UserCode == 1;
+            }
+            catch { }
+
+            if (isAdmin)
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+                hasEditRight = true;
+                hasDeleteRight = true;
+            }
+            else
+            {
+                var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                if (rightsResult.Success && rightsResult.Value != null)
+                {
+                    var pageRight = rightsResult.Value.FirstOrDefault(r =>
+                        r.ModuleName != null && r.ModuleName.Trim().Equals("Paymode_Master", StringComparison.OrdinalIgnoreCase));
+                    if (pageRight != null)
+                    {
+                        hasViewRight = pageRight.ToView;
+                        hasCreateRight = pageRight.ToAdd;
+                        hasEditRight = pageRight.ToEdit;
+                        hasDeleteRight = pageRight.ToDelete;
+                    }
+                    else { hasViewRight = false; hasCreateRight = false; hasEditRight = false; hasDeleteRight = false; }
+                }
+                else { hasViewRight = false; hasCreateRight = false; hasEditRight = false; hasDeleteRight = false; }
+
+                if (!hasViewRight)
+                {
+                    ToastService.ShowError("You do not have permission to access Paymode Master.");
+                    Navigation.NavigateTo("/home");
+                    return;
+                }
+            }
+        }
+        catch { }
+
         await LoadPaymodes();
     }
 
@@ -219,6 +275,7 @@
 
     private void NewPaymode()
     {
+        if (!hasCreateRight) { ToastService.ShowError("You do not have permission to create payment modes."); return; }
         current = new Booking.Models.PaymodeMasterModel { 
             deleted = false,
             computercode = 1,
@@ -237,6 +294,7 @@
 
     private void EditPaymode(Booking.Models.PaymodeMasterModel p)
     {
+        if (!hasEditRight) { ToastService.ShowError("You do not have permission to edit payment modes."); return; }
         if (p == null) return;
         current = new Booking.Models.PaymodeMasterModel
         {
@@ -310,6 +368,7 @@
 
     private async Task DeletePaymode(decimal pmcode)
     {
+        if (!hasDeleteRight) { ToastService.ShowError("You do not have permission to delete payment modes."); return; }
         if (pmcode == 0) return;
         
         if (await JSRuntime.InvokeAsync<bool>("confirm", "Are you sure you want to delete this payment mode?"))

@@ -10,6 +10,7 @@
 @inject IJSRuntime JS
 @inject Booking.Services.ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject NavigationManager NavigationManager
 
 <style>
     @@keyframes blinker {
@@ -110,7 +111,10 @@
                                         </td>
                                         <td>@GetItemsCount(indent.indentcode)</td>
                                         <td>
-                                            <button class="btn-approve-action" @onclick="async () => await OpenApproval(indent)" title="Approve"><i class="bi bi-check-circle-fill"></i> Approve</button>
+                                            @if (hasCreateRight || hasEditRight)
+                                            {
+                                                <button class="btn-approve-action" @onclick="async () => await OpenApproval(indent)" title="Approve"><i class="bi bi-check-circle-fill"></i> Approve</button>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -127,7 +131,10 @@
                                 <div class="item-card-head">
                                     <span class="card-item-code">#@indent.indentcode</span>
                                     <div>
-                                        <button class="btn-approve-action" style="font-size: 0.65rem !important; padding: 4px 10px !important;" @onclick="async () => await OpenApproval(indent)" title="Approve"><i class="bi bi-check-circle-fill"></i> Approve</button>
+                                        @if (hasCreateRight || hasEditRight)
+                                        {
+                                            <button class="btn-approve-action" style="font-size: 0.65rem !important; padding: 4px 10px !important;" @onclick="async () => await OpenApproval(indent)" title="Approve"><i class="bi bi-check-circle-fill"></i> Approve</button>
+                                        }
                                     </div>
                                 </div>
                                 <div class="item-card-body">
@@ -384,6 +391,11 @@
 
     private int TotalPages => (int)Math.Ceiling((double)FilteredIndents.Count() / ItemsPerPage);
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -391,6 +403,80 @@
             var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
             DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
             
+            try
+            {
+                bool isAdmin = false;
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null)
+                    {
+                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                  userResult.Value.UserCode == 0 ||
+                                  userResult.Value.UserCode == 1;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                }
+
+                if (isAdmin)
+                {
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                    hasEditRight = true;
+                    hasDeleteRight = true;
+                }
+                else
+                {
+                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                    if (rightsResult.Success && rightsResult.Value != null)
+                    {
+                        var pageRight = rightsResult.Value.FirstOrDefault(r => 
+                            r.ModuleName != null && 
+                            r.ModuleName.Trim().Equals("Indent_Approval", StringComparison.OrdinalIgnoreCase));
+                        
+                        if (pageRight != null)
+                        {
+                            hasViewRight = pageRight.ToView;
+                            hasCreateRight = pageRight.ToAdd;
+                            hasEditRight = pageRight.ToEdit;
+                            hasDeleteRight = pageRight.ToDelete;
+                        }
+                        else
+                        {
+                            hasViewRight = false;
+                            hasCreateRight = false;
+                            hasEditRight = false;
+                            hasDeleteRight = false;
+                        }
+                    }
+                    else
+                    {
+                        hasViewRight = false;
+                        hasCreateRight = false;
+                        hasEditRight = false;
+                        hasDeleteRight = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking Indent_Approval rights: {ex.Message}");
+                hasViewRight = false;
+                hasCreateRight = false;
+                hasEditRight = false;
+                hasDeleteRight = false;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Indent Approval.");
+                NavigationManager.NavigateTo("/home");
+                return;
+            }
+
             await Task.WhenAll(LoadIndents(), LoadItems(), LoadWarehouses());
             StateHasChanged();
         }
@@ -537,6 +623,11 @@
 
     private async Task OpenApproval(indent_master master)
     {
+        if (!hasCreateRight && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to approve indents.");
+            return;
+        }
         IsLoading = true;
         try 
         {
@@ -664,6 +755,11 @@
 
     private async Task SaveApproval()
     {
+        if (!hasCreateRight && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to approve indents.");
+            return;
+        }
         if (string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))
         {
             ToastService.ShowWarning("Please select an Approval Status decision.");
