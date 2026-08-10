@@ -4,6 +4,9 @@
 @using Booking.Helpers
 @using System.Net.Http.Json
 @using SharedComponents.Rcl.Models
+@using Medico_Backend.Model
+@using medico_backend.Model
+@using Newtonsoft.Json
 @inject AppointmentBookingService BookingService
 @inject DoctorService DoctorService
 @inject DoctorCurrentStatusService StatusService
@@ -11,6 +14,14 @@
 @inject ToastService ToastService
 @inject CaseSheetService CaseSheetService
 @inject IHttpClientFactory ClientFactory
+@inject IpRegistrationService IpService
+@inject FloorMasterService FloorService
+@inject RoomTypeMasterService RoomTypeService
+@inject WardMasterService WardService
+@inject BedMasterService BedService
+@inject BlockMasterService BlockService
+@inject IJSRuntime JSRuntime
+@inject NavigationManager Navigation
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 
 <PageTitle>Doctor Patient List</PageTitle>
@@ -23,62 +34,106 @@
 <div class="dashboard-container">
     <DnaLoader IsLoading="@loading" Message="Loading Patients..." />
     <!-- Header -->
-    <div class="dashboard-header">
+    <div class="dashboard-header" style="margin-top: 10px; margin-bottom: 8px;">
         <div class="dashboard-title">
-            <h1>Doctor's Patient List</h1>
-            <p>View your scheduled patients, tokens, and appointment statuses for selected date.</p>
+            @if (activeTab == "OP")
+            {
+                <h1 style="font-size: 1.15rem; font-weight: 800; color: #034f75; margin: 0;">Doctor's Patient List</h1>
+            }
+            else
+            {
+                <h1 style="font-size: 1.15rem; font-weight: 800; color: #034f75; margin: 0;">Inpatient Admissions Dashboard</h1>
+            }
         </div>
-        <div>
-            <button class="btn-header-action" @onclick="LoadTodayBookingsAsync" disabled="@loading">
+        <div style="display: flex; gap: 8px; align-items: center; position: relative;">
+            <button class="btn-header-action" @onclick="() => showStatsPopover = !showStatsPopover" style="background: #ffffff; color: #475569; border: 1px solid #d0d5dd; font-weight: 600; padding: 0.5rem 1rem; border-radius: 8px; display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; box-shadow: 0 1px 2px rgba(16, 24, 40, 0.05); height: 38px;">
+                <i class="bi bi-bar-chart-fill" style="color: #0284c7;"></i>
+                <span>@(showStatsPopover ? "Hide Stats" : "Show Stats")</span>
+            </button>
+            <button class="btn-header-action" @onclick="RefreshActiveTabQueue" disabled="@loading">
                 @if (loading)
                 {
                     <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
                 }
                 <i class="bi bi-arrow-clockwise"></i> Refresh Queue
             </button>
+
+            @if (showStatsPopover)
+            {
+                <div class="stats-popup-card">
+                    <div class="stats-popup-header">
+                        <span>Dashboard Summary Stats</span>
+                        <button type="button" class="close-btn" @onclick="() => showStatsPopover = false">&times;</button>
+                    </div>
+                    <div class="stats-popup-list">
+                        @if (activeTab == "OP")
+                        {
+                            <div class="stat-popup-item blue">
+                                <i class="bi bi-calendar3"></i>
+                                <span class="label">Total Scheduled</span>
+                                <span class="num">@GetFilteredBookings().Count</span>
+                            </div>
+                            <div class="stat-popup-item orange">
+                                <i class="bi bi-hourglass-split"></i>
+                                <span class="label">Pending</span>
+                                <span class="num">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "BOOKED")</span>
+                            </div>
+                            <div class="stat-popup-item green">
+                                <i class="bi bi-check2-all"></i>
+                                <span class="label">Confirmed/Served</span>
+                                <span class="num">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "CONFIRMED" || b.booking_status?.ToUpper() == "COMPLETED" || b.booking_status?.ToUpper() == "VISITED")</span>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="stat-popup-item blue">
+                                <i class="bi bi-person-fill-check"></i>
+                                <span class="label">Currently Admitted</span>
+                                <span class="num">@admissionsList.Count(a => a.ip_status == "ADMITTED")</span>
+                            </div>
+                            <div class="stat-popup-item green">
+                                <i class="bi bi-wallet2"></i>
+                                <span class="label">Insurance Cases</span>
+                                <span class="num">@admissionsList.Count(a => a.isinsurancepatient)</span>
+                            </div>
+                            <div class="stat-popup-item orange">
+                                <i class="bi bi-shield-exclamation"></i>
+                                <span class="label">Emergency Cases</span>
+                                <span class="num">@admissionsList.Count(a => a.admission_type == "EMERGENCY")</span>
+                            </div>
+                            <div class="stat-popup-item purple">
+                                <i class="bi bi-person-dash"></i>
+                                <span class="label">Discharged (Total)</span>
+                                <span class="num">@admissionsList.Count(a => a.ip_status == "DISCHARGED")</span>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
         </div>
     </div>
 
-    @if (loading && todayBookings.Count == 0)
-    {
-        <div class="loading-state">
-            <div class="spinner-border" role="status"></div>
-            <p>Loading patient list...</p>
-        </div>
-    }
-    else
-    {
-        <!-- Stats Row -->
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-icon blue">
-                    <i class="bi bi-calendar3"></i>
-                </div>
-                <div class="stat-info">
-                    <span class="stat-value">@GetFilteredBookings().Count</span>
-                    <span class="stat-label">Total Scheduled</span>
-                </div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-icon orange">
-                    <i class="bi bi-hourglass-split"></i>
-                </div>
-                <div class="stat-info">
-                    <span class="stat-value">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "BOOKED")</span>
-                    <span class="stat-label">Pending</span>
-                </div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-icon green">
-                    <i class="bi bi-check2-all"></i>
-                </div>
-                <div class="stat-info">
-                    <span class="stat-value">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "CONFIRMED" || b.booking_status?.ToUpper() == "COMPLETED" || b.booking_status?.ToUpper() == "VISITED")</span>
-                    <span class="stat-label">Confirmed/Served</span>
-                </div>
-            </div>
-        </div>
+    <!-- Navigation Tabs -->
+    <div class="medico-tabs">
+        <button class="tab-btn @(activeTab == "OP" ? "active" : "")" @onclick='() => SetActiveTab("OP")'>
+            <i class="bi bi-person-lines-fill"></i> Outpatient (OP) Queue
+        </button>
+        <button class="tab-btn @(activeTab == "IP" ? "active" : "")" @onclick='() => SetActiveTab("IP")'>
+            <i class="bi bi-hospital"></i> Inpatient (IP) Admissions
+        </button>
+    </div>
 
+    @if (activeTab == "OP")
+    {
+        @if (loading && todayBookings.Count == 0)
+        {
+            <div class="loading-state">
+                <div class="spinner-border" role="status"></div>
+                <p>Loading patient list...</p>
+            </div>
+        }
+        else
+        {
         <!-- Toolbar Filters -->
         <div class="filter-card">
             <div class="filter-flex">
@@ -155,7 +210,7 @@
                         <tbody>
                             @foreach (var b in GetFilteredBookings())
                             {
-                                <tr class="@(b.isvip == true ? "vip-row" : "")">
+                                <tr class="@(b.isvip == true ? "vip-row" : "")" @ondblclick="() => OpenCaseSheetForBooking(b)" style="cursor: pointer;" title="Double-click to open clinical Case Sheet">
                                     <td>
                                         <div class="badge-op-container">
                                             <span class="badge-op">@b.token_no</span>
@@ -266,18 +321,594 @@
             }
         </div>
     }
+}
+else if (activeTab == "IP")
+{
+    @* --- FILTERS --- *@
+    <div class="filters-card">
+        <div class="filters-row">
+            <div class="filter-group">
+                <label>Admission Status</label>
+                <select class="filter-control" @bind="filterStatus" @bind:after="ApplyFilters">
+                    <option value="ALL">All Statuses</option>
+                    <option value="ADMITTED">Admitted</option>
+                    <option value="DISCHARGED">Discharged</option>
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Doctor Specialist</label>
+                <select class="filter-control" @bind="filterDoctor" @bind:after="ApplyFilters">
+                    <option value="0">All Doctors</option>
+                    @foreach (var doc in doctors)
+                    {
+                        <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name)</option>
+                    }
+                </select>
+            </div>
+            <div class="filter-group">
+                <label>Search Patient</label>
+                <input type="text" class="filter-control" @bind="filterSearch" @bind:event="oninput" @bind:after="ApplyFilters" placeholder="Search by name/IP no..." />
+            </div>
+            <div class="filter-group">
+                <label>From Date</label>
+                <input type="date" class="filter-control" @bind="filterFromDate" @bind:after="ApplyFilters" />
+            </div>
+            <div class="filter-group">
+                <label>To Date</label>
+                <input type="date" class="filter-control" @bind="filterToDate" @bind:after="ApplyFilters" />
+            </div>
+        </div>
+    </div>
+
+    @* --- TABLE --- *@
+    <div class="table-card">
+        <div class="table-responsive">
+            <table class="medico-table">
+                <thead>
+                    <tr>
+                        <th style="width: 100px;">IP NUMBER</th>
+                        <th style="width: 250px;">PATIENT NAME</th>
+                        <th>MOBILE NO</th>
+                        <th style="width: 180px;">DOCTOR</th>
+                        <th>BED LOCATION</th>
+                        @if (filterStatus == "DISCHARGED")
+                        {
+                            <th style="width: 150px;">DISCHARGE DATE</th>
+                        }
+                        else
+                        {
+                            <th style="width: 150px;">ADMIT DATE</th>
+                        }
+                        <th>ADMISSION TYPE</th>
+                        <th>INSURANCE</th>
+                        <th>STATUS</th>
+                        <th class="text-center" style="width: 90px;">ACTIONS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (filteredList != null && filteredList.Any())
+                    {
+                        var currentPageItems = filteredList.Skip((currentPage - 1) * pageSize).Take(pageSize).ToList();
+                        @for (int rowIndex = 0; rowIndex < currentPageItems.Count; rowIndex++)
+                        {
+                            var a = currentPageItems[rowIndex];
+                            var isFirstRow = rowIndex == 0;
+                            <tr class="lc-table-row @(a.isvip == true || a.is_vip == true ? "vip-row" : "")" @ondblclick="() => OpenCaseSheetForIp(a)" style="cursor: pointer;" title="Double-click to open clinical Case Sheet">
+                                <td class="font-bold" style="color: #034f75;">@a.ip_no</td>
+                                <td class="font-bold text-slate-800">
+                                     @(string.IsNullOrWhiteSpace(a.patient_name) ? a.custid.ToString() : a.patient_name)
+                                     @if (a.isvip == true || a.is_vip == true)
+                                     {
+                                         <span class="vip-badge" style="background: #fffbeb; border: 1px solid #fde68a; color: #d97706; padding: 2px 6px; border-radius: 4px; font-weight: 700; font-size: 0.7rem; margin-left: 8px; display: inline-flex; align-items: center; gap: 2px;" title="VIP Patient">VIP</span>
+                                     }
+                                </td>
+                                <td>@(a.mobile ?? customersList.FirstOrDefault(c => c.custid == a.custid)?.mobile ?? "-")</td>
+                                <td>Dr. @(doctors.FirstOrDefault(d => d.dcode == a.dcode)?.name ?? a.dcode.ToString())</td>
+                                <td>
+                                    @{
+                                        var bed = bedsList.FirstOrDefault(b => b.bedcode == a.bedcode);
+                                        var displayFloor = floorsList.FirstOrDefault(f => f.flrcode == (a.flrcode ?? bed?.flrcode))?.name 
+                                                           ?? (a.flrcode ?? bed?.flrcode)?.ToString() ?? "-";
+                                        var displayRoomType = roomTypes.FirstOrDefault(r => r.rmtcode == (a.rmtcode ?? bed?.rmtcode))?.name 
+                                                              ?? (a.rmtcode ?? bed?.rmtcode)?.ToString() ?? "-";
+                                        var displayWard = wardsList.FirstOrDefault(w => w.wrdcode == (a.wrdcode ?? bed?.wrdcode))?.name 
+                                                          ?? (a.wrdcode ?? bed?.wrdcode)?.ToString() ?? "-";
+                                        var displayBed = bed?.bedname ?? a.bedcode?.ToString() ?? "-";
+                                    }
+                                    <div style="position: relative; display: inline-block;">
+                                        <a href="javascript:void(0)" @onclick="() => ShowBedDetailsPopover(a, displayFloor, displayRoomType, displayBed)" style="text-decoration: underline; color: #026aa7; font-weight: bold; cursor: pointer;">@displayBed</a>
+                                        
+                                        @if (showBedPopover && selectedBedPatient?.ip_id == a.ip_id)
+                                        {
+                                            <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); border: 1px solid #cbd5e1; background: #ffffff; padding: 8px; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); font-size: 0.72rem; z-index: 1000; width: 190px; text-align: left; line-height: 1.3; color: #334155;">
+                                                <button type="button" @onclick="CloseBedPopover" style="position: absolute; right: 6px; top: 3px; border: none; background: none; font-size: 1rem; cursor: pointer; color: #ef4444; font-weight: bold; padding: 0; line-height: 1;">&times;</button>
+                                                <div style="font-weight: bold; margin-bottom: 4px; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 2px; font-size: 0.75rem; padding-right: 15px;">Bed Allocation</div>
+                                                <div><strong>Bed No:</strong> @displayBed</div>
+                                                <div><strong>Room Type:</strong> @displayRoomType</div>
+                                                <div><strong>Ward:</strong> @displayWard</div>
+                                                <div><strong>Floor:</strong> @displayFloor</div>
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                                <td class="text-slate-700">
+                                    @if (a.ip_status == "DISCHARGED")
+                                    {
+                                        @(a.dischargedate?.ToString("dd-MM-yyyy hh:mm tt") ?? "-")
+                                    }
+                                    else
+                                    {
+                                        @a.admitdate.ToString("dd-MM-yyyy hh:mm tt")
+                                    }
+                                </td>
+                                <td>
+                                    <span class="badge-type @(a.admission_type == "EMERGENCY" ? "walkin" : "online")">
+                                        @a.admission_type
+                                    </span>
+                                </td>
+                                <td>
+                                    @if (a.isinsurancepatient)
+                                    {
+                                        <div style="position: relative; display: inline-block;">
+                                            <a href="javascript:void(0)" @onclick="() => OpenInsuranceCard(a)" style="text-decoration: underline; color: #026aa7; cursor: pointer; font-weight: 600; font-size: 0.8rem;">Insurance details</a>
+                                            
+                                            @if (showInsuranceModal && selectedInsurancePatient?.ip_id == a.ip_id)
+                                            {
+                                                <div style="position: absolute; top: @(isFirstRow ? "calc(100% + 1px)" : "50%"); left: 50%; transform: @(isFirstRow ? "translateX(-50%)" : "translate(-50%, -50%)"); border: 1px solid #cbd5e1; background: #ffffff; padding: 8px; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06); font-size: 0.72rem; z-index: 1000; width: 190px; text-align: left; line-height: 1.3; color: #334155;">
+                                                    <button type="button" @onclick="CloseInsuranceCard" style="position: absolute; right: 6px; top: 3px; border: none; background: none; font-size: 1rem; cursor: pointer; color: #ef4444; font-weight: bold; padding: 0; line-height: 1;">&times;</button>
+                                                    <div style="font-weight: bold; margin-bottom: 4px; color: #0f172a; border-bottom: 1px solid #e2e8f0; padding-bottom: 2px; font-size: 0.75rem; padding-right: 15px;">Insurance Info</div>
+                                                    <div><strong>Co:</strong> @a.insurance_company</div>
+                                                    <div><strong>Policy:</strong> @a.policyno</div>
+                                                    <div><strong>Auth:</strong> @a.authorizationno</div>
+                                                    <div><strong>TPA:</strong> @a.tpa_name</div>
+                                                    <div><strong>Appr:</strong> @(a.insurance_approved_amount?.ToString("N0") ?? "0")</div>
+                                                    <div><strong>Status:</strong> @a.insurance_status</div>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-slate-400" style="font-size: 0.8rem;">No</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (a.ip_status == "ADMITTED")
+                                    {
+                                        <select disabled="@(!hasEditRight)" @key="@(a.ip_id.ToString() + selectResetKey)" class="status-select admitted" value="@a.ip_status" @onchange="(e) => OnStatusChange(a, e)">
+                                            <option value="ADMITTED">Admitted</option>
+                                            <option value="DISCHARGED">Discharged</option>
+                                        </select>
+                                    }
+                                    else
+                                    {
+                                        <span class="status-badge completed">
+                                            Discharged
+                                        </span>
+                                    }
+                                </td>
+                                <td class="text-center" style="position: relative; overflow: visible;">
+                                    <div class="actions-dropdown-container">
+                                        <button type="button" class="btn-action-dots" @onclick="() => ToggleDropdown(a.ip_id)" @onclick:stopPropagation>
+                                            <i class="bi bi-three-dots-vertical"></i>
+                                        </button>
+                                        
+                                        @if (activeDropdownIpId == a.ip_id)
+                                        {
+                                            <div class="actions-dropdown-menu" @onclick:stopPropagation>
+                                                @if (a.ip_status == "ADMITTED")
+                                                {
+                                                    @if (hasEditRight)
+                                                    {
+                                                        <button type="button" class="action-item-btn update" @onclick="() => { OpenUpdateModal(a); ToggleDropdown(a.ip_id); }">
+                                                            <i class="bi bi-pencil-fill"></i>
+                                                            <span>Edit Admission</span>
+                                                        </button>
+                                                    }
+                                                    @if (hasCaseSheetViewRight)
+                                                    {
+                                                        <button type="button" class="action-item-btn casesheet" @onclick="() => { OpenCaseSheetForIp(a); ToggleDropdown(a.ip_id); }">
+                                                            <i class="bi bi-journal-medical"></i>
+                                                            <span>Case Sheet</span>
+                                                        </button>
+                                                    }
+                                                    @if (hasDischargeViewRight)
+                                                    {
+                                                        <button type="button" class="action-item-btn discharge" @onclick="() => { OpenDischargeSummaryForIp(a); ToggleDropdown(a.ip_id); }">
+                                                            <i class="bi bi-file-earmark-text-fill"></i>
+                                                            <span>Discharge Summary</span>
+                                                        </button>
+                                                    }
+                                                    @if (hasDeleteRight)
+                                                    {
+                                                        <button type="button" class="action-item-btn cancel" @onclick="() => { OpenCancelModal(a); ToggleDropdown(a.ip_id); }">
+                                                            <i class="bi bi-trash-fill"></i>
+                                                            <span>Cancel Admission</span>
+                                                        </button>
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    @if (hasDischargeViewRight)
+                                                    {
+                                                        <button type="button" class="action-item-btn discharge" @onclick="() => { OpenDischargeSummaryForIp(a); ToggleDropdown(a.ip_id); }">
+                                                            <i class="bi bi-file-earmark-text-fill"></i>
+                                                            <span>Discharge Summary</span>
+                                                        </button>
+                                                    }
+                                                    <button type="button" class="action-item-btn disabled" disabled>
+                                                        <i class="bi bi-pencil-fill"></i>
+                                                        <span>Edit Admission (Disabled)</span>
+                                                    </button>
+                                                    <button type="button" class="action-item-btn disabled" disabled>
+                                                        <i class="bi bi-trash-fill"></i>
+                                                        <span>Cancel (Disabled)</span>
+                                                    </button>
+                                                }
+                                            </div>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="@(filterStatus == "DISCHARGED" ? 9 : 10)" class="text-center p-48 text-slate-400 italic">No IP records found.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @* --- PAGINATION --- *@
+        @if (filteredList != null && filteredList.Count > 10)
+        {
+            var totalItems = filteredList.Count;
+            var totalPages = (int)Math.Ceiling((double)totalItems / pageSize);
+            <div class="pagination-container" style="display: flex; justify-content: space-between; align-items: center; margin-top: 1rem; padding: 0.5rem 1rem; background: rgba(255, 255, 255, 0.7); border-radius: 12px; border: 1px solid #eaecf0;">
+                <div style="font-size: 0.8rem; color: #64748b;">
+                    Showing <strong>@(((currentPage - 1) * pageSize) + 1)</strong> to <strong>@(Math.Min(currentPage * pageSize, totalItems))</strong> of <strong>@totalItems</strong> entries
+                </div>
+                <div style="display: flex; gap: 0.5rem;">
+                    <button class="btn-page" style="padding: 0.35rem 0.75rem; border-radius: 6px; border: 1px solid #cbd5e1; background: #ffffff; cursor: @(currentPage > 1 ? "pointer" : "not-allowed"); font-size: 0.8rem;" disabled="@(currentPage == 1)" @onclick="() => { currentPage--; }">«</button>
+                    @for (int p = 1; p <= totalPages; p++)
+                    {
+                        var pageNumber = p;
+                        <button class="btn-page @(currentPage == pageNumber ? "active" : "")" style="padding: 0.35rem 0.75rem; border-radius: 6px; border: 1px solid @(currentPage == pageNumber ? "#026aa7" : "#cbd5e1"); background: @(currentPage == pageNumber ? "#026aa7" : "#ffffff"); color: @(currentPage == pageNumber ? "#ffffff" : "#475569"); cursor: pointer; font-size: 0.8rem; font-weight: bold;" @onclick="() => { currentPage = pageNumber; }">@pageNumber</button>
+                    }
+                    <button class="btn-page" style="padding: 0.35rem 0.75rem; border-radius: 6px; border: 1px solid #cbd5e1; background: #ffffff; cursor: @(currentPage < totalPages ? "pointer" : "not-allowed"); font-size: 0.8rem;" disabled="@(currentPage == totalPages)" @onclick="() => { currentPage++; }">»</button>
+                </div>
+            </div>
+        }
+    </div>
+}
 </div>
 
 <!-- Case Sheet Workspace Modal -->
 <CaseSheetComponent @bind-Visible="showCaseSheetModal"
                     OpId="selectedOpId"
+                    IpId="selectedIpId"
                     OpNo="@selectedOpNo"
+                    IpNo="@selectedIpNo"
                     CustId="selectedCustId"
                     Dcode="selectedDcode"
                     PatientName="@selectedPatientName"
                     VisitDate="selectedVisitDate"
                     OpStatus="@selectedOpStatus"
-                    OnSaved="LoadTodayBookingsAsync" />
+                    OnSaved="RefreshActiveTabQueue" />
+
+<!-- Discharge Summary Workspace Modal for IP -->
+<DischargeSummaryComponent @bind-Visible="showDischargeSummaryModal"
+                           IpId="selectedDsIpId"
+                           IpNo="@selectedDsIpNo"
+                           PatCode="@selectedDsPatCode"
+                           CustId="selectedDsCustId"
+                           Dcode="selectedDsDcode"
+                           PatientName="@selectedDsPatientName"
+                           DoctorName="@selectedDsDoctorName"
+                           BedNo="@selectedDsBedNo"
+                           AdmitDate="selectedDsAdmitDate"
+                           DischargeDate="selectedDsDischargeDate" />
+
+@* --- ADMIT PATIENT MODAL --- *@
+@if (showAdmitModal)
+{
+    <div class="modal-backdrop" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 1050;" @onclick="CloseAdmitModal"></div>
+    <div class="glass-modal large-modal-custom" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 14px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); z-index: 1060; width: 850px; max-width: 95%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e2e8f0; padding: 0;">
+        <div class="modal-header" style="background: #004c7a; color: white; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0;">
+            <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700;">New Inpatient Admission</h3>
+            <button class="close-btn" @onclick="CloseAdmitModal" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 1.5rem; max-height: 70vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem;">
+            @* Row 1: Patient, Doctor, Type, Reason *@
+            <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                <div class="form-group" style="position: relative; display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Select Patient *</label>
+                    <div style="position: relative;">
+                        <input type="text" class="filter-control" placeholder="-- Choose Patient --" 
+                               value="@selectedPatientSearchName" 
+                               @oninput="OnPatientSearchInput" 
+                               @focus="ShowPatientDropdown" 
+                               @onblur="HidePatientDropdownWithDelay" 
+                               @onkeydown="OnPatientSearchKeyDown" 
+                               style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                        
+                        @if (showPatientDropdown)
+                        {
+                            <div style="position: absolute; top: 100%; left: 0; right: 0; z-index: 1070; max-height: 200px; overflow-y: auto; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.1); margin-top: 2px;">
+                                @if (filteredPatientsForDropdown.Any())
+                                {
+                                    @for (int idx = 0; idx < filteredPatientsForDropdown.Count; idx++)
+                                    {
+                                        var pIndex = idx;
+                                        var p = filteredPatientsForDropdown[idx];
+                                        <div @onmousedown="() => SelectPatientFromDropdown(p)" 
+                                             style="padding: 8px 12px; cursor: pointer; font-size: 0.8rem; color: #1e293b; background-color: @(idx == activeDropdownIndex ? "#f1f5f9" : "transparent");">
+                                            @p.custcode @(string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials)
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <div style="padding: 8px 12px; font-size: 0.8rem; color: #64748b; font-style: italic;">No patients found</div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Assigned Doctor *</label>
+                    <select class="filter-control" @bind="admitRequest.dcode" @bind:after="PrintPayload" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem;">
+                        <option value="0">-- Choose Doctor --</option>
+                        @foreach (var d in doctors)
+                        {
+                            <option value="@d.dcode">Dr. @(string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname ?? "Specialist" : d.name)</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Admission Type</label>
+                    <select class="filter-control" @bind="admitRequest.admission_type" @bind:after="PrintPayload" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem;">
+                        <option value="PLANNED">PLANNED</option>
+                        <option value="EMERGENCY">EMERGENCY</option>
+                        <option value="REFERRAL">REFERRAL</option>
+                    </select>
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Admission Reason</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.admission_reason" @bind:event="oninput" @bind:after="PrintPayload" placeholder="e.g. Appendectomy" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+            </div>
+
+            @* Row 2: Expected Discharge Date & Guardian Info *@
+            <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Expected Discharge Date</label>
+                    <input type="date" class="filter-control" @bind="admitRequest.expected_dischargedate" @bind:after="PrintPayload" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Guardian Name</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.guardian_name" @bind:event="oninput" @bind:after="PrintPayload" placeholder="Name" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Relation</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.guardian_relation" @bind:event="oninput" @bind:after="PrintPayload" placeholder="Relation" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Contact No</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.guardian_contact" @bind:event="oninput" @bind:after="PrintPayload" placeholder="Contact" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+            </div>
+
+            @* Row 3: Notes & Is Insurance Patient *@
+            <div class="um-grid-cols-4" style="display: grid; grid-template-columns: 3fr 1fr; gap: 1rem;">
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Admission Notes</label>
+                    <input type="text" class="filter-control" @bind="admitRequest.notes" @bind:event="oninput" @bind:after="PrintPayload" placeholder="Notes" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: row; align-items: center; gap: 8px; margin-top: 20px;">
+                    <input type="checkbox" id="isinsurance" @bind="admitRequest.isinsurancepatient" @bind:after="PrintPayload" style="width: 16px; height: 16px; cursor: pointer;" />
+                    <label for="isinsurance" style="margin-bottom: 0; cursor: pointer; text-transform: none; font-size: 0.8rem; font-weight: 700; color: #475569;">Is Insurance Patient</label>
+                </div>
+            </div>
+
+            @if (admitRequest.isinsurancepatient)
+            {
+                @* Row 4: Insurance details (Insurance, Policy No, Auth No, TPA) *@
+                <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Insurance Company</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.insurance_company" @bind:event="oninput" @bind:after="PrintPayload" placeholder="e.g. Star Health" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Policy No</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.policyno" @bind:event="oninput" @bind:after="PrintPayload" placeholder="Policy No" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Authorization No</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.authorizationno" @bind:event="oninput" @bind:after="PrintPayload" placeholder="Auth No" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">TPA Name</label>
+                        <input type="text" class="filter-control" @bind="admitRequest.tpa_name" @bind:event="oninput" @bind:after="PrintPayload" placeholder="TPA" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                </div>
+                
+                @* Row 5: Approved Amount *@
+                <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Approved Amount</label>
+                        <input type="number" step="any" class="filter-control" @bind="admitRequest.insurance_approved_amount" @bind:event="oninput" @bind:after="PrintPayload" placeholder="0.00" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                </div>
+            }
+
+        </div>
+        <div class="modal-footer" style="background: #f8fafc; padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid #edf2f7;">
+            <button class="btn-modal cancel" @onclick="CloseAdmitModal" style="background: white; border: 1px solid #cbd5e1; color: #64748b; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Cancel</button>
+            <button class="btn-modal confirm" @onclick="GoToBedAllocation" style="background: #0284c7; border: none; color: white; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Bed Allocation</button>
+        </div>
+    </div>
+}
+
+@* --- DISCHARGE MODAL --- *@
+@if (showDischargeModal)
+{
+    <div class="modal-backdrop" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 1050;" @onclick="CloseDischargeModal"></div>
+    <div class="glass-modal" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 14px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); z-index: 1060; width: 480px; max-width: 90%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e2e8f0; padding: 0;">
+        <div class="modal-header" style="background: #004c7a; color: white; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0;">
+            <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700;">Discharge Patient</h3>
+            <button class="close-btn" @onclick="CloseDischargeModal" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem;">
+            <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Discharge Type *</label>
+                <select class="filter-control" @bind="dischargeRequest.discharge_type" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem;">
+                    <option value="NORMAL">NORMAL</option>
+                    <option value="DAMA">DAMA (Discharge Against Medical Advice)</option>
+                    <option value="LAMA">LAMA (Left Against Medical Advice)</option>
+                    <option value="DEATH">DEATH</option>
+                    <option value="REFERRED">REFERRED</option>
+                </select>
+            </div>
+            <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Discharge Summary / Comments</label>
+                <textarea class="filter-control" style="width: 100%; height: 100px; resize: none; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" @bind="dischargeRequest.discharge_summary" placeholder="Provide summary of patient status, medication instructions, follow-up advice..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer" style="background: #f8fafc; padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid #edf2f7;">
+            <button class="btn-modal cancel" @onclick="CloseDischargeModal" style="background: white; border: 1px solid #cbd5e1; color: #64748b; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Cancel</button>
+            <button class="btn-modal confirm" @onclick="ExecuteDischarge" style="background: #0284c7; border: none; color: white; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Confirm Discharge</button>
+        </div>
+    </div>
+}
+
+@* --- UPDATE IP REGISTRATION MODAL --- *@
+@if (showUpdateModal)
+{
+    <div class="modal-backdrop" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 1050;" @onclick="CloseUpdateModal"></div>
+    <div class="glass-modal large-modal-custom" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 14px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); z-index: 1060; width: 850px; max-width: 95%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e2e8f0; padding: 0;">
+        <div class="modal-header" style="background: #004c7a; color: white; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0;">
+            <h3>Update Inpatient Admission</h3>
+            <button class="close-btn" @onclick="CloseUpdateModal" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 1.5rem; max-height: 70vh; overflow-y: auto; display: flex; flex-direction: column; gap: 1rem;">
+            @* Row 1: Doctor, Referring Doctor, Department, Reason *@
+            <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Patient Name</label>
+                    <input type="text" class="filter-control" value="@selectedUpdatePatientName" readonly style="background-color: #f1f5f9; cursor: not-allowed; font-weight: bold; width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Assigned Doctor</label>
+                    <select class="filter-control" @bind="updateRequest.dcode" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem;">
+                        <option value="">-- Choose Doctor --</option>
+                        @foreach (var d in doctors)
+                        {
+                            <option value="@d.dcode">Dr. @d.name</option>
+                        }
+                    </select>
+                </div>
+                <div class="form-group" style="grid-column: span 2; display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Admission Reason</label>
+                    <input type="text" class="filter-control" @bind="updateRequest.admission_reason" placeholder="e.g. Appendectomy" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+            </div>
+
+            @* Row 2: Expected Discharge Date, Guardian Name, Relation, Contact *@
+            <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Expected Discharge Date</label>
+                    <input type="date" class="filter-control" @bind="updateRequest.expected_dischargedate" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Guardian Name</label>
+                    <input type="text" class="filter-control" @bind="updateRequest.guardian_name" placeholder="Name" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Relation</label>
+                    <input type="text" class="filter-control" @bind="updateRequest.guardian_relation" placeholder="Relation" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Contact No</label>
+                    <input type="text" class="filter-control" @bind="updateRequest.guardian_contact" placeholder="Contact" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+            </div>
+
+            @* Row 3: Notes & Insurance Patient Checkbox *@
+            <div class="um-grid-cols-4" style="display: grid; grid-template-columns: 3fr 1fr; gap: 1rem;">
+                <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                    <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Notes</label>
+                    <input type="text" class="filter-control" @bind="updateRequest.notes" placeholder="Notes" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                </div>
+                <div class="form-group" style="display: flex; flex-direction: row; align-items: center; gap: 8px; margin-top: 20px;">
+                    <input type="checkbox" id="update_isinsurance" @bind="updateRequest.isinsurancepatient" style="width: 16px; height: 16px; cursor: pointer;" />
+                    <label for="update_isinsurance" style="margin-bottom: 0; cursor: pointer; text-transform: none; font-size: 0.8rem; font-weight: 700; color: #475569;">Is Insurance Patient</label>
+                </div>
+            </div>
+
+            @if (updateRequest.isinsurancepatient == true)
+            {
+                @* Row 4: Insurance details *@
+                <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Insurance Company</label>
+                        <input type="text" class="filter-control" @bind="updateRequest.insurance_company" placeholder="e.g. Star Health" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Policy No</label>
+                        <input type="text" class="filter-control" @bind="updateRequest.policyno" placeholder="Policy No" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Authorization No</label>
+                        <input type="text" class="filter-control" @bind="updateRequest.authorizationno" placeholder="Auth No" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">TPA Name</label>
+                        <input type="text" class="filter-control" @bind="updateRequest.tpa_name" placeholder="TPA" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                </div>
+                
+                @* Row 5: Approved Amount *@
+                <div class="um-grid-cols-4" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 1rem;">
+                    <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Approved Amount</label>
+                        <input type="number" step="any" class="filter-control" @bind="updateRequest.insurance_approved_amount" placeholder="0.00" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    </div>
+                </div>
+            }
+
+        </div>
+        <div class="modal-footer" style="background: #f8fafc; padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid #edf2f7;">
+            <button class="btn-modal cancel" @onclick="CloseUpdateModal" style="background: white; border: 1px solid #cbd5e1; color: #64748b; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Cancel</button>
+            <button class="btn-modal confirm" @onclick="ExecuteUpdate" style="background: #0284c7; border: none; color: white; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Save Changes</button>
+        </div>
+    </div>
+}
+
+@* --- CANCEL ADMISSION MODAL --- *@
+@if (showCancelModal)
+{
+    <div class="modal-backdrop" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 1050;" @onclick="CloseCancelModal"></div>
+    <div class="glass-modal" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); background: white; border-radius: 14px; box-shadow: 0 10px 25px rgba(0,0,0,0.15); z-index: 1060; width: 480px; max-width: 90%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #e2e8f0; padding: 0;">
+        <div class="modal-header" style="background: #004c7a; color: white; padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0;">
+            <h3 style="margin: 0; font-size: 1.15rem; font-weight: 700;">Cancel Admission</h3>
+            <button class="close-btn" @onclick="CloseCancelModal" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem;">
+            <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
+                <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Cancellation Reason *</label>
+                <textarea class="filter-control" style="width: 100%; height: 100px; resize: none; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" @bind="cancelRequest.reason" placeholder="Provide cancellation reason..."></textarea>
+            </div>
+        </div>
+        <div class="modal-footer" style="background: #f8fafc; padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid #edf2f7;">
+            <button class="btn-modal cancel" @onclick="CloseCancelModal" style="background: white; border: 1px solid #cbd5e1; color: #64748b; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Close</button>
+            <button class="btn-modal confirm" style="background-color: #ef4444; border: none; color: #ffffff; padding: 0.55rem 1.25rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;" @onclick="ExecuteCancel">Cancel Admission</button>
+        </div>
+    </div>
+}
 
 @if (showVipModal)
 {
@@ -520,7 +1151,10 @@
 <!-- Floating Quick Access Button for Doctor Status Popup -->
 @if (!showCaseSheetModal)
 {
-    <div class="doctor-status-fab-container">
+    <div class="doctor-status-fab-container" id="draggableStatusFab">
+        <div class="doctor-status-fab-drag-handle" title="Hold to drag button">
+            <i class="bi bi-grip-vertical"></i>
+        </div>
         <button type="button" class="doctor-status-fab" @onclick="OpenDoctorStatusModal" title="Quick Access: Update Doctor Availability Status">
             <div class="fab-icon-pulse">
                 <i class="bi bi-person-badge-fill"></i>
@@ -531,6 +1165,75 @@
 }
 
 @code {
+    private string activeTab = "OP";
+
+    // User Permissions for IP Admissions module
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
+    private bool hasDischargeViewRight = true;
+
+    // IP Admissions lists
+    private List<IPRegistrationModel.IpRegistrationModel> admissionsList = new();
+    private List<IPRegistrationModel.IpRegistrationModel> filteredList = new();
+    private List<SharedComponents.Rcl.Models.CustomerModel> customersList = new();
+
+    // Dropdowns data lists
+    private List<FloorMasterModel> floorsList = new();
+    private List<RoomTypeMasterModel> roomTypes = new();
+    private List<WardMasterModel> wardsList = new();
+    private List<BedMasterModel> bedsList = new();
+    private List<BlockMasterModel> blocksList = new();
+
+    // IP filter bindings
+    private string filterStatus = "ADMITTED";
+    private int filterDoctor = 0;
+    private string filterSearch = "";
+    private DateTime? filterFromDate = null;
+    private DateTime? filterToDate = null;
+    private bool showStatsPopover = false;
+
+    // IP Modals toggles
+    private bool showAdmitModal = false;
+    private bool showDischargeModal = false;
+    private bool showUpdateModal = false;
+    private bool showCancelModal = false;
+    private bool showBedPopover = false;
+    private bool showInsuranceModal = false;
+    private bool showDischargeSummaryModal = false;
+
+    // IP Form payloads
+    private IPRegistrationModel.CreateIpRegistrationRequest admitRequest = new();
+    private IPRegistrationModel.DischargeRequest dischargeRequest = new();
+    private IPRegistrationModel.UpdateIpRegistrationRequest updateRequest = new();
+    private IPRegistrationModel.CancelAdmissionRequest cancelRequest = new();
+
+    // Selected items properties for modals/popovers
+    private IPRegistrationModel.IpRegistrationModel? selectedBedPatient;
+    private IPRegistrationModel.IpRegistrationModel? selectedInsurancePatient;
+    private string selectedUpdatePatientName = "";
+    private Guid selectedIpId = Guid.Empty;
+    private string selectedIpNo = "";
+
+    // Discharge Summary modal properties
+    private Guid selectedDsIpId = Guid.Empty;
+    private string selectedDsIpNo = "";
+    private string selectedDsPatCode = "";
+    private decimal selectedDsCustId = 0;
+    private int selectedDsDcode = 0;
+    private string selectedDsPatientName = "";
+    private string selectedDsDoctorName = "";
+    private string selectedDsBedNo = "";
+    private DateTime? selectedDsAdmitDate;
+    private DateTime? selectedDsDischargeDate;
+
+    // IP Pagination
+    private int currentPage = 1;
+    private int pageSize = 10;
+    private int selectResetKey = 0;
+    private Guid? activeDropdownIpId = null;
+
     private string TenantCode = "";
     private string AuthToken = "";
 
@@ -565,6 +1268,11 @@
                 if (isAdmin)
                 {
                     hasCaseSheetViewRight = true;
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                    hasEditRight = true;
+                    hasDeleteRight = true;
+                    hasDischargeViewRight = true;
                 }
                 else
                 {
@@ -576,14 +1284,47 @@
                             r.ModuleName.Trim().Equals("View_CaseSheet", StringComparison.OrdinalIgnoreCase));
                         
                         hasCaseSheetViewRight = casesheetRight != null ? casesheetRight.ToView : false;
+
+                        var ipRight = rightsResult.Value.FirstOrDefault(r => 
+                            r.ModuleName != null && 
+                            (r.ModuleName.Trim().Equals("Admission_IP", StringComparison.OrdinalIgnoreCase) ||
+                             r.ModuleName.Trim().Equals("Ip_Registration", StringComparison.OrdinalIgnoreCase)));
+                        
+                        if (ipRight != null)
+                        {
+                            hasViewRight = ipRight.ToView;
+                            hasCreateRight = ipRight.ToAdd;
+                            hasEditRight = ipRight.ToEdit;
+                            hasDeleteRight = ipRight.ToDelete;
+                        }
+                        else
+                        {
+                            hasViewRight = true;
+                            hasCreateRight = false;
+                            hasEditRight = false;
+                            hasDeleteRight = false;
+                        }
+
+                        var dischargeRight = rightsResult.Value.FirstOrDefault(r => 
+                            r.ModuleName != null && 
+                            (r.ModuleName.Trim().Equals("DischargeSummary", StringComparison.OrdinalIgnoreCase) ||
+                             r.ModuleName.Trim().Equals("Discharge_Summery", StringComparison.OrdinalIgnoreCase) ||
+                             r.ModuleName.Trim().Equals("Discharge_Summary", StringComparison.OrdinalIgnoreCase)));
+                        hasDischargeViewRight = dischargeRight != null ? dischargeRight.ToView : true;
                     }
                     else
                     {
                         hasCaseSheetViewRight = false;
+                        hasViewRight = true;
+                        hasCreateRight = false;
+                        hasEditRight = false;
+                        hasDeleteRight = false;
+                        hasDischargeViewRight = true;
                     }
                 }
                 
                 StateHasChanged();
+                await JSRuntime.InvokeVoidAsync("makeElementDraggable", "draggableStatusFab");
             }
             catch (Exception ex)
             {
@@ -623,6 +1364,27 @@
     {
         await LoadDoctorsAsync();
         await LoadTodayBookingsAsync();
+        await LoadIpDataAsync();
+        await LoadCustomersAsync();
+    }
+
+    private void SetActiveTab(string tab)
+    {
+        activeTab = tab;
+        showStatsPopover = false;
+        StateHasChanged();
+    }
+
+    private async Task RefreshActiveTabQueue()
+    {
+        if (activeTab == "OP")
+        {
+            await LoadTodayBookingsAsync();
+        }
+        else
+        {
+            await LoadIpDataAsync();
+        }
     }
 
     private async Task OpenCaseSheetForBooking(DoctorBookingListModel booking)
@@ -951,7 +1713,7 @@
     private string statusModalEditStatus = "IN_OPD";
     private string? statusModalRemarks = string.Empty;
     private DateTime? statusModalExpectedReturnTime = null;
-    private Dictionary<long, DoctorCurrentStatusModel> modalStatusMap = new();
+    private Dictionary<long, Booking.Models.DoctorCurrentStatusModel> modalStatusMap = new();
     private Dictionary<int, string> doctorSpecialtiesMap = new();
 
     private async Task OpenDoctorStatusModal()
@@ -1063,7 +1825,7 @@
         try
         {
             var normStatus = NormalizeDoctorStatus(statusModalEditStatus);
-            var model = new DoctorCurrentStatusModel
+            var model = new Booking.Models.DoctorCurrentStatusModel
             {
                 dcode = statusModalDcode,
                 status = normStatus,
@@ -1158,5 +1920,551 @@
         var parts = name.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
         return $"{parts[0][0]}{parts[1][0]}".ToUpper();
+    }
+
+    // ==========================================
+    // INPATIENT (IP) ADMISSIONS LOADERS & ACTIONS
+    // ==========================================
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Customer/partition?pagenumber=1&pagesize=1000");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                customersList = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading customers: {ex.Message}");
+        }
+    }
+
+    private async Task LoadIpDataAsync()
+    {
+        loading = true;
+        try
+        {
+            // Load IP dropdown lists
+            floorsList = await FloorService.GetFloorMastersAsync();
+            roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
+            wardsList = await WardService.GetWardMastersAsync();
+            bedsList = await BedService.GetBedMastersAsync();
+            blocksList = await BlockService.GetBlockMastersAsync();
+
+            // Load IP Admissions
+            var active = await IpService.GetIpRegistrationsAsync("ADMITTED");
+            var discharged = await IpService.GetIpRegistrationsAsync("DISCHARGED");
+            var sortedDischarged = discharged.OrderByDescending(d => d.dischargedate).ToList();
+            admissionsList = active.Concat(sortedDischarged).ToList();
+
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading IP admissions: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        currentPage = 1;
+        filteredList = admissionsList;
+
+        if (filterStatus != "ALL")
+        {
+            filteredList = filteredList.Where(a => a.ip_status == filterStatus).ToList();
+        }
+
+        if (filterDoctor > 0)
+        {
+            filteredList = filteredList.Where(a => a.dcode == filterDoctor).ToList();
+        }
+
+        if (filterFromDate.HasValue)
+        {
+            filteredList = filteredList.Where(a => 
+                (a.ip_status == "DISCHARGED" && a.dischargedate.HasValue ? a.dischargedate.Value.Date : a.admitdate.Date) >= filterFromDate.Value.Date
+            ).ToList();
+        }
+
+        if (filterToDate.HasValue)
+        {
+            filteredList = filteredList.Where(a => 
+                (a.ip_status == "DISCHARGED" && a.dischargedate.HasValue ? a.dischargedate.Value.Date : a.admitdate.Date) <= filterToDate.Value.Date
+            ).ToList();
+        }
+
+        if (!string.IsNullOrWhiteSpace(filterSearch))
+        {
+            filteredList = filteredList.Where(a => 
+                (a.ip_no != null && a.ip_no.Contains(filterSearch, StringComparison.OrdinalIgnoreCase)) ||
+                (a.patient_name != null && a.patient_name.Contains(filterSearch, StringComparison.OrdinalIgnoreCase)) ||
+                (a.mobile != null && a.mobile.Contains(filterSearch, StringComparison.OrdinalIgnoreCase)) ||
+                (customersList.FirstOrDefault(c => c.custid == a.custid)?.mobile?.Contains(filterSearch, StringComparison.OrdinalIgnoreCase) ?? false)
+            ).ToList();
+        }
+    }
+
+    private void PrintPayload()
+    {
+        try
+        {
+            var payloadJson = Newtonsoft.Json.JsonConvert.SerializeObject(admitRequest, Newtonsoft.Json.Formatting.Indented);
+            Console.WriteLine("--- CreateIpRegistrationRequest Current Payload JSON ---");
+            Console.WriteLine(payloadJson);
+            Console.WriteLine("---------------------------------------------------------");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error serializing admission payload: {ex.Message}");
+        }
+    }
+
+    private void OpenAdmitModal()
+    {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to register inpatients.");
+            return;
+        }
+        selectedPatientSearchName = "";
+        admitRequest = new IPRegistrationModel.CreateIpRegistrationRequest
+        {
+            admission_type = "PLANNED",
+            admitdate = DateTime.Now,
+            branchcode = 101,
+            blockcode = blocksList.FirstOrDefault()?.blockcode,
+            flrcode = floorsList.FirstOrDefault()?.flrcode,
+            wrdcode = wardsList.FirstOrDefault()?.wrdcode,
+            rmtcode = roomTypes.FirstOrDefault()?.rmtcode,
+            bedcode = 0,
+            isinsurancepatient = false
+        };
+        showAdmitModal = true;
+    }
+
+    private void CloseAdmitModal()
+    {
+        showAdmitModal = false;
+    }
+
+    private async Task GoToBedAllocation()
+    {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to register inpatients.");
+            return;
+        }
+        if (admitRequest.custid <= 0)
+        {
+            ToastService.ShowError("Please select a patient.");
+            return;
+        }
+        if (admitRequest.dcode <= 0)
+        {
+            ToastService.ShowError("Please select a doctor.");
+            return;
+        }
+
+        try
+        {
+            await _sessionStorage.SetAsync("DraftAdmission", admitRequest);
+            Navigation.NavigateTo("/booking/available-beds");
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error transferring draft admission details: {ex.Message}");
+        }
+    }
+
+    private async Task ExecuteAdmit()
+    {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to register inpatients.");
+            return;
+        }
+        if (admitRequest.custid <= 0)
+        {
+            ToastService.ShowError("Please select a patient.");
+            return;
+        }
+        if (admitRequest.dcode <= 0)
+        {
+            ToastService.ShowError("Please select a doctor.");
+            return;
+        }
+        if (admitRequest.bedcode <= 0)
+        {
+            ToastService.ShowError("Please allocate a bed.");
+            return;
+        }
+
+        try
+        {
+            bool success = await IpService.AdmitPatientAsync(admitRequest);
+            if (success)
+            {
+                ToastService.ShowSuccess("Patient admitted successfully!");
+                showAdmitModal = false;
+                await LoadIpDataAsync();
+                StateHasChanged();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to admit patient.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error admitting patient: {ex.Message}");
+        }
+    }
+
+    private void OpenDischargeModal(IPRegistrationModel.IpRegistrationModel admission)
+    {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to discharge patients.");
+            return;
+        }
+        dischargeRequest = new IPRegistrationModel.DischargeRequest
+        {
+            ip_id = admission.ip_id,
+            discharge_type = "NORMAL",
+            discharge_summary = ""
+        };
+        showDischargeModal = true;
+    }
+
+    private void CloseDischargeModal()
+    {
+        showDischargeModal = false;
+        selectResetKey++;
+        StateHasChanged();
+    }
+
+    private async Task ExecuteDischarge()
+    {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to discharge patients.");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(dischargeRequest.discharge_type))
+        {
+            ToastService.ShowError("Please select a discharge type.");
+            return;
+        }
+
+        try
+        {
+            var (success, message) = await IpService.DischargePatientAsync(dischargeRequest);
+            if (success)
+            {
+                ToastService.ShowSuccess(message);
+                showDischargeModal = false;
+                await LoadIpDataAsync();
+                StateHasChanged();
+            }
+            else
+            {
+                ToastService.ShowError(message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error discharging patient: {ex.Message}");
+        }
+    }
+
+    private void OpenUpdateModal(IPRegistrationModel.IpRegistrationModel admission)
+    {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit admissions.");
+            return;
+        }
+        selectedUpdatePatientName = string.IsNullOrWhiteSpace(admission.patient_name) ? admission.custid.ToString() : admission.patient_name;
+
+        updateRequest = new IPRegistrationModel.UpdateIpRegistrationRequest
+        {
+            ip_id = admission.ip_id,
+            dcode = admission.dcode,
+            referring_dcode = admission.referring_dcode,
+            department_code = admission.department_code,
+            admission_reason = admission.admission_reason,
+            expected_dischargedate = admission.expected_dischargedate,
+            isinsurancepatient = admission.isinsurancepatient,
+            insurance_company = admission.insurance_company,
+            policyno = admission.policyno,
+            authorizationno = admission.authorizationno,
+            tpa_name = admission.tpa_name,
+            insurance_approved_amount = admission.insurance_approved_amount,
+            insurance_status = admission.insurance_status,
+            guardian_name = admission.guardian_name,
+            guardian_relation = admission.guardian_relation,
+            guardian_contact = admission.guardian_contact,
+            notes = admission.notes
+        };
+        showUpdateModal = true;
+    }
+
+    private void CloseUpdateModal()
+    {
+        showUpdateModal = false;
+    }
+
+    private async Task ExecuteUpdate()
+    {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit admissions.");
+            return;
+        }
+        try
+        {
+            var originalAdmission = admissionsList.FirstOrDefault(a => a.ip_id == updateRequest.ip_id);
+            decimal? custid = originalAdmission?.custid;
+            bool success = await IpService.UpdateIpRegistrationAsync(updateRequest, custid);
+            if (success)
+            {
+                ToastService.ShowSuccess("IP Registration updated successfully!");
+                showUpdateModal = false;
+                await LoadIpDataAsync();
+                StateHasChanged();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to update IP Registration.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error updating registration: {ex.Message}");
+        }
+    }
+
+    private void OpenCancelModal(IPRegistrationModel.IpRegistrationModel admission)
+    {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to cancel admissions.");
+            return;
+        }
+        cancelRequest = new IPRegistrationModel.CancelAdmissionRequest
+        {
+            ip_id = admission.ip_id,
+            reason = ""
+        };
+        showCancelModal = true;
+    }
+
+    private void CloseCancelModal()
+    {
+        showCancelModal = false;
+    }
+
+    private async Task ExecuteCancel()
+    {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to cancel admissions.");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(cancelRequest.reason))
+        {
+            ToastService.ShowError("Please provide a reason for cancellation.");
+            return;
+        }
+
+        try
+        {
+            bool success = await IpService.CancelAdmissionAsync(cancelRequest);
+            if (success)
+            {
+                ToastService.ShowSuccess("Admission cancelled successfully!");
+                showCancelModal = false;
+                await LoadIpDataAsync();
+                StateHasChanged();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to cancel admission.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error cancelling admission: {ex.Message}");
+        }
+    }
+
+    private void OnStatusChange(IPRegistrationModel.IpRegistrationModel admission, ChangeEventArgs e)
+    {
+        var val = e.Value?.ToString();
+        if (val == "DISCHARGED")
+        {
+            OpenDischargeModal(admission);
+        }
+    }
+
+    private void OpenInsuranceCard(IPRegistrationModel.IpRegistrationModel patient)
+    {
+        selectedInsurancePatient = patient;
+        showInsuranceModal = true;
+    }
+
+    private void CloseInsuranceCard()
+    {
+        selectedInsurancePatient = null;
+        showInsuranceModal = false;
+    }
+
+    private string selectedPatientSearchName = "";
+    private bool showPatientDropdown = false;
+    private int activeDropdownIndex = 0;
+    private List<SharedComponents.Rcl.Models.CustomerModel> filteredPatientsForDropdown = new();
+
+    private void OnPatientSearchInput(ChangeEventArgs e)
+    {
+        selectedPatientSearchName = e.Value?.ToString() ?? "";
+        UpdateFilteredPatients();
+        showPatientDropdown = true;
+        activeDropdownIndex = 0;
+    }
+
+    private void UpdateFilteredPatients()
+    {
+        if (string.IsNullOrWhiteSpace(selectedPatientSearchName))
+        {
+            filteredPatientsForDropdown = customersList.Take(50).ToList();
+        }
+        else
+        {
+            filteredPatientsForDropdown = customersList
+                .Where(c => (c.name != null && c.name.Contains(selectedPatientSearchName, StringComparison.OrdinalIgnoreCase)) ||
+                            (c.namewithinitials != null && c.namewithinitials.Contains(selectedPatientSearchName, StringComparison.OrdinalIgnoreCase)) ||
+                            (c.custcode != null && c.custcode.Contains(selectedPatientSearchName, StringComparison.OrdinalIgnoreCase)))
+                .ToList();
+        }
+    }
+
+    private void ShowPatientDropdown()
+    {
+        UpdateFilteredPatients();
+        showPatientDropdown = true;
+    }
+
+    private async Task HidePatientDropdownWithDelay()
+    {
+        await Task.Delay(250);
+        showPatientDropdown = false;
+    }
+
+    private void SelectPatientFromDropdown(SharedComponents.Rcl.Models.CustomerModel p)
+    {
+        admitRequest.custid = p.custid;
+        selectedPatientSearchName = $"{p.custcode} {(string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials)}";
+        showPatientDropdown = false;
+        StateHasChanged();
+        PrintPayload();
+    }
+
+    private void OnPatientSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            if (filteredPatientsForDropdown.Any())
+            {
+                activeDropdownIndex = (activeDropdownIndex + 1) % filteredPatientsForDropdown.Count;
+            }
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            if (filteredPatientsForDropdown.Any())
+            {
+                activeDropdownIndex = (activeDropdownIndex - 1 + filteredPatientsForDropdown.Count) % filteredPatientsForDropdown.Count;
+            }
+        }
+        else if (e.Key == "Enter")
+        {
+            if (filteredPatientsForDropdown.Any() && activeDropdownIndex >= 0 && activeDropdownIndex < filteredPatientsForDropdown.Count)
+            {
+                SelectPatientFromDropdown(filteredPatientsForDropdown[activeDropdownIndex]);
+            }
+        }
+    }
+
+    private void ToggleDropdown(Guid ipId)
+    {
+        if (activeDropdownIpId == ipId)
+        {
+            activeDropdownIpId = null;
+        }
+        else
+        {
+            activeDropdownIpId = ipId;
+        }
+    }
+
+    private void OpenCaseSheetForIp(IPRegistrationModel.IpRegistrationModel admission)
+    {
+        selectedIpId = admission.ip_id;
+        selectedIpNo = admission.ip_no;
+        selectedOpId = admission.op_id ?? Guid.Empty;
+        selectedOpNo = "";
+        selectedCustId = admission.custid;
+        selectedDcode = admission.dcode;
+        selectedPatientName = string.IsNullOrWhiteSpace(admission.patient_name) ? admission.custid.ToString() : admission.patient_name;
+        selectedVisitDate = admission.admitdate;
+        selectedOpStatus = "ADMITTED";
+        showCaseSheetModal = true;
+    }
+
+    private void OpenDischargeSummaryForIp(IPRegistrationModel.IpRegistrationModel admission)
+    {
+        selectedDsIpId = admission.ip_id;
+        selectedDsIpNo = admission.ip_no;
+        selectedDsPatCode = !string.IsNullOrWhiteSpace(admission.ip_no) ? admission.ip_no : admission.custid.ToString();
+        selectedDsCustId = admission.custid;
+        selectedDsDcode = admission.dcode;
+        selectedDsPatientName = string.IsNullOrWhiteSpace(admission.patient_name) ? admission.custid.ToString() : admission.patient_name;
+        selectedDsDoctorName = doctors.FirstOrDefault(d => d.dcode == admission.dcode)?.name ?? admission.dcode.ToString();
+        var bed = bedsList.FirstOrDefault(b => b.bedcode == admission.bedcode);
+        selectedDsBedNo = bed?.bedname ?? admission.bedcode?.ToString() ?? "";
+        selectedDsAdmitDate = admission.admitdate;
+        selectedDsDischargeDate = admission.dischargedate ?? DateTime.Now;
+        showDischargeSummaryModal = true;
+    }
+
+    private void ShowBedDetailsPopover(IPRegistrationModel.IpRegistrationModel admission, string floor, string ward, string bedName)
+    {
+        selectedBedPatient = admission;
+        showBedPopover = true;
+    }
+
+    private void CloseBedPopover()
+    {
+        selectedBedPatient = null;
+        showBedPopover = false;
     }
 }
