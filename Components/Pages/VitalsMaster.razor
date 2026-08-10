@@ -2,6 +2,7 @@
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @implements IDisposable
 @using Booking.Models
+@using Booking.Helpers
 @using Medico_Backend.Model
 @using SharedComponents.Rcl.Models
 @inject Booking.Services.VitalsService VitalsService
@@ -133,6 +134,11 @@
         </div>
 
         <div class="vitals-filter-group">
+            <div class="vitals-filter-select-wrapper">
+                <span class="material-symbols-outlined vitals-filter-select-icon">calendar_today</span>
+                <input type="date" class="vitals-filter-select" style="padding-left: 32px;" @bind="selectedDateFilter" @bind:after="OnDateFilterChanged" />
+            </div>
+
             <div class="vitals-filter-select-wrapper">
                 <span class="material-symbols-outlined vitals-filter-select-icon">stethoscope</span>
                 <select class="vitals-filter-select" @bind="selectedDoctorFilter">
@@ -700,15 +706,15 @@
             doctorsList = await DoctorService.GetDoctorsAsync() ?? new();
             testMastersList = await TestMasterService.GetTestMastersAsync() ?? new();
             var allVitals = await VitalsService.GetVitalsAsync() ?? new();
-            vitalsList = allVitals.Where(v => v.entered_date.Date == DateTime.Today).ToList();
+            vitalsList = allVitals.Where(v => v.entered_date != DateTime.MinValue && v.entered_date.ToIndianTime().Date == selectedDateFilter.Date).ToList();
 
-            var todayStr = DateTime.Now.ToString("yyyy-MM-dd");
-            var consultList = await OGService.GetConsultationListAsync(todayStr) ?? new();
-            var labScanList = await OGService.GetLabScanListAsync(todayStr) ?? new();
+            var dateStr = selectedDateFilter.ToString("yyyy-MM-dd");
+            var consultList = await OGService.GetConsultationListAsync(dateStr) ?? new();
+            var labScanList = await OGService.GetLabScanListAsync(dateStr) ?? new();
             consultationList = consultList.Concat(labScanList).ToList();
 
-            labResultList = await VitalsService.SearchLabResultEntriesAsync(null, DateTime.Now.Date) ?? new();
-            scanResultList = await VitalsService.SearchScanResultEntriesAsync(null, DateTime.Now.Date) ?? new();
+            labResultList = await VitalsService.SearchLabResultEntriesAsync(null, selectedDateFilter.Date) ?? new();
+            scanResultList = await VitalsService.SearchScanResultEntriesAsync(null, selectedDateFilter.Date) ?? new();
 
             // Load patients from api/customer/getcus to map patient_name if missing
             await LoadPatientsFromGetCusAsync();
@@ -747,11 +753,11 @@
         try
         {
             var allVitals = await VitalsService.GetVitalsAsync() ?? new();
-            vitalsList = allVitals.Where(v => v.entered_date.Date == DateTime.Today).ToList();
+            vitalsList = allVitals.Where(v => v.entered_date != DateTime.MinValue && v.entered_date.ToIndianTime().Date == selectedDateFilter.Date).ToList();
 
-            var todayStr = DateTime.Now.ToString("yyyy-MM-dd");
-            var consultList = await OGService.GetConsultationListAsync(todayStr) ?? new();
-            var labScanList = await OGService.GetLabScanListAsync(todayStr) ?? new();
+            var dateStr = selectedDateFilter.ToString("yyyy-MM-dd");
+            var consultList = await OGService.GetConsultationListAsync(dateStr) ?? new();
+            var labScanList = await OGService.GetLabScanListAsync(dateStr) ?? new();
             consultationList = consultList.Concat(labScanList).ToList();
 
             if (allCustomersList.Count > 0)
@@ -967,9 +973,16 @@
         string.Equals(currentVital.in4, "scan", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(currentVital.in5, "scan", StringComparison.OrdinalIgnoreCase);
 
+    private DateTime selectedDateFilter = DateTime.UtcNow.ToIndianTime().Date;
     private int selectedDoctorFilter = 0; // 0 = All Doctors
     private string selectedLabStatusFilter = "all"; // all, waiting, on_going, completed, report_received
     private string selectedStatusFilter = "all"; // all, waiting, up_next, in_consultation, report_received, completed
+
+    private async Task OnDateFilterChanged()
+    {
+        currentPage = 1;
+        await LoadDataAsync();
+    }
 
     private int WaitingCount => vitalsList.Count(v => GetDoctorStatus(v) == "waiting" || v.status == "waiting");
     private int ConsultationCount => vitalsList.Count(v => GetDoctorStatus(v) == "in_consultation");
@@ -990,13 +1003,15 @@
         currentPage = 1;
     }
 
-    private void ClearAllFilters()
+    private async Task ClearAllFilters()
     {
         _searchQuery = "";
+        selectedDateFilter = DateTime.UtcNow.ToIndianTime().Date;
         selectedDoctorFilter = 0;
         selectedLabStatusFilter = "all";
         selectedStatusFilter = "all";
         currentPage = 1;
+        await LoadDataAsync();
     }
 
     private string GetDoctorInitials(int? dcode)
@@ -1088,10 +1103,10 @@
         {
             in1 = "doctor",
             status = "waiting",
-            arrival_time = TimeOnly.FromDateTime(DateTime.Now),
+            arrival_time = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime()),
             usercode = 1,
             computercode = 1,
-            entered_date = DateTime.Now
+            entered_date = DateTime.UtcNow.ToIndianTime()
         };
         showForm = true;
     }
@@ -1154,7 +1169,7 @@
 
         if (isEditing)
         {
-            currentVital.updated_at = DateTime.Now;
+            currentVital.updated_at = DateTime.UtcNow.ToIndianTime();
             success = await VitalsService.UpdateVitalAsync(currentVital);
             if (success)
             {
@@ -1167,10 +1182,37 @@
         }
         else
         {
+            var mrn = currentVital.custcode?.Trim() ?? "";
+            var docCode = currentVital.dcode.Value;
+            var today = DateTime.UtcNow.ToIndianTime().Date;
+
+            // Fetch all vitals to check for existing registrations today across Vitals & Reception
+            var allVitals = await VitalsService.GetVitalsAsync();
+            var existing = allVitals.FirstOrDefault(x =>
+                x.dcode == docCode &&
+                x.entered_date != DateTime.MinValue &&
+                x.entered_date.ToIndianTime().Date == today &&
+                (
+                    string.Equals(x.custcode?.Trim(), mrn, StringComparison.OrdinalIgnoreCase) ||
+                    (!string.IsNullOrEmpty(mrn) && mrn.StartsWith("PID-", StringComparison.OrdinalIgnoreCase) && string.Equals(x.custcode?.Trim(), mrn.Substring(4), StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(x.custcode) && x.custcode.Trim().StartsWith("PID-", StringComparison.OrdinalIgnoreCase) && string.Equals(x.custcode.Trim().Substring(4), mrn, StringComparison.OrdinalIgnoreCase))
+                )
+            );
+
+            if (existing != null)
+            {
+                isLoading = false;
+                var docObj = doctorsList.FirstOrDefault(d => d.dcode == docCode);
+                var docName = docObj != null ? (string.IsNullOrWhiteSpace(docObj.name) ? docObj.doctorfullname : docObj.name) : $"Doctor ID {docCode}";
+                var registeredTime = existing.entered_date.ToIndianTime().ToString("yyyy-MM-dd HH:mm");
+                ToastService.ShowError($"The patient is already registered on {registeredTime} for {docName}.");
+                return;
+            }
+
             currentVital.status = "waiting";
-            currentVital.entered_date = DateTime.Now;
-            currentVital.created_at = DateTime.Now;
-            currentVital.updated_at = DateTime.Now;
+            currentVital.entered_date = DateTime.UtcNow.ToIndianTime();
+            currentVital.created_at = DateTime.UtcNow.ToIndianTime();
+            currentVital.updated_at = DateTime.UtcNow.ToIndianTime();
             success = await VitalsService.InsertVitalAsync(currentVital);
             if (success)
             {

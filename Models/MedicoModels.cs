@@ -38,7 +38,7 @@ namespace MedicoAi.Models
             if (string.IsNullOrWhiteSpace(dateStr)) return false;
 
             var clean = dateStr.Trim();
-            var today = DateTime.Today;
+            var today = Booking.Helpers.DateTimeExtensions.ToIndianTime(DateTime.UtcNow).Date;
 
             string ymd = today.ToString("yyyy-MM-dd");
             string dmyHyphen = today.ToString("dd-MM-yyyy");
@@ -53,12 +53,12 @@ namespace MedicoAi.Models
 
             if (DateTimeOffset.TryParse(clean, out var dto))
             {
-                return dto.LocalDateTime.Date == today;
+                return Booking.Helpers.DateTimeExtensions.ToIndianTime(dto.UtcDateTime).Date == today;
             }
 
             if (DateTime.TryParse(clean, out var dt))
             {
-                return dt.Date == today;
+                return Booking.Helpers.DateTimeExtensions.ToIndianTime(dt).Date == today;
             }
 
             return false;
@@ -92,12 +92,17 @@ namespace MedicoAi.Models
             if (IsDateToday(created_at)) return true;
             if (IsDateToday(entered_date)) return true;
 
-            if (!string.IsNullOrEmpty(created_at) || !string.IsNullOrEmpty(entered_date))
+            // Only fallback to arrival_time if date fields are missing OR if created_at/entered_date is stored as yesterday UTC
+            // AND arrival_time is strictly between 00:00:00 and 05:29:59 (post-midnight IST)
+            bool isYesterdayUtc = IsDateYesterday(created_at) || IsDateYesterday(entered_date);
+            bool isDateEmpty = string.IsNullOrEmpty(created_at) && string.IsNullOrEmpty(entered_date);
+
+            if ((isYesterdayUtc || isDateEmpty) && !string.IsNullOrWhiteSpace(arrival_time) && TimeSpan.TryParse(arrival_time, out var ts) && ts < new TimeSpan(5, 30, 0))
             {
-                return false;
+                return true;
             }
 
-            return true;
+            return false;
         }
 
         public bool IsYesterdayToken()
@@ -204,12 +209,17 @@ namespace MedicoAi.Models
             if (VitalsItem.IsDateToday(created_at)) return true;
             if (VitalsItem.IsDateToday(arrival_time)) return true;
 
-            if (!string.IsNullOrEmpty(created_at))
+            // Only fallback to arrival_time if date fields are missing OR if created_at is stored as yesterday UTC
+            // AND arrival_time is strictly between 00:00:00 and 05:29:59 (post-midnight IST)
+            bool isYesterdayUtc = VitalsItem.IsDateYesterday(created_at);
+            bool isDateEmpty = string.IsNullOrEmpty(created_at);
+
+            if ((isYesterdayUtc || isDateEmpty) && !string.IsNullOrWhiteSpace(arrival_time) && TimeSpan.TryParse(arrival_time, out var ts) && ts < new TimeSpan(5, 30, 0))
             {
-                return false;
+                return true;
             }
 
-            return true;
+            return false;
         }
     }
 

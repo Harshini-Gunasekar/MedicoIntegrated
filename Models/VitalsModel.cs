@@ -19,6 +19,9 @@ namespace Medico_Backend.Model
         [Write(false)]
         public string? patient_name { get; set; }
 
+        [Write(false)]
+        public string? doctor_name { get; set; }
+
         public int? dcode { get; set; }
 
         // REPLACED "investigation" (single string) with 5 slots

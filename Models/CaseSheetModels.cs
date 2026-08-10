@@ -1,18 +1,20 @@
-using System;
-using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations.Schema;
+using Dapper.Contrib.Extensions;
 
-namespace Booking.Models
+
+namespace medico_backend.Model
 {
+
     [Table("op_case_sheet")]
     public class OpCaseSheetModel
     {
+        [ExplicitKey]
         public Guid sheet_id { get; set; } = Guid.NewGuid();
         public Guid? op_id { get; set; }
         public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
-        public DateTime visit_date { get; set; } = DateTime.UtcNow.Date;
+        public DateTime? visit_date { get; set; } = DateTime.UtcNow.Date;
+
 
         // Clinical notes
         public string? chief_complaint { get; set; }
@@ -21,13 +23,17 @@ namespace Booking.Models
         public string? advise { get; set; }
         public string? notes { get; set; }
 
+
         // Follow up
         public DateTime? followup_date { get; set; }
         public string? followup_notes { get; set; }
 
+
         // Status
+        public bool refer_to_ip { get; set; } = false;
         public bool is_consulted { get; set; } = false;
         public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
+
 
         public string? tenant_code { get; set; }
         public bool isdeleted { get; set; } = false;
@@ -35,22 +41,28 @@ namespace Booking.Models
         public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
+
     [Table("op_case_sheet_diagnosis")]
     public class OpCaseSheetDiagnosisModel
     {
+        [ExplicitKey]
         public Guid diag_id { get; set; } = Guid.NewGuid();
         public Guid sheet_id { get; set; }
-        public string? op_id { get; set; }
+        public Guid? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public DateTime visit_date { get; set; }
 
+
         public int sno { get; set; }
+
 
         // ICD-10
         public string? icd_code { get; set; }
         public string? icd_description { get; set; }
         public string? diagnosis_text { get; set; }
+
 
         // Classification
         public string? diagnosis_type { get; set; }   // PRIMARY / SECONDARY / COMORBIDITY
@@ -58,44 +70,55 @@ namespace Booking.Models
         public string? severity { get; set; }         // MILD / MODERATE / SEVERE
         public string status { get; set; } = "ACTIVE"; // ACTIVE / RESOLVED / ONGOING
 
+
         public string? tenant_code { get; set; }
         public bool isdeleted { get; set; } = false;
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
+
     [Table("op_case_sheet_symptoms")]
     public class OpCaseSheetSymptomModel
     {
+        [ExplicitKey]
         public Guid symptom_id { get; set; } = Guid.NewGuid();
         public Guid sheet_id { get; set; }
-        public string? op_id { get; set; }
+        public Guid? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int sno { get; set; }
+
 
         public string symptom_text { get; set; } = string.Empty;
         public string? duration { get; set; }
         public string? severity { get; set; }  // MILD / MODERATE / SEVERE
         public string? notes { get; set; }
 
+
         public string? tenant_code { get; set; }
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
+
     [Table("op_prescription_master")]
     public class OpPrescriptionMasterModel
     {
+        [ExplicitKey]
         public Guid pr_id { get; set; } = Guid.NewGuid();
         public string pr_code { get; set; } = string.Empty;   // PR/2026/06/0001
         public Guid? sheet_id { get; set; }
-        public Guid op_id { get; set; }
+        public Guid? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public DateTime visit_date { get; set; }
+
 
         public DateTime pr_date { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         public string? topremarks { get; set; }
         public string? bottonremarks { get; set; }
         public bool is_dispensed { get; set; } = false;
+
 
         public string? tenant_code { get; set; }
         public bool isdeleted { get; set; } = false;
@@ -103,20 +126,24 @@ namespace Booking.Models
         public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
+
     [Table("op_prescription_detail")]
     public class OpPrescriptionDetailModel
     {
+        [ExplicitKey]
         public Guid pr_det_id { get; set; } = Guid.NewGuid();
         public Guid pr_id { get; set; }
         public string pr_code { get; set; } = string.Empty;
         public Guid? diag_id { get; set; }
         public int sno { get; set; }
 
+
         // Drug info
         public string drug_name { get; set; } = string.Empty;
         public decimal? drug_code { get; set; }
         public string? generic_name { get; set; }
         public string? drug_category { get; set; }
+
 
         // Dosage
         public string morning { get; set; } = "0";
@@ -129,10 +156,12 @@ namespace Booking.Models
         public decimal? qty { get; set; }
         public string? route { get; set; }   // ORAL / IV / IM / TOPICAL
 
+
         // Billing
         public decimal? rate { get; set; }
         public decimal? mrp { get; set; }
         public bool is_billed { get; set; } = false;
+
 
         public string? notes { get; set; }
         public string? tenant_code { get; set; }
@@ -140,21 +169,26 @@ namespace Booking.Models
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
+
     [Table("op_investigation_master")]
     public class OpInvestigationMasterModel
     {
+        [ExplicitKey]
         public Guid inv_id { get; set; } = Guid.NewGuid();
         public string inv_code { get; set; } = string.Empty;   // INV/2026/06/0001
         public Guid? sheet_id { get; set; }
-        public Guid op_id { get; set; }
+        public Guid? op_id { get; set; }
+        public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public DateTime visit_date { get; set; }
+
 
         public DateTime inv_date { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         public string? notes { get; set; }
         public bool is_urgent { get; set; } = false;
         public string status { get; set; } = "ORDERED";  // ORDERED / PARTIAL / COMPLETED
+
 
         public string? tenant_code { get; set; }
         public bool isdeleted { get; set; } = false;
@@ -162,21 +196,26 @@ namespace Booking.Models
         public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
+
     [Table("op_investigation_detail")]
     public class OpInvestigationDetailModel
     {
+        [ExplicitKey]
         public Guid inv_det_id { get; set; } = Guid.NewGuid();
         public Guid inv_id { get; set; }
         public Guid? diag_id { get; set; }
         public int sno { get; set; }
 
+
         public string test_name { get; set; } = string.Empty;
         public int? test_code { get; set; }
         public string? test_category { get; set; }
 
+
         public decimal quantity { get; set; } = 1;
         public decimal? rate { get; set; }
         public decimal? amount { get; set; }
+
 
         // Result tracking
         public string result_status { get; set; } = "PENDING";  // PENDING / COMPLETED
@@ -184,6 +223,7 @@ namespace Booking.Models
         public DateTime? result_date { get; set; }
         public string? result_notes { get; set; }
 
+
         public bool is_billed { get; set; } = false;
         public string? tenant_code { get; set; }
         public bool isdeleted { get; set; } = false;
@@ -191,48 +231,74 @@ namespace Booking.Models
         public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
-    // Request Shapes
+
+    // ─────────────────────────────────────────────────────────────
+    // REQUEST SHAPES
+    // ─────────────────────────────────────────────────────────────
+
+
+    /// <summary>
+    /// Save the full OP Case Sheet in one call.
+    /// Vitals are NOT included here — use the existing
+    /// POST api/OpRegistration/save-vitals endpoint.
+    /// </summary>
     public class SaveCaseSheetRequest
     {
-        public string op_id { get; set; } = string.Empty;
+        // Visit identifiers
+        public string? op_id { get; set; } = string.Empty;
         public Guid? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
+
+
+        // null = new sheet; provide sheet_id to update existing
         public string? sheet_id { get; set; }
 
-        // Clinical notes
+
+        // Clinical notes (free text)
         public string? chief_complaint { get; set; }
-        public string? symptoms { get; set; }
+        public string? symptoms { get; set; }        // free-text paragraph (legacy support)
         public string? examination { get; set; }
         public string? advise { get; set; }
         public string? notes { get; set; }
+
 
         // Follow up
         public DateTime? followup_date { get; set; }
         public string? followup_notes { get; set; }
 
-        // Sheet status
-        public string sheet_status { get; set; } = "DRAFT";
 
-        // Structured lists
+        // Sheet status
+        public bool refer_to_ip { get; set; } = false;
+        public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
+
+
+        // Structured symptoms list
         public List<CaseSheetSymptomItem> symptom_list { get; set; } = new();
+
+
+        // Structured diagnosis list
         public List<CaseSheetDiagnosisItem> diagnosis_list { get; set; } = new();
+
 
         // Prescription
         public CaseSheetPrescriptionRequest? prescription { get; set; }
+
 
         // Investigation
         public CaseSheetInvestigationRequest? investigation { get; set; }
     }
 
+
     public class CaseSheetSymptomItem
     {
         public int sno { get; set; }
         public string symptom_text { get; set; } = string.Empty;
-        public string? duration { get; set; }
-        public string? severity { get; set; }
+        public string? duration { get; set; }        // "3 days", "1 week"
+        public string? severity { get; set; }        // MILD / MODERATE / SEVERE
         public string? notes { get; set; }
     }
+
 
     public class CaseSheetDiagnosisItem
     {
@@ -240,24 +306,27 @@ namespace Booking.Models
         public string? icd_code { get; set; }
         public string? icd_description { get; set; }
         public string? diagnosis_text { get; set; }
-        public string? diagnosis_type { get; set; }
-        public string? condition_type { get; set; }
-        public string? severity { get; set; }
+        public string? diagnosis_type { get; set; }  // PRIMARY / SECONDARY / COMORBIDITY
+        public string? condition_type { get; set; }  // ACUTE / CHRONIC / FOLLOWUP
+        public string? severity { get; set; }        // MILD / MODERATE / SEVERE
         public string status { get; set; } = "ACTIVE";
     }
 
+
     public class CaseSheetPrescriptionRequest
     {
+        /// <summary>null = new. Provide pr_code to update existing.</summary>
         public string? pr_code { get; set; }
         public string? topremarks { get; set; }
         public string? bottonremarks { get; set; }
         public List<CaseSheetPrescriptionItem> items { get; set; } = new();
     }
 
+
     public class CaseSheetPrescriptionItem
     {
         public int sno { get; set; }
-        public string? diag_id { get; set; }
+        public string? diag_id { get; set; }         // link to specific diagnosis
         public string drug_name { get; set; } = string.Empty;
         public decimal? drug_code { get; set; }
         public string? generic_name { get; set; }
@@ -276,18 +345,22 @@ namespace Booking.Models
         public string? notes { get; set; }
     }
 
+
     public class CaseSheetInvestigationRequest
     {
+        /// <summary>null = new. Provide inv_id to update existing.</summary>
         public string? inv_id { get; set; }
         public string? notes { get; set; }
         public bool is_urgent { get; set; } = false;
         public List<CaseSheetInvestigationItem> tests { get; set; } = new();
     }
 
+
     public class CaseSheetInvestigationItem
     {
         public int sno { get; set; }
-        public string? diag_id { get; set; }
+        public Guid inv_det_id { get; set; }
+        public string? diag_id { get; set; }         // link to specific diagnosis
         public string test_name { get; set; } = string.Empty;
         public int? test_code { get; set; }
         public string? test_category { get; set; }
@@ -296,15 +369,23 @@ namespace Booking.Models
         public decimal? amount { get; set; }
         public string? result_value { get; set; }
         public string? result_notes { get; set; }
-        public string result_status { get; set; } = "PENDING";
+        public string? result_status { get; set; }
     }
 
+
+    // ─────────────────────────────────────────────────────────────
+    // FINALIZE REQUEST
+    // ─────────────────────────────────────────────────────────────
     public class FinalizeCaseSheetRequest
     {
         public string sheet_id { get; set; } = string.Empty;
         public bool is_consulted { get; set; } = true;
     }
 
+
+    // ─────────────────────────────────────────────────────────────
+    // UPDATE RESULT REQUEST
+    // ─────────────────────────────────────────────────────────────
     public class UpdateInvestigationResultRequest
     {
         public string inv_det_id { get; set; } = string.Empty;
@@ -313,7 +394,12 @@ namespace Booking.Models
         public string result_status { get; set; } = "COMPLETED";
     }
 
-    // Response Shapes
+
+    // ─────────────────────────────────────────────────────────────
+    // RESPONSE / VIEW SHAPES
+    // ─────────────────────────────────────────────────────────────
+
+
     public class CaseSheetViewModel
     {
         public string? sheet_id { get; set; }
@@ -323,6 +409,7 @@ namespace Booking.Models
         public int dcode { get; set; }
         public DateTime? visit_date { get; set; }
 
+
         // Clinical notes
         public string? chief_complaint { get; set; }
         public string? symptoms { get; set; }
@@ -330,24 +417,31 @@ namespace Booking.Models
         public string? advise { get; set; }
         public string? notes { get; set; }
 
+
         // Follow up
         public DateTime? followup_date { get; set; }
         public string? followup_notes { get; set; }
 
+
         // Status
         public bool is_consulted { get; set; }
         public string? sheet_status { get; set; }
+        public bool refer_to_ip { get; set; } = false;
+
 
         // Structured lists
         public List<OpCaseSheetSymptomModel> symptom_list { get; set; } = new();
         public List<OpCaseSheetDiagnosisModel> diagnosis_list { get; set; } = new();
 
+
         // Prescription
         public CaseSheetPrescriptionViewModel? prescription { get; set; }
+
 
         // Investigation
         public CaseSheetInvestigationViewModel? investigation { get; set; }
     }
+
 
     public class CaseSheetPrescriptionViewModel
     {
@@ -360,6 +454,7 @@ namespace Booking.Models
         public List<OpPrescriptionDetailModel> items { get; set; } = new();
     }
 
+
     public class CaseSheetInvestigationViewModel
     {
         public string? inv_id { get; set; }
@@ -369,6 +464,33 @@ namespace Booking.Models
         public bool is_urgent { get; set; }
         public string? status { get; set; }
         public List<OpInvestigationDetailModel> tests { get; set; } = new();
+    }
+    [Table("icd_master")]
+    public class IcdMasterModel
+    {
+        [Key]
+        public int icd_id { get; set; }
+
+        public string icd_code { get; set; } = string.Empty;
+
+        public string icd_description { get; set; } = string.Empty;
+
+        public string? icd_category { get; set; }
+
+        public string? icd_chapter { get; set; }
+
+        public bool is_active { get; set; } = true;
+    }
+    [Table("doctor_patient_visit_track")]
+    public class DoctorPatientVisitTrack
+    {
+        [ExplicitKey] public string? visittrackid { get; set; }
+        public int? dcode { get; set; }
+        public decimal? custid { get; set; }
+        public DateTime? episode_start_date { get; set; }
+        public int visit_count_used { get; set; }
+        public DateTime? last_visit_date { get; set; }
+        public string? tenant_code { get; set; }
     }
 
     public class IcdSearchResult
@@ -385,78 +507,5 @@ namespace Booking.Models
         public string? icd_category { get; set; }
         public string? icd_chapter { get; set; }
         public bool is_active { get; set; }
-    }
-
-    public class item_master
-    {
-        public int itemcode { get; set; }
-        public string itemname { get; set; }
-        public string shortname { get; set; }
-        public string description { get; set; }
-
-        public int categorycode { get; set; }
-        public int subcategorycode { get; set; }
-
-        public int hsnCode { get; set; }
-
-        public string itemtype { get; set; }
-
-        public decimal gstpercentage { get; set; }
-
-        public int uomcode { get; set; }
-
-        public decimal purchaserate { get; set; }
-
-        public decimal salesrate { get; set; }
-
-        public decimal mrp { get; set; }
-
-        public decimal currentstock { get; set; }
-
-        public decimal minstock { get; set; }
-
-        public decimal reorderlevel { get; set; }
-        public decimal packsize { get; set; }
-        public bool isexpiry { get; set; }          
-        public int expiryalertdays { get; set; }    
-
-        public bool expiryrequired { get; set; }
-
-        public bool serialrequired { get; set; }
-
-        public int brandcode { get; set; }
-
-        public int manufacturercode { get; set; }
-
-        public int taxcode { get; set; }
-
-        // New Fields
-
-        public int naturetype { get; set; }
-
-        // Asset = 1
-        // Liability = 2
-        // Expense = 3
-        // Income = 4
-
-        public string? manufacturername { get; set; }
-        public string? manufacturer { get; set; }
-        public int ledgergroupcode { get; set; }
-
-        public string? drugname { get; set; }
-
-        public string? packaging { get; set; }
-
-        public bool isactive { get; set; }
-
-        public bool deleted { get; set; }
-
-        public DateTime createddate { get; set; }
- 
-        public int usercode { get; set; }
- 
-        public string tenantcode { get; set; }
-        public string? schedule { get; set; }
-        public bool isnarcoticdrug { get; set; }
     }
 }

@@ -1,0 +1,1398 @@
+@page "/ip/nurse-notes"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using medico_backend.Model
+@using Booking.Services
+@using Booking.Models
+@using Booking.Helpers
+
+@inject NurseNotesService NurseNotesService
+@inject IpRegistrationService IpService
+@inject DoctorService DoctorService
+@inject AppointmentBookingService AppointmentBookingService
+@inject CaseSheetService CaseSheetService
+@inject ToastService ToastService
+@inject IJSRuntime JSRuntime
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+
+<PageTitle>Nurse Notes — IP Care</PageTitle>
+
+<div class="nn-page">
+
+    @* ══════════════════════════════════════════════════════ HEADER ══════════════════════════════════ *@
+    <div class="nn-header">
+        <div class="nn-header-left">
+            <div class="nn-header-icon">
+                <i class="bi bi-clipboard2-pulse-fill"></i>
+            </div>
+            <div>
+                <h1 class="nn-header-title">Nurse Notes</h1>
+                <p class="nn-header-sub">Inpatient Clinical Nursing Documentation</p>
+            </div>
+        </div>
+        <div class="nn-header-actions">
+            <button class="nn-btn nn-btn-outline" @onclick="LoadPatientsAsync" disabled="@isLoadingPatients">
+                <i class="bi bi-arrow-clockwise @(isLoadingPatients ? "nn-spin" : "")"></i>
+                Refresh
+            </button>
+            @if (selectedPatient != null)
+            {
+                <button class="nn-btn nn-btn-primary" @onclick="OpenAddNoteModal">
+                    <i class="bi bi-plus-circle-fill"></i>
+                    Add Note
+                </button>
+            }
+        </div>
+    </div>
+
+    @* ══════════════════════════════════════════════════════ BODY ══════════════════════════════════ *@
+    <div class="nn-body">
+
+        @* ── LEFT PANEL: Patient List ── *@
+        <div class="nn-patient-panel">
+            <div class="nn-panel-header">
+                <span class="nn-panel-title"><i class="bi bi-people-fill"></i> IP Patients</span>
+                <span class="nn-badge">@GetFilteredPatients().Count()</span>
+            </div>
+
+            <div class="nn-search-box">
+                <i class="bi bi-search nn-search-icon"></i>
+                <input type="text" class="nn-search-input" placeholder="Search patient..." 
+                       @bind="patientSearch" @bind:event="oninput" />
+            </div>
+
+            <div class="nn-patient-list">
+                @if (isLoadingPatients)
+                {
+                    <div class="nn-state-center">
+                        <span class="spinner-border text-primary" style="width:2rem;height:2rem;"></span>
+                        <p style="margin-top:.75rem;font-size:.82rem;color:#64748b;">Loading patients…</p>
+                    </div>
+                }
+                else if (!GetFilteredPatients().Any())
+                {
+                    <div class="nn-state-center">
+                        <i class="bi bi-person-exclamation" style="font-size:2rem;color:#cbd5e1;"></i>
+                        <p style="margin-top:.5rem;font-size:.82rem;color:#94a3b8;">No patients found</p>
+                    </div>
+                }
+                else
+                {
+                    @foreach (var p in GetFilteredPatients())
+                    {
+                        var isActive = selectedPatient?.ip_id == p.ip_id;
+                        <div class="nn-patient-card @(isActive ? "active" : "")" @onclick="() => SelectPatient(p)">
+                            <div class="nn-pat-avatar">@GetInitials(p.patient_name)</div>
+                            <div class="nn-pat-info">
+                                <div class="nn-pat-name">@p.patient_name</div>
+                                <div class="nn-pat-meta">
+                                    <span><i class="bi bi-person-badge"></i> @p.ip_no</span>
+                                    @if (!string.IsNullOrWhiteSpace(p.mobile))
+                                    {
+                                        <span><i class="bi bi-telephone"></i> @p.mobile</span>
+                                    }
+                                </div>
+                            </div>
+                            <div class="nn-pat-status @(p.ip_status == "ADMITTED" ? "admitted" : "discharged")">
+                                @(p.ip_status == "ADMITTED" ? "Admitted" : "Discharged")
+                            </div>
+                        </div>
+                    }
+                }
+            </div>
+        </div>
+
+        @* ── MAIN CONTENT AREA ── *@
+        <div class="nn-main">
+            @if (selectedPatient == null)
+            {
+                <div class="nn-empty-state">
+                    <div class="nn-empty-icon">
+                        <i class="bi bi-clipboard2-pulse"></i>
+                    </div>
+                    <h3>Select a Patient</h3>
+                    <p>Choose a patient from the list to view and manage nursing notes.</p>
+                </div>
+            }
+            else
+            {
+                @* Patient Info Bar *@
+                <div class="nn-patient-bar">
+                    <div class="nn-patient-bar-info">
+                        <div class="nn-patient-bar-avatar">@GetInitials(selectedPatient.patient_name)</div>
+                        <div>
+                            <div class="nn-patient-bar-name">@selectedPatient.patient_name</div>
+                            <div class="nn-patient-bar-meta">
+                                IP No: <strong>@selectedPatient.ip_no</strong> &nbsp;|&nbsp;
+                                Admitted: <strong>@selectedPatient.admitdate.ToString("dd MMM yyyy")</strong>
+                                @if (selectedPatient.dcode > 0)
+                                {
+                                    <span> &nbsp;|&nbsp; Dr: <strong>@GetDoctorName(selectedPatient.dcode)</strong></span>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                    <div style="display:flex;gap:.5rem;flex-wrap:wrap;align-items:center;">
+                        <select class="nn-filter-select" @bind="noteTypeFilter" @bind:after="FilterNotesAsync">
+                            <option value="">All Note Types</option>
+                            <option value="FALL_RISK">Fall Risk</option>
+                            <option value="DRESSING">Dressing / Wound</option>
+                            <option value="MEDICATION">Medication</option>
+                            <option value="INFUSION">Infusion</option>
+                            <option value="PROCEDURE">Procedure</option>
+                            <option value="INTAKE_OUTPUT">Intake / Output</option>
+                            <option value="OXYGEN">Oxygen</option>
+                            <option value="PAIN">Pain Assessment</option>
+                            <option value="PATIENT_MOVEMENT">Patient Movement</option>
+                            <option value="SKIN_ASSESSMENT">Skin Assessment</option>
+                            <option value="CATHETER">Catheter Care</option>
+                            <option value="RESTRAINT">Restraint</option>
+                            <option value="ISOLATION">Isolation</option>
+                            <option value="EDUCATION">Patient Education</option>
+                            <option value="HANDOVER">Shift Handover</option>
+                            <option value="GENERAL">General</option>
+                        </select>
+                    </div>
+                </div>
+
+                @* Tab navigation *@
+                <div class="nn-tabs">
+                    <button class="nn-tab @(activeMainTab == "notes" ? "active" : "")" @onclick='() => activeMainTab = "notes"'>
+                        <i class="bi bi-clipboard2-pulse"></i> Nursing Notes
+                    </button>
+                    <button class="nn-tab @(activeMainTab == "casesheet" ? "active" : "")" @onclick='() => { activeMainTab = "casesheet"; _ = LoadCaseSheetAsync(); }'>
+                        <i class="bi bi-file-earmark-medical"></i> OP Case Sheet
+                    </button>
+                    <button class="nn-tab @(activeMainTab == "vitals" ? "active" : "")" @onclick='() => { activeMainTab = "vitals"; _ = LoadVitalsAsync(); }'>
+                        <i class="bi bi-heart-pulse"></i> Vitals
+                    </button>
+                </div>
+
+                <div class="nn-tab-content">
+
+                    @* ═════════════ NOTES TAB ═════════════ *@
+                    @if (activeMainTab == "notes")
+                    {
+                        @if (isLoadingNotes)
+                        {
+                            <div class="nn-state-center">
+                                <span class="spinner-border text-primary" style="width:2.5rem;height:2.5rem;"></span>
+                                <p style="margin-top:1rem;color:#64748b;">Loading nursing notes…</p>
+                            </div>
+                        }
+                        else if (!nurseNotes.Any())
+                        {
+                            <div class="nn-empty-state" style="padding:3rem;">
+                                <i class="bi bi-clipboard2" style="font-size:3rem;color:#cbd5e1;"></i>
+                                <h4 style="margin-top:1rem;color:#94a3b8;">No nursing notes recorded</h4>
+                                <p style="color:#94a3b8;font-size:.85rem;">Click <strong>Add Note</strong> to create the first entry.</p>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="nn-notes-list">
+                                @foreach (var note in nurseNotes.OrderByDescending(n => n.note_datetime))
+                                {
+                                    <div class="nn-note-card @GetNoteStatusClass(note.note_status) @(note.isdeleted ? "deleted" : "")">
+                                        @* Note Header *@
+                                        <div class="nn-note-header">
+                                            <div class="nn-note-type-badge @GetNoteTypeBadgeClass(note.note_type)">
+                                                <i class="bi @GetNoteTypeIcon(note.note_type)"></i>
+                                                @FormatNoteType(note.note_type)
+                                            </div>
+                                            <div class="nn-note-meta">
+                                                @if (!string.IsNullOrWhiteSpace(note.shift))
+                                                {
+                                                    <span class="nn-shift-badge @note.shift.ToLower()">
+                                                        <i class="bi @GetShiftIcon(note.shift)"></i> @note.shift
+                                                    </span>
+                                                }
+                                                <span class="nn-note-time">
+                                                    <i class="bi bi-clock"></i>
+                                                    @(DateTimeHelper.ConvertUtcToIst((DateTime?)note.note_datetime)?.ToString("dd MMM yyyy hh:mm tt") ?? note.note_datetime.ToString("dd MMM yyyy hh:mm tt"))
+                                                </span>
+                                                <div class="nn-note-status-dot @note.note_status.ToLower()">@note.note_status</div>
+                                            </div>
+                                        </div>
+
+                                        @* Note Body — show only fields that have values *@
+                                        <div class="nn-note-body">
+                                            @RenderNoteFields(note)
+                                        </div>
+
+                                        @* Note Footer Actions *@
+                                        @if (!note.isdeleted)
+                                        {
+                                            <div class="nn-note-footer">
+                                                @if (note.note_status != "CANCELLED")
+                                                {
+                                                    <button class="nn-action-btn edit" @onclick="() => OpenEditNoteModal(note)" title="Edit">
+                                                        <i class="bi bi-pencil-fill"></i> Edit
+                                                    </button>
+                                                }
+                                                @if (note.verified_by == null && note.note_status != "CANCELLED")
+                                                {
+                                                    <button class="nn-action-btn verify" @onclick="() => VerifyNote(note)" title="Verify">
+                                                        <i class="bi bi-patch-check-fill"></i> Verify
+                                                    </button>
+                                                }
+                                                else if (note.verified_by != null)
+                                                {
+                                                    <span class="nn-verified-badge"><i class="bi bi-patch-check-fill"></i> Verified</span>
+                                                }
+                                                @if (note.note_status != "CANCELLED")
+                                                {
+                                                    <button class="nn-action-btn cancel" @onclick="() => ConfirmCancelNote(note)" title="Cancel">
+                                                        <i class="bi bi-x-circle-fill"></i> Cancel
+                                                    </button>
+                                                }
+                                                <button class="nn-action-btn delete" @onclick="() => ConfirmDeleteNote(note)" title="Delete">
+                                                    <i class="bi bi-trash3-fill"></i> Delete
+                                                </button>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+
+                    @* ═════════════ CASE SHEET TAB ═════════════ *@
+                    else if (activeMainTab == "casesheet")
+                    {
+                        @if (isLoadingCaseSheet)
+                        {
+                            <div class="nn-state-center">
+                                <span class="spinner-border text-primary" style="width:2.5rem;height:2.5rem;"></span>
+                                <p style="margin-top:1rem;color:#64748b;">Loading case sheet…</p>
+                            </div>
+                        }
+                        else if (caseSheet == null)
+                        {
+                            <div class="nn-empty-state" style="padding:3rem;">
+                                <i class="bi bi-file-earmark-x" style="font-size:3rem;color:#cbd5e1;"></i>
+                                <h4 style="margin-top:1rem;color:#94a3b8;">No Case Sheet Found</h4>
+                                <p style="color:#94a3b8;font-size:.85rem;">No OP case sheet has been recorded for this patient.</p>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="nn-casesheet-preview">
+                                <div class="nn-cs-header">
+                                    <div>
+                                        <div class="nn-cs-patient">Patient: <strong>@selectedPatient?.patient_name</strong></div>
+                                        <div class="nn-cs-date">
+                                            Date: @(caseSheet.visit_date.HasValue ? caseSheet.visit_date.Value.ToString("dd-MMM-yyyy") : "-")
+                                        </div>
+                                    </div>
+                                    <span class="nn-cs-status @caseSheet.sheet_status?.ToLower()">@caseSheet.sheet_status</span>
+                                </div>
+
+                                <div class="nn-cs-body">
+                                    @* Chief Complaint *@
+                                    @if (!string.IsNullOrWhiteSpace(caseSheet.chief_complaint))
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Chief Complaint</div>
+                                            <div class="nn-cs-section-value">@caseSheet.chief_complaint</div>
+                                        </div>
+                                    }
+
+                                    @* Symptoms *@
+                                    @if (!string.IsNullOrWhiteSpace(caseSheet.symptoms))
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Symptoms</div>
+                                            <div class="nn-cs-section-value">@caseSheet.symptoms</div>
+                                        </div>
+                                    }
+
+                                    @* Symptom List *@
+                                    @if (caseSheet.symptom_list != null && caseSheet.symptom_list.Any())
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Symptom List</div>
+                                            <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+                                                @foreach (var s in caseSheet.symptom_list)
+                                                {
+                                                    <span class="nn-cs-chip">@s.symptom_text @(!string.IsNullOrWhiteSpace(s.severity) ? $"({s.severity})" : "")</span>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+
+                                    @* Examination *@
+                                    @if (!string.IsNullOrWhiteSpace(caseSheet.examination))
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Clinical Examination</div>
+                                            <div class="nn-cs-section-value">@caseSheet.examination</div>
+                                        </div>
+                                    }
+
+                                    @* Diagnosis *@
+                                    @if (caseSheet.diagnosis_list != null && caseSheet.diagnosis_list.Any())
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Diagnosis (ICD-10)</div>
+                                            <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+                                                @foreach (var d in caseSheet.diagnosis_list)
+                                                {
+                                                    <span class="nn-cs-chip diagnosis">@d.icd_code — @d.icd_description</span>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+
+                                    @* Prescription *@
+                                    @if (caseSheet.prescription?.items != null && caseSheet.prescription.items.Any())
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Prescription</div>
+                                            <table class="nn-cs-table">
+                                                <thead>
+                                                    <tr><th>#</th><th>Drug</th><th>M/A/E/N</th><th>Route</th><th>Days</th></tr>
+                                                </thead>
+                                                <tbody>
+                                                    @foreach (var rx in caseSheet.prescription.items)
+                                                    {
+                                                        <tr>
+                                                            <td>@rx.sno</td>
+                                                            <td>@rx.drug_name</td>
+                                                            <td>@rx.morning-@rx.afternoon-@rx.evening-@rx.night</td>
+                                                            <td>@rx.route</td>
+                                                            <td>@(rx.days.HasValue ? $"{rx.days} d" : "-")</td>
+                                                        </tr>
+                                                    }
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    }
+
+                                    @* Investigations *@
+                                    @if (caseSheet.investigation?.tests != null && caseSheet.investigation.tests.Any())
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Investigations</div>
+                                            <div style="display:flex;gap:.5rem;flex-wrap:wrap;">
+                                                @foreach (var t in caseSheet.investigation.tests)
+                                                {
+                                                    <span class="nn-cs-chip inv">@t.test_name</span>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+
+                                    @* Advise *@
+                                    @if (!string.IsNullOrWhiteSpace(caseSheet.advise))
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Advise / Recommendations</div>
+                                            <div class="nn-cs-section-value">@caseSheet.advise</div>
+                                        </div>
+                                    }
+
+                                    @* Follow Up *@
+                                    @if (caseSheet.followup_date.HasValue || !string.IsNullOrWhiteSpace(caseSheet.followup_notes))
+                                    {
+                                        <div class="nn-cs-section">
+                                            <div class="nn-cs-section-label">Follow Up</div>
+                                            <div style="display:flex;gap:1rem;flex-wrap:wrap;">
+                                                @if (caseSheet.followup_date.HasValue)
+                                                {
+                                                    <span class="nn-cs-chip fu"><i class="bi bi-calendar-event"></i> @caseSheet.followup_date.Value.ToString("dd MMM yyyy")</span>
+                                                }
+                                                @if (!string.IsNullOrWhiteSpace(caseSheet.followup_notes))
+                                                {
+                                                    <span class="nn-cs-section-value">@caseSheet.followup_notes</span>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    }
+
+                    @* ═════════════ VITALS TAB ═════════════ *@
+                    else if (activeMainTab == "vitals")
+                    {
+                        @if (isLoadingVitals)
+                        {
+                            <div class="nn-state-center">
+                                <span class="spinner-border text-primary" style="width:2.5rem;height:2.5rem;"></span>
+                                <p style="margin-top:1rem;color:#64748b;">Loading vitals…</p>
+                            </div>
+                        }
+                        else if (vitalsList == null || !vitalsList.Any())
+                        {
+                            <div class="nn-empty-state" style="padding:3rem;">
+                                <i class="bi bi-heart-pulse" style="font-size:3rem;color:#cbd5e1;"></i>
+                                <h4 style="margin-top:1rem;color:#94a3b8;">No Vitals Recorded</h4>
+                                <p style="color:#94a3b8;font-size:.85rem;">No vitals have been recorded for this patient.</p>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="nn-vitals-grid">
+                                @foreach (var v in vitalsList.OrderByDescending(v => v.created_at))
+                                {
+                                    <div class="nn-vitals-card">
+                                        <div class="nn-vitals-card-time">
+                                            <i class="bi bi-clock-history"></i>
+                                            @(DateTimeHelper.ConvertUtcToIst((DateTime?)v.created_at)?.ToString("dd MMM yyyy hh:mm tt") ?? v.created_at.ToString("g"))
+                                        </div>
+                                        <div class="nn-vitals-metrics">
+                                            @if (v.bp_systolic.HasValue && v.bp_diastolic.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#fee2e2;color:#dc2626;"><i class="bi bi-heart-fill"></i></span>
+                                                    <div><div class="nn-vit-label">BP</div><div class="nn-vit-value">@v.bp_systolic/@v.bp_diastolic <small>mmHg</small></div></div>
+                                                </div>
+                                            }
+                                            @if (v.pulse_rate.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#fce7f3;color:#db2777;"><i class="bi bi-activity"></i></span>
+                                                    <div><div class="nn-vit-label">Pulse</div><div class="nn-vit-value">@v.pulse_rate <small>bpm</small></div></div>
+                                                </div>
+                                            }
+                                            @if (v.temperature_f.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#fef3c7;color:#d97706;"><i class="bi bi-thermometer-half"></i></span>
+                                                    <div><div class="nn-vit-label">Temp</div><div class="nn-vit-value">@v.temperature_f <small>°F</small></div></div>
+                                                </div>
+                                            }
+                                            @if (v.spo2.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#dbeafe;color:#2563eb;"><i class="bi bi-droplet-fill"></i></span>
+                                                    <div><div class="nn-vit-label">SpO2</div><div class="nn-vit-value">@v.spo2 <small>%</small></div></div>
+                                                </div>
+                                            }
+                                            @if (v.respiratory_rate.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#d1fae5;color:#059669;"><i class="bi bi-lungs-fill"></i></span>
+                                                    <div><div class="nn-vit-label">RR</div><div class="nn-vit-value">@v.respiratory_rate <small>/min</small></div></div>
+                                                </div>
+                                            }
+                                            @if (v.weight_kg.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#ede9fe;color:#7c3aed;"><i class="bi bi-person-fill"></i></span>
+                                                    <div><div class="nn-vit-label">Weight</div><div class="nn-vit-value">@v.weight_kg <small>kg</small></div></div>
+                                                </div>
+                                            }
+                                            @if (v.sugar_level.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#fef9c3;color:#ca8a04;"><i class="bi bi-droplet-half"></i></span>
+                                                    <div><div class="nn-vit-label">Sugar</div><div class="nn-vit-value">@v.sugar_level <small>mg/dL</small></div></div>
+                                                </div>
+                                            }
+                                            @if (v.pain_scale.HasValue)
+                                            {
+                                                <div class="nn-vitals-metric">
+                                                    <span class="nn-vit-icon" style="background:#fee2e2;color:#b91c1c;"><i class="bi bi-emoji-frown-fill"></i></span>
+                                                    <div><div class="nn-vit-label">Pain</div><div class="nn-vit-value">@v.pain_scale <small>/10</small></div></div>
+                                                </div>
+                                            }
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(v.allergy_notes))
+                                        {
+                                            <div class="nn-vitals-allergy">
+                                                <i class="bi bi-exclamation-triangle-fill"></i> Allergy: @v.allergy_notes
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    }
+
+                </div>
+            }
+        </div>
+
+    </div>
+
+</div>
+
+@* ══════════════════════════════════════════════════════════ ADD/EDIT NOTE MODAL ══════════════════════════════════ *@
+@if (showNoteModal)
+{
+    <div class="nn-modal-backdrop" @onclick="CloseNoteModal">
+        <div class="nn-modal" @onclick:stopPropagation>
+            <div class="nn-modal-header">
+                <div class="nn-modal-title">
+                    <i class="bi @(editingNote == null ? "bi-plus-circle-fill" : "bi-pencil-fill")"></i>
+                    @(editingNote == null ? "Add Nurse Note" : "Edit Nurse Note")
+                </div>
+                <button class="nn-modal-close" @onclick="CloseNoteModal">×</button>
+            </div>
+
+            <div class="nn-modal-body">
+                @* Category Selector Card *@
+                <div class="nn-modal-card">
+                    <label class="nn-label-bold"><i class="bi bi-grid-3x3-gap-fill text-primary"></i> Select Note Type <span class="nn-required">*</span></label>
+                    <div class="nn-type-grid">
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "FALL_RISK" ? "selected fall" : "")" @onclick='() => noteForm.note_type = "FALL_RISK"'>
+                            <i class="bi bi-exclamation-triangle-fill"></i> Fall Risk
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "DRESSING" ? "selected dressing" : "")" @onclick='() => noteForm.note_type = "DRESSING"'>
+                            <i class="bi bi-bandaid-fill"></i> Dressing
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "MEDICATION" ? "selected medication" : "")" @onclick='() => noteForm.note_type = "MEDICATION"'>
+                            <i class="bi bi-capsule-pill"></i> Medication
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "INFUSION" ? "selected infusion" : "")" @onclick='() => noteForm.note_type = "INFUSION"'>
+                            <i class="bi bi-droplet-fill"></i> Infusion
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "INTAKE_OUTPUT" ? "selected io" : "")" @onclick='() => noteForm.note_type = "INTAKE_OUTPUT"'>
+                            <i class="bi bi-arrow-left-right"></i> Intake / Output
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "OXYGEN" ? "selected oxygen" : "")" @onclick='() => noteForm.note_type = "OXYGEN"'>
+                            <i class="bi bi-lungs-fill"></i> Oxygen
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "PAIN" ? "selected pain" : "")" @onclick='() => noteForm.note_type = "PAIN"'>
+                            <i class="bi bi-emoji-frown"></i> Pain
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "HANDOVER" ? "selected handover" : "")" @onclick='() => noteForm.note_type = "HANDOVER"'>
+                            <i class="bi bi-arrow-repeat"></i> Handover
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "PROCEDURE" ? "selected general" : "")" @onclick='() => noteForm.note_type = "PROCEDURE"'>
+                            <i class="bi bi-tools"></i> Procedure
+                        </button>
+                        <button type="button" class="nn-type-chip @(noteForm.note_type == "GENERAL" ? "selected general" : "")" @onclick='() => noteForm.note_type = "GENERAL"'>
+                            <i class="bi bi-clipboard2-pulse"></i> General
+                        </button>
+                    </div>
+
+                    <div style="margin-top:0.75rem;">
+                        <select class="nn-select-sm" @bind="noteForm.note_type">
+                            <option value="">-- Or pick all available note types --</option>
+                            <option value="FALL_RISK">Fall Risk Assessment</option>
+                            <option value="DRESSING">Dressing / Wound</option>
+                            <option value="MEDICATION">Medication Administration</option>
+                            <option value="INFUSION">Infusion</option>
+                            <option value="PROCEDURE">Procedure</option>
+                            <option value="INTAKE_OUTPUT">Intake / Output</option>
+                            <option value="OXYGEN">Oxygen Therapy</option>
+                            <option value="PAIN">Pain Assessment</option>
+                            <option value="PATIENT_MOVEMENT">Patient Movement</option>
+                            <option value="SKIN_ASSESSMENT">Skin Assessment</option>
+                            <option value="CATHETER">Catheter Care</option>
+                            <option value="RESTRAINT">Restraint</option>
+                            <option value="ISOLATION">Isolation</option>
+                            <option value="EDUCATION">Patient Education</option>
+                            <option value="HANDOVER">Shift Handover</option>
+                            <option value="GENERAL">General</option>
+                        </select>
+                    </div>
+                </div>
+
+                @* Shift Selector & Metadata Card *@
+                <div class="nn-modal-card">
+                    <div class="nn-form-row-2" style="margin-bottom:0.5rem;">
+                        <div class="nn-form-group" style="margin-bottom:0;">
+                            <label class="nn-label"><i class="bi bi-clock-history"></i> Select Shift</label>
+                            <div class="nn-shift-pills">
+                                <button type="button" class="nn-shift-pill @(noteForm.shift == "MORNING" ? "active morning" : "")" @onclick='() => noteForm.shift = "MORNING"'>
+                                    <i class="bi bi-sunrise"></i> Morning
+                                </button>
+                                <button type="button" class="nn-shift-pill @(noteForm.shift == "AFTERNOON" ? "active afternoon" : "")" @onclick='() => noteForm.shift = "AFTERNOON"'>
+                                    <i class="bi bi-sun"></i> Afternoon
+                                </button>
+                                <button type="button" class="nn-shift-pill @(noteForm.shift == "EVENING" ? "active evening" : "")" @onclick='() => noteForm.shift = "EVENING"'>
+                                    <i class="bi bi-sunset"></i> Evening
+                                </button>
+                                <button type="button" class="nn-shift-pill @(noteForm.shift == "NIGHT" ? "active night" : "")" @onclick='() => noteForm.shift = "NIGHT"'>
+                                    <i class="bi bi-moon-stars-fill"></i> Night
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="nn-form-row-2" style="margin-bottom:0; margin-top: 0.75rem;">
+                        <div class="nn-form-group" style="margin-bottom:0;">
+                            <label class="nn-label"><i class="bi bi-calendar-event"></i> Date & Time</label>
+                            <input type="datetime-local" class="nn-input" @bind="noteDateTimeLocal" />
+                        </div>
+                        <div class="nn-form-group" style="margin-bottom:0;">
+                            <label class="nn-label"><i class="bi bi-person-badge"></i> Given By (Staff ID)</label>
+                            <input type="number" class="nn-input" placeholder="Staff ID" @bind="noteForm.given_by" />
+                        </div>
+                    </div>
+                </div>
+
+                @* FALL RISK *@
+                @if (noteForm.note_type == "FALL_RISK")
+                {
+                    <div class="nn-modal-card">
+                        <div class="nn-form-section-title"><i class="bi bi-exclamation-triangle-fill"></i> Fall Risk Details</div>
+                        <div class="nn-form-row-3">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Risk Score</label>
+                                <input type="number" class="nn-input" placeholder="e.g. 45" @bind="noteForm.fall_risk_score" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Risk Level</label>
+                                <select class="nn-select" @bind="noteForm.fall_risk_level">
+                                    <option value="">-- Level --</option>
+                                    <option value="LOW">Low</option>
+                                    <option value="MODERATE">Moderate</option>
+                                    <option value="HIGH">High</option>
+                                </select>
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Risk Scale</label>
+                                <select class="nn-select" @bind="noteForm.fall_risk_scale">
+                                    <option value="">-- Scale --</option>
+                                    <option value="MORSE">Morse</option>
+                                    <option value="HENDRICH_II">Hendrich II</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="nn-form-row-2">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Fall Precautions</label>
+                                <textarea class="nn-textarea" rows="2" placeholder="e.g. Bed rails up, non-slip footwear…" @bind="noteForm.fall_precautions"></textarea>
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Fall Occurred?</label>
+                                <div class="nn-toggle-row">
+                                    <label class="nn-toggle">
+                                        <input type="checkbox" @bind="noteForm.fall_occurred" />
+                                        <span class="nn-toggle-slider"></span>
+                                    </label>
+                                    <span class="nn-toggle-text">@(noteForm.fall_occurred == true ? "Yes, incident occurred" : "No fall")</span>
+                                </div>
+                                @if (noteForm.fall_occurred == true)
+                                {
+                                    <textarea class="nn-textarea" rows="2" placeholder="Fall incident details…" @bind="noteForm.fall_incident_details" style="margin-top:.5rem;"></textarea>
+                                }
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @* DRESSING *@
+                @if (noteForm.note_type == "DRESSING")
+                {
+                    <div class="nn-modal-card">
+                        <div class="nn-form-section-title"><i class="bi bi-bandaid-fill"></i> Dressing / Wound Details</div>
+                        <div class="nn-form-row-2">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Dressing Site</label>
+                                <input type="text" class="nn-input" placeholder="e.g. Left lower abdomen" @bind="noteForm.dressing_site" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Wound Type</label>
+                                <select class="nn-select" @bind="noteForm.wound_type">
+                                    <option value="">-- Type --</option>
+                                    <option value="SURGICAL">Surgical</option>
+                                    <option value="TRAUMATIC">Traumatic</option>
+                                    <option value="PRESSURE">Pressure</option>
+                                    <option value="BURN">Burn</option>
+                                    <option value="DIABETIC">Diabetic</option>
+                                    <option value="VENOUS">Venous</option>
+                                    <option value="OTHER">Other</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="nn-form-row-3">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Length (cm)</label>
+                                <input type="number" step="0.1" class="nn-input" @bind="noteForm.wound_length" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Width (cm)</label>
+                                <input type="number" step="0.1" class="nn-input" @bind="noteForm.wound_width" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Depth (cm)</label>
+                                <input type="number" step="0.1" class="nn-input" @bind="noteForm.wound_depth" />
+                            </div>
+                        </div>
+                        <div class="nn-form-row-3">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Wound Condition</label>
+                                <select class="nn-select" @bind="noteForm.wound_condition">
+                                    <option value="">-- Condition --</option>
+                                    <option value="CLEAN">Clean</option>
+                                    <option value="INFECTED">Infected</option>
+                                    <option value="NECROTIC">Necrotic</option>
+                                    <option value="GRANULATING">Granulating</option>
+                                    <option value="SLOUGHY">Sloughy</option>
+                                </select>
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Discharge</label>
+                                <select class="nn-select" @bind="noteForm.wound_discharge">
+                                    <option value="">-- Discharge --</option>
+                                    <option value="NIL">Nil</option>
+                                    <option value="MINIMAL_SEROUS">Minimal Serous</option>
+                                    <option value="SEROUS">Serous</option>
+                                    <option value="SEROSANGUINOUS">Serosanguinous</option>
+                                    <option value="SANGUINOUS">Sanguinous</option>
+                                    <option value="PURULENT">Purulent</option>
+                                </select>
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Dressing Status</label>
+                                <select class="nn-select" @bind="noteForm.dressing_status">
+                                    <option value="">-- Status --</option>
+                                    <option value="COMPLETED">Completed</option>
+                                    <option value="PENDING">Pending</option>
+                                    <option value="NOT_REQUIRED">Not Required</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="nn-form-row-2">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Bleeding?</label>
+                                <div class="nn-toggle-row">
+                                    <label class="nn-toggle">
+                                        <input type="checkbox" @bind="noteForm.bleeding" />
+                                        <span class="nn-toggle-slider"></span>
+                                    </label>
+                                    <span class="nn-toggle-text">@(noteForm.bleeding == true ? "Yes" : "No")</span>
+                                </div>
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Infection Signs?</label>
+                                <div class="nn-toggle-row">
+                                    <label class="nn-toggle">
+                                        <input type="checkbox" @bind="noteForm.infection_sign" />
+                                        <span class="nn-toggle-slider"></span>
+                                    </label>
+                                    <span class="nn-toggle-text">@(noteForm.infection_sign == true ? "Yes" : "No")</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @* MEDICATION *@
+                @if (noteForm.note_type == "MEDICATION")
+                {
+                    <div class="nn-modal-card">
+                        <div class="nn-form-section-title"><i class="bi bi-capsule-pill"></i> Medication Details</div>
+                        <div class="nn-form-row-2">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Medication Status</label>
+                                <select class="nn-select" @bind="noteForm.medication_status">
+                                    <option value="">-- Status --</option>
+                                    <option value="GIVEN">Given</option>
+                                    <option value="SKIPPED">Skipped</option>
+                                    <option value="REFUSED">Refused</option>
+                                    <option value="HELD">Held</option>
+                                </select>
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Prescription Detail ID</label>
+                                <input type="text" class="nn-input" placeholder="GUID" @bind="prescriptionDetailIdStr" />
+                            </div>
+                        </div>
+                        <div class="nn-form-row-2">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Scheduled Time</label>
+                                <input type="datetime-local" class="nn-input" @bind="scheduledTimeLocal" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Given Time</label>
+                                <input type="datetime-local" class="nn-input" @bind="givenTimeLocal" />
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @* INTAKE/OUTPUT *@
+                @if (noteForm.note_type == "INTAKE_OUTPUT")
+                {
+                    <div class="nn-modal-card">
+                        <div class="nn-form-section-title"><i class="bi bi-droplet-half"></i> Intake / Output</div>
+                        <div class="nn-form-row-3">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Oral Intake (mL)</label>
+                                <input type="number" class="nn-input" @bind="noteForm.oral_intake_ml" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">IV Fluid (mL)</label>
+                                <input type="number" class="nn-input" @bind="noteForm.iv_fluid_ml" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Tube Feed (mL)</label>
+                                <input type="number" class="nn-input" @bind="noteForm.tube_feed_ml" />
+                            </div>
+                        </div>
+                        <div class="nn-form-row-3">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Urine Output (mL)</label>
+                                <input type="number" class="nn-input" @bind="noteForm.urine_ml" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Vomit (mL)</label>
+                                <input type="number" class="nn-input" @bind="noteForm.vomit_ml" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Drain (mL)</label>
+                                <input type="number" class="nn-input" @bind="noteForm.drain_ml" />
+                            </div>
+                        </div>
+                        <div class="nn-form-row-2">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Stool Count</label>
+                                <input type="number" class="nn-input" @bind="noteForm.stool_count" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Total Output (mL)</label>
+                                <input type="number" class="nn-input" @bind="noteForm.total_output_ml" />
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @* OXYGEN *@
+                @if (noteForm.note_type == "OXYGEN")
+                {
+                    <div class="nn-modal-card">
+                        <div class="nn-form-section-title"><i class="bi bi-lungs-fill"></i> Oxygen Therapy</div>
+                        <div class="nn-form-row-3">
+                            <div class="nn-form-group">
+                                <label class="nn-label">Device</label>
+                                <input type="text" class="nn-input" placeholder="e.g. Nasal Cannula" @bind="noteForm.oxygen_device" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Flow Rate</label>
+                                <input type="number" step="0.5" class="nn-input" @bind="noteForm.oxygen_flow_rate" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Flow Unit</label>
+                                <input type="text" class="nn-input" placeholder="L/min" @bind="noteForm.oxygen_flow_unit" />
+                            </div>
+                        </div>
+                        <div class="nn-form-row-2">
+                            <div class="nn-form-group">
+                                <label class="nn-label">FiO2 (%)</label>
+                                <input type="number" step="1" class="nn-input" @bind="noteForm.fio2" />
+                            </div>
+                            <div class="nn-form-group">
+                                <label class="nn-label">Status</label>
+                                <select class="nn-select" @bind="noteForm.oxygen_status">
+                                    <option value="">-- Status --</option>
+                                    <option value="STARTED">Started</option>
+                                    <option value="ONGOING">Ongoing</option>
+                                    <option value="STOPPED">Stopped</option>
+                                    <option value="WEANED">Weaned</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                @* GENERAL NOTES *@
+                <div class="nn-modal-card" style="margin-bottom:0;">
+                    <div class="nn-form-group" style="margin-bottom:0;">
+                        <label class="nn-label"><i class="bi bi-journal-text"></i> Additional Notes</label>
+                        <textarea class="nn-textarea" rows="3" placeholder="Enter any additional observations, clinical findings, or nurse remarks…" @bind="noteForm.notes"></textarea>
+                    </div>
+                </div>
+            </div>
+
+            <div class="nn-modal-footer">
+                <button class="nn-btn nn-btn-ghost" @onclick="CloseNoteModal" disabled="@isSavingNote">Cancel</button>
+                <button class="nn-btn nn-btn-primary" @onclick="SaveNoteAsync" disabled="@isSavingNote">
+                    @if (isSavingNote)
+                    {
+                        <span class="spinner-border spinner-border-sm"></span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-floppy-fill"></i>
+                    }
+                    @(editingNote == null ? "Add Note" : "Save Changes")
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ══════════════════════════════════════════════════════════ CANCEL MODAL ══════════════════════════════════════ *@
+@if (showCancelModal)
+{
+    <div class="nn-modal-backdrop" @onclick="() => showCancelModal = false">
+        <div class="nn-modal" style="max-width:440px;" @onclick:stopPropagation>
+            <div class="nn-modal-header">
+                <div class="nn-modal-title"><i class="bi bi-x-circle-fill" style="color:#dc2626;"></i> Cancel Note</div>
+                <button class="nn-modal-close" @onclick="() => showCancelModal = false">×</button>
+            </div>
+            <div class="nn-modal-body">
+                <div class="nn-form-group">
+                    <label class="nn-label">Cancel Reason <span class="nn-required">*</span></label>
+                    <textarea class="nn-textarea" rows="3" placeholder="Enter reason for cancellation…" @bind="cancelReason"></textarea>
+                </div>
+                <div class="nn-form-group">
+                    <label class="nn-label">Cancelled By (Staff ID)</label>
+                    <input type="number" class="nn-input" @bind="cancelledBy" />
+                </div>
+            </div>
+            <div class="nn-modal-footer">
+                <button class="nn-btn nn-btn-ghost" @onclick="() => showCancelModal = false">Back</button>
+                <button class="nn-btn" style="background:#dc2626;color:#fff;" @onclick="ExecuteCancelNote" disabled="@isSavingNote">
+                    @if (isSavingNote) { <span class="spinner-border spinner-border-sm"></span> } else { <i class="bi bi-x-circle-fill"></i> }
+                    Confirm Cancel
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // ─── State ──────────────────────────────────────────────
+    private bool isLoadingPatients = false;
+    private bool isLoadingNotes = false;
+    private bool isLoadingCaseSheet = false;
+    private bool isLoadingVitals = false;
+    private bool isSavingNote = false;
+
+    private string patientSearch = "";
+    private string noteTypeFilter = "";
+    private string activeMainTab = "notes";
+
+    private List<IPRegistrationModel.IpRegistrationModel> patients = new();
+    private List<DoctorMasterModel> doctorsList = new();
+    private IPRegistrationModel.IpRegistrationModel? selectedPatient;
+
+    private List<NurseNotesModel> nurseNotes = new();
+    private CaseSheetViewModel? caseSheet;
+    private List<OPRegistrationModel.PatientVitalsModel>? vitalsList;
+
+    // ─── Add/Edit Modal ──────────────────────────────────────
+    private bool showNoteModal = false;
+    private NurseNotesModel? editingNote;
+    private AddNurseNoteRequest noteForm = new();
+    private DateTime noteDateTimeLocal = DateTime.Now;
+    private DateTime? scheduledTimeLocal;
+    private DateTime? givenTimeLocal;
+    private string prescriptionDetailIdStr = "";
+
+    // ─── Cancel Modal ────────────────────────────────────────
+    private bool showCancelModal = false;
+    private NurseNotesModel? noteToCancel;
+    private string cancelReason = "";
+    private int cancelledBy = 1;
+
+    // ─── Lifecycle ───────────────────────────────────────────
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPatientsAsync();
+    }
+
+    private async Task LoadPatientsAsync()
+    {
+        isLoadingPatients = true;
+        try
+        {
+            doctorsList = await DoctorService.GetDoctorsAsync() ?? new();
+            patients = await IpService.GetIpRegistrationsAsync("") ?? new();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading patients: {ex.Message}");
+        }
+        finally
+        {
+            isLoadingPatients = false;
+        }
+    }
+
+    private async Task SelectPatient(IPRegistrationModel.IpRegistrationModel p)
+    {
+        selectedPatient = p;
+        activeMainTab = "notes";
+        await LoadNotesAsync();
+    }
+
+    private async Task LoadNotesAsync()
+    {
+        if (selectedPatient == null) return;
+        isLoadingNotes = true;
+        try
+        {
+            nurseNotes = await NurseNotesService.GetNotesByIpAsync(selectedPatient.ip_id, string.IsNullOrWhiteSpace(noteTypeFilter) ? null : noteTypeFilter);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading notes: {ex.Message}");
+        }
+        finally { isLoadingNotes = false; }
+    }
+
+    private async Task FilterNotesAsync()
+    {
+        await LoadNotesAsync();
+    }
+
+    private async Task LoadCaseSheetAsync()
+    {
+        if (selectedPatient == null) return;
+        isLoadingCaseSheet = true;
+        try
+        {
+            caseSheet = await CaseSheetService.GetCaseSheetByVisitAsync(null, selectedPatient.ip_id);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading case sheet: {ex.Message}");
+        }
+        finally { isLoadingCaseSheet = false; }
+    }
+
+    private async Task LoadVitalsAsync()
+    {
+        if (selectedPatient == null) return;
+        isLoadingVitals = true;
+        try
+        {
+            vitalsList = await AppointmentBookingService.GetOpVitalsAsync(null, selectedPatient.ip_id);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading vitals: {ex.Message}");
+        }
+        finally { isLoadingVitals = false; }
+    }
+
+    // ─── Add/Edit Modal ──────────────────────────────────────
+    private void OpenAddNoteModal()
+    {
+        editingNote = null;
+        noteForm = new AddNurseNoteRequest();
+        noteDateTimeLocal = DateTime.Now;
+        scheduledTimeLocal = null;
+        givenTimeLocal = null;
+        prescriptionDetailIdStr = "";
+        cancelReason = "";
+        showNoteModal = true;
+    }
+
+    private void OpenEditNoteModal(NurseNotesModel note)
+    {
+        editingNote = note;
+        noteForm = new AddNurseNoteRequest
+        {
+            ip_id = note.ip_id,
+            note_type = note.note_type,
+            shift = note.shift,
+            given_by = note.given_by,
+            notes = note.notes,
+            fall_risk_score = note.fall_risk_score,
+            fall_risk_level = note.fall_risk_level,
+            fall_risk_scale = note.fall_risk_scale,
+            fall_precautions = note.fall_precautions,
+            fall_occurred = note.fall_occurred,
+            fall_incident_details = note.fall_incident_details,
+            dressing_site = note.dressing_site,
+            wound_type = note.wound_type,
+            wound_length = note.wound_length,
+            wound_width = note.wound_width,
+            wound_depth = note.wound_depth,
+            wound_condition = note.wound_condition,
+            wound_discharge = note.wound_discharge,
+            wound_discharge_amount = note.wound_discharge_amount,
+            bleeding = note.bleeding,
+            infection_sign = note.infection_sign,
+            dressing_status = note.dressing_status,
+            medication_status = note.medication_status,
+            oral_intake_ml = note.oral_intake_ml,
+            iv_fluid_ml = note.iv_fluid_ml,
+            urine_ml = note.urine_ml,
+            vomit_ml = note.vomit_ml,
+            drain_ml = note.drain_ml,
+            stool_count = note.stool_count,
+            total_output_ml = note.total_output_ml,
+            oxygen_device = note.oxygen_device,
+            oxygen_flow_rate = note.oxygen_flow_rate,
+            oxygen_flow_unit = note.oxygen_flow_unit,
+            fio2 = note.fio2,
+            oxygen_status = note.oxygen_status,
+        };
+        noteDateTimeLocal = note.note_datetime.ToLocalTime();
+        scheduledTimeLocal = note.scheduled_time?.ToLocalTime();
+        givenTimeLocal = note.given_time?.ToLocalTime();
+        prescriptionDetailIdStr = note.prescription_detail_id?.ToString() ?? "";
+        showNoteModal = true;
+    }
+
+    private void CloseNoteModal() => showNoteModal = false;
+
+    private async Task SaveNoteAsync()
+    {
+        if (string.IsNullOrWhiteSpace(noteForm.note_type))
+        {
+            ToastService.ShowError("Please select a note type.");
+            return;
+        }
+
+        isSavingNote = true;
+        try
+        {
+            noteForm.ip_id = selectedPatient!.ip_id;
+            noteForm.note_datetime = DateTime.SpecifyKind(noteDateTimeLocal.ToUniversalTime(), DateTimeKind.Utc);
+            if (scheduledTimeLocal.HasValue)
+                noteForm.scheduled_time = DateTime.SpecifyKind(scheduledTimeLocal.Value.ToUniversalTime(), DateTimeKind.Utc);
+            if (givenTimeLocal.HasValue)
+                noteForm.given_time = DateTime.SpecifyKind(givenTimeLocal.Value.ToUniversalTime(), DateTimeKind.Utc);
+            if (Guid.TryParse(prescriptionDetailIdStr, out var pId))
+                noteForm.prescription_detail_id = pId;
+
+            if (editingNote == null)
+            {
+                var (ok, msg) = await NurseNotesService.AddNurseNoteAsync(noteForm);
+                if (ok) { ToastService.ShowSuccess(msg); showNoteModal = false; await LoadNotesAsync(); }
+                else ToastService.ShowError(msg);
+            }
+            else
+            {
+                var updateReq = new UpdateNurseNoteRequest
+                {
+                    note_id = editingNote.note_id,
+                    ip_id = noteForm.ip_id,
+                    note_type = noteForm.note_type,
+                    shift = noteForm.shift,
+                    given_by = noteForm.given_by,
+                    notes = noteForm.notes,
+                    dressing_site = noteForm.dressing_site,
+                    wound_condition = noteForm.wound_condition,
+                    wound_discharge = noteForm.wound_discharge,
+                    dressing_status = noteForm.dressing_status,
+                    fall_risk_score = noteForm.fall_risk_score,
+                    fall_risk_level = noteForm.fall_risk_level,
+                    fall_risk_scale = noteForm.fall_risk_scale,
+                    fall_precautions = noteForm.fall_precautions,
+                    fall_occurred = noteForm.fall_occurred,
+                    medication_status = noteForm.medication_status,
+                };
+                var (ok, msg) = await NurseNotesService.UpdateNurseNoteAsync(updateReq);
+                if (ok) { ToastService.ShowSuccess(msg); showNoteModal = false; await LoadNotesAsync(); }
+                else ToastService.ShowError(msg);
+            }
+        }
+        finally { isSavingNote = false; }
+    }
+
+    // ─── Verify ──────────────────────────────────────────────
+    private async Task VerifyNote(NurseNotesModel note)
+    {
+        var req = new VerifyNurseNoteRequest { note_id = note.note_id, verified_by = 1 };
+        var (ok, msg) = await NurseNotesService.VerifyNurseNoteAsync(req);
+        if (ok) { ToastService.ShowSuccess(msg); await LoadNotesAsync(); }
+        else ToastService.ShowError(msg);
+    }
+
+    // ─── Cancel ──────────────────────────────────────────────
+    private void ConfirmCancelNote(NurseNotesModel note)
+    {
+        noteToCancel = note;
+        cancelReason = "";
+        cancelledBy = 1;
+        showCancelModal = true;
+    }
+
+    private async Task ExecuteCancelNote()
+    {
+        if (string.IsNullOrWhiteSpace(cancelReason))
+        {
+            ToastService.ShowError("Please provide a cancel reason.");
+            return;
+        }
+        isSavingNote = true;
+        var req = new CancelNurseNoteRequest { note_id = noteToCancel!.note_id, cancelled_by = cancelledBy, cancel_reason = cancelReason };
+        var (ok, msg) = await NurseNotesService.CancelNurseNoteAsync(req);
+        isSavingNote = false;
+        if (ok) { ToastService.ShowSuccess(msg); showCancelModal = false; await LoadNotesAsync(); }
+        else ToastService.ShowError(msg);
+    }
+
+    // ─── Delete ──────────────────────────────────────────────
+    private async Task ConfirmDeleteNote(NurseNotesModel note)
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm", $"Delete this nursing note? This action cannot be undone.");
+        if (!confirmed) return;
+        var (ok, msg) = await NurseNotesService.DeleteNurseNoteAsync(note.note_id);
+        if (ok) { ToastService.ShowSuccess(msg); await LoadNotesAsync(); }
+        else ToastService.ShowError(msg);
+    }
+
+    // ─── Helpers ─────────────────────────────────────────────
+    private IEnumerable<IPRegistrationModel.IpRegistrationModel> GetFilteredPatients()
+    {
+        var result = patients.AsEnumerable();
+        if (!string.IsNullOrWhiteSpace(patientSearch))
+        {
+            var q = patientSearch.Trim().ToLower();
+            result = result.Where(p =>
+                (p.patient_name != null && p.patient_name.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                (p.ip_no != null && p.ip_no.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                (p.mobile != null && p.mobile.Contains(q, StringComparison.OrdinalIgnoreCase)));
+        }
+        return result;
+    }
+
+    private string GetInitials(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
+        return $"{parts[0][0]}{parts[^1][0]}".ToUpper();
+    }
+
+    private string GetDoctorName(int dcode)
+    {
+        var doc = doctorsList.FirstOrDefault(d => d.dcode == dcode);
+        if (doc == null) return $"Dr. #{dcode}";
+        return string.IsNullOrWhiteSpace(doc.name) ? $"Dr. #{dcode}" : $"Dr. {doc.name}";
+    }
+
+    private string GetNoteStatusClass(string status) => status switch
+    {
+        "CANCELLED" => "cancelled",
+        "COMPLETED" => "completed",
+        _ => ""
+    };
+
+    private string GetNoteTypeBadgeClass(string type) => type switch
+    {
+        "FALL_RISK" => "fall",
+        "DRESSING" => "dressing",
+        "MEDICATION" => "medication",
+        "INFUSION" => "infusion",
+        "INTAKE_OUTPUT" => "io",
+        "OXYGEN" => "oxygen",
+        "PAIN" => "pain",
+        "HANDOVER" => "handover",
+        _ => "general"
+    };
+
+    private string GetNoteTypeIcon(string type) => type switch
+    {
+        "FALL_RISK" => "bi-exclamation-triangle-fill",
+        "DRESSING" => "bi-bandaid-fill",
+        "MEDICATION" => "bi-capsule-pill",
+        "INFUSION" => "bi-droplet-fill",
+        "INTAKE_OUTPUT" => "bi-arrow-left-right",
+        "OXYGEN" => "bi-lungs-fill",
+        "PAIN" => "bi-emoji-frown",
+        "PROCEDURE" => "bi-tools",
+        "PATIENT_MOVEMENT" => "bi-person-walking",
+        "SKIN_ASSESSMENT" => "bi-person-bounding-box",
+        "CATHETER" => "bi-moisture",
+        "RESTRAINT" => "bi-lock-fill",
+        "ISOLATION" => "bi-shield-fill",
+        "EDUCATION" => "bi-mortarboard-fill",
+        "HANDOVER" => "bi-arrow-repeat",
+        _ => "bi-clipboard2-pulse"
+    };
+
+    private string GetShiftIcon(string shift) => shift switch
+    {
+        "MORNING" => "bi-sunrise",
+        "AFTERNOON" => "bi-sun",
+        "EVENING" => "bi-sunset",
+        "NIGHT" => "bi-moon-stars-fill",
+        _ => "bi-clock"
+    };
+
+    private string FormatNoteType(string type) => type switch
+    {
+        "FALL_RISK" => "Fall Risk",
+        "DRESSING" => "Dressing",
+        "MEDICATION" => "Medication",
+        "INFUSION" => "Infusion",
+        "INTAKE_OUTPUT" => "I&O",
+        "OXYGEN" => "Oxygen",
+        "PAIN" => "Pain",
+        "PROCEDURE" => "Procedure",
+        "PATIENT_MOVEMENT" => "Movement",
+        "SKIN_ASSESSMENT" => "Skin",
+        "CATHETER" => "Catheter",
+        "RESTRAINT" => "Restraint",
+        "ISOLATION" => "Isolation",
+        "EDUCATION" => "Education",
+        "HANDOVER" => "Handover",
+        "GENERAL" => "General",
+        _ => type
+    };
+
+    private RenderFragment RenderNoteFields(NurseNotesModel note) => builder =>
+    {
+        int seq = 0;
+
+        void AddField(string label, string? value)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return;
+            builder.OpenElement(seq++, "div");
+            builder.AddAttribute(seq++, "class", "nn-field");
+            builder.OpenElement(seq++, "span");
+            builder.AddAttribute(seq++, "class", "nn-field-label");
+            builder.AddContent(seq++, label);
+            builder.CloseElement();
+            builder.OpenElement(seq++, "span");
+            builder.AddAttribute(seq++, "class", "nn-field-value");
+            builder.AddContent(seq++, value);
+            builder.CloseElement();
+            builder.CloseElement();
+        }
+
+        // Fall Risk
+        if (note.fall_risk_score.HasValue) AddField("Risk Score", note.fall_risk_score.ToString());
+        if (!string.IsNullOrWhiteSpace(note.fall_risk_level)) AddField("Risk Level", note.fall_risk_level);
+        if (!string.IsNullOrWhiteSpace(note.fall_risk_scale)) AddField("Scale", note.fall_risk_scale);
+        if (!string.IsNullOrWhiteSpace(note.fall_precautions)) AddField("Precautions", note.fall_precautions);
+        if (note.fall_occurred.HasValue) AddField("Fall Occurred", note.fall_occurred.Value ? "Yes" : "No");
+        if (!string.IsNullOrWhiteSpace(note.fall_incident_details)) AddField("Incident", note.fall_incident_details);
+
+        // Dressing
+        if (!string.IsNullOrWhiteSpace(note.dressing_site)) AddField("Site", note.dressing_site);
+        if (!string.IsNullOrWhiteSpace(note.wound_type)) AddField("Wound Type", note.wound_type);
+        if (note.wound_length.HasValue) AddField("L×W×D", $"{note.wound_length}×{note.wound_width}×{note.wound_depth} cm");
+        if (!string.IsNullOrWhiteSpace(note.wound_condition)) AddField("Condition", note.wound_condition);
+        if (!string.IsNullOrWhiteSpace(note.wound_discharge)) AddField("Discharge", note.wound_discharge);
+        if (note.bleeding.HasValue) AddField("Bleeding", note.bleeding.Value ? "Yes" : "No");
+        if (note.infection_sign.HasValue) AddField("Infection Signs", note.infection_sign.Value ? "Yes" : "No");
+        if (!string.IsNullOrWhiteSpace(note.dressing_status)) AddField("Status", note.dressing_status);
+
+        // Medication
+        if (!string.IsNullOrWhiteSpace(note.medication_status)) AddField("Med Status", note.medication_status);
+        if (note.scheduled_time.HasValue) AddField("Scheduled", note.scheduled_time.Value.ToLocalTime().ToString("hh:mm tt"));
+        if (note.given_time.HasValue) AddField("Given At", note.given_time.Value.ToLocalTime().ToString("hh:mm tt"));
+
+        // Intake/Output
+        if (note.oral_intake_ml.HasValue) AddField("Oral Intake", $"{note.oral_intake_ml} mL");
+        if (note.iv_fluid_ml.HasValue) AddField("IV Fluid", $"{note.iv_fluid_ml} mL");
+        if (note.urine_ml.HasValue) AddField("Urine", $"{note.urine_ml} mL");
+        if (note.vomit_ml.HasValue) AddField("Vomit", $"{note.vomit_ml} mL");
+        if (note.drain_ml.HasValue) AddField("Drain", $"{note.drain_ml} mL");
+        if (note.stool_count.HasValue) AddField("Stool", $"{note.stool_count} times");
+        if (note.total_output_ml.HasValue) AddField("Total Out", $"{note.total_output_ml} mL");
+
+        // Oxygen
+        if (!string.IsNullOrWhiteSpace(note.oxygen_device)) AddField("O2 Device", note.oxygen_device);
+        if (note.oxygen_flow_rate.HasValue) AddField("Flow Rate", $"{note.oxygen_flow_rate} {note.oxygen_flow_unit}");
+        if (note.fio2.HasValue) AddField("FiO2", $"{note.fio2}%");
+        if (!string.IsNullOrWhiteSpace(note.oxygen_status)) AddField("O2 Status", note.oxygen_status);
+
+        // Pain
+        if (note.pain_present.HasValue) AddField("Pain Present", note.pain_present.Value ? "Yes" : "No");
+        if (!string.IsNullOrWhiteSpace(note.pain_location)) AddField("Pain Location", note.pain_location);
+        if (note.pain_after_intervention_score.HasValue) AddField("Pain Score After", note.pain_after_intervention_score.ToString());
+
+        // General
+        if (!string.IsNullOrWhiteSpace(note.notes)) AddField("Notes", note.notes);
+    };
+}

@@ -3,6 +3,7 @@
 @using Newtonsoft.Json
 @using Medico_Backend.Model
 @using Booking.Models
+@using Booking.Helpers
 @inject NavigationManager NavigationManager
 @inject IHttpClientFactory ClientFactory
 @inject Booking.Services.ToastService Toast
@@ -131,7 +132,7 @@
         <!-- Card 4: Completed Today -->
         <div class="stat-card">
             <div class="stat-info">
-                <span class="stat-label">@(selectedDate.Date == DateTime.Today ? "Completed Today" : "Completed")</span>
+                <span class="stat-label">@(selectedDate.Date == DateTime.UtcNow.ToIndianTime().Date ? "Completed Today" : "Completed")</span>
                 <span class="stat-value">@FormatNumber(completedCount)</span>
             </div>
             <div class="stat-icon-wrapper bg-green-light">
@@ -369,7 +370,7 @@
     private List<DoctorMasterModel> doctors = new();
     private List<DoctorGroupMasterModel> doctorGroups = new();
     private string selectedFilterValue = "";
-    private DateTime selectedDate = DateTime.Today;
+    private DateTime selectedDate = DateTime.MinValue;
 
     private string TenantCode = "";
     private string AuthToken = "";
@@ -420,9 +421,9 @@
     {
         if (item.status != "completed" && item.status != "report_received") return false;
         if (!item.out_time.HasValue) return false;
-        if (selectedDate.Date != DateTime.Today) return true;
+        if (selectedDate.Date != DateTime.UtcNow.ToIndianTime().Date) return true;
         
-        var now = TimeOnly.FromDateTime(DateTime.Now);
+        var now = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
         var diff = now - item.out_time.Value;
         if (diff.TotalMinutes >= 1 || diff.TotalMinutes < 0)
         {
@@ -497,6 +498,8 @@
     {
         if (firstRender)
         {
+            // Set selectedDate to IST today at runtime
+            selectedDate = DateTime.UtcNow.ToIndianTime().Date;
             try
             {
                 var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
@@ -557,13 +560,41 @@
         try
         {
             var dateStr = selectedDate.ToString("yyyy-MM-dd");
+
+            // Also fetch the UTC-previous day to capture entries made after midnight IST
+            // (e.g. 00:30 IST = 19:00 UTC previous day, stored in DB as previous UTC date)
+            var prevDateStr = selectedDate.AddDays(-1).ToString("yyyy-MM-dd");
+
             var consultTask = OGService.GetConsultationListAsync(dateStr);
+            var consultPrevTask = OGService.GetConsultationListAsync(prevDateStr);
             var labScanTask = OGService.GetLabScanListAsync(dateStr);
+            var labScanPrevTask = OGService.GetLabScanListAsync(prevDateStr);
 
-            await Task.WhenAll(consultTask, labScanTask);
+            await Task.WhenAll(consultTask, consultPrevTask, labScanTask, labScanPrevTask);
 
-            consultationItems = await consultTask ?? new();
-            labScanItems = await labScanTask ?? new();
+            var todayConsult = await consultTask ?? new();
+            var prevConsult = (await consultPrevTask ?? new())
+                .Where(x => IsPostMidnightIstEntry(x, selectedDate))
+                .ToList();
+
+            var todayLabScan = await labScanTask ?? new();
+            var prevLabScan = (await labScanPrevTask ?? new())
+                .Where(x => IsPostMidnightIstEntry(x, selectedDate))
+                .ToList();
+
+            var allConsult = todayConsult.Concat(prevConsult).ToList();
+            var allLabScan = todayLabScan.Concat(prevLabScan).ToList();
+
+            // Deduplicate by ogentryid (keep first occurrence)
+            consultationItems = allConsult
+                .GroupBy(x => x.ogentryid ?? x.vitalentryid)
+                .Select(g => g.First())
+                .ToList();
+
+            labScanItems = allLabScan
+                .GroupBy(x => x.ogentryid ?? x.vitalentryid)
+                .Select(g => g.First())
+                .ToList();
 
             // Default 'reserved' status to 'waiting' when data is loaded
             foreach (var item in consultationItems.Concat(labScanItems))
@@ -581,6 +612,28 @@
             Console.Error.WriteLine($"[OGScreen] Error loading queue: {ex.Message}");
             Toast.ShowError("Error loading queue data");
         }
+    }
+
+    /// <summary>
+    /// Returns true if an item from the UTC-previous-day API belongs to today IST.
+    /// Entries after midnight IST (00:00–05:29) are stored in DB as previous UTC day.
+    /// Primary check: created_at converted to IST equals selectedDate.
+    /// Fallback: arrival_time is before 05:30 (the IST midnight-to-UTC-midnight window).
+    /// </summary>
+    private bool IsPostMidnightIstEntry(OgQueueFrontendDto x, DateTime selectedDate)
+    {
+        // Primary: use created_at converted to IST
+        if (x.created_at.HasValue && x.created_at.Value != DateTime.MinValue)
+        {
+            return x.created_at.Value.ToIndianTime().Date == selectedDate.Date;
+        }
+        // Fallback: use arrival_time — post-midnight IST entries have arrival_time 00:00–05:29
+        if (x.arrival_time.HasValue)
+        {
+            return x.arrival_time.Value < new TimeOnly(5, 30);
+        }
+        // Cannot determine — exclude to avoid showing wrong-day data
+        return false;
     }
 
     private async Task RefreshQueue()
@@ -644,7 +697,7 @@
 
         if (newStatus == "completed" && !item.out_time.HasValue)
         {
-            item.out_time = TimeOnly.FromDateTime(DateTime.Now);
+            item.out_time = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
         }
 
         await TriggerUpdate(item);
@@ -662,7 +715,7 @@
                 {
                     ogentryid = item.ogentryid,
                     vitalentryid = item.vitalentryid,
-                    out_time = item.out_time ?? TimeOnly.FromDateTime(DateTime.Now),
+                    out_time = item.out_time ?? TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime()),
                     status = item.status,
                     queue_status = item.queue_status ?? item.status,
                     notes = item.notes,

@@ -9,6 +9,7 @@
 @inject IHttpClientFactory HttpClientFactory
 @inject NavigationManager NavManager
 @using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
+@using Booking.Helpers
 @inject ProtectedSessionStorage _sessionStorage
 
 <PageTitle>Hospital Token Display Signage</PageTitle>
@@ -1666,8 +1667,15 @@
                 var list = await response.Content.ReadFromJsonAsync<List<TokenOgQueueModel>>(_jsonOptions);
                 if (list != null)
                 {
-                    // Disable Labcare bulk customer fetch to prevent endpoint issues
-                    // The names should come directly from Medico API.
+                    // Also fetch prev UTC-day data to capture post-midnight IST entries
+                    // (e.g. 00:30 IST = 19:00 UTC previous day, stored in DB as previous UTC date)
+                    var prevDayPatients = await FetchPrevDayPatientsAsync(baseUrl);
+
+                    // Merge: today's merged-list + filtered prev-day entries (arrival_time < 05:30)
+                    var existingIds = list.Where(p => p.ogentryid.HasValue).Select(p => p.ogentryid!.Value).ToHashSet();
+                    var newFromPrev = prevDayPatients.Where(p => !p.ogentryid.HasValue || !existingIds.Contains(p.ogentryid.Value)).ToList();
+                    list = list.Concat(newFromPrev).ToList();
+
                     _apiError = null;
 
                     if (_isFirstLoad)
@@ -1763,6 +1771,82 @@
             _apiError = ex.Message;
             StateHasChanged();
         }
+    }
+
+    /// <summary>
+    /// Fetches the UTC-previous-day consultation and lab-scan lists and returns only
+    /// entries that belong to today IST (arrival_time between 00:00 and 05:29,
+    /// or created_at IST date == today IST).
+    /// </summary>
+    private async Task<List<TokenOgQueueModel>> FetchPrevDayPatientsAsync(string baseUrl)
+    {
+        try
+        {
+            var today = DateTime.UtcNow.ToIndianTime().Date;
+            var prevDateStr = today.AddDays(-1).ToString("yyyy-MM-dd");
+            string ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+
+            var consultUrl = $"{baseUrl.TrimEnd('/')}/api/OgQueue/consultation-list?date={prevDateStr}&_t={ts}";
+            var labScanUrl = $"{baseUrl.TrimEnd('/')}/api/OgQueue/lab-scan-list?date={prevDateStr}&_t={ts}";
+
+            using var http1 = HttpClientFactory.CreateClient();
+            using var req1 = new HttpRequestMessage(HttpMethod.Get, consultUrl);
+            req1.Headers.Add("tenant_code", TenantCode);
+            req1.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, NoStore = true };
+
+            using var http2 = HttpClientFactory.CreateClient();
+            using var req2 = new HttpRequestMessage(HttpMethod.Get, labScanUrl);
+            req2.Headers.Add("tenant_code", TenantCode);
+            req2.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue { NoCache = true, NoStore = true };
+
+            var task1 = http1.SendAsync(req1);
+            var task2 = http2.SendAsync(req2);
+            await Task.WhenAll(task1, task2);
+
+            var result = new List<TokenOgQueueModel>();
+
+            if ((await task1).IsSuccessStatusCode)
+            {
+                var consultList = await (await task1).Content.ReadFromJsonAsync<List<TokenOgQueueModel>>(_jsonOptions);
+                if (consultList != null)
+                    result.AddRange(consultList);
+            }
+
+            if ((await task2).IsSuccessStatusCode)
+            {
+                var labList = await (await task2).Content.ReadFromJsonAsync<List<TokenOgQueueModel>>(_jsonOptions);
+                if (labList != null)
+                    result.AddRange(labList);
+            }
+
+            // Filter: keep only post-midnight IST entries (arrival_time 00:00–05:29, or created_at IST == today)
+            return result.Where(p => IsTokenPostMidnightIstEntry(p, today)).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[TokenDisplay] Prev-day fetch error: {ex.Message}");
+            return new List<TokenOgQueueModel>();
+        }
+    }
+
+    /// <summary>
+    /// Returns true if a prev-day UTC entry actually belongs to today IST.
+    /// Primary: check created_at IST date. Fallback: arrival_time_str &lt; 05:30.
+    /// </summary>
+    private bool IsTokenPostMidnightIstEntry(TokenOgQueueModel x, DateTime todayIst)
+    {
+        // Primary: created_at is non-default — use IST conversion
+        if (x.created_at != DateTime.MinValue && x.created_at.Year > 2000)
+        {
+            return x.created_at.ToIndianTime().Date == todayIst;
+        }
+        // Fallback: parse arrival_time_str ("HH:mm:ss") and check < 05:30
+        if (!string.IsNullOrWhiteSpace(x.arrival_time_str) &&
+            TimeSpan.TryParse(x.arrival_time_str, out var ts))
+        {
+            return ts < new TimeSpan(5, 30, 0);
+        }
+        return false;
     }
 
     private void ToggleAdminDrawer()
@@ -2016,7 +2100,9 @@
                         !"completed".Equals(p.status, StringComparison.OrdinalIgnoreCase) &&
                         (_selectedGroupId.HasValue ? p.group_id == _selectedGroupId.Value : (_selectedDcode == null || p.dcode == _selectedDcode)) &&
                         ("waiting".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                         "waiting_for_test".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
                          "in_consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
+                         "consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
                          "up-next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
                          "up_next".Equals(p.status, StringComparison.OrdinalIgnoreCase) ||
                          "upnext".Equals(p.status, StringComparison.OrdinalIgnoreCase)))
@@ -2025,7 +2111,7 @@
 
         // ── 1. GREEN: In Consultation ──────────────────────────────────────────
         var consulting = activePatients
-            .Where(p => "in_consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase))
+            .Where(p => "in_consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase) || "consultation".Equals(p.status, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         foreach (var p in consulting)
@@ -2052,7 +2138,7 @@
             .ToList();
 
         var waitingOnly = activePatients
-            .Where(p => "waiting".Equals(p.status, StringComparison.OrdinalIgnoreCase))
+            .Where(p => "waiting".Equals(p.status, StringComparison.OrdinalIgnoreCase) || "waiting_for_test".Equals(p.status, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         // Merge: explicit up-next first, then waiting ordered by token_sort

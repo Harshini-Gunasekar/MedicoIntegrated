@@ -48,7 +48,8 @@ namespace medico_backend.Model
             public string? guardian_name { get; set; }
             public string? guardian_relation { get; set; }
             public string? guardian_contact { get; set; }
-
+            public int? billing_rmtcode { get; set; }
+            public string? billing_type { get; set; }
             public string? notes { get; set; }
 
             public string? tenant_code { get; set; }
@@ -107,6 +108,9 @@ namespace medico_backend.Model
             public string? guardian_name { get; set; }
             public string? guardian_relation { get; set; }
             public string? guardian_contact { get; set; }
+            // Model/IPRegistrationModel.cs — inside CreateIpRegistrationRequest
+            public int? billing_rmtcode { get; set; }   // rate to charge (AC / Non-AC room type)
+            public string? billing_type { get; set; }   // "AC" / "NON_AC" — for display only
 
             public string? notes { get; set; }
         }
@@ -118,44 +122,42 @@ namespace medico_backend.Model
             public string? discharge_summary { get; set; }
         }
 
-        public class IpBedTransferRequest
+        // ─── UPDATE — IP/admission details ONLY. No bed/room fields.
+        //     Room/bed changes must go through BedTransferController → /insert.
+        public class UpdateIpRegistrationRequest
         {
             public Guid ip_id { get; set; }
-            public int transfloor { get; set; }
-            public int transroom { get; set; }
-            public int transward { get; set; }
-            public int transbed { get; set; }
-            public string? reason { get; set; }
-            public string? transferedby { get; set; }
+            public decimal custid { get; set; }
+            public Guid? booking_id { get; set; }
+            public Guid? op_id { get; set; }
+            public int dcode { get; set; }
+            public int? referring_dcode { get; set; }
+            public int? department_code { get; set; }
+            public string admission_type { get; set; } = "PLANNED";
+            public string? admission_reason { get; set; }
+            public DateTime? admitdate { get; set; }
+            public DateTime? expected_dischargedate { get; set; }
+
+            public bool isinsurancepatient { get; set; } = false;
+            public string? insurance_company { get; set; }
+            public string? policyno { get; set; }
+            public string? authorizationno { get; set; }
+            public string? tpa_name { get; set; }
+            public double? insurance_approved_amount { get; set; }
+            public string? insurance_status { get; set; }
+
+            public string? guardian_name { get; set; }
+            public string? guardian_relation { get; set; }
+            public string? guardian_contact { get; set; }
+            public int? billing_rmtcode { get; set; }
+            public string? billing_type { get; set; }
+            public string? notes { get; set; }
         }
 
-         public class UpdateIpRegistrationRequest
-{
-      public Guid ip_id { get; set; }
-      public int? dcode { get; set; }
-      public int? referring_dcode { get; set; }
-    public int? department_code { get; set; }
-    public string? admission_reason { get; set; }
-    public DateTime? expected_dischargedate { get; set; }
-    public bool? isinsurancepatient { get; set; }
-    public string? insurance_company { get; set; }
-    public string? policyno { get; set; }
-    public string? authorizationno { get; set; }
-    public string? tpa_name { get; set; }
-    public double? insurance_approved_amount { get; set; }
-    public string? insurance_status { get; set; }
-    public string? guardian_name { get; set; }
-    public string? guardian_relation { get; set; }
-    public string? guardian_contact { get; set; }
-    public string? notes { get; set; }
+        public class CancelAdmissionRequest
+        {
+            public Guid ip_id { get; set; }
+            public string? reason { get; set; }
+        }
+    }
 }
-
-public class CancelAdmissionRequest
-{
-    public Guid ip_id { get; set; }
-    public string? reason { get; set; }
-}
-
-   }
-}
-

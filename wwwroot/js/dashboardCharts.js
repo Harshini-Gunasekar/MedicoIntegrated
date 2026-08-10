@@ -348,5 +348,166 @@ window.dashboardCharts = {
                 }
             }
         });
+    },
+
+    // Generic Area Line Chart with gradient fill
+    initAreaLineChart: function (canvasId, labels, data, datasetLabel, lineColor, fillColor) {
+        this.destroyChart(canvasId);
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+
+        const chartCtx = ctx.getContext('2d');
+        let bgGradient = fillColor;
+        if (!fillColor || fillColor.startsWith('#') || fillColor.startsWith('rgb')) {
+            bgGradient = chartCtx.createLinearGradient(0, 0, 0, 240);
+            bgGradient.addColorStop(0, lineColor ? lineColor + '33' : 'rgba(37, 99, 235, 0.35)');
+            bgGradient.addColorStop(1, lineColor ? lineColor + '03' : 'rgba(37, 99, 235, 0.02)');
+        }
+
+        const defaultLabels = labels && labels.length ? labels : ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+        const defaultData = data && data.length ? data : [12, 19, 15, 25, 22, 30, 28];
+
+        this.instances[canvasId] = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: defaultLabels,
+                datasets: [{
+                    label: datasetLabel || 'Value',
+                    data: defaultData,
+                    borderColor: lineColor || '#2563eb',
+                    borderWidth: 3,
+                    backgroundColor: bgGradient,
+                    fill: true,
+                    tension: 0.4,
+                    pointBackgroundColor: lineColor || '#2563eb',
+                    pointBorderColor: '#ffffff',
+                    pointBorderWidth: 2,
+                    pointRadius: 4,
+                    pointHoverRadius: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 900, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        backgroundColor: '#0f172a',
+                        titleFont: { size: 12, weight: '700' },
+                        bodyFont: { size: 12 },
+                        padding: 10,
+                        cornerRadius: 8
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#64748b', font: { size: 11, weight: '600' } }
+                    },
+                    y: {
+                        grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                        ticks: { color: '#64748b', font: { size: 11, weight: '600' } }
+                    }
+                }
+            }
+        });
+    },
+
+    // Generic Doughnut / Pie Chart with sleek styling
+    initCustomDoughnutChart: function (canvasId, labels, data, bgColors) {
+        this.destroyChart(canvasId);
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+
+        const defaultLabels = labels && labels.length ? labels : ['Category A', 'Category B', 'Category C'];
+        const defaultData = data && data.length ? data : [40, 35, 25];
+        const defaultColors = bgColors && bgColors.length ? bgColors : ['#2563eb', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899'];
+
+        this.instances[canvasId] = new Chart(ctx, {
+            type: 'doughnut',
+            data: {
+                labels: defaultLabels,
+                datasets: [{
+                    data: defaultData,
+                    backgroundColor: defaultColors,
+                    borderWidth: 2,
+                    borderColor: '#ffffff',
+                    hoverOffset: 6
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                cutout: '70%',
+                animation: { duration: 800, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'bottom',
+                        labels: { color: '#475569', font: { size: 11, weight: '600' }, padding: 12, usePointStyle: true, pointStyle: 'circle' }
+                    },
+                    tooltip: { backgroundColor: '#0f172a', cornerRadius: 8, padding: 10 }
+                }
+            }
+        });
+    },
+
+    // Generic Grouped Bar Chart
+    initGroupedBarChart: function (canvasId, labels, dataset1Label, dataset1Data, dataset1Color, dataset2Label, dataset2Data, dataset2Color) {
+        this.destroyChart(canvasId);
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+
+        const defaultLabels = labels && labels.length ? labels : ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun'];
+        const d1 = dataset1Data && dataset1Data.length ? dataset1Data : [45, 52, 60, 48, 65, 70];
+        const d2 = dataset2Data && dataset2Data.length ? dataset2Data : [38, 44, 50, 42, 58, 62];
+
+        this.instances[canvasId] = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: defaultLabels,
+                datasets: [
+                    {
+                        label: dataset1Label || 'Dataset 1',
+                        data: d1,
+                        backgroundColor: dataset1Color || '#2563eb',
+                        borderRadius: 6,
+                        borderSkipped: false
+                    },
+                    {
+                        label: dataset2Label || 'Dataset 2',
+                        data: d2,
+                        backgroundColor: dataset2Color || '#10b981',
+                        borderRadius: 6,
+                        borderSkipped: false
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 900, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: { color: '#475569', font: { size: 11, weight: '600' }, usePointStyle: true, pointStyle: 'circle' }
+                    },
+                    tooltip: { backgroundColor: '#0f172a', cornerRadius: 8, padding: 10 }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#64748b', font: { size: 11, weight: '600' } }
+                    },
+                    y: {
+                        grid: { color: 'rgba(226, 232, 240, 0.7)' },
+                        ticks: { color: '#64748b', font: { size: 11, weight: '600' } }
+                    }
+                }
+            }
+        });
     }
 };
+

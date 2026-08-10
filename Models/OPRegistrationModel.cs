@@ -50,6 +50,9 @@ namespace Booking.Models
 
             [Write(false)]
             public string? viprole { get; set; }
+
+            [Write(false)]
+            public bool refer_to_ip { get; set; } = false;
         }
 
         [Table("patient_vitals")]
@@ -155,6 +158,7 @@ namespace Booking.Models
             public string? booking_type { get; set; }
 
             public string? notes { get; set; }
+            public bool refer_to_ip { get; set; } = false;
         }
         public class DressingRegistrationRequest
         {

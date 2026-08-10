@@ -6324,41 +6324,122 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                 }
             }
 
-            // Sync to CaseSheet investigation result API conditionally
+            // Sync to CaseSheet investigation result API (/api/CaseSheet/investigation/result)
             bool csSyncSuccess = false;
             try
             {
                 if (lre1 != null && lre1.Any())
                 {
                     var csMap = new Dictionary<int, string>();
+                    var csNameMap = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                    var csAllTests = new List<CaseSheetTestDto>();
+
                     try
                     {
-                        var csCandidates = new[]
+                        string targetEffectiveTenant = !string.IsNullOrEmpty(tenantCode) ? tenantCode : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010");
+                        
+                        string rawCust = !string.IsNullOrEmpty(CustCode) ? CustCode.Trim() : "";
+                        string rowCust = lre1.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.custcode))?.custcode?.Trim() ?? "";
+                        string numCust = System.Text.RegularExpressions.Regex.Replace(rawCust, @"[^\d]", "");
+                        string numRowCust = System.Text.RegularExpressions.Regex.Replace(rowCust, @"[^\d]", "");
+
+                        var csCandidates = new List<string>
                         {
+                            "api/CaseSheet/investigation/all",
                             $"api/CaseSheet/investigation?op_id={RequestGuid}",
                             $"api/CaseSheet/investigation?ip_id={RequestGuid}"
                         };
-                        foreach (var ep in csCandidates)
+                        if (!string.IsNullOrEmpty(_resolvedBilledGuid) && _resolvedBilledGuid != RequestGuid)
                         {
-                            var csReq = new HttpRequestMessage(HttpMethod.Get, ep);
-                            if (!string.IsNullOrEmpty(token)) csReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-                            if (!string.IsNullOrEmpty(tenantCode)) csReq.Headers.Add("tenant_code", tenantCode);
-                            var csRes = await ClientFactory.CreateClient("Medico").SendAsync(csReq, SafeToken);
-                            if (csRes.IsSuccessStatusCode)
+                            csCandidates.Add($"api/CaseSheet/investigation?op_id={_resolvedBilledGuid}");
+                            csCandidates.Add($"api/CaseSheet/investigation?ip_id={_resolvedBilledGuid}");
+                        }
+                        if (!string.IsNullOrEmpty(rawCust))
+                        {
+                            csCandidates.Add($"api/CaseSheet/investigation?custcode={rawCust}");
+                            if (!string.IsNullOrEmpty(numCust)) csCandidates.Add($"api/CaseSheet/investigation?custcode=CUST-{numCust}");
+                        }
+                        if (!string.IsNullOrEmpty(rowCust) && rowCust != rawCust)
+                        {
+                            csCandidates.Add($"api/CaseSheet/investigation?custcode={rowCust}");
+                            if (!string.IsNullOrEmpty(numRowCust)) csCandidates.Add($"api/CaseSheet/investigation?custcode=CUST-{numRowCust}");
+                        }
+
+                        foreach (var ep in csCandidates.Distinct())
+                        {
+                            try
                             {
-                                var csJson = await csRes.Content.ReadAsStringAsync();
-                                var csObj = JsonConvert.DeserializeObject<CaseSheetInvestigationDetailDto>(csJson);
-                                if (csObj?.tests != null)
+                                var csReq = new HttpRequestMessage(HttpMethod.Get, ep);
+                                if (!string.IsNullOrEmpty(token)) csReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                                if (!string.IsNullOrEmpty(targetEffectiveTenant)) csReq.Headers.Add("tenant_code", targetEffectiveTenant);
+                                
+                                var csRes = await ClientFactory.CreateClient("Medico").SendAsync(csReq, SafeToken);
+                                if (csRes.IsSuccessStatusCode)
                                 {
-                                    foreach (var t in csObj.tests)
+                                    var csJson = await csRes.Content.ReadAsStringAsync(SafeToken);
+                                    if (csJson.TrimStart().StartsWith("["))
                                     {
-                                        if (!string.IsNullOrEmpty(t.inv_det_id) && t.test_code.HasValue && t.test_code.Value > 0)
+                                        var allHeaders = JsonConvert.DeserializeObject<List<CaseSheetInvestigationAllDto>>(csJson);
+                                        if (allHeaders != null && allHeaders.Any())
                                         {
-                                            csMap[t.test_code.Value] = t.inv_det_id;
+                                            var matchedHeaders = allHeaders.Where(h =>
+                                                (!string.IsNullOrEmpty(h.op_id) && (h.op_id.Equals(RequestGuid, StringComparison.OrdinalIgnoreCase) || h.op_id.Equals(_resolvedBilledGuid, StringComparison.OrdinalIgnoreCase))) ||
+                                                (!string.IsNullOrEmpty(h.custcode) && (h.custcode.Equals(rawCust, StringComparison.OrdinalIgnoreCase) || h.custcode.Equals(rowCust, StringComparison.OrdinalIgnoreCase) || (!string.IsNullOrEmpty(numCust) && h.custcode.Contains(numCust)))) ||
+                                                (h.custid.HasValue && !string.IsNullOrEmpty(numCust) && h.custid.Value.ToString() == numCust)
+                                            ).ToList();
+
+                                            foreach (var mh in matchedHeaders)
+                                            {
+                                                string detailEp = !string.IsNullOrEmpty(mh.inv_id)
+                                                    ? $"api/CaseSheet/investigation?inv_id={mh.inv_id}"
+                                                    : (!string.IsNullOrEmpty(mh.op_id) ? $"api/CaseSheet/investigation?op_id={mh.op_id}" : "");
+                                                
+                                                if (string.IsNullOrEmpty(detailEp)) continue;
+
+                                                var dReq = new HttpRequestMessage(HttpMethod.Get, detailEp);
+                                                if (!string.IsNullOrEmpty(token)) dReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                                                if (!string.IsNullOrEmpty(targetEffectiveTenant)) dReq.Headers.Add("tenant_code", targetEffectiveTenant);
+
+                                                var dRes = await ClientFactory.CreateClient("Medico").SendAsync(dReq, SafeToken);
+                                                if (dRes.IsSuccessStatusCode)
+                                                {
+                                                    var dJson = await dRes.Content.ReadAsStringAsync(SafeToken);
+                                                    var dObj = JsonConvert.DeserializeObject<CaseSheetInvestigationDetailDto>(dJson);
+                                                    if (dObj?.tests != null)
+                                                    {
+                                                        foreach (var t in dObj.tests)
+                                                        {
+                                                            if (!string.IsNullOrEmpty(t.inv_det_id))
+                                                            {
+                                                                csAllTests.Add(t);
+                                                                if (t.test_code.HasValue && t.test_code.Value > 0) csMap[t.test_code.Value] = t.inv_det_id;
+                                                                if (!string.IsNullOrEmpty(t.test_name)) csNameMap[t.test_name.Trim()] = t.inv_det_id;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        var csObj = JsonConvert.DeserializeObject<CaseSheetInvestigationDetailDto>(csJson);
+                                        if (csObj?.tests != null)
+                                        {
+                                            foreach (var t in csObj.tests)
+                                            {
+                                                if (!string.IsNullOrEmpty(t.inv_det_id))
+                                                {
+                                                    csAllTests.Add(t);
+                                                    if (t.test_code.HasValue && t.test_code.Value > 0) csMap[t.test_code.Value] = t.inv_det_id;
+                                                    if (!string.IsNullOrEmpty(t.test_name)) csNameMap[t.test_name.Trim()] = t.inv_det_id;
+                                                }
+                                            }
                                         }
                                     }
                                 }
                             }
+                            catch { }
                         }
                     }
                     catch { }
@@ -6368,6 +6449,8 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                         int parentTCode = x.fromtcode > 0 ? x.fromtcode : x.tcode;
                         if (csMap.TryGetValue(parentTCode, out var mappedInvDetId)) return mappedInvDetId;
                         if (csMap.TryGetValue(x.tcode, out var mappedTCodeInvDetId)) return mappedTCodeInvDetId;
+                        string gName = x.groupname ?? x.testname ?? "";
+                        if (!string.IsNullOrEmpty(gName) && csNameMap.TryGetValue(gName.Trim(), out var mappedNameInvDetId)) return mappedNameInvDetId;
                         return x.testresultid != Guid.Empty ? x.testresultid.ToString() : (parentTCode > 0 ? parentTCode.ToString() : Guid.NewGuid().ToString());
                     });
 
@@ -6380,6 +6463,23 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                         if (string.IsNullOrEmpty(targetInvDetId) && Guid.TryParse(grp.Key, out _))
                         {
                             targetInvDetId = grp.Key;
+                        }
+
+                        if (string.IsNullOrEmpty(targetInvDetId) && csAllTests.Any())
+                        {
+                            var grpFirstName = grp.FirstOrDefault()?.groupname ?? grp.FirstOrDefault()?.testname ?? "";
+                            var fuzzyMatch = csAllTests.FirstOrDefault(t =>
+                                !string.IsNullOrEmpty(t.test_name) && !string.IsNullOrEmpty(grpFirstName) &&
+                                (t.test_name.Contains(grpFirstName, StringComparison.OrdinalIgnoreCase) || grpFirstName.Contains(t.test_name, StringComparison.OrdinalIgnoreCase))
+                            );
+                            if (fuzzyMatch != null && !string.IsNullOrEmpty(fuzzyMatch.inv_det_id))
+                            {
+                                targetInvDetId = fuzzyMatch.inv_det_id;
+                            }
+                            else
+                            {
+                                targetInvDetId = csAllTests.FirstOrDefault()?.inv_det_id;
+                            }
                         }
 
                         if (string.IsNullOrEmpty(targetInvDetId) || !Guid.TryParse(targetInvDetId, out _))
@@ -6424,16 +6524,19 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                             result_status = "COMPLETED"
                         };
 
+                        string targetEffectiveTenant = !string.IsNullOrEmpty(tenantCode) ? tenantCode : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010");
                         var csResultReq = new HttpRequestMessage(HttpMethod.Post, "api/CaseSheet/investigation/result")
                         {
                             Content = new StringContent(JsonConvert.SerializeObject(payload), System.Text.Encoding.UTF8, "application/json")
                         };
                         if (!string.IsNullOrEmpty(token)) csResultReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-                        if (!string.IsNullOrEmpty(tenantCode)) csResultReq.Headers.Add("tenant_code", tenantCode);
+                        if (!string.IsNullOrEmpty(targetEffectiveTenant)) csResultReq.Headers.Add("tenant_code", targetEffectiveTenant);
+                        
                         var csResOut = await ClientFactory.CreateClient("Medico").SendAsync(csResultReq, SafeToken);
                         if (csResOut.IsSuccessStatusCode)
                         {
                             csSyncSuccess = true;
+                            Console.WriteLine($"[SAVE] Successfully synced investigation result to CaseSheet for inv_det_id: {targetInvDetId}");
                         }
                     }
                 }
@@ -6762,6 +6865,24 @@ public class User_Master {
 public class UserMasterWrapper {
     [Newtonsoft.Json.JsonProperty("user")]
     public User_Master User { get; set; }
+}
+
+public class CaseSheetInvestigationAllDto
+{
+    public string? inv_id { get; set; }
+    public string? inv_code { get; set; }
+    public DateTimeOffset? inv_date { get; set; }
+    public string? report_status { get; set; }
+    public string? sheet_status { get; set; }
+    public long? custid { get; set; }
+    public string? patient_name { get; set; }
+    public string? mobile { get; set; }
+    public string? custcode { get; set; }
+    public int? dcode { get; set; }
+    public string? name { get; set; }
+    public string? op_id { get; set; }
+    public string? ip_id { get; set; }
+    public int? total_tests { get; set; }
 }
 
 public class CaseSheetInvestigationDetailDto

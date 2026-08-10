@@ -4,6 +4,7 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Booking.Models;
+using medico_backend.Model;
 
 namespace Booking.Services
 {
