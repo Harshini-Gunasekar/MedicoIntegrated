@@ -98,18 +98,10 @@ namespace Booking.Services
                 var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
                 var url = $"api/CaseSheet/by-visit{queryString}";
 
-                Console.WriteLine($"--- GET CASE SHEET BY VISIT URL: {url} ---");
-                var response = await _http.GetAsync(url);
-                var rawJson = await response.Content.ReadAsStringAsync();
-
-                Console.WriteLine("--- GET CASE SHEET BY VISIT RESPONSE ---");
-                Console.WriteLine(rawJson);
-                Console.WriteLine("----------------------------------------");
-
-                if (response.IsSuccessStatusCode)
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var vm = await _http.GetFromJsonAsync<CaseSheetViewModel>(url, options);
+                if (vm != null)
                 {
-                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                    var vm = System.Text.Json.JsonSerializer.Deserialize<CaseSheetViewModel>(rawJson, options);
                     AdjustViewModelDatesToIst(vm);
                     return vm;
                 }
