@@ -55,6 +55,23 @@ namespace Booking.Handlers
                         tenantCode = tcVals.FirstOrDefault() ?? "";
                     if (string.IsNullOrEmpty(tenantCode) && !string.IsNullOrEmpty(_session.TenantCode))
                         tenantCode = _session.TenantCode;
+                    
+                    if (string.IsNullOrEmpty(tenantCode) && request.RequestUri != null && !string.IsNullOrEmpty(request.RequestUri.Query))
+                    {
+                        var query = request.RequestUri.Query.TrimStart('?');
+                        var pairs = query.Split('&');
+                        foreach (var pair in pairs)
+                        {
+                            var parts = pair.Split('=');
+                            if (parts.Length == 2 && (parts[0].Equals("tenantCode", StringComparison.OrdinalIgnoreCase) || 
+                                                     parts[0].Equals("tenant_code", StringComparison.OrdinalIgnoreCase) || 
+                                                     parts[0].Equals("TenantId", StringComparison.OrdinalIgnoreCase)))
+                            {
+                                tenantCode = Uri.UnescapeDataString(parts[1]);
+                                break;
+                            }
+                        }
+                    }
 
                     if (!string.IsNullOrEmpty(tenantCode))
                     {

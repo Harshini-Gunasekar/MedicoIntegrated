@@ -3,10 +3,13 @@
 @using Booking.Helpers
 @using LabCare.Services
 @using LabCare.Models
+@using medico_backend.Model
+@using Medico_Backend.Model
 @inject CaseSheetService CaseSheetService
 @inject AppointmentBookingService AppointmentBookingService
 @inject ToastService ToastService
 @inject LabCare.Services.TestService LabCareTestService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 
 <style>
     .dosage-btn {
@@ -1544,7 +1547,7 @@
                 </div>
                 <div class="footer-right">
                     <button class="btn-footer btn-close" @onclick="CloseModal">Close</button>
-                    @if (!string.IsNullOrEmpty(currentRequest.sheet_id))
+                    @if (!string.IsNullOrEmpty(currentRequest.sheet_id) && hasPrintRight)
                     {
                         <button class="btn-footer btn-print" @onclick="PrintCaseSheetAsync" disabled="@printingCaseSheet" style="background: linear-gradient(135deg, #10b981, #059669); color: white; display: flex; align-items: center; gap: 0.35rem;">
                             @if (printingCaseSheet)
@@ -1775,14 +1778,74 @@
             _ = LoadPatientHistoryAsync();
         }
     }
-
-    private async Task LoadClinicalWorkspaceAsync()
+       private async Task LoadClinicalWorkspaceAsync()
     {
         loadingData = true;
         activeTab = "notes";
         
         inlineIcdSearchResults.Clear();
         activeInlineDiagSno = 0;
+
+        try
+        {
+            bool isAdmin = false;
+            try
+            {
+                var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (userResult.Success && userResult.Value != null)
+                {
+                    isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                              userResult.Value.UserCode == 0 ||
+                              userResult.Value.UserCode == 1;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error checking user details: {ex.Message}");
+            }
+
+            if (isAdmin)
+            {
+                hasViewRight = true;
+                hasPrintRight = true;
+            }
+            else
+            {
+                var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                if (rightsResult.Success && rightsResult.Value != null)
+                {
+                    var casesheetRight = rightsResult.Value.FirstOrDefault(r => 
+                        r.ModuleName != null && 
+                        r.ModuleName.Trim().Equals("View_CaseSheet", StringComparison.OrdinalIgnoreCase));
+                    
+                    hasViewRight = casesheetRight != null ? casesheetRight.ToView : false;
+
+                    var printRight = rightsResult.Value.FirstOrDefault(r => 
+                        r.ModuleName != null && 
+                        r.ModuleName.Trim().Equals("Print_CaseSheet", StringComparison.OrdinalIgnoreCase));
+
+                    hasPrintRight = printRight != null ? printRight.ToExport : false;
+                }
+                else
+                {
+                    hasViewRight = false;
+                    hasPrintRight = false;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error retrieving user rights: {ex.Message}");
+            hasViewRight = false;
+            hasPrintRight = false;
+        }
+
+        if (!hasViewRight)
+        {
+            ToastService.ShowError("You do not have permission to view Case Sheets.");
+            await CloseModal();
+            return;
+        }
 
         try
         {
@@ -2917,9 +2980,17 @@
     [Inject] private IHttpClientFactory ClientFactory { get; set; } = default!;
 
     private bool printingCaseSheet = false;
+    private bool hasViewRight = true;
+    private bool hasPrintRight = true;
 
     private async Task PrintCaseSheetAsync()
     {
+        if (!hasPrintRight)
+        {
+            ToastService.ShowError("You do not have permission to print Case Sheets.");
+            return;
+        }
+
         if (string.IsNullOrEmpty(currentRequest.sheet_id)) return;
         try
         {

@@ -170,6 +170,38 @@
                         </div>
                     </div>
 
+                    <!-- Section: Role & Application Permissions -->
+                    <div class="form-section mb-0 lc-mt-16">
+                        <h4 class="section-title">
+                            <span class="section-icon">
+                                <span class="material-symbols-outlined" style="font-size: 14px;">key</span>
+                            </span>
+                            ROLE & APPLICATION PERMISSIONS
+                        </h4>
+                        <div class="form-row mt-6" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px; width: 100%;">
+                            <div class="form-group">
+                                <label>Select Application</label>
+                                <select class="lab-input" value="@selectedProductId" @onchange="OnApplicationChanged">
+                                    <option value="">-- Select Application --</option>
+                                    @foreach (var prod in rclProducts)
+                                    {
+                                        <option value="@prod.ProductId">@prod.ProductName</option>
+                                    }
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label>Role Template</label>
+                                <select class="lab-input" @bind="selectedRoleTemplateName">
+                                    <option value="">-- Select Role Template --</option>
+                                    @foreach (var template in rclRoleTemplates)
+                                    {
+                                        <option value="@template.RoleName">@template.RoleName</option>
+                                    }
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
                     <!-- Section: Profile Images -->
                     <div class="form-section mb-0 lc-mt-16">
                         <h4 class="section-title">
@@ -603,6 +635,12 @@
     private List<UserFormRightsModel.usermodules> allModules = new();
     private int selectedModuleId = 0;
 
+    // RCL template fields
+    private List<ProductList> rclProducts = new();
+    private List<RoleTemplate> rclRoleTemplates = new();
+    private string selectedProductId = "";
+    private string selectedRoleTemplateName = "";
+
     private int SelectedModuleId
     {
         get => selectedModuleId;
@@ -668,6 +706,7 @@
                     await LoadModules();
                     await LoadUsers();
                     await LoadGroups();
+                    await LoadRclProducts();
                     StateHasChanged();
                 }
                 else
@@ -869,6 +908,19 @@
 
         newPassword = "";
         ShowPwd = false;
+        
+        if (rclProducts != null && rclProducts.Any())
+        {
+            selectedProductId = rclProducts.First().ProductId;
+            await LoadRclRoleTemplates();
+            await LoadUserProductPermission(u.user_code);
+        }
+        else
+        {
+            selectedProductId = "";
+            selectedRoleTemplateName = "";
+        }
+
         isEditMode = true;
         showForm = true;
         
@@ -1061,6 +1113,7 @@
                 if (savedUserCode > 0)
                 {
                     await SaveUserModuleRights(savedUserCode);
+                    await SaveRclUserRoleTemplate(savedUserCode);
                 }
 
                 Toast.Success(isEditMode ? "User updated successfully." : "User created successfully.");
@@ -1103,6 +1156,9 @@
         authorizedGroups.Clear();
         selectedGroupCodeToAuthorize = 0;
         selectedModuleId = 0;
+        selectedProductId = "";
+        selectedRoleTemplateName = "";
+        rclRoleTemplates.Clear();
     }
 
     // ── Delete ────────────────────────────────────────────────────────────────
@@ -1679,6 +1735,160 @@
         catch (Exception ex)
         {
             Toast.Error($"Error persisting module rights: {ex.Message}");
+        }
+    }
+
+    private async Task LoadRclProducts()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("Medico");
+            var targetTenantCode = string.IsNullOrEmpty(TenantCode) ? TenantState.TenantCode : TenantCode;
+            if (client.DefaultRequestHeaders.Contains("tenant_code")) client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", targetTenantCode);
+            var response = await client.GetAsync($"Tenant/GetTenantProducts?tenantCode={targetTenantCode}");
+            if (response.IsSuccessStatusCode)
+            {
+                var jsonStr = await response.Content.ReadAsStringAsync();
+                rclProducts = Newtonsoft.Json.JsonConvert.DeserializeObject<List<ProductList>>(jsonStr) ?? new();
+            }
+            else
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[RCL Sync] Failed to load products: {response.StatusCode} - {body}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RCL Sync] Error loading products: {ex.Message}");
+        }
+    }
+
+    private async Task LoadRclRoleTemplates()
+    {
+        if (string.IsNullOrEmpty(selectedProductId))
+        {
+            rclRoleTemplates.Clear();
+            return;
+        }
+
+        try
+        {
+            var client = ClientFactory.CreateClient("Medico");
+            var targetTenantCode = string.IsNullOrEmpty(TenantCode) ? TenantState.TenantCode : TenantCode;
+            if (client.DefaultRequestHeaders.Contains("tenant_code")) client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", targetTenantCode);
+            var response = await client.GetAsync($"User/GetRoleTemplates?tenantId={targetTenantCode}&productId={selectedProductId}");
+            if (response.IsSuccessStatusCode)
+            {
+                var jsonStr = await response.Content.ReadAsStringAsync();
+                rclRoleTemplates = Newtonsoft.Json.JsonConvert.DeserializeObject<List<RoleTemplate>>(jsonStr) ?? new();
+            }
+            else
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[RCL Sync] Failed to load role templates: {response.StatusCode} - {body}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RCL Sync] Error loading role templates: {ex.Message}");
+        }
+    }
+
+    private async Task OnApplicationChanged(ChangeEventArgs e)
+    {
+        selectedProductId = e.Value?.ToString() ?? "";
+        selectedRoleTemplateName = "";
+        await LoadRclRoleTemplates();
+        if (isEditMode && current.user_code > 0)
+        {
+            await LoadUserProductPermission(current.user_code);
+        }
+    }
+
+    private async Task LoadUserProductPermission(int usercode)
+    {
+        if (string.IsNullOrEmpty(selectedProductId)) return;
+
+        try
+        {
+            var client = ClientFactory.CreateClient("Medico");
+            var targetTenantCode = string.IsNullOrEmpty(TenantCode) ? TenantState.TenantCode : TenantCode;
+            if (client.DefaultRequestHeaders.Contains("tenant_code")) client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", targetTenantCode);
+            var response = await client.GetAsync($"User/GetPermissions?userId={usercode}&tenantId={targetTenantCode}&productId={selectedProductId}");
+            if (response.IsSuccessStatusCode)
+            {
+                var jsonStr = await response.Content.ReadAsStringAsync();
+                var perm = Newtonsoft.Json.JsonConvert.DeserializeObject<ProductPermission>(jsonStr);
+                if (perm != null && !string.IsNullOrEmpty(perm.RoleName))
+                {
+                    selectedRoleTemplateName = perm.RoleName;
+                }
+                else
+                {
+                    selectedRoleTemplateName = "";
+                }
+            }
+            else
+            {
+                selectedRoleTemplateName = "";
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RCL Sync] Error loading user product permission: {ex.Message}");
+            selectedRoleTemplateName = "";
+        }
+    }
+
+    private async Task SaveRclUserRoleTemplate(int usercode)
+    {
+        if (string.IsNullOrEmpty(selectedProductId) || string.IsNullOrEmpty(selectedRoleTemplateName))
+        {
+            return;
+        }
+
+        try
+        {
+            var template = rclRoleTemplates.FirstOrDefault(t => t.RoleName == selectedRoleTemplateName);
+            if (template == null)
+            {
+                Console.WriteLine($"[RCL Sync] Selected template {selectedRoleTemplateName} not found.");
+                return;
+            }
+
+            var targetTenantCode = string.IsNullOrEmpty(TenantCode) ? TenantState.TenantCode : TenantCode;
+            var pp = new ProductPermission
+            {
+                UserID = usercode,
+                TenantID = targetTenantCode,
+                ProductId = selectedProductId,
+                RoleName = selectedRoleTemplateName,
+                RightsJson = template.RightsJson
+            };
+
+            var client = ClientFactory.CreateClient("Medico");
+            if (client.DefaultRequestHeaders.Contains("tenant_code")) client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", targetTenantCode);
+            var response = await client.PostAsJsonAsync("User/SavePermissions", pp);
+            if (response.IsSuccessStatusCode)
+            {
+                Console.WriteLine($"[RCL Sync] Successfully assigned role {selectedRoleTemplateName} to user {usercode}.");
+                Toast.Success($"Assigned role template '{selectedRoleTemplateName}' to the user.");
+            }
+            else
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[RCL Sync] Failed to assign role template: {response.StatusCode} - {body}");
+                Toast.Error($"Could not assign role template: {body}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[RCL Sync] Error saving user role template: {ex.Message}");
+            Toast.Error($"Error assigning role template: {ex.Message}");
         }
     }
 }
