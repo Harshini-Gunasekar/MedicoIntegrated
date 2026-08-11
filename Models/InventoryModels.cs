@@ -167,7 +167,7 @@ namespace Booking.Models
         public string shortname { get; set; }
         public string description { get; set; }
         public string location { get; set; }
-        public int tenantcode { get; set; }
+        public string? tenantcode { get; set; }
         public bool isactive { get; set; }
         public bool isdeleted { get; set; }
         public DateTime createddate { get; set; }

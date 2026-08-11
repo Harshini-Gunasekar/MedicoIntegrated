@@ -230,6 +230,9 @@ namespace Booking.Services
         {
             try
             {
+                var payloadStr = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine($"\n>>> [API POST api/HmsDueCollection/advance/deposit]\nPayload:\n{payloadStr}\n");
+
                 var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/deposit", request);
                 if (response.IsSuccessStatusCode)
                 {
@@ -262,6 +265,9 @@ namespace Booking.Services
         {
             try
             {
+                var payloadStr = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine($"\n>>> [API POST api/HmsDueCollection/advance/refund]\nPayload:\n{payloadStr}\n");
+
                 var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/refund", request);
                 if (response.IsSuccessStatusCode)
                 {
@@ -272,6 +278,32 @@ namespace Booking.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"Error in RefundAdvanceAsync: {ex.Message}");
+            }
+            return null;
+        }
+
+        public async Task<HmsAdvanceReceiptResponse?> UseAdvanceAsync(HmsAdvanceUseRequest request)
+        {
+            try
+            {
+                var payloadStr = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine($"\n>>> [API POST api/HmsDueCollection/advance/use]\nPayload:\n{payloadStr}\n");
+
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/use", request);
+                if (response.IsSuccessStatusCode)
+                {
+                    var wrapper = await response.Content.ReadFromJsonAsync<HmsAdvanceReceiptResponseWrapper>();
+                    return wrapper?.data;
+                }
+                else
+                {
+                    var err = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine($"Error in UseAdvanceAsync status {response.StatusCode}: {err}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in UseAdvanceAsync: {ex.Message}");
             }
             return null;
         }

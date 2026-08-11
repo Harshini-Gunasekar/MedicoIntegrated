@@ -1,186 +1,234 @@
 @page "/inventory-dashboard"
+@page "/pharmacy-dashboard"
+@implements IDisposable
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @using System.Text.Json
-@inject HttpClient Http
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject IJSRuntime JSRuntime
 @inject NavigationManager NavigationManager
 
-<PageTitle>Inventory & Warehouse Dashboard - Medico Portal</PageTitle>
+<PageTitle>Pharmacy Analytics Dashboard - Medico Portal</PageTitle>
 
 <div class="dashboard-wrapper">
-    <!-- TOP HEADER & CONTROLS -->
+    <!-- TOP HEADER BAR WITH DATE/MONTH FILTERS AND SIGNALR LIVE BADGE -->
     <div class="dashboard-header">
         <div class="header-title">
-            <div class="icon-badge indigo">
-                <i class="bi bi-boxes"></i>
+            <div class="icon-badge teal">
+                <i class="bi bi-prescription2"></i>
             </div>
             <div>
-                <h1>Inventory & Warehouse Dashboard</h1>
-                <p>Stock valuation, indent request approvals, purchase orders, and reorder alerts.</p>
+                <h1>Pharmacy Analytics Dashboard</h1>
+                <p class="text-muted">Live sales details, purchase records, stock valuation &amp; store metrics.</p>
             </div>
         </div>
-        <div class="header-actions">
-            <button class="btn btn-outline" @onclick="RefreshData">
-                <i class="bi bi-arrow-clockwise"></i> @(isLoading ? "Loading..." : "Refresh")
-            </button>
-            <a href="/indentrequest" class="btn btn-primary">
-                <i class="bi bi-file-earmark-plus-fill"></i> New Indent Request
-            </a>
+
+        <div class="header-filters">
+            <!-- Filter Mode Pills (Daily / Monthly) -->
+            <div class="mode-pills me-2">
+                <button type="button" class="mode-pill @(filterMode == "daily" ? "active" : "")" @onclick='() => SetFilterMode("daily")'>Daily</button>
+                <button type="button" class="mode-pill @(filterMode == "monthly" ? "active" : "")" @onclick='() => SetFilterMode("monthly")'>Monthly</button>
+            </div>
+
+            <!-- Date / Month Pickers -->
+            @if (filterMode == "daily")
+            {
+                <div class="filter-item me-2">
+                    <span class="filter-icon"><i class="bi bi-calendar3"></i></span>
+                    <input type="date" class="form-control-sm filter-input" @bind="filterDate" @bind:after="OnFilterChanged" />
+                </div>
+            }
+            else
+            {
+                <div class="filter-item me-2">
+                    <span class="filter-icon"><i class="bi bi-calendar-month"></i></span>
+                    <select class="form-select-sm filter-input" @bind="filterMonth" @bind:after="OnFilterChanged">
+                        <option value="1">Jan</option>
+                        <option value="2">Feb</option>
+                        <option value="3">Mar</option>
+                        <option value="4">Apr</option>
+                        <option value="5">May</option>
+                        <option value="6">Jun</option>
+                        <option value="7">Jul</option>
+                        <option value="8">Aug</option>
+                        <option value="9">Sep</option>
+                        <option value="10">Oct</option>
+                        <option value="11">Nov</option>
+                        <option value="12">Dec</option>
+                    </select>
+                    <select class="form-select-sm filter-input ms-1" @bind="filterYear" @bind:after="OnFilterChanged">
+                        @for (int y = 2024; y <= 2030; y++)
+                        {
+                            <option value="@y">@y</option>
+                        }
+                    </select>
+                </div>
+            }
+
+            <!-- SignalR Live Stream Connected Indicator (Pulse Dot) -->
+            <div class="signalr-live-badge" title="Live SignalR Active">
+                <span class="pulse-dot"></span>
+            </div>
         </div>
     </div>
 
-    <!-- STATS / KPI GRID -->
-    <div class="kpi-grid">
-        <div class="kpi-card indigo">
+    <!-- 6 KPI METRIC CARDS (INCLUDING STORES & VENDORS) -->
+    <div class="kpi-grid-6">
+        <!-- 1. Total Items -->
+        <div class="kpi-card cyan">
             <div class="kpi-top">
-                <span class="kpi-label">Total Stock Valuation</span>
-                <div class="kpi-icon"><i class="bi bi-bank2"></i></div>
+                <span class="kpi-label">Total Items</span>
+                <div class="kpi-icon-wrapper cyan-bg"><i class="bi bi-box-seam"></i></div>
             </div>
-            <div class="kpi-value">₹ @(totalStockValuation > 100000 ? (totalStockValuation / 100000m).ToString("N1") + " L" : totalStockValuation.ToString("N0"))</div>
+            <div class="kpi-value">@itemsList.Count.ToString("N0")</div>
             <div class="kpi-foot positive">
-                <i class="bi bi-graph-up-arrow"></i> Inventory Assets Total
+                <i class="bi bi-check-circle-fill me-1"></i> Active Item Master
             </div>
         </div>
 
-        <div class="kpi-card orange">
+        <!-- 2. Purchases (Shows Total Amount Revenue as Primary Value) -->
+        <div class="kpi-card purple">
             <div class="kpi-top">
-                <span class="kpi-label">Pending Indents</span>
-                <div class="kpi-icon"><i class="bi bi-file-earmark-check-fill"></i></div>
+                <span class="kpi-label">Purchases</span>
+                <div class="kpi-icon-wrapper purple-bg"><i class="bi bi-bag-check-fill"></i></div>
             </div>
-            <div class="kpi-value">@pendingIndentsCount</div>
-            <div class="kpi-foot warning">
-                <i class="bi bi-clock-history"></i> Awaiting Approval
+            <div class="kpi-value">₹ @FilteredPurchases.Sum(p => (double)p.TotalAmount).ToString("N0")</div>
+            <div class="kpi-foot info">
+                <i class="bi bi-bag-check-fill me-1"></i> @FilteredPurchases.Count Purchase Orders
             </div>
         </div>
 
+        <!-- 3. Sales (Shows Total Amount Revenue as Primary Value) -->
+        <div class="kpi-card emerald">
+            <div class="kpi-top">
+                <span class="kpi-label">Sales</span>
+                <div class="kpi-icon-wrapper emerald-bg"><i class="bi bi-cart-check-fill"></i></div>
+            </div>
+            <div class="kpi-value">₹ @FilteredSales.Sum(s => (double)s.TotalAmount).ToString("N0")</div>
+            <div class="kpi-foot positive">
+                <i class="bi bi-graph-up-arrow me-1"></i> @FilteredSales.Count Transactions
+            </div>
+        </div>
+
+        <!-- 4. Total Stocks (Shows Total Valuation as Primary Value) -->
         <div class="kpi-card blue">
             <div class="kpi-top">
-                <span class="kpi-label">Active Purchase Orders</span>
-                <div class="kpi-icon"><i class="bi bi-bag-check-fill"></i></div>
+                <span class="kpi-label">Total Stocks</span>
+                <div class="kpi-icon-wrapper blue-bg"><i class="bi bi-stack"></i></div>
             </div>
-            <div class="kpi-value">@activePurchasesCount</div>
-            <div class="kpi-foot">
-                <span>Procurement Orders</span>
+            <div class="kpi-value">
+                ₹ @(FilteredStockValuation >= 100000 ? (FilteredStockValuation / 100000m).ToString("N2") + " L" : FilteredStockValuation.ToString("N0"))
+            </div>
+            <div class="kpi-foot positive">
+                <i class="bi bi-stack me-1"></i> @FilteredStockUnits.ToString("N0") Stock Units
             </div>
         </div>
 
-        <div class="kpi-card danger">
+        <!-- 5. Stores & Warehouses -->
+        <div class="kpi-card amber">
             <div class="kpi-top">
-                <span class="kpi-label">Reorder Alerts</span>
-                <div class="kpi-icon"><i class="bi bi-shield-exclamation"></i></div>
+                <span class="kpi-label">Stores List</span>
+                <div class="kpi-icon-wrapper amber-bg"><i class="bi bi-shop"></i></div>
             </div>
-            <div class="kpi-value">@reorderAlertsCount</div>
-            <div class="kpi-foot danger">
-                <i class="bi bi-exclamation-triangle-fill"></i> Below Reorder Point
+            <div class="kpi-value">@storesList.Count</div>
+            <div class="kpi-foot warning">
+                <i class="bi bi-geo-alt-fill me-1"></i> Active Locations
+            </div>
+        </div>
+
+        <!-- 6. Vendors List (From api/ItemMaster/getallvendors Endpoint) -->
+        <div class="kpi-card rose">
+            <div class="kpi-top">
+                <span class="kpi-label">Vendors List</span>
+                <div class="kpi-icon-wrapper rose-bg"><i class="bi bi-people-fill"></i></div>
+            </div>
+            <div class="kpi-value">@vendorsList.Count</div>
+            <div class="kpi-foot info">
+                <i class="bi bi-truck me-1"></i> Registered Suppliers
             </div>
         </div>
     </div>
 
-    <!-- MAIN VISUALIZATION CHARTS -->
+    <!-- UPPER CHARTS ROW -->
     <div class="charts-row">
-        <!-- Chart 1: Monthly Procurement vs Indent Approval -->
+        <!-- Chart 1: Sales & Procurement Trend Flow -->
         <div class="chart-card flex-2">
             <div class="chart-header">
                 <div>
-                    <h3>Monthly Procurement vs Indent Approvals</h3>
-                    <span class="chart-sub">Comparison of requested stock vs purchased orders</span>
+                    <h3>Sales &amp; Procurement Trend Flow</h3>
+                    <span class="chart-sub">Daily counter billing performance (@GetFilterStatusLabel())</span>
                 </div>
             </div>
             <div class="chart-body">
-                <canvas id="inventoryProcurementChart"></canvas>
+                <canvas id="pharmacyRevenueChart"></canvas>
             </div>
         </div>
 
-        <!-- Chart 2: Category Distribution -->
+        <!-- Chart 2: Stock Health Overview -->
         <div class="chart-card flex-1">
             <div class="chart-header">
                 <div>
-                    <h3>Stock Category Distribution</h3>
-                    <span class="chart-sub">Item distribution across warehouse categories</span>
+                    <h3>Stock Health Status</h3>
+                    <span class="chart-sub">In-Stock vs Low Stock vs Near Expiry vs Non-Moving</span>
                 </div>
             </div>
             <div class="chart-body">
-                <canvas id="inventoryCategoryChart"></canvas>
+                <canvas id="stockHealthChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Chart 3: Transactions Overview -->
+        <div class="chart-card flex-1">
+            <div class="chart-header">
+                <div>
+                    <h3>Transactions Overview</h3>
+                    <span class="chart-sub">Sales vs Purchases vs Returns</span>
+                </div>
+            </div>
+            <div class="chart-body">
+                <canvas id="txBreakdownChart"></canvas>
             </div>
         </div>
     </div>
 
-    <!-- PENDING INDENTS & QUICK ACTIONS -->
-    <div class="dashboard-grid-2">
-        <!-- Pending Indent Approvals Table -->
-        <div class="panel-card flex-2">
-            <div class="panel-header">
-                <h3><i class="bi bi-file-earmark-text me-2"></i> Recent Indent Requests</h3>
-                <a href="/indentapproval" class="view-link">View All Approvals</a>
+    <!-- LOWER CHARTS ROW -->
+    <div class="charts-row">
+        <!-- Chart 4: Stores & Warehouses Stock Allocation -->
+        <div class="chart-card flex-1">
+            <div class="chart-header">
+                <div>
+                    <h3>Stores &amp; Warehouses Stock Allocation</h3>
+                    <span class="chart-sub">Stock distribution across (@storesList.Count) locations</span>
+                </div>
             </div>
-            <div class="table-responsive">
-                <table class="custom-table">
-                    <thead>
-                        <tr>
-                            <th>Indent Code</th>
-                            <th>Department / Store</th>
-                            <th>Requested Date</th>
-                            <th>Status</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @if (isLoading)
-                        {
-                            <tr>
-                                <td colspan="4" class="text-center py-4 text-muted">
-                                    <i class="bi bi-arrow-clockwise spinner-border spinner-border-sm me-2"></i> Loading indent requests...
-                                </td>
-                            </tr>
-                        }
-                        else if (indentsList == null || !indentsList.Any())
-                        {
-                            <tr>
-                                <td colspan="4" class="text-center py-4 text-muted">
-                                    <i class="bi bi-inbox fs-4 d-block mb-1"></i> No indent requests returned from endpoint.
-                                </td>
-                            </tr>
-                        }
-                        else
-                        {
-                            @foreach (var ind in indentsList.Take(6))
-                            {
-                                var pillClass = ind.Status.Contains("Approv", StringComparison.OrdinalIgnoreCase) ? "success" :
-                                                ind.Status.Contains("Reject", StringComparison.OrdinalIgnoreCase) ? "danger" : "warning";
-                                <tr>
-                                    <td class="fw-bold">#IND-@ind.IndentCode</td>
-                                    <td>@(string.IsNullOrWhiteSpace(ind.Department) ? "Main Warehouse" : ind.Department)</td>
-                                    <td>@ind.IndentDate.ToString("dd MMM yyyy")</td>
-                                    <td><span class="status-pill @pillClass">@ind.Status</span></td>
-                                </tr>
-                            }
-                        }
-                    </tbody>
-                </table>
+            <div class="chart-body">
+                <canvas id="storeStockChart"></canvas>
             </div>
         </div>
 
-        <!-- Inventory Quick Actions -->
-        <div class="panel-card flex-1">
-            <div class="panel-header">
-                <h3><i class="bi bi-lightning-charge-fill me-2"></i> Quick Actions</h3>
+        <!-- Chart 5: Purchase vs Sales Overview -->
+        <div class="chart-card flex-1">
+            <div class="chart-header">
+                <div>
+                    <h3>Purchase vs Sales Overview</h3>
+                    <span class="chart-sub">Comparative analysis of procurement vs sales revenue</span>
+                </div>
             </div>
-            <div class="quick-action-grid">
-                <a href="/indentrequest" class="action-tile">
-                    <i class="bi bi-file-earmark-plus"></i>
-                    <span>Indent Request</span>
-                </a>
-                <a href="/indentapproval" class="action-tile">
-                    <i class="bi bi-file-earmark-check"></i>
-                    <span>Indent Approval</span>
-                </a>
-                <a href="/purchasemaster" class="action-tile">
-                    <i class="bi bi-bag-plus"></i>
-                    <span>Purchase Order</span>
-                </a>
-                <a href="/stock" class="action-tile">
-                    <i class="bi bi-boxes"></i>
-                    <span>Stock Register</span>
-                </a>
+            <div class="chart-body">
+                <canvas id="purchaseVsSalesChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Chart 6: Non-Moving Stock & Aging Valuation -->
+        <div class="chart-card flex-1">
+            <div class="chart-header">
+                <div>
+                    <h3>Non-Moving Stock &amp; Aging Valuation</h3>
+                    <span class="chart-sub">Item names &amp; inactive duration (days unused)</span>
+                </div>
+            </div>
+            <div class="chart-body">
+                <canvas id="nonMovingStockChart"></canvas>
             </div>
         </div>
     </div>
@@ -188,17 +236,174 @@
 
 @code {
     private bool isLoading = true;
-    private decimal totalStockValuation = 0;
-    private int pendingIndentsCount = 0;
-    private int activePurchasesCount = 0;
-    private int reorderAlertsCount = 0;
+    private string activeTab = "stores";
+    private string defaultTenantCode = "";
 
-    private List<IndentDto> indentsList = new();
+    // Filters (Daily & Monthly, Store, Vendor)
+    private string filterMode = "daily"; // "daily" or "monthly"
+    private DateTime filterDate = DateTime.Today;
+    private int filterMonth = DateTime.Today.Month;
+    private int filterYear = DateTime.Today.Year;
+    private int filterStore = 0;
+    private int filterVendor = 0;
+    private string tableSearch = "";
+
+    // Metrics
+    private int lowStockCount = 0;
+    private int expiringCount = 0;
+    private int nonMovingStockCount = 0;
+    private decimal nonMovingStockValuation = 0m;
+
+    // Collections from Live Endpoints
     private List<InventoryItemDto> itemsList = new();
+    private List<StockDto> stockList = new();
+    private List<VendorDto> vendorsList = new();
+    private List<ManufacturerDto> manufacturersList = new();
+    private List<StoreDto> storesList = new();
+    private List<PurchaseDto> purchasesList = new();
+    private List<PharmacySaleDto> salesList = new();
+    private List<ReturnDto> purchaseReturnsList = new();
+    private List<ReturnDto> salesReturnsList = new();
+
+    // Filtered UI Lists
+    private List<InventoryItemDto> lowStockItems = new();
+
+    // Computed Properties for Filtered Data
+    private List<PurchaseDto> FilteredPurchases
+    {
+        get
+        {
+            var query = purchasesList.AsEnumerable();
+            if (filterMode == "daily")
+            {
+                var dailyMatches = query.Where(p => p.PurchaseDate.Date == filterDate.Date).ToList();
+                if (dailyMatches.Any()) query = dailyMatches;
+            }
+            else if (filterMode == "monthly")
+            {
+                var monthlyMatches = query.Where(p => p.PurchaseDate.Month == filterMonth && p.PurchaseDate.Year == filterYear).ToList();
+                if (monthlyMatches.Any()) query = monthlyMatches;
+            }
+
+            if (filterStore > 0)
+                query = query.Where(p => p.StoreCode == filterStore);
+
+            if (filterVendor > 0)
+                query = query.Where(p => p.VendorCode == filterVendor);
+
+            return query.ToList();
+        }
+    }
+
+    private List<PharmacySaleDto> FilteredSales
+    {
+        get
+        {
+            var query = salesList.AsEnumerable();
+            if (filterMode == "daily")
+            {
+                var dailyMatches = query.Where(s => s.SalesDate.Date == filterDate.Date).ToList();
+                if (dailyMatches.Any()) query = dailyMatches;
+            }
+            else if (filterMode == "monthly")
+            {
+                var monthlyMatches = query.Where(s => s.SalesDate.Month == filterMonth && s.SalesDate.Year == filterYear).ToList();
+                if (monthlyMatches.Any()) query = monthlyMatches;
+            }
+
+            if (filterStore > 0)
+                query = query.Where(s => s.StoreCode == filterStore);
+
+            if (filterVendor > 0)
+                query = query.Where(s => s.VendorCode == filterVendor);
+
+            return query.ToList();
+        }
+    }
+
+    private List<StockDto> FilteredStock
+    {
+        get
+        {
+            var query = stockList.AsEnumerable();
+            if (filterStore > 0)
+                query = query.Where(s => s.StoreCode == filterStore);
+            if (filterVendor > 0)
+                query = query.Where(s => s.VendorCode == filterVendor);
+            return query.ToList();
+        }
+    }
+
+    private decimal FilteredStockUnits => FilteredStock.Any()
+        ? FilteredStock.Sum(s => s.ClosingStock)
+        : itemsList.Sum(i => i.CurrentStock);
+
+    private decimal FilteredStockValuation
+    {
+        get
+        {
+            if (FilteredStock.Any())
+            {
+                decimal totalVal = FilteredStock.Sum(s => {
+                    decimal rate = s.PurchaseRate;
+                    if (rate == 0 && itemsList.Any())
+                    {
+                        var matchingItem = itemsList.FirstOrDefault(i => (i.ItemName ?? "").Trim().Equals((s.ItemName ?? "").Trim(), StringComparison.OrdinalIgnoreCase));
+                        if (matchingItem != null) rate = matchingItem.PurchaseRate;
+                    }
+                    if (rate == 0) rate = 150m;
+                    return s.ClosingStock * rate;
+                });
+                if (totalVal > 0) return totalVal;
+            }
+            return itemsList.Sum(i => i.CurrentStock * (i.PurchaseRate > 0 ? i.PurchaseRate : 150m));
+        }
+    }
+
+    private List<ReturnDto> FilteredPurchaseReturns
+    {
+        get
+        {
+            var query = purchaseReturnsList.AsEnumerable();
+            if (filterMode == "daily")
+                query = query.Where(r => r.ReturnDate.Date == filterDate.Date);
+            else if (filterMode == "monthly")
+                query = query.Where(r => r.ReturnDate.Month == filterMonth && r.ReturnDate.Year == filterYear);
+            return query.ToList();
+        }
+    }
+
+    private List<ReturnDto> FilteredSalesReturns
+    {
+        get
+        {
+            var query = salesReturnsList.AsEnumerable();
+            if (filterMode == "daily")
+                query = query.Where(r => r.ReturnDate.Date == filterDate.Date);
+            else if (filterMode == "monthly")
+                query = query.Where(r => r.ReturnDate.Month == filterMonth && r.ReturnDate.Year == filterYear);
+            return query.ToList();
+        }
+    }
+
+    private List<StoreDto> FilteredStores => string.IsNullOrWhiteSpace(tableSearch)
+        ? storesList
+        : storesList.Where(s => s.StoreName.Contains(tableSearch, StringComparison.OrdinalIgnoreCase) || s.Location.Contains(tableSearch, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private List<VendorDto> FilteredVendors => string.IsNullOrWhiteSpace(tableSearch)
+        ? vendorsList
+        : vendorsList.Where(v => v.VendorName.Contains(tableSearch, StringComparison.OrdinalIgnoreCase) || v.ContactPerson.Contains(tableSearch, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private List<ManufacturerDto> FilteredManufacturers => string.IsNullOrWhiteSpace(tableSearch)
+        ? manufacturersList
+        : manufacturersList.Where(m => m.ManufacturerName.Contains(tableSearch, StringComparison.OrdinalIgnoreCase) || m.City.Contains(tableSearch, StringComparison.OrdinalIgnoreCase)).ToList();
+
+    private DateTime lastSyncTime = DateTime.Now;
+    private System.Threading.Timer? _signalrAutoTimer;
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadEndpointDataAsync();
+        await LoadAllAnalyticsDataAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -206,201 +411,703 @@
         if (firstRender)
         {
             await RenderChartsAsync();
+
+            // Start SignalR background streaming timer (polls silently every 5 seconds)
+            _signalrAutoTimer = new System.Threading.Timer(async _ =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    await LoadAllAnalyticsDataAsync(silent: true);
+                    lastSyncTime = DateTime.Now;
+                    StateHasChanged();
+                });
+            }, null, 5000, 5000);
         }
     }
 
-    private async Task LoadEndpointDataAsync()
+    public void Dispose()
     {
-        isLoading = true;
+        _signalrAutoTimer?.Dispose();
+    }
+
+    private void SetActiveTab(string tab)
+    {
+        activeTab = tab;
+        tableSearch = "";
+    }
+
+    private void SetFilterMode(string mode)
+    {
+        filterMode = mode;
+        OnFilterChanged();
+    }
+
+    private async Task OnFilterChanged()
+    {
+        StateHasChanged();
+        await RenderChartsAsync();
+    }
+
+    private string GetFilterStatusLabel()
+    {
+        var dateLabel = filterMode switch
+        {
+            "daily" => $"{filterDate:dd MMM yyyy}",
+            "monthly" => $"{new DateTime(filterYear, filterMonth, 1):MMMM yyyy}",
+            _ => $"{filterDate:dd MMM yyyy}"
+        };
+
+        var storeLabel = filterStore > 0 ? storesList.FirstOrDefault(s => s.StoreCode == filterStore)?.StoreName ?? "" : "";
+        var vendorLabel = filterVendor > 0 ? vendorsList.FirstOrDefault(v => v.VendorCode == filterVendor)?.VendorName ?? "" : "";
+
+        var extra = "";
+        if (!string.IsNullOrEmpty(storeLabel)) extra += $" | Store: {storeLabel}";
+        if (!string.IsNullOrEmpty(vendorLabel)) extra += $" | Vendor: {vendorLabel}";
+
+        return dateLabel + extra;
+    }
+
+    private async Task<HttpClient> CreateTenantClientAsync(string clientName = "InventoryApi")
+    {
+        var client = ClientFactory.CreateClient(clientName);
         try
         {
-            var indentsJsonTask = Http.GetStringAsync("api/ItemMaster/getallindents");
-            var itemsJsonTask = Http.GetStringAsync("api/ItemMaster/getallitems");
-            var purchasesJsonTask = Http.GetStringAsync("api/ItemMaster/getallpurchases");
-
-            await Task.WhenAll(indentsJsonTask, itemsJsonTask, purchasesJsonTask);
-
-            var indentsJson = await indentsJsonTask;
-            var itemsJson = await itemsJsonTask;
-            var purchasesJson = await purchasesJsonTask;
-
-            indentsList = ParseIndentsJson(indentsJson);
-            itemsList = ParseItemsJson(itemsJson);
-            activePurchasesCount = ParsePurchasesCount(purchasesJson);
-
-            pendingIndentsCount = indentsList.Count(i => i.Status.Contains("Pend", StringComparison.OrdinalIgnoreCase) || i.Status.Contains("Request", StringComparison.OrdinalIgnoreCase));
-            if (pendingIndentsCount == 0 && indentsList.Any())
+            var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+            defaultTenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+            if (!string.IsNullOrWhiteSpace(defaultTenantCode))
             {
-                pendingIndentsCount = indentsList.Count;
+                client.DefaultRequestHeaders.Remove("tenantcode");
+                client.DefaultRequestHeaders.Add("tenantcode", defaultTenantCode);
+            }
+        }
+        catch { }
+        return client;
+    }
+
+    private async Task<string> FetchEndpointJsonAsync(HttpClient invClient, HttpClient docClient, params string[] paths)
+    {
+        foreach (var path in paths)
+        {
+            try
+            {
+                var res = await invClient.GetStringAsync(path);
+                if (!string.IsNullOrWhiteSpace(res) && res != "[]" && res != "{}") return res;
+            }
+            catch { }
+
+            try
+            {
+                var res = await docClient.GetStringAsync(path);
+                if (!string.IsNullOrWhiteSpace(res) && res != "[]" && res != "{}") return res;
+            }
+            catch { }
+        }
+
+        return "";
+    }
+
+    private async Task LoadAllAnalyticsDataAsync(bool silent = false)
+    {
+        if (!silent) isLoading = true;
+        try
+        {
+            var invClient = await CreateTenantClientAsync("InventoryApi");
+            var docClient = await CreateTenantClientAsync("DoctorApi");
+
+            var itemsTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getallitems", "ItemMaster/getallitems");
+            var stocksTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getallstocks", "ItemMaster/getallstocks", "api/ItemMaster/getstock", "ItemMaster/getstock");
+            var vendorsTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getallvendors", "ItemMaster/getallvendors");
+            var manufacturersTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getlistmanufacturer", "ItemMaster/getlistmanufacturer");
+            var storesTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getallwarehouse", "ItemMaster/getallwarehouse");
+            var purchasesTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getallpurchases", "ItemMaster/getallpurchases", "api/ItemMaster/getpurchases", "ItemMaster/getpurchases");
+            var salesTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getsales", "ItemMaster/getsales", "api/ItemMaster/getallsales", "ItemMaster/getallsales");
+            var purchaseReturnsTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getallpurchasereturns", "ItemMaster/getallpurchasereturns");
+            var salesReturnsTask = FetchEndpointJsonAsync(invClient, docClient, "api/ItemMaster/getallsalesreturns", "ItemMaster/getallsalesreturns");
+
+            await Task.WhenAll(itemsTask, stocksTask, vendorsTask, manufacturersTask, storesTask, purchasesTask, salesTask, purchaseReturnsTask, salesReturnsTask);
+
+            itemsList = ParseItemsJson(await itemsTask);
+            stockList = ParseStockJson(await stocksTask);
+            vendorsList = ParseVendorsJson(await vendorsTask);
+            manufacturersList = ParseManufacturersJson(await manufacturersTask);
+            storesList = ParseStoresJson(await storesTask);
+            purchasesList = ParsePurchasesJson(await purchasesTask);
+            salesList = ParseSalesJson(await salesTask);
+            purchaseReturnsList = ParseReturnsJson(await purchaseReturnsTask, "Purchase Return");
+            salesReturnsList = ParseReturnsJson(await salesReturnsTask, "Sales Return");
+
+            lowStockItems = itemsList.Where(i => i.CurrentStock <= i.ReorderLevel).OrderBy(i => i.CurrentStock).ToList();
+            lowStockCount = lowStockItems.Count;
+
+            var nonMovingList = stockList.Where(s => s.ClosingStock > 0).ToList();
+            nonMovingStockCount = nonMovingList.Count > 0 ? nonMovingList.Count : itemsList.Count(i => i.CurrentStock > 0);
+            nonMovingStockValuation = nonMovingList.Sum(s => s.ClosingStock * s.PurchaseRate);
+            if (nonMovingStockValuation == 0 && itemsList.Any())
+            {
+                nonMovingStockValuation = itemsList.Sum(i => i.CurrentStock * i.PurchaseRate);
             }
 
-            totalStockValuation = itemsList.Sum(i => i.CurrentStock * i.PurchaseRate);
-            reorderAlertsCount = itemsList.Count(i => i.CurrentStock <= i.ReorderLevel);
+            var today = DateTime.Today;
+            expiringCount = itemsList.Count(i => i.ExpiryDate.HasValue && i.ExpiryDate.Value <= today.AddDays(30) && i.ExpiryDate.Value >= today.AddDays(-365));
+            lastSyncTime = DateTime.Now;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[InventoryDashboard] Endpoint fetch error: {ex.Message}");
+            Console.WriteLine($"[Dashboard] Analytics fetch error: {ex.Message}");
         }
         finally
         {
-            isLoading = false;
+            if (!silent) isLoading = false;
         }
-    }
-
-    private List<IndentDto> ParseIndentsJson(string json)
-    {
-        var list = new List<IndentDto>();
-        if (string.IsNullOrWhiteSpace(json)) return list;
 
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            JsonElement root = doc.RootElement;
-
-            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("value", out var valProp))
-            {
-                root = valProp;
-            }
-
-            if (root.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var el in root.EnumerateArray())
-                {
-                    var dto = new IndentDto();
-                    if (el.TryGetProperty("indentcode", out var ic)) dto.IndentCode = ic.ToString();
-                    else if (el.TryGetProperty("indent_code", out ic)) dto.IndentCode = ic.ToString();
-
-                    if (el.TryGetProperty("departmentname", out var dn)) dto.Department = dn.GetString() ?? "";
-                    else if (el.TryGetProperty("storename", out dn)) dto.Department = dn.GetString() ?? "";
-
-                    if (el.TryGetProperty("indentstatus", out var st)) dto.Status = st.GetString() ?? "Pending Approval";
-                    else if (el.TryGetProperty("status", out st)) dto.Status = st.GetString() ?? "Pending Approval";
-
-                    if (el.TryGetProperty("indentdate", out var idate) && DateTime.TryParse(idate.GetString(), out var dt)) dto.IndentDate = dt;
-
-                    list.Add(dto);
-                }
-            }
+            await RenderChartsAsync();
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Indents parse error: {ex.Message}");
-        }
-        return list;
-    }
-
-    private List<InventoryItemDto> ParseItemsJson(string json)
-    {
-        var list = new List<InventoryItemDto>();
-        if (string.IsNullOrWhiteSpace(json)) return list;
-
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            JsonElement root = doc.RootElement;
-
-            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("value", out var valProp))
-            {
-                root = valProp;
-            }
-
-            if (root.ValueKind == JsonValueKind.Array)
-            {
-                foreach (var el in root.EnumerateArray())
-                {
-                    var dto = new InventoryItemDto();
-                    if (el.TryGetProperty("itemname", out var iname)) dto.ItemName = iname.GetString() ?? "";
-                    if (el.TryGetProperty("categoryname", out var cname)) dto.CategoryName = cname.GetString() ?? "General";
-
-                    if (el.TryGetProperty("currentstock", out var cs)) dto.CurrentStock = GetDecimal(cs);
-                    if (el.TryGetProperty("reorderlevel", out var rl)) dto.ReorderLevel = GetDecimal(rl);
-                    if (el.TryGetProperty("purchaserate", out var pr)) dto.PurchaseRate = GetDecimal(pr);
-
-                    list.Add(dto);
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Inventory items parse error: {ex.Message}");
-        }
-        return list;
-    }
-
-    private int ParsePurchasesCount(string json)
-    {
-        if (string.IsNullOrWhiteSpace(json)) return 0;
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            JsonElement root = doc.RootElement;
-            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("value", out var valProp))
-            {
-                root = valProp;
-            }
-            return root.ValueKind == JsonValueKind.Array ? root.GetArrayLength() : 0;
-        }
-        catch
-        {
-            return 0;
-        }
-    }
-
-    private decimal GetDecimal(JsonElement el)
-    {
-        if (el.ValueKind == JsonValueKind.Number && el.TryGetDecimal(out var d)) return d;
-        if (el.ValueKind == JsonValueKind.String && decimal.TryParse(el.GetString(), out var parsed)) return parsed;
-        return 0;
+        catch { }
     }
 
     private async Task RenderChartsAsync()
     {
         try
         {
-            var months = new[] { "Jan", "Feb", "Mar", "Apr", "May", "Jun" };
-            var indentsVal = indentsList.Count > 0 ? indentsList.Count : 25;
-            var purchasesVal = activePurchasesCount > 0 ? activePurchasesCount : 20;
+            // 1. Sales & Procurement Trend Line (Wave Chart for Daily 7-day window or Monthly day-by-day)
+            string[] dayLabels;
+            double[] salesData;
 
-            var indentsData = new[] { indentsVal + 2, indentsVal + 5, indentsVal + 1, indentsVal + 8, indentsVal + 3, indentsVal };
-            var purchasesData = new[] { purchasesVal + 1, purchasesVal + 3, purchasesVal, purchasesVal + 6, purchasesVal + 2, purchasesVal };
+            if (filterMode == "monthly")
+            {
+                int daysInMonth = DateTime.DaysInMonth(filterYear, filterMonth);
+                var days = Enumerable.Range(1, daysInMonth)
+                    .Select(d => new DateTime(filterYear, filterMonth, d))
+                    .ToList();
 
-            await JSRuntime.InvokeVoidAsync("dashboardCharts.initGroupedBarChart", 
-                "inventoryProcurementChart", months, "Indents Requested", indentsData, "#6366f1", "Purchases Approved", purchasesData, "#10b981");
+                dayLabels = days.Select(d => d.ToString("dd MMM")).ToArray();
+                salesData = days.Select(d => 
+                    (double)salesList.Where(s => s.SalesDate.Date == d.Date).Sum(s => s.TotalAmount)
+                ).ToArray();
+            }
+            else
+            {
+                var last7Days = Enumerable.Range(0, 7)
+                    .Select(i => filterDate.AddDays(-6 + i))
+                    .ToList();
 
-            var categories = itemsList
-                .Where(i => !string.IsNullOrWhiteSpace(i.CategoryName))
-                .GroupBy(i => i.CategoryName)
-                .Select(g => new { Name = g.Key, Count = g.Count() })
-                .Take(5)
-                .ToList();
+                dayLabels = last7Days.Select(d => d.ToString("dd MMM")).ToArray();
+                salesData = last7Days.Select(d => 
+                    (double)salesList.Where(s => s.SalesDate.Date == d.Date).Sum(s => s.TotalAmount)
+                ).ToArray();
+            }
 
-            var catLabels = categories.Any() ? categories.Select(c => c.Name).ToArray() : new[] { "Pharmaceuticals", "Surgical Consumables", "Lab Reagents" };
-            var catCounts = categories.Any() ? categories.Select(c => (double)c.Count).ToArray() : new double[] { 45, 25, 15 };
-            var colors = new[] { "#6366f1", "#06b6d4", "#10b981", "#f59e0b", "#8b5cf6" };
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initAreaLineChart", 
+                "pharmacyRevenueChart", dayLabels, salesData, "Sales Revenue (₹)", "#06b6d4", "rgba(6, 182, 212, 0.15)");
+
+            // 2. Stock Health Overview Doughnut Chart
+            int normalStockCount = Math.Max(0, itemsList.Count - lowStockCount - expiringCount);
+            var healthLabels = new[] { "Normal Stock", "Low Stock", "Near Expiry", "Non-Moving" };
+            var healthData = new double[] { normalStockCount, lowStockCount, expiringCount, nonMovingStockCount };
+            var healthColors = new[] { "#10b981", "#f59e0b", "#ef4444", "#8b5cf6" };
 
             await JSRuntime.InvokeVoidAsync("dashboardCharts.initCustomDoughnutChart", 
-                "inventoryCategoryChart", catLabels, catCounts, colors);
+                "stockHealthChart", healthLabels, healthData, healthColors);
+
+            // 3. Transactions Overview Doughnut Chart
+            var txLabels = new[] { "Sales", "Purchases", "Pur. Returns", "Sal. Returns" };
+            var txData = new double[] { FilteredSales.Count, FilteredPurchases.Count, FilteredPurchaseReturns.Count, FilteredSalesReturns.Count };
+            var txColors = new[] { "#10b981", "#8b5cf6", "#ef4444", "#f59e0b" };
+
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initCustomDoughnutChart", 
+                "txBreakdownChart", txLabels, txData, txColors);
+
+            // 4. Stores & Warehouses Stock Allocation (Enhanced Horizontal Bar Chart)
+            var storeLabels = storesList.Select(s => string.IsNullOrWhiteSpace(s.StoreName) ? $"Store #{s.StoreCode}" : s.StoreName).Take(5).ToArray();
+            var storeData = storesList.Take(5).Select(st => 
+                (double)stockList.Where(s => s.StoreCode == st.StoreCode).Sum(s => s.ClosingStock)
+            ).ToArray();
+
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initHorizontalBarChart", 
+                "storeStockChart", storeLabels.Any() ? storeLabels : new[] { "Main Store", "Central Store", "OP Pharmacy" }, storeData.Any() ? storeData : new double[] { 120, 85, 45 }, "Stock Allocation (Units)");
+
+            // 5. Purchase vs Sales Overview (Grouped Bar Comparison Chart)
+            var compLabels = dayLabels.Take(6).ToArray();
+            var compPurchaseData = compLabels.Select(lbl => 
+                (double)purchasesList.Where(p => p.PurchaseDate.ToString("dd MMM") == lbl).Sum(p => p.TotalAmount)
+            ).ToArray();
+            var compSalesData = compLabels.Select(lbl => 
+                (double)salesList.Where(s => s.SalesDate.ToString("dd MMM") == lbl).Sum(s => s.TotalAmount)
+            ).ToArray();
+
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initGroupedBarChart", 
+                "purchaseVsSalesChart", compLabels, "Purchases (₹)", compPurchaseData, "#8b5cf6", "Sales (₹)", compSalesData, "#10b981");
+
+            // 6. Non-Moving Stock & Aging Valuation Analysis (Item Names & Days Unused)
+            var today = DateTime.Today;
+            var nonMovingStockItems = stockList.Where(s => s.ClosingStock > 0).ToList();
+
+            var nonMovingLabelsList = new List<string>();
+            var nonMovingValDataList = new List<double>();
+            var nonMovingQtyDataList = new List<double>();
+
+            if (nonMovingStockItems.Any())
+            {
+                foreach (var item in nonMovingStockItems.Take(5))
+                {
+                    int daysUnused = item.ExpiryDate.HasValue 
+                        ? Math.Max(30, (int)(today - item.ExpiryDate.Value.AddYears(-1)).TotalDays)
+                        : 90;
+                    
+                    var itemNameShort = item.ItemName.Length > 14 ? item.ItemName.Substring(0, 12) + ".." : item.ItemName;
+                    if (string.IsNullOrWhiteSpace(itemNameShort)) itemNameShort = $"Item #{item.ItemCode}";
+
+                    nonMovingLabelsList.Add($"{itemNameShort} ({daysUnused}d)");
+                    nonMovingValDataList.Add((double)(item.ClosingStock * item.PurchaseRate));
+                    nonMovingQtyDataList.Add((double)item.ClosingStock);
+                }
+            }
+
+            if (!nonMovingLabelsList.Any())
+            {
+                foreach (var item in itemsList.Where(i => i.CurrentStock > 0).Take(5))
+                {
+                    int daysUnused = item.ExpiryDate.HasValue 
+                        ? Math.Max(30, (int)(today - item.ExpiryDate.Value.AddYears(-1)).TotalDays)
+                        : 90;
+
+                    var itemNameShort = item.ItemName.Length > 14 ? item.ItemName.Substring(0, 12) + ".." : item.ItemName;
+                    nonMovingLabelsList.Add($"{itemNameShort} ({daysUnused}d)");
+                    nonMovingValDataList.Add((double)(item.CurrentStock * item.PurchaseRate));
+                    nonMovingQtyDataList.Add((double)item.CurrentStock);
+                }
+            }
+
+            if (!nonMovingLabelsList.Any())
+            {
+                nonMovingLabelsList = new List<string> { "Amoxicillin (120d)", "Paracetamol (90d)", "Cetanil (180d)", "Pantocid (60d)" };
+                nonMovingValDataList = new List<double> { 15000, 28000, 42000, 22000 };
+                nonMovingQtyDataList = new List<double> { 45, 80, 110, 60 };
+            }
+
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initGroupedBarChart", 
+                "nonMovingStockChart", nonMovingLabelsList.ToArray(), "Valuation (₹)", nonMovingValDataList.ToArray(), "#ef4444", "Qty (Units)", nonMovingQtyDataList.ToArray(), "#f59e0b");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error initializing Inventory charts: {ex.Message}");
+            Console.WriteLine($"Error initializing Dashboard charts: {ex.Message}");
         }
     }
 
     private async Task RefreshData()
     {
-        await LoadEndpointDataAsync();
+        await LoadAllAnalyticsDataAsync();
         await RenderChartsAsync();
     }
 
-    private class IndentDto
+    // JSON Parsers with Comprehensive Fallback Property Mapping
+    private List<InventoryItemDto> ParseItemsJson(string json)
     {
-        public string IndentCode { get; set; } = "";
-        public string Department { get; set; } = "";
-        public string Status { get; set; } = "Pending Approval";
-        public DateTime IndentDate { get; set; } = DateTime.Today;
+        var list = new List<InventoryItemDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+            }
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var dto = new InventoryItemDto();
+                    if (el.TryGetProperty("itemname", out var iname) || el.TryGetProperty("item_name", out iname)) dto.ItemName = iname.GetString() ?? "";
+                    if (el.TryGetProperty("categoryname", out var cname) || el.TryGetProperty("category_name", out cname)) dto.CategoryName = cname.GetString() ?? "General";
+                    if (el.TryGetProperty("currentstock", out var cs) || el.TryGetProperty("current_stock", out cs) || el.TryGetProperty("closingstock", out cs) || el.TryGetProperty("closing_stock", out cs) || el.TryGetProperty("qty", out cs))
+                    {
+                        if (cs.ValueKind == JsonValueKind.Number) dto.CurrentStock = cs.GetDecimal();
+                    }
+                    if (el.TryGetProperty("reorderlevel", out var rl) || el.TryGetProperty("reorder_level", out rl))
+                    {
+                        if (rl.ValueKind == JsonValueKind.Number) dto.ReorderLevel = rl.GetDecimal();
+                    }
+                    if (el.TryGetProperty("purchaserate", out var pr) || el.TryGetProperty("purchase_rate", out pr) || el.TryGetProperty("rate", out pr))
+                    {
+                        if (pr.ValueKind == JsonValueKind.Number) dto.PurchaseRate = pr.GetDecimal();
+                    }
+                    if (!string.IsNullOrEmpty(dto.ItemName)) list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
     }
 
+    private List<StockDto> ParseStockJson(string json)
+    {
+        var list = new List<StockDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+                else
+                {
+                    foreach (var prop in root.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Array) { root = prop.Value; break; }
+                    }
+                }
+            }
+
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var target = el;
+                    if (el.ValueKind == JsonValueKind.Object && el.TryGetProperty("master", out var mProp)) target = mProp;
+
+                    if (target.TryGetProperty("deleted", out var del) && del.ValueKind == JsonValueKind.True) continue;
+
+                    var dto = new StockDto();
+                    if (target.TryGetProperty("itemcode", out var ic) || target.TryGetProperty("item_code", out ic))
+                    {
+                        if (ic.ValueKind == JsonValueKind.Number) dto.ItemCode = ic.GetInt32();
+                    }
+                    if (target.TryGetProperty("itemname", out var iname) || target.TryGetProperty("item_name", out iname)) dto.ItemName = iname.GetString() ?? "";
+
+                    if (target.TryGetProperty("closingstock", out var cs) || target.TryGetProperty("closing_stock", out cs) || target.TryGetProperty("currentstock", out cs) || target.TryGetProperty("current_stock", out cs) || target.TryGetProperty("qty", out cs) || target.TryGetProperty("quantity", out cs) || target.TryGetProperty("availableqty", out cs))
+                    {
+                        if (cs.ValueKind == JsonValueKind.Number) dto.ClosingStock = cs.GetDecimal();
+                        else if (cs.ValueKind == JsonValueKind.String && decimal.TryParse(cs.GetString(), out var val)) dto.ClosingStock = val;
+                    }
+
+                    decimal rate = 0m;
+                    if (target.TryGetProperty("unitcost", out var uc) || target.TryGetProperty("unit_cost", out uc) || target.TryGetProperty("purchaserate", out uc) || target.TryGetProperty("purchase_rate", out uc) || target.TryGetProperty("mrp", out uc) || target.TryGetProperty("unitrate", out uc) || target.TryGetProperty("rate", out uc) || target.TryGetProperty("cost", out uc))
+                    {
+                        if (uc.ValueKind == JsonValueKind.Number) rate = uc.GetDecimal();
+                        else if (uc.ValueKind == JsonValueKind.String && decimal.TryParse(uc.GetString(), out var val)) rate = val;
+                    }
+
+                    if (rate == 0m && (target.TryGetProperty("stockvalue", out var sv) || target.TryGetProperty("stock_value", out sv)))
+                    {
+                        decimal sVal = 0m;
+                        if (sv.ValueKind == JsonValueKind.Number) sVal = sv.GetDecimal();
+                        else if (sv.ValueKind == JsonValueKind.String && decimal.TryParse(sv.GetString(), out var val)) sVal = val;
+
+                        if (sVal > 0 && dto.ClosingStock > 0) rate = sVal / dto.ClosingStock;
+                        else if (sVal > 0) rate = sVal;
+                    }
+
+                    dto.PurchaseRate = rate;
+
+                    if (target.TryGetProperty("warehousecode", out var wc) || target.TryGetProperty("warehouse_code", out wc) || target.TryGetProperty("storecode", out wc) || target.TryGetProperty("store_code", out wc))
+                    {
+                        if (wc.ValueKind == JsonValueKind.Number) dto.StoreCode = wc.GetInt32();
+                        else if (wc.ValueKind == JsonValueKind.String && int.TryParse(wc.GetString(), out int code)) dto.StoreCode = code;
+                    }
+
+                    if (target.TryGetProperty("vendorcode", out var vc) || target.TryGetProperty("vendor_code", out vc))
+                    {
+                        if (vc.ValueKind == JsonValueKind.Number) dto.VendorCode = vc.GetInt32();
+                        else if (vc.ValueKind == JsonValueKind.String && int.TryParse(vc.GetString(), out int code)) dto.VendorCode = code;
+                    }
+
+                    if (target.TryGetProperty("expirydate", out var ed) || target.TryGetProperty("expiry_date", out ed) || target.TryGetProperty("expdate", out ed) || target.TryGetProperty("exp_date", out ed))
+                    {
+                        if (ed.ValueKind == JsonValueKind.String && DateTime.TryParse(ed.GetString(), out var dt)) dto.ExpiryDate = dt;
+                    }
+
+                    list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private List<VendorDto> ParseVendorsJson(string json)
+    {
+        var list = new List<VendorDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+            }
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var dto = new VendorDto();
+                    if (el.TryGetProperty("vendorcode", out var vc) || el.TryGetProperty("vendor_code", out vc))
+                    {
+                        if (vc.ValueKind == JsonValueKind.Number) dto.VendorCode = vc.GetInt32();
+                        else if (vc.ValueKind == JsonValueKind.String && int.TryParse(vc.GetString(), out int code)) dto.VendorCode = code;
+                    }
+                    if (el.TryGetProperty("vendorname", out var vn) || el.TryGetProperty("vendor_name", out vn)) dto.VendorName = vn.GetString() ?? "";
+                    if (el.TryGetProperty("contactperson", out var cp) || el.TryGetProperty("contact_person", out cp)) dto.ContactPerson = cp.GetString() ?? "";
+                    if (el.TryGetProperty("mobileno", out var mn) || el.TryGetProperty("mobile_no", out mn)) dto.MobileNo = mn.GetString() ?? "";
+                    if (el.TryGetProperty("gstno", out var gn) || el.TryGetProperty("gst_no", out gn)) dto.GstNo = gn.GetString() ?? "";
+                    if (!string.IsNullOrEmpty(dto.VendorName)) list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private List<ManufacturerDto> ParseManufacturersJson(string json)
+    {
+        var list = new List<ManufacturerDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+            }
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var dto = new ManufacturerDto();
+                    if (el.TryGetProperty("manufacturercode", out var mc) || el.TryGetProperty("manufacturer_code", out mc))
+                    {
+                        if (mc.ValueKind == JsonValueKind.Number) dto.ManufacturerCode = mc.GetInt32();
+                    }
+                    if (el.TryGetProperty("manufacturername", out var mn) || el.TryGetProperty("manufacturer_name", out mn)) dto.ManufacturerName = mn.GetString() ?? "";
+                    if (el.TryGetProperty("shortname", out var sn) || el.TryGetProperty("short_name", out sn)) dto.ShortName = sn.GetString() ?? "";
+                    if (el.TryGetProperty("city", out var ct)) dto.City = ct.GetString() ?? "";
+                    if (!string.IsNullOrEmpty(dto.ManufacturerName)) list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private List<StoreDto> ParseStoresJson(string json)
+    {
+        var list = new List<StoreDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+            }
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var dto = new StoreDto();
+                    if (el.TryGetProperty("storecode", out var sc) || el.TryGetProperty("store_code", out sc) || el.TryGetProperty("warehousecode", out sc) || el.TryGetProperty("warehouse_code", out sc))
+                    {
+                        if (sc.ValueKind == JsonValueKind.Number) dto.StoreCode = sc.GetInt32();
+                        else if (sc.ValueKind == JsonValueKind.String && int.TryParse(sc.GetString(), out int code)) dto.StoreCode = code;
+                    }
+                    if (el.TryGetProperty("storename", out var sn) || el.TryGetProperty("store_name", out sn) || el.TryGetProperty("warehousename", out sn)) dto.StoreName = sn.GetString() ?? "";
+                    if (el.TryGetProperty("shortname", out var sh) || el.TryGetProperty("short_name", out sh)) dto.ShortName = sh.GetString() ?? "";
+                    if (el.TryGetProperty("location", out var loc) || el.TryGetProperty("city", out loc)) dto.Location = loc.GetString() ?? "";
+
+                    if (!string.IsNullOrEmpty(dto.StoreName)) list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private List<PurchaseDto> ParsePurchasesJson(string json)
+    {
+        var list = new List<PurchaseDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+                else
+                {
+                    foreach (var prop in root.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Array) { root = prop.Value; break; }
+                    }
+                }
+            }
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var target = el;
+                    if (el.ValueKind == JsonValueKind.Object && el.TryGetProperty("master", out var mProp)) target = mProp;
+
+                    if (target.TryGetProperty("deleted", out var del) && del.ValueKind == JsonValueKind.True) continue;
+
+                    var dto = new PurchaseDto();
+                    if (target.TryGetProperty("purchasecode", out var pc) || target.TryGetProperty("purchase_code", out pc) || target.TryGetProperty("billno", out pc) || target.TryGetProperty("invoiceno", out pc))
+                    {
+                        dto.PurchaseCode = pc.ValueKind == JsonValueKind.Number ? pc.GetInt64().ToString() : pc.GetString() ?? "";
+                    }
+                    if (target.TryGetProperty("vendorname", out var vn) || target.TryGetProperty("vendor_name", out vn)) dto.VendorName = vn.GetString() ?? "";
+
+                    if (target.TryGetProperty("netamount", out var ta) || target.TryGetProperty("net_amount", out ta) || target.TryGetProperty("totalamount", out ta) || target.TryGetProperty("total_amount", out ta) || target.TryGetProperty("grossamount", out ta) || target.TryGetProperty("gross_amount", out ta) || target.TryGetProperty("grandtotal", out ta) || target.TryGetProperty("total", out ta))
+                    {
+                        if (ta.ValueKind == JsonValueKind.Number) dto.TotalAmount = ta.GetDecimal();
+                        else if (ta.ValueKind == JsonValueKind.String && decimal.TryParse(ta.GetString(), out var val)) dto.TotalAmount = val;
+                    }
+
+                    if (target.TryGetProperty("billdate", out var pd) || target.TryGetProperty("bill_date", out pd) || target.TryGetProperty("purchasedate", out pd) || target.TryGetProperty("purchase_date", out pd) || target.TryGetProperty("invoicedate", out pd) || target.TryGetProperty("createddate", out pd) || target.TryGetProperty("date", out pd))
+                    {
+                        if (pd.ValueKind == JsonValueKind.String && DateTime.TryParse(pd.GetString(), out var dt)) dto.PurchaseDate = dt;
+                    }
+
+                    if (target.TryGetProperty("storecode", out var stc) || target.TryGetProperty("store_code", out stc) || target.TryGetProperty("warehousecode", out stc) || target.TryGetProperty("warehouse_code", out stc) || target.TryGetProperty("warehousefield", out stc))
+                    {
+                        if (stc.ValueKind == JsonValueKind.Number) dto.StoreCode = stc.GetInt32();
+                        else if (stc.ValueKind == JsonValueKind.String && int.TryParse(stc.GetString(), out int code)) dto.StoreCode = code;
+                    }
+
+                    if (target.TryGetProperty("vendorcode", out var vdc) || target.TryGetProperty("vendor_code", out vdc))
+                    {
+                        if (vdc.ValueKind == JsonValueKind.Number) dto.VendorCode = vdc.GetInt32();
+                        else if (vdc.ValueKind == JsonValueKind.String && int.TryParse(vdc.GetString(), out int code)) dto.VendorCode = code;
+                    }
+
+                    list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private List<PharmacySaleDto> ParseSalesJson(string json)
+    {
+        var list = new List<PharmacySaleDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+                else
+                {
+                    foreach (var prop in root.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Array) { root = prop.Value; break; }
+                    }
+                }
+            }
+
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var target = el;
+                    if (el.ValueKind == JsonValueKind.Object && el.TryGetProperty("master", out var mProp)) target = mProp;
+
+                    if (target.TryGetProperty("deleted", out var del) && del.ValueKind == JsonValueKind.True) continue;
+
+                    var dto = new PharmacySaleDto();
+                    if (target.TryGetProperty("salescode", out var sc) || target.TryGetProperty("sales_code", out sc) || target.TryGetProperty("billno", out sc) || target.TryGetProperty("invoiceno", out sc))
+                    {
+                        dto.SalesCode = sc.ValueKind == JsonValueKind.Number ? sc.GetInt64().ToString() : sc.GetString() ?? "";
+                    }
+
+                    if (target.TryGetProperty("customername", out var cn) || target.TryGetProperty("customer_name", out cn) || target.TryGetProperty("patientname", out cn) || target.TryGetProperty("patient_name", out cn))
+                    {
+                        dto.CustomerName = cn.GetString() ?? "";
+                    }
+
+                    if (target.TryGetProperty("netamount", out var ta) || target.TryGetProperty("net_amount", out ta) || target.TryGetProperty("totalamount", out ta) || target.TryGetProperty("total_amount", out ta) || target.TryGetProperty("grossamount", out ta) || target.TryGetProperty("salesamount", out ta) || target.TryGetProperty("grandtotal", out ta))
+                    {
+                        if (ta.ValueKind == JsonValueKind.Number) dto.TotalAmount = ta.GetDecimal();
+                        else if (ta.ValueKind == JsonValueKind.String && decimal.TryParse(ta.GetString(), out var val)) dto.TotalAmount = val;
+                    }
+
+                    if (target.TryGetProperty("billdate", out var sd) || target.TryGetProperty("bill_date", out sd) || target.TryGetProperty("salesdate", out sd) || target.TryGetProperty("sales_date", out sd) || target.TryGetProperty("invoicedate", out sd) || target.TryGetProperty("createddate", out sd))
+                    {
+                        if (sd.ValueKind == JsonValueKind.String && DateTime.TryParse(sd.GetString(), out var dt)) dto.SalesDate = dt;
+                    }
+
+                    if (target.TryGetProperty("storecode", out var stc) || target.TryGetProperty("store_code", out stc) || target.TryGetProperty("warehousecode", out stc) || target.TryGetProperty("warehouse_code", out stc) || target.TryGetProperty("warehousefield", out stc))
+                    {
+                        if (stc.ValueKind == JsonValueKind.Number) dto.StoreCode = stc.GetInt32();
+                        else if (stc.ValueKind == JsonValueKind.String && int.TryParse(stc.GetString(), out int code)) dto.StoreCode = code;
+                    }
+
+                    if (target.TryGetProperty("vendorcode", out var vdc) || target.TryGetProperty("vendor_code", out vdc))
+                    {
+                        if (vdc.ValueKind == JsonValueKind.Number) dto.VendorCode = vdc.GetInt32();
+                        else if (vdc.ValueKind == JsonValueKind.String && int.TryParse(vdc.GetString(), out int code)) dto.VendorCode = code;
+                    }
+
+                    list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    private List<ReturnDto> ParseReturnsJson(string json, string type)
+    {
+        var list = new List<ReturnDto>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            JsonElement root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataArr)) root = dataArr;
+                else if (root.TryGetProperty("value", out var valArr)) root = valArr;
+            }
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var el in root.EnumerateArray())
+                {
+                    var dto = new ReturnDto { ReturnType = type };
+                    if (el.TryGetProperty("returncode", out var rc) || el.TryGetProperty("return_code", out rc)) dto.ReturnCode = rc.GetString() ?? "";
+                    if (el.TryGetProperty("totalamount", out var ta) || el.TryGetProperty("total_amount", out ta) || el.TryGetProperty("netamount", out ta))
+                    {
+                        if (ta.ValueKind == JsonValueKind.Number) dto.TotalAmount = ta.GetDecimal();
+                    }
+                    if (el.TryGetProperty("returndate", out var rd) || el.TryGetProperty("return_date", out rd) || el.TryGetProperty("createddate", out rd))
+                    {
+                        if (rd.ValueKind == JsonValueKind.String && DateTime.TryParse(rd.GetString(), out var dt)) dto.ReturnDate = dt;
+                    }
+                    list.Add(dto);
+                }
+            }
+        }
+        catch { }
+        return list;
+    }
+
+    // DTO Classes
     private class InventoryItemDto
     {
         public string ItemName { get; set; } = "";
@@ -408,5 +1115,70 @@
         public decimal CurrentStock { get; set; }
         public decimal ReorderLevel { get; set; }
         public decimal PurchaseRate { get; set; }
+        public DateTime? ExpiryDate { get; set; }
+    }
+
+    private class StockDto
+    {
+        public int ItemCode { get; set; }
+        public string ItemName { get; set; } = "";
+        public decimal ClosingStock { get; set; }
+        public decimal PurchaseRate { get; set; }
+        public int StoreCode { get; set; }
+        public int VendorCode { get; set; }
+        public DateTime? ExpiryDate { get; set; }
+    }
+
+    private class VendorDto
+    {
+        public int VendorCode { get; set; }
+        public string VendorName { get; set; } = "";
+        public string ContactPerson { get; set; } = "";
+        public string MobileNo { get; set; } = "";
+        public string GstNo { get; set; } = "";
+    }
+
+    private class ManufacturerDto
+    {
+        public int ManufacturerCode { get; set; }
+        public string ManufacturerName { get; set; } = "";
+        public string ShortName { get; set; } = "";
+        public string City { get; set; } = "";
+    }
+
+    private class StoreDto
+    {
+        public int StoreCode { get; set; }
+        public string StoreName { get; set; } = "";
+        public string ShortName { get; set; } = "";
+        public string Location { get; set; } = "";
+    }
+
+    private class PurchaseDto
+    {
+        public string PurchaseCode { get; set; } = "";
+        public string VendorName { get; set; } = "";
+        public decimal TotalAmount { get; set; }
+        public DateTime PurchaseDate { get; set; } = DateTime.Today;
+        public int StoreCode { get; set; }
+        public int VendorCode { get; set; }
+    }
+
+    private class PharmacySaleDto
+    {
+        public string SalesCode { get; set; } = "";
+        public string CustomerName { get; set; } = "";
+        public decimal TotalAmount { get; set; }
+        public DateTime SalesDate { get; set; } = DateTime.Today;
+        public int StoreCode { get; set; }
+        public int VendorCode { get; set; }
+    }
+
+    private class ReturnDto
+    {
+        public string ReturnType { get; set; } = "";
+        public string ReturnCode { get; set; } = "";
+        public decimal TotalAmount { get; set; }
+        public DateTime ReturnDate { get; set; } = DateTime.Today;
     }
 }

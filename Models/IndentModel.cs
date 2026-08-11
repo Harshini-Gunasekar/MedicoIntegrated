@@ -1,38 +1,38 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel.DataAnnotations;
 
 namespace Booking.Models
 {
     public class indent_master
     {
-        [Key]
         public long indentcode { get; set; }
 
         // Indent Info
         public string? indentno { get; set; }
-        public DateTime indentdate { get; set; } = DateTime.Now;
+        public DateTime indentdate { get; set; }
 
         // Request Info
         public long? requestedby { get; set; }
         public long? departmentcode { get; set; }
         public string? branchcode { get; set; }
+        public long purchasedetailcode { get; set; }
 
+        public decimal issuedqty { get; set; }
         // Remarks
         public string? remarks { get; set; }
 
         // Approval
-        public string? approvalstatus { get; set; } = "PENDING";   // PENDING / APPROVED / REJECTED
+        public string? approvalstatus { get; set; }   // PENDING / APPROVED / REJECTED
         public long? approvedby { get; set; }
         public DateTime? approveddate { get; set; }
         public string? approvalremarks { get; set; }
 
         // Status
-        public bool isactive { get; set; } = true;
-        public bool deleted { get; set; } = false;
+        public bool isactive { get; set; }
+        public bool deleted { get; set; }
 
         // Audit
-        public DateTime createddate { get; set; } = DateTime.Now;
+        public DateTime createddate { get; set; }
 
         // Multi Tenant
         public string? tenantcode { get; set; }
@@ -40,15 +40,14 @@ namespace Booking.Models
 
     public class indent_detail
     {
-        [Key]
         public long indentdetailcode { get; set; }
 
         // Parent Indent
         public long indentcode { get; set; }
 
         // Item Reference
-        [Range(1, long.MaxValue, ErrorMessage = "Item selection is required")]
         public long itemcode { get; set; }
+        public long purchasedetailcode { get; set; }
 
         // Quantity
         public decimal requestedqty { get; set; }
@@ -61,7 +60,7 @@ namespace Booking.Models
 
     public class indent_request
     {
-        public indent_master master { get; set; } = new();
-        public List<indent_detail> details { get; set; } = new();
+        public indent_master master { get; set; }
+        public List<indent_detail> details { get; set; }
     }
 }

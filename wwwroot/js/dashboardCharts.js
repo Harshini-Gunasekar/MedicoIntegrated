@@ -9,14 +9,14 @@ window.dashboardCharts = {
     },
 
     // 1. Doctor-Wise Total Diagnostic Orders (Horizontal Bar Chart)
-    initHorizontalBarChart: function (canvasId, labels, data) {
+    initHorizontalBarChart: function (canvasId, labels, data, datasetLabel) {
         this.destroyChart(canvasId);
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
-        const defaultLabels = labels && labels.length ? labels : ['No Doctor Data'];
+        const defaultLabels = labels && labels.length ? labels : ['No Store Data'];
         const defaultData = data && data.length ? data : [0];
-        const barColors = ['#10b981', '#2563eb', '#8b5cf6', '#f59e0b', '#ec4899', '#06b6d4', '#f43f5e', '#64748b'];
+        const barColors = ['#10b981', '#8b5cf6', '#06b6d4', '#f59e0b', '#ec4899', '#3b82f6', '#f43f5e', '#64748b'];
 
         var bgColors = [];
         for (var i = 0; i < defaultLabels.length; i++) {
@@ -28,12 +28,12 @@ window.dashboardCharts = {
             data: {
                 labels: defaultLabels,
                 datasets: [{
-                    label: 'Diagnostic Orders',
+                    label: datasetLabel || 'Stock Units',
                     data: defaultData,
                     backgroundColor: bgColors,
-                    borderRadius: 6,
+                    borderRadius: 8,
                     borderSkipped: false,
-                    maxBarThickness: 16
+                    maxBarThickness: 18
                 }]
             },
             options: {
@@ -45,8 +45,10 @@ window.dashboardCharts = {
                     legend: { display: false },
                     tooltip: {
                         backgroundColor: '#0f172a',
-                        padding: 8,
-                        cornerRadius: 6
+                        padding: 10,
+                        cornerRadius: 8,
+                        titleFont: { size: 11, weight: '700' },
+                        bodyFont: { size: 11 }
                     }
                 },
                 scales: {
@@ -58,7 +60,7 @@ window.dashboardCharts = {
                         grid: { display: false },
                         ticks: {
                             autoSkip: false,
-                            color: '#475569',
+                            color: '#334155',
                             font: { size: 10, weight: '700' }
                         }
                     }

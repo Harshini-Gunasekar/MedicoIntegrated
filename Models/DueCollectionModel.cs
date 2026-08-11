@@ -477,6 +477,18 @@ namespace medico_backend.Model
     }
 
 
+    public class HmsAdvanceUseRequest
+    {
+        public decimal custid { get; set; }
+        public double amount_to_use { get; set; }
+        public int enteredbhcode { get; set; } = 1;
+        public int cntcode { get; set; } = 1;
+        public int usercode { get; set; } = 10;
+        public int computercode { get; set; } = 1;
+        public string? remarks { get; set; }
+    }
+
+
     public class HmsDueCollectionSummary
     {
         public string? receipt_guid { get; set; }

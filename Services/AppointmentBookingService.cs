@@ -363,6 +363,24 @@ namespace Booking.Services
             }
         }
 
+        public async Task<bool> DeleteOpVitalsAsync(Guid vitalId)
+        {
+            try
+            {
+                var response = await _http.PostAsync($"api/OpRegistration/delete-vitals?vital_id={vitalId}", null);
+                if (!response.IsSuccessStatusCode)
+                {
+                    response = await _http.DeleteAsync($"api/OpRegistration/delete-vitals?vital_id={vitalId}");
+                }
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting OP vitals: {ex.Message}");
+                return false;
+            }
+        }
+
         public async Task<bool> UpdateOpStatusAsync(Guid opId, string visitStatus)
         {
             try
