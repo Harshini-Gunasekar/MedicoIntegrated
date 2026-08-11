@@ -1,91 +1,216 @@
 @page "/op-dashboard"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IDisposable
 @using Booking.Models
+@using System.Threading
 @inject Booking.Services.DoctorService DoctorService
 @inject Booking.Services.DoctorCurrentStatusService DoctorStatusService
+@inject Booking.Services.AppointmentBookingService BookingService
 @inject HttpClient Http
 @inject IJSRuntime JSRuntime
 @inject NavigationManager NavigationManager
 
 <PageTitle>Out-Patient (OP) Dashboard - Medico Portal</PageTitle>
 
-<div class="dashboard-wrapper">
-    <!-- TOP HEADER & CONTROLS -->
-    <div class="dashboard-header">
+<div class="op-wrapper">
+
+    <!-- ═══ HEADER ═══ -->
+    <div class="op-header">
         <div class="header-title">
             <div class="icon-badge cyan">
                 <i class="bi bi-heart-pulse-fill"></i>
             </div>
             <div>
-                <h1>Out-Patient (OP) Portal Dashboard</h1>
-                <p>Live consultation queue, token visits, doctor schedules, and outpatient workflow metrics.</p>
+                <h1>Out-Patient (OP) Dashboard</h1>
+                <p>Live consultation queue, token visits, doctor schedules & outpatient workflow metrics.</p>
             </div>
         </div>
         <div class="header-actions">
-            <button class="btn btn-outline" @onclick="RefreshData">
-                <i class="bi bi-arrow-clockwise"></i> @(isLoading ? "Loading..." : "Refresh")
+            <div class="live-sync-badge" title="Live stream auto-update active">
+                <span class="pulse-dot"></span> SignalR Live
+            </div>
+            <button class="btn btn-outline" @onclick="RefreshData" disabled="@isLoading">
+                <i class="bi bi-arrow-clockwise @(isLoading ? "spin-anim" : "")"></i>
+                @(isLoading ? "Loading..." : "Refresh")
             </button>
+
             <a href="/booking/reception" class="btn btn-primary">
                 <i class="bi bi-person-check-fill"></i> Patient Check-In
             </a>
         </div>
     </div>
 
-    <!-- STATS / KPI GRID -->
-    <div class="kpi-grid">
-        <div class="kpi-card cyan">
-            <div class="kpi-top">
-                <span class="kpi-label">Active Doctors</span>
-                <div class="kpi-icon"><i class="bi bi-person-badge-fill"></i></div>
+    <!-- ═══ QUICK ACCESS POPUP ═══ -->
+    @if (showQuickAccess)
+    {
+        <!-- Backdrop -->
+        <div class="qa-backdrop" @onclick="ToggleQuickAccess"></div>
+
+        <!-- Popup Card -->
+        <div class="qa-popup">
+            <div class="qa-popup-header">
+                <div class="qa-popup-title">
+                    <div class="qa-title-icon"><i class="bi bi-grid-3x3-gap-fill"></i></div>
+                    <div>
+                        <h4>Quick Access</h4>
+                        <p>OP Shortcuts</p>
+                    </div>
+                </div>
+                <button class="qa-close" @onclick="ToggleQuickAccess">
+                    <i class="bi bi-x-lg"></i>
+                </button>
             </div>
-            <div class="kpi-value">@activeDoctorsCount</div>
-            <div class="kpi-foot positive">
-                <i class="bi bi-shield-check"></i> Registered Practitioners
+            <div class="qa-popup-grid">
+
+                <a href="/booking/reception" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#06b6d4,#0e7490)">
+                        <i class="bi bi-person-plus-fill"></i>
+                    </div>
+                    <span>Patient Check-In</span>
+                    <small>Register new OP visit</small>
+                </a>
+
+                <a href="/booking/outpatient" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#8b5cf6,#7c3aed)">
+                        <i class="bi bi-hospital"></i>
+                    </div>
+                    <span>Outpatient Queue</span>
+                    <small>View live OP queue</small>
+                </a>
+
+                <a href="/slots" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#10b981,#059669)">
+                        <i class="bi bi-calendar-range"></i>
+                    </div>
+                    <span>Slot Master</span>
+                    <small>Manage slot schedules</small>
+                </a>
+
             </div>
         </div>
+    }
 
-        <div class="kpi-card green">
-            <div class="kpi-top">
-                <span class="kpi-label">Doctors Available</span>
-                <div class="kpi-icon"><i class="bi bi-check-circle-fill"></i></div>
-            </div>
-            <div class="kpi-value">@availableDoctorsCount</div>
-            <div class="kpi-foot">
-                <span>In OPD Chambers</span>
-            </div>
+    <!-- ═══ FILTER BAR ═══ -->
+    <div class="filter-bar">
+        <div class="filter-group">
+            <label class="filter-label"><i class="bi bi-calendar3"></i> Date</label>
+            <input type="date"
+                   class="filter-input"
+                   value="@selectedDate.ToString("yyyy-MM-dd")"
+                   @onchange="OnDateChanged" />
         </div>
-
-        <div class="kpi-card purple">
-            <div class="kpi-top">
-                <span class="kpi-label">Specialties Active</span>
-                <div class="kpi-icon"><i class="bi bi-hospital"></i></div>
-            </div>
-            <div class="kpi-value">@specialtiesCount</div>
-            <div class="kpi-foot info">
-                <i class="bi bi-layers-fill"></i> Clinical Departments
-            </div>
+        <div class="filter-group">
+            <label class="filter-label"><i class="bi bi-person-badge"></i> Doctor</label>
+            <select class="filter-input" @onchange="OnDoctorFilterChanged">
+                <option value="0">— All Doctors —</option>
+                @foreach (var doc in doctorsList)
+                {
+                    <option value="@doc.dcode">@doc.GetFormattedName()</option>
+                }
+            </select>
         </div>
-
-        <div class="kpi-card orange">
-            <div class="kpi-top">
-                <span class="kpi-label">Doctors On Leave</span>
-                <div class="kpi-icon"><i class="bi bi-person-dash-fill"></i></div>
-            </div>
-            <div class="kpi-value">@onLeaveCount</div>
-            <div class="kpi-foot warning">
-                <i class="bi bi-clock"></i> Leave / Away Status
-            </div>
+        <div class="filter-group">
+            <label class="filter-label"><i class="bi bi-building"></i> Branch</label>
+            <select class="filter-input" @onchange="OnBranchFilterChanged">
+                <option value="">— All Branches —</option>
+                <option value="MAIN">Main Branch</option>
+                <option value="BRANCH1">Branch 1</option>
+                <option value="BRANCH2">Branch 2</option>
+            </select>
+        </div>
+        <div class="filter-info">
+            <i class="bi bi-info-circle text-muted"></i>
+            <span>Showing data for <strong>@selectedDate.ToString("dd MMM yyyy")</strong></span>
         </div>
     </div>
 
-    <!-- MAIN VISUALIZATION CHARTS -->
+    <!-- ═══ KPI GRID (6 cards) ═══ -->
+    <div class="kpi-grid">
+
+        <!-- 1. Total OP Patients -->
+        <div class="kpi-card cyan">
+            <div class="kpi-top">
+                <span class="kpi-label">Total OP Patients</span>
+                <div class="kpi-icon"><i class="bi bi-people-fill"></i></div>
+            </div>
+            <div class="kpi-value">@totalOpCount</div>
+            <div class="kpi-foot info">
+                <i class="bi bi-calendar-check"></i> Today's Registrations
+            </div>
+        </div>
+
+        <!-- 2. New Patients -->
+        <div class="kpi-card green">
+            <div class="kpi-top">
+                <span class="kpi-label">New Patients</span>
+                <div class="kpi-icon"><i class="bi bi-person-plus-fill"></i></div>
+            </div>
+            <div class="kpi-value">@newPatientCount</div>
+            <div class="kpi-foot positive">
+                <i class="bi bi-shield-check"></i> First Visits
+            </div>
+        </div>
+
+        <!-- 3. Follow-Up Patients -->
+        <div class="kpi-card purple">
+            <div class="kpi-top">
+                <span class="kpi-label">Follow-Up Patients</span>
+                <div class="kpi-icon"><i class="bi bi-arrow-repeat"></i></div>
+            </div>
+            <div class="kpi-value">@followUpCount</div>
+            <div class="kpi-foot info">
+                <i class="bi bi-clock-history"></i> Revisit Cases
+            </div>
+        </div>
+
+        <!-- 4. Walk-In Count -->
+        <div class="kpi-card orange">
+            <div class="kpi-top">
+                <span class="kpi-label">Walk-Ins Today</span>
+                <div class="kpi-icon"><i class="bi bi-person-walking"></i></div>
+            </div>
+            <div class="kpi-value">@walkinCount</div>
+            <div class="kpi-foot warning">
+                <i class="bi bi-door-open"></i> Direct Walk-In
+            </div>
+        </div>
+
+        <!-- 5. Online Appointments -->
+        <div class="kpi-card blue">
+            <div class="kpi-top">
+                <span class="kpi-label">Online Appointments</span>
+                <div class="kpi-icon"><i class="bi bi-globe2"></i></div>
+            </div>
+            <div class="kpi-value">@onlineCount</div>
+            <div class="kpi-foot info">
+                <i class="bi bi-calendar-range"></i> Pre-Booked Online
+            </div>
+        </div>
+
+        <!-- 6. Available Doctors -->
+        <div class="kpi-card teal">
+            <div class="kpi-top">
+                <span class="kpi-label">Available Doctors</span>
+                <div class="kpi-icon"><i class="bi bi-check-circle-fill"></i></div>
+            </div>
+            <div class="kpi-value">@availableDoctorsCount</div>
+            <div class="kpi-foot positive">
+                <i class="bi bi-person-badge-fill"></i>
+                @availableDoctorsCount of @activeDoctorsCount In OPD
+            </div>
+        </div>
+
+    </div>
+
+    <!-- ═══ CHARTS ROW ═══ -->
     <div class="charts-row">
-        <!-- Chart 1: Hourly Consultation Volume -->
+
+        <!-- Chart 1: Hourly Patient Consultation Flow -->
         <div class="chart-card flex-2">
             <div class="chart-header">
                 <div>
                     <h3>Hourly Patient Consultation Flow</h3>
-                    <span class="chart-sub">Real-time token arrivals and consultations per hour</span>
+                    <span class="chart-sub">Token arrivals and consultations per hour (today)</span>
                 </div>
             </div>
             <div class="chart-body">
@@ -93,35 +218,71 @@
             </div>
         </div>
 
-        <!-- Chart 2: Specialty Wise Patient Breakdown -->
+        <!-- Chart 2: OPD Overview Pie -->
         <div class="chart-card flex-1">
             <div class="chart-header">
                 <div>
-                    <h3>Specialty Distribution</h3>
-                    <span class="chart-sub">Doctor breakdown by medical specialization</span>
+                    <h3>OPD Overview</h3>
+                    <span class="chart-sub">New vs Follow-Up vs Dressing</span>
                 </div>
             </div>
             <div class="chart-body">
-                <canvas id="opSpecialtyChart"></canvas>
+                <canvas id="opOverviewPieChart"></canvas>
             </div>
         </div>
+
+        <!-- Chart 3: Queue Status Pie -->
+        <div class="chart-card flex-1">
+            <div class="chart-header">
+                <div>
+                    <h3>Queue Status</h3>
+                    <span class="chart-sub">Completed / Pending / In Consultation</span>
+                </div>
+            </div>
+            <div class="chart-body">
+                <canvas id="opQueueStatusChart"></canvas>
+            </div>
+        </div>
+
+        <!-- Chart 4: Booking Status Pie (Booked vs Confirmed vs Cancelled) -->
+        <div class="chart-card flex-1">
+            <div class="chart-header">
+                <div>
+                    <h3>Appointment Status</h3>
+                    <span class="chart-sub">Booked &bull; Confirmed &bull; Cancelled &bull; Rescheduled</span>
+                </div>
+            </div>
+            <div class="chart-body">
+                <canvas id="opBookingStatusChart"></canvas>
+            </div>
+        </div>
+
     </div>
 
-    <!-- QUEUE & QUICK ACTIONS -->
+    <!-- ═══ BOTTOM ROW: ROSTER + QUICK ACTIONS ═══ -->
     <div class="dashboard-grid-2">
-        <!-- Live Doctor Queue Overview -->
+
+        <!-- Doctor Roster Table -->
         <div class="panel-card flex-2">
             <div class="panel-header">
-                <h3><i class="bi bi-person-workspace me-2"></i> Active Doctor Consultation Roster</h3>
-                <a href="/booking/outpatient" class="view-link">View Full Queue</a>
+                <h3><i class="bi bi-person-workspace me-2"></i>Active Doctor Consultation Roster</h3>
+                <div class="roster-controls">
+                    <button class="filter-chip @(showAvailableOnly ? "active" : "")"
+                            @onclick="ToggleAvailableFilter">
+                        <i class="bi bi-circle-fill"></i>
+                        @(showAvailableOnly ? "Available Only" : "All Doctors")
+                    </button>
+                    <a href="/booking/outpatient" class="view-link">View Full Queue</a>
+                </div>
             </div>
             <div class="table-responsive">
                 <table class="custom-table">
                     <thead>
                         <tr>
-                            <th>Doctor Code</th>
+                            
                             <th>Doctor Name</th>
                             <th>Qualification</th>
+                            <th>Specialty</th>
                             <th>Mobile</th>
                             <th>Chamber Status</th>
                         </tr>
@@ -130,32 +291,36 @@
                         @if (isLoading)
                         {
                             <tr>
-                                <td colspan="5" class="text-center py-4 text-muted">
-                                    <i class="bi bi-arrow-clockwise spinner-border spinner-border-sm me-2"></i> Loading doctor roster...
+                                <td colspan="6" class="text-center py-4 text-muted">
+                                    <i class="bi bi-arrow-clockwise spin-anim me-2"></i> Loading doctor roster...
                                 </td>
                             </tr>
                         }
-                        else if (doctorsList == null || !doctorsList.Any())
+                        else if (!FilteredDoctorRoster.Any())
                         {
                             <tr>
-                                <td colspan="5" class="text-center py-4 text-muted">
-                                    <i class="bi bi-inbox fs-4 d-block mb-1"></i> No doctor records returned from endpoint.
+                                <td colspan="6" class="text-center py-4 text-muted">
+                                    <i class="bi bi-inbox fs-4 d-block mb-1"></i>
+                                    @(showAvailableOnly ? "No available doctors found." : "No doctor records found.")
                                 </td>
                             </tr>
                         }
                         else
                         {
-                            @foreach (var doc in doctorsList.Take(6))
+                            @foreach (var doc in FilteredDoctorRoster.Take(8))
                             {
                                 var statusModel = doctorStatusesList.FirstOrDefault(s => s.dcode == doc.dcode);
                                 var currentStatus = statusModel?.status ?? "AVAILABLE";
                                 var statusClass = currentStatus.Equals("IN_CONSULTATION", StringComparison.OrdinalIgnoreCase) ? "active" :
-                                                  currentStatus.Equals("ON_LEAVE", StringComparison.OrdinalIgnoreCase) ? "warning" : "success";
+                                                  currentStatus.Equals("ON_LEAVE", StringComparison.OrdinalIgnoreCase) ? "warning" :
+                                                  currentStatus.Equals("OFF_DUTY", StringComparison.OrdinalIgnoreCase) ? "muted" : "success";
+                                var specialtyLabel = doc.spcode.HasValue ? $"Dept #{doc.spcode}" : "General";
 
                                 <tr>
-                                    <td class="fw-bold">#DOC-@doc.dcode</td>
-                                    <td>@doc.name</td>
+                                   
+                                    <td>@doc.GetFormattedName()</td>
                                     <td>@(doc.qualification ?? "MBBS")</td>
+                                    <td>@specialtyLabel</td>
                                     <td>@(doc.mobile ?? "N/A")</td>
                                     <td><span class="status-pill @statusClass">@currentStatus.Replace("_", " ")</span></td>
                                 </tr>
@@ -166,116 +331,322 @@
             </div>
         </div>
 
-        <!-- OP Quick Action Links -->
-        <div class="panel-card flex-1">
-            <div class="panel-header">
-                <h3><i class="bi bi-lightning-charge-fill me-2"></i> Quick OP Actions</h3>
-            </div>
-            <div class="quick-action-grid">
-                <a href="/booking/reception" class="action-tile">
-                    <i class="bi bi-person-plus-fill"></i>
-                    <span>Patient Check-In</span>
-                </a>
-                <a href="/booking/outpatient" class="action-tile">
-                    <i class="bi bi-hospital"></i>
-                    <span>Outpatient Queue</span>
-                </a>
-                <a href="/slots" class="action-tile">
-                    <i class="bi bi-calendar-range"></i>
-                    <span>Slot Master</span>
-                </a>
-                <a href="/booking/customer" class="action-tile">
-                    <i class="bi bi-person-lines-fill"></i>
-                    <span>Customer History</span>
-                </a>
-            </div>
-        </div>
     </div>
+
+    <!-- ═══ FLOATING QUICK ACCESS BUTTON (bottom-right) ═══ -->
+    <button class="qa-pill-btn qa-pill-floating" @onclick="ToggleQuickAccess">
+        <span class="qa-pill-dots"><i class="bi bi-grid-3x3-gap-fill"></i></span>
+        <span class="qa-pill-label"><i class="bi bi-lightning-charge-fill"></i> Quick Access</span>
+    </button>
+
 </div>
 
 @code {
+    // ── State ──────────────────────────────────────────────────────────────
     private bool isLoading = true;
+    private bool showQuickAccess = false;
+    private bool _chartsRendered = false;
+    private DateOnly selectedDate = DateOnly.FromDateTime(DateTime.Today);
+    private int selectedDcode = 0;
+    private string selectedBranch = "";
+    private bool showAvailableOnly = false;
+
+    // ── KPI Counters ───────────────────────────────────────────────────────
+    private int totalOpCount = 0;
+    private int newPatientCount = 0;
+    private int followUpCount = 0;
+    private int walkinCount = 0;
+    private int onlineCount = 0;
     private int activeDoctorsCount = 0;
     private int availableDoctorsCount = 0;
-    private int specialtiesCount = 0;
-    private int onLeaveCount = 0;
 
+    // Queue status counts for pie chart
+    private int waitingCount = 0;
+    private int inConsultationCount = 0;
+    private int completedCount = 0;
+    private int dressingCount = 0;
+
+    // Booking status counts for Appointment Status pie chart
+    private int bookedCount = 0;
+    private int confirmedCount = 0;
+    private int cancelledCount = 0;
+    private int rescheduledCount = 0;
+
+    // ── Data Lists ─────────────────────────────────────────────────────────
     private List<DoctorMasterModel> doctorsList = new();
     private List<DoctorCurrentStatusModel> doctorStatusesList = new();
+    private List<OPRegistrationModel.OpRegistrationModel> opRegistrations = new();
+    private List<AppointmentBookingModel> todayBookings = new();
+    private List<AppointmentBookingModel> allBookings = new();
 
+    // ── Computed ───────────────────────────────────────────────────────────
+    private IEnumerable<DoctorMasterModel> FilteredDoctorRoster =>
+        showAvailableOnly
+            ? doctorsList.Where(d =>
+            {
+                var s = doctorStatusesList.FirstOrDefault(x => x.dcode == d.dcode);
+                var status = s?.status ?? "AVAILABLE";
+                return status.Equals("AVAILABLE", StringComparison.OrdinalIgnoreCase);
+            })
+            : doctorsList;
+
+    // ── SignalR / Live Stream Background Sync ────────────────────────────────
+    private CancellationTokenSource? _liveCts;
+    private PeriodicTimer? _liveTimer;
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
-        await LoadEndpointDataAsync();
+        await LoadAllDataAsync();
+        StartLiveStream();
+    }
+
+    private void StartLiveStream()
+    {
+        _liveCts = new CancellationTokenSource();
+        _liveTimer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (_liveTimer != null && await _liveTimer.WaitForNextTickAsync(_liveCts.Token))
+                {
+                    if (_liveCts.IsCancellationRequested) break;
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadAllDataAsync();
+                        await RenderChartsAsync();
+                        StateHasChanged();
+                    });
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[OPDashboard SignalR Stream Error]: {ex.Message}");
+            }
+        });
+    }
+
+    public void Dispose()
+    {
+        _liveCts?.Cancel();
+        _liveCts?.Dispose();
+        _liveTimer?.Dispose();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
+        // Only render charts once data is fully loaded and DOM is ready
+        if (!isLoading && !_chartsRendered)
         {
+            _chartsRendered = true;
             await RenderChartsAsync();
         }
     }
 
-    private async Task LoadEndpointDataAsync()
+    // ── Filter Handlers ────────────────────────────────────────────────────
+    private async Task OnDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var parsed))
+        {
+            selectedDate = parsed;
+            await LoadAllDataAsync();
+            await RenderChartsAsync();
+        }
+    }
+
+    private async Task OnDoctorFilterChanged(ChangeEventArgs e)
+    {
+        int.TryParse(e.Value?.ToString(), out selectedDcode);
+        ComputeKpis();
+        await RenderChartsAsync();
+    }
+
+    private async Task OnBranchFilterChanged(ChangeEventArgs e)
+    {
+        selectedBranch = e.Value?.ToString() ?? "";
+        ComputeKpis();
+        await RenderChartsAsync();
+    }
+
+    private void ToggleAvailableFilter()
+    {
+        showAvailableOnly = !showAvailableOnly;
+        StateHasChanged();
+    }
+
+    private void ToggleQuickAccess()
+    {
+        showQuickAccess = !showQuickAccess;
+        StateHasChanged();
+    }
+
+    // ── Data Loading ───────────────────────────────────────────────────────
+    private async Task LoadAllDataAsync()
     {
         isLoading = true;
+        StateHasChanged();
         try
         {
-            var doctorsTask = DoctorService.GetDoctorsAsync();
-            var statusTask = DoctorStatusService.GetAllStatusesAsync();
+            var doctorsTask      = DoctorService.GetDoctorsAsync();
+            var statusTask       = DoctorStatusService.GetAllStatusesAsync();
+            var opTask           = BookingService.GetAllOpRegistrationsAsync();
+            var bookingTask      = BookingService.GetBookingsByDateAsync(selectedDate);
+            var allBookingsTask  = BookingService.GetAllBookingsAsync();
 
-            await Task.WhenAll(doctorsTask, statusTask);
+            await Task.WhenAll(doctorsTask, statusTask, opTask, bookingTask, allBookingsTask);
 
-            doctorsList = await doctorsTask ?? new();
-            doctorStatusesList = await statusTask ?? new();
+            doctorsList         = await doctorsTask      ?? new();
+            doctorStatusesList  = await statusTask       ?? new();
+            opRegistrations     = await opTask           ?? new();
+            todayBookings       = await bookingTask      ?? new();
+            allBookings         = await allBookingsTask  ?? new();
 
-            activeDoctorsCount = doctorsList.Count;
-            specialtiesCount = doctorsList.Select(d => d.spcode).Distinct().Count();
-
-            onLeaveCount = doctorStatusesList.Count(s => string.Equals(s.status, "ON_LEAVE", StringComparison.OrdinalIgnoreCase));
-            availableDoctorsCount = Math.Max(0, activeDoctorsCount - onLeaveCount);
+            ComputeKpis();
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[OPDashboard] Error fetching endpoint data: {ex.Message}");
+            Console.WriteLine($"[OPDashboard] LoadAllDataAsync error: {ex.Message}");
         }
         finally
         {
             isLoading = false;
+            _chartsRendered = false; // allow OnAfterRenderAsync to re-render charts
+            StateHasChanged();       // triggers re-render → OnAfterRenderAsync fires
         }
     }
 
+    private void ComputeKpis()
+    {
+        // Filter OP registrations for selected date (and optionally doctor)
+        var dateFiltered = opRegistrations
+            .Where(r => r.visit_date == selectedDate && !r.isdeleted)
+            .Where(r => selectedDcode == 0 || r.dcode == selectedDcode)
+            .ToList();
+
+        totalOpCount    = dateFiltered.Count;
+        newPatientCount = dateFiltered.Count(r => string.Equals(r.visit_type, "NEWVISIT",  StringComparison.OrdinalIgnoreCase));
+        followUpCount   = dateFiltered.Count(r => string.Equals(r.visit_type, "REVISIT",   StringComparison.OrdinalIgnoreCase));
+        dressingCount   = dateFiltered.Count(r => r.is_dressing);
+        walkinCount     = dateFiltered.Count(r => string.Equals(r.reg_type, "WALKIN",      StringComparison.OrdinalIgnoreCase));
+
+        // Queue status breakdown
+        waitingCount        = dateFiltered.Count(r => string.Equals(r.visit_status, "WAITING",         StringComparison.OrdinalIgnoreCase));
+        inConsultationCount = dateFiltered.Count(r => string.Equals(r.visit_status, "IN_CONSULTATION", StringComparison.OrdinalIgnoreCase));
+        completedCount      = dateFiltered.Count(r => string.Equals(r.visit_status, "COMPLETED",       StringComparison.OrdinalIgnoreCase));
+
+        // Online count from bookings for the selected date
+        onlineCount = todayBookings
+            .Where(b => !b.isdeleted)
+            .Where(b => selectedDcode == 0 || b.dcode == selectedDcode)
+            .Count(b => string.Equals(b.booking_type, "ONLINE", StringComparison.OrdinalIgnoreCase));
+
+        // Booking status counts (all bookings, filtered to selected date + optional doctor)
+        var bookingFiltered = allBookings
+            .Where(b => !b.isdeleted && b.appointment_date == selectedDate)
+            .Where(b => selectedDcode == 0 || b.dcode == selectedDcode)
+            .ToList();
+
+        bookedCount      = bookingFiltered.Count(b => string.Equals(b.booking_status, "BOOKED",      StringComparison.OrdinalIgnoreCase));
+        confirmedCount   = bookingFiltered.Count(b => string.Equals(b.booking_status, "CONFIRMED",   StringComparison.OrdinalIgnoreCase));
+        cancelledCount   = bookingFiltered.Count(b => string.Equals(b.booking_status, "CANCELLED",   StringComparison.OrdinalIgnoreCase));
+        rescheduledCount = bookingFiltered.Count(b => string.Equals(b.booking_status, "RESCHEDULED", StringComparison.OrdinalIgnoreCase));
+
+        // Doctor availability from real status data
+        activeDoctorsCount = doctorsList.Count;
+        availableDoctorsCount = doctorStatusesList.Count(s =>
+            string.Equals(s.status, "AVAILABLE", StringComparison.OrdinalIgnoreCase));
+
+        // If a doctor has no status record, treat as AVAILABLE
+        var doccodesWithStatus = doctorStatusesList.Select(s => (int)s.dcode).ToHashSet();
+        availableDoctorsCount += doctorsList.Count(d => !doccodesWithStatus.Contains(d.dcode));
+    }
+
+    // ── Chart Rendering ────────────────────────────────────────────────────
     private async Task RenderChartsAsync()
     {
         try
         {
-            var hours = new[] { "08 AM", "09 AM", "10 AM", "11 AM", "12 PM", "01 PM", "02 PM", "03 PM", "04 PM" };
-            var visits = new[] { 10, 22, 30, 38, 18, 12, 25, 28, 15 };
-
-            await JSRuntime.InvokeVoidAsync("dashboardCharts.initAreaLineChart", 
+            // Chart 1: Hourly Patient Consultation Flow
+            var hours  = new[] { "08 AM", "09 AM", "10 AM", "11 AM", "12 PM", "01 PM", "02 PM", "03 PM", "04 PM" };
+            var visits = BuildHourlyData();
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initAreaLineChart",
                 "opHourlyFlowChart", hours, visits, "Consultations Per Hour", "#06b6d4", "#06b6d4");
 
-            var specialtyGroups = doctorsList
-                .Where(d => d.spcode.HasValue)
-                .GroupBy(d => "Specialty #" + d.spcode)
-                .ToList();
+            // Chart 2: OPD Overview Pie (New vs Follow-Up vs Dressing)
+            int dressingDisplay = Math.Max(0, totalOpCount - newPatientCount - followUpCount);
+            var overviewLabels = new[] { "New Patients", "Follow-Up", "Dressing" };
+            var overviewData   = new[] { newPatientCount, followUpCount, dressingDisplay };
+            var overviewColors = new[] { "#10b981", "#8b5cf6", "#f59e0b" };
 
-            var labels = specialtyGroups.Any() ? specialtyGroups.Select(g => g.Key).ToArray() : new[] { "General Medicine", "Cardiology", "Orthopedics" };
-            var counts = specialtyGroups.Any() ? specialtyGroups.Select(g => g.Count()).ToArray() : new[] { 5, 3, 2 };
-            var colors = new[] { "#06b6d4", "#2563eb", "#8b5cf6", "#f59e0b", "#ec4899" };
+            // Show placeholder if no data
+            if (overviewData.All(v => v == 0))
+            {
+                overviewLabels = new[] { "No OPD Data" };
+                overviewData   = new[] { 1 };
+                overviewColors = new[] { "#e2e8f0" };
+            }
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initCustomDoughnutChart",
+                "opOverviewPieChart", overviewLabels, overviewData, overviewColors);
 
-            await JSRuntime.InvokeVoidAsync("dashboardCharts.initCustomDoughnutChart", 
-                "opSpecialtyChart", labels, counts, colors);
+            // Chart 3: Queue Status Pie (Waiting vs In-Consultation vs Completed)
+            var queueLabels = new[] { "Waiting", "In Consultation", "Completed" };
+            var queueData   = new[] { waitingCount, inConsultationCount, completedCount };
+            var queueColors = new[] { "#f59e0b", "#06b6d4", "#10b981" };
+
+            if (queueData.All(v => v == 0))
+            {
+                queueLabels = new[] { "No Queue Data" };
+                queueData   = new[] { 1 };
+                queueColors = new[] { "#e2e8f0" };
+            }
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initCustomDoughnutChart",
+                "opQueueStatusChart", queueLabels, queueData, queueColors);
+
+            // Chart 4: Appointment Booking Status Pie (Booked / Confirmed / Cancelled / Rescheduled)
+            var bookingStatusLabels = new[] { "Booked", "Confirmed", "Cancelled", "Rescheduled" };
+            var bookingStatusData   = new[] { bookedCount, confirmedCount, cancelledCount, rescheduledCount };
+            var bookingStatusColors = new[] { "#2563eb", "#10b981", "#f43f5e", "#f59e0b" };
+
+            if (bookingStatusData.All(v => v == 0))
+            {
+                bookingStatusLabels = new[] { "No Bookings" };
+                bookingStatusData   = new[] { 1 };
+                bookingStatusColors = new[] { "#e2e8f0" };
+            }
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initCustomDoughnutChart",
+                "opBookingStatusChart", bookingStatusLabels, bookingStatusData, bookingStatusColors);
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error initializing OP charts: {ex.Message}");
+            Console.WriteLine($"[OPDashboard] Chart render error: {ex.Message}");
         }
     }
 
+    /// <summary>Distribute today's OP registrations by hour bucket (8 AM – 4 PM).</summary>
+    private int[] BuildHourlyData()
+    {
+        var buckets = new int[9]; // indices 0–8 → 08:00–16:00
+        var todayOp = opRegistrations
+            .Where(r => r.visit_date == selectedDate && !r.isdeleted && (selectedDcode == 0 || r.dcode == selectedDcode))
+            .ToList();
+
+        foreach (var reg in todayOp)
+        {
+            var hour = Booking.Helpers.DateTimeExtensions.ToIndianTime(reg.created_at).Hour;
+            var idx  = hour - 8;
+            if (idx >= 0 && idx < 9) buckets[idx]++;
+        }
+
+        return buckets;
+    }
+
+    // ── Refresh ─────────────────────────────────────────────────────────────
+    // Only reloads data & KPI numbers — charts stay stable (no flicker)
     private async Task RefreshData()
     {
-        await LoadEndpointDataAsync();
-        await RenderChartsAsync();
+        await LoadAllDataAsync();
     }
 }

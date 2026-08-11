@@ -1,11 +1,14 @@
 @page "/ip-dashboard"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IAsyncDisposable
 @using medico_backend.Model
 @using Medico_Backend.Model
 @using Booking.Models
 @using Booking.Services
+@using System.Threading
 @inject IpRegistrationService IpService
-@inject BedMasterService BedService
+@inject BedMasterService BedMasterSvc
+@inject BedStatusService BedStatusSvc
 @inject DoctorService DoctorService
 @inject IJSRuntime JSRuntime
 @inject NavigationManager NavigationManager
@@ -13,20 +16,25 @@
 <PageTitle>In-Patient (IP) Dashboard - Medico Portal</PageTitle>
 
 <div class="dashboard-wrapper">
-    <!-- TOP HEADER & CONTROLS -->
+
+    <!-- ═══ HEADER ═══ -->
     <div class="dashboard-header">
         <div class="header-title">
             <div class="icon-badge blue">
-                <i class="bi bi-grid-1x2-fill"></i>
+                <i class="bi bi-hospital-fill"></i>
             </div>
             <div>
-                <h1>In-Patient (IP) Portal Dashboard</h1>
-                <p>Live bed occupancy, inpatient admissions, bed allocation breakdown, and ward statistics.</p>
+                <h1>In-Patient (IP) Dashboard</h1>
+                <p>Live bed occupancy, inpatient admissions, ward statistics &amp; discharge metrics.</p>
             </div>
         </div>
         <div class="header-actions">
-            <button class="btn btn-outline" @onclick="RefreshData">
-                <i class="bi bi-arrow-clockwise @(isLoading ? "spin" : "")"></i> @(isLoading ? "Loading..." : "Refresh")
+            <div class="live-sync-badge" title="SignalR live auto-update active">
+                <span class="pulse-dot"></span> SignalR Live
+            </div>
+            <button class="btn btn-outline" @onclick="RefreshData" disabled="@isLoading">
+                <i class="bi bi-arrow-clockwise @(isLoading ? "spin-anim" : "")"></i>
+                @(isLoading ? "Loading..." : "Refresh")
             </button>
             <a href="/booking/ip-registration" class="btn btn-primary">
                 <i class="bi bi-plus-circle-fill"></i> Register Inpatient
@@ -34,85 +42,217 @@
         </div>
     </div>
 
-    <!-- STATS / KPI GRID -->
-    <div class="kpi-grid">
-        <div class="kpi-card blue">
-            <div class="kpi-top">
-                <span class="kpi-label">Total Beds</span>
-                <div class="kpi-icon"><i class="bi bi-hospital"></i></div>
+    <!-- ═══ QUICK ACCESS POPUP ═══ -->
+    @if (showQuickAccess)
+    {
+        <div class="qa-backdrop" @onclick="ToggleQuickAccess"></div>
+        <div class="qa-popup">
+            <div class="qa-popup-header">
+                <div class="qa-popup-title">
+                    <div class="qa-title-icon"><i class="bi bi-grid-3x3-gap-fill"></i></div>
+                    <div>
+                        <h4>Quick Access</h4>
+                        <p>IP Shortcuts</p>
+                    </div>
+                </div>
+                <button class="qa-close" @onclick="ToggleQuickAccess">
+                    <i class="bi bi-x-lg"></i>
+                </button>
             </div>
-            <div class="kpi-value">@totalBedsCount</div>
-            <div class="kpi-foot">
-                <i class="bi bi-building"></i> Facility Capacity
+            <div class="qa-popup-grid">
+
+                <a href="/booking/ip-registration" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#2563eb,#1d4ed8)">
+                        <i class="bi bi-hospital"></i>
+                    </div>
+                    <span>IP Registration</span>
+                    <small>Admit new patient</small>
+                </a>
+
+                <a href="/booking/available-beds" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#10b981,#059669)">
+                        <i class="bi bi-door-open-fill"></i>
+                    </div>
+                    <span>Available Beds</span>
+                    <small>View vacant beds</small>
+                </a>
+
+                <a href="/bed-transfer-master" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#8b5cf6,#7c3aed)">
+                        <i class="bi bi-arrow-left-right"></i>
+                    </div>
+                    <span>Bed Transfer</span>
+                    <small>Shift patient bed</small>
+                </a>
+
+                <a href="/discharge-summary" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#f97316,#ea580c)">
+                        <i class="bi bi-file-earmark-medical"></i>
+                    </div>
+                    <span>Discharge</span>
+                    <small>Prepare summary</small>
+                </a>
+
+                <a href="/ip/nurse-notes" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#06b6d4,#0891b2)">
+                        <i class="bi bi-clipboard2-pulse"></i>
+                    </div>
+                    <span>Nurse Notes</span>
+                    <small>Vitals &amp; rounds</small>
+                </a>
+
+                <a href="/bed-master" class="qa-tile" @onclick="ToggleQuickAccess">
+                    <div class="qa-icon" style="background:linear-gradient(135deg,#64748b,#475569)">
+                        <i class="bi bi-box"></i>
+                    </div>
+                    <span>Bed Master</span>
+                    <small>Manage layout</small>
+                </a>
+
             </div>
         </div>
+    }
 
-        <div class="kpi-card green">
+    <!-- ═══ FILTER BAR ═══ -->
+    <div class="filter-bar">
+        <div class="filter-group">
+            <label class="filter-label"><i class="bi bi-calendar3"></i> Date</label>
+            <input type="date" class="filter-input"
+                   value="@selectedDate.ToString("yyyy-MM-dd")"
+                   @onchange="OnDateChanged" />
+        </div>
+
+        <div class="filter-group">
+            <label class="filter-label"><i class="bi bi-person-badge"></i> Attending Doctor</label>
+            <select class="filter-input" @onchange="OnDoctorFilterChanged">
+                <option value="0">All Doctors</option>
+                @foreach (var doc in doctorsList)
+                {
+                    <option value="@doc.dcode">@doc.GetFormattedName()</option>
+                }
+            </select>
+        </div>
+
+        <div class="filter-group">
+            <label class="filter-label"><i class="bi bi-building"></i> Branch</label>
+            <select class="filter-input" @onchange="OnBranchFilterChanged">
+                <option value="">All Branches</option>
+                <option value="MAIN">Main Hospital</option>
+                <option value="NORTH">North Wing</option>
+            </select>
+        </div>
+
+        <div class="filter-info">
+            <i class="bi bi-info-circle-fill me-1"></i> Showing metrics for <strong>@selectedDate.ToString("dd MMM yyyy")</strong>
+        </div>
+    </div>
+
+    <!-- ═══ KPI GRID (6 Cards) ═══ -->
+    <div class="kpi-grid">
+        <!-- 1. Active Admissions -->
+        <div class="kpi-card blue">
             <div class="kpi-top">
                 <span class="kpi-label">Active Admissions</span>
                 <div class="kpi-icon"><i class="bi bi-person-check-fill"></i></div>
             </div>
             <div class="kpi-value">@admittedCount</div>
             <div class="kpi-foot positive">
-                <i class="bi bi-shield-check"></i> Currently Admitted
+                <i class="bi bi-shield-check"></i> Currently Inpatient
             </div>
         </div>
 
-        <div class="kpi-card purple">
+        <!-- 2. Available Beds -->
+        <div class="kpi-card green">
             <div class="kpi-top">
                 <span class="kpi-label">Available Beds</span>
                 <div class="kpi-icon"><i class="bi bi-door-open-fill"></i></div>
             </div>
             <div class="kpi-value">@availableBedsCount</div>
-            <div class="kpi-foot">
-                <i class="bi bi-check2-circle"></i> Ready for Admission
+            <div class="kpi-foot positive">
+                <i class="bi bi-check-circle-fill"></i> Ready for Admission
             </div>
         </div>
 
+        <!-- 3. Occupied Beds -->
+        <div class="kpi-card purple">
+            <div class="kpi-top">
+                <span class="kpi-label">Occupied Beds</span>
+                <div class="kpi-icon"><i class="bi bi-hospital"></i></div>
+            </div>
+            <div class="kpi-value">@occupiedBedsCount</div>
+            <div class="kpi-foot info">
+                <i class="bi bi-person-fill-lock"></i> In Use
+            </div>
+        </div>
+
+        <!-- 4. Not Cleaned Beds -->
+        <div class="kpi-card amber">
+            <div class="kpi-top">
+                <span class="kpi-label">Not Cleaned Beds</span>
+                <div class="kpi-icon"><i class="bi bi-stars"></i></div>
+            </div>
+            <div class="kpi-value">@notCleanedBedsCount</div>
+            <div class="kpi-foot warning">
+                <i class="bi bi-exclamation-triangle-fill"></i> Pending Housekeeping
+            </div>
+        </div>
+
+        <!-- 5. Discharged Today -->
         <div class="kpi-card orange">
             <div class="kpi-top">
                 <span class="kpi-label">Discharged Today</span>
                 <div class="kpi-icon"><i class="bi bi-box-arrow-right"></i></div>
             </div>
-            <div class="kpi-value">@dischargedCount</div>
+            <div class="kpi-value">@dischargedTodayCount</div>
+            <div class="kpi-foot positive">
+                <i class="bi bi-check2-circle"></i> Completed Today
+            </div>
+        </div>
+
+        <!-- 6. Admitted Today / Emergency -->
+        <div class="kpi-card red">
+            <div class="kpi-top">
+                <span class="kpi-label">Admitted Today</span>
+                <div class="kpi-icon"><i class="bi bi-lightning-charge-fill"></i></div>
+            </div>
+            <div class="kpi-value">@admittedTodayCount</div>
             <div class="kpi-foot warning">
-                <i class="bi bi-clock"></i> Completed Discharges
+                <i class="bi bi-activity"></i> @emergencyCasesCount Emergency
             </div>
         </div>
     </div>
 
-    <!-- MAIN VISUALIZATION CHARTS -->
+    <!-- ═══ CHARTS ROW ═══ -->
     <div class="charts-row">
-        <!-- Chart 1: Inpatient Admission Trend -->
+        <!-- Chart 1: Monthly Weekwise Admission vs Discharge Bar Graph -->
         <div class="chart-card flex-2">
             <div class="chart-header">
                 <div>
-                    <h3>Inpatient Admissions & Occupancy Trend</h3>
-                    <span class="chart-sub">Daily admission inflow over the current month</span>
+                    <h3>Monthly Admission &amp; Discharge Trend</h3>
+                    <span class="chart-sub">Weekwise comparison of admitted patient count vs discharges for current month</span>
                 </div>
             </div>
             <div class="chart-body">
-                <canvas id="ipBedOccupancyChart"></canvas>
+                <canvas id="ipMonthlyBarChart"></canvas>
             </div>
         </div>
 
-        <!-- Chart 2: Bed Allocation / Status Distribution -->
+        <!-- Chart 2: Bed Status Allocation Pie Chart -->
         <div class="chart-card flex-1">
             <div class="chart-header">
                 <div>
                     <h3>Bed Status Allocation</h3>
-                    <span class="chart-sub">Distribution of Occupied vs Available Beds</span>
+                    <span class="chart-sub">Occupied vs Available vs Not Cleaned</span>
                 </div>
             </div>
             <div class="chart-body">
-                <canvas id="ipWardStatusChart"></canvas>
+                <canvas id="ipBedStatusPieChart"></canvas>
             </div>
         </div>
     </div>
 
-    <!-- QUEUE & QUICK ACTIONS -->
+    <!-- ═══ BOTTOM ROW: ACTIVE ADMISSIONS TABLE ═══ -->
     <div class="dashboard-grid-2">
-        <!-- Recent Inpatient Admissions List -->
         <div class="panel-card flex-2">
             <div class="panel-header">
                 <h3><i class="bi bi-hospital-fill me-2" style="color:#2563eb;"></i> Active Inpatient Admissions</h3>
@@ -124,8 +264,9 @@
                         <tr>
                             <th>IP No</th>
                             <th>Patient Name</th>
-                            <th>Admission Date</th>
+                            <th>Admit Date</th>
                             <th>Attending Doctor</th>
+                            <th>Length of Stay</th>
                             <th>Status</th>
                         </tr>
                     </thead>
@@ -133,32 +274,44 @@
                         @if (isLoading)
                         {
                             <tr>
-                                <td colspan="5" class="text-center py-4 text-muted">
-                                    <i class="bi bi-arrow-clockwise spinner-border spinner-border-sm me-2"></i> Loading inpatient data...
+                                <td colspan="6" class="text-center py-4 text-muted">
+                                    <i class="bi bi-arrow-clockwise spin-anim me-2"></i> Loading inpatient data...
                                 </td>
                             </tr>
                         }
-                        else if (ipList == null || !ipList.Any())
+                        else if (!FilteredIpList.Any())
                         {
                             <tr>
-                                <td colspan="5" class="text-center py-4 text-muted">
+                                <td colspan="6" class="text-center py-4 text-muted">
                                     <i class="bi bi-inbox fs-4 d-block mb-1"></i> No active inpatient admissions found.
                                 </td>
                             </tr>
                         }
                         else
                         {
-                            @foreach (var ip in ipList.Take(6))
+                            @foreach (var ip in FilteredIpList.Take(8))
                             {
-                                var isAdmitted = string.Equals(ip.ip_status, "ADMITTED", StringComparison.OrdinalIgnoreCase);
-                                var statusClass = isAdmitted ? "active" : "success";
+                                var losDays = (DateTime.Now.Date - ip.admitdate.Date).Days;
+                                var isLongStay = losDays >= 7;
 
                                 <tr>
-                                    <td class="fw-bold">@ip.ip_no</td>
-                                    <td>@ip.patient_name</td>
+                                    <td class="fw-bold">#@ip.ip_no</td>
+                                    <td>@(string.IsNullOrWhiteSpace(ip.patient_name) ? $"Patient #{ip.custid}" : ip.patient_name)</td>
                                     <td>@ip.admitdate.ToString("dd MMM yyyy")</td>
                                     <td>@GetDoctorName(ip.dcode)</td>
-                                    <td><span class="status-pill @statusClass">@ip.ip_status</span></td>
+                                    <td>
+                                        @if (isLongStay)
+                                        {
+                                            <span class="status-pill warning" title="Long stay patient (>7 days)">
+                                                <i class="bi bi-exclamation-circle-fill me-1"></i>@losDays Days (Long Stay)
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="status-pill active">@losDays Days</span>
+                                        }
+                                    </td>
+                                    <td><span class="status-pill success">@ip.ip_status</span></td>
                                 </tr>
                             }
                         }
@@ -166,88 +319,173 @@
                 </table>
             </div>
         </div>
-
-        <!-- IP Quick Action Links -->
-        <div class="panel-card flex-1">
-            <div class="panel-header">
-                <h3><i class="bi bi-lightning-charge-fill me-2" style="color:#f59e0b;"></i> Quick IP Actions</h3>
-            </div>
-            <div class="quick-action-grid">
-                <a href="/booking/ip-registration" class="action-tile">
-                    <i class="bi bi-hospital"></i>
-                    <span>IP Registration</span>
-                </a>
-                <a href="/booking/available-beds" class="action-tile">
-                    <i class="bi bi-door-open"></i>
-                    <span>Available Beds</span>
-                </a>
-                <a href="/bed-transfer-master" class="action-tile">
-                    <i class="bi bi-arrow-left-right"></i>
-                    <span>Bed Transfer</span>
-                </a>
-                <a href="/discharge-summary" class="action-tile">
-                    <i class="bi bi-file-earmark-medical"></i>
-                    <span>Discharge Summary</span>
-                </a>
-                <a href="/ip/nurse-notes" class="action-tile">
-                    <i class="bi bi-clipboard2-pulse"></i>
-                    <span>Nurse Notes</span>
-                </a>
-                <a href="/bed-master" class="action-tile">
-                    <i class="bi bi-box"></i>
-                    <span>Bed Master</span>
-                </a>
-            </div>
-        </div>
     </div>
+
+    <!-- ═══ FLOATING QUICK ACCESS BUTTON (bottom-right) ═══ -->
+    <button class="qa-pill-btn qa-pill-floating" @onclick="ToggleQuickAccess">
+        <span class="qa-pill-dots"><i class="bi bi-grid-3x3-gap-fill"></i></span>
+        <span class="qa-pill-label"><i class="bi bi-lightning-charge-fill"></i> Quick Access</span>
+    </button>
+
 </div>
 
 @code {
+    // ── State ──────────────────────────────────────────────────────────────
     private bool isLoading = true;
+    private bool showQuickAccess = false;
+    private bool _chartsRendered = false;
+    private DateOnly selectedDate = DateOnly.FromDateTime(DateTime.Today);
+    private int selectedDcode = 0;
+    private string selectedBranch = "";
+
+    // ── KPI Counters ───────────────────────────────────────────────────────
     private int totalBedsCount = 0;
     private int admittedCount = 0;
     private int availableBedsCount = 0;
-    private int dischargedCount = 0;
+    private int occupiedBedsCount = 0;
+    private int notCleanedBedsCount = 0;
+    private int dischargedTodayCount = 0;
+    private int admittedTodayCount = 0;
+    private int emergencyCasesCount = 0;
 
-    private List<IPRegistrationModel.IpRegistrationModel> ipList = new();
-    private List<BedMasterModel> bedsList = new();
+    // ── Data Lists ─────────────────────────────────────────────────────────
+    private List<IPRegistrationModel.IpRegistrationModel> ipList = new();         // ADMITTED
+    private List<IPRegistrationModel.IpRegistrationModel> dischargedList = new(); // DISCHARGED
+    private List<BedMasterModel> availableBedsList = new();        // api/BedMaster/get-available
+    private List<BedStatusModel> pendingCleaningList = new();      // api/BedStatus/pending-cleaning
+    private List<BedStatusModel> allBedStatusList = new();         // api/BedStatus/get
     private List<DoctorMasterModel> doctorsList = new();
 
+    // ── Computed ───────────────────────────────────────────────────────────
+    // ipList already contains only ADMITTED records (loaded via GetIpRegistrationsAsync("ADMITTED"))
+    private IEnumerable<IPRegistrationModel.IpRegistrationModel> FilteredIpList =>
+        ipList.Where(i => !i.isdeleted)
+              .Where(i => selectedDcode == 0 || i.dcode == selectedDcode)
+              .OrderByDescending(i => i.admitdate);
+
+    // ── SignalR / Live Stream Background Sync ────────────────────────────────
+    private CancellationTokenSource? _liveCts;
+    private PeriodicTimer? _liveTimer;
+
+    // ── Lifecycle ──────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
         await LoadDataAsync();
+        StartLiveStream();
+    }
+
+    private void StartLiveStream()
+    {
+        _liveCts  = new CancellationTokenSource();
+        _liveTimer = new PeriodicTimer(TimeSpan.FromSeconds(30));
+        var token  = _liveCts.Token;
+
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (_liveTimer != null && await _liveTimer.WaitForNextTickAsync(token))
+                {
+                    // Guard: stop if cancelled BEFORE touching HttpClient or JS
+                    if (token.IsCancellationRequested) break;
+
+                    try
+                    {
+                        await InvokeAsync(async () =>
+                        {
+                            if (token.IsCancellationRequested) return;
+                            await LoadDataAsync();
+                            if (token.IsCancellationRequested) return;
+                            await RenderChartsAsync();
+                            StateHasChanged();
+                        });
+                    }
+                    catch (ObjectDisposedException)  { break; } // circuit already gone
+                    catch (InvalidOperationException) { break; } // JS interop unavailable
+                }
+            }
+            catch (OperationCanceledException) { } // normal shutdown
+            catch (ObjectDisposedException)    { } // disposed before first tick
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[IPDashboard LiveStream] {ex.GetType().Name}: {ex.Message}");
+            }
+        }, token);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _liveCts?.Cancel();
+        _liveTimer?.Dispose();
+        _liveCts?.Dispose();
+        await Task.CompletedTask;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (firstRender)
+        if (!isLoading && !_chartsRendered)
         {
+            _chartsRendered = true;
             await RenderChartsAsync();
         }
     }
 
+    // ── Filter Handlers ────────────────────────────────────────────────────
+    private async Task OnDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var parsed))
+        {
+            selectedDate = parsed;
+            await LoadDataAsync();
+            await RenderChartsAsync();
+        }
+    }
+
+    private async Task OnDoctorFilterChanged(ChangeEventArgs e)
+    {
+        int.TryParse(e.Value?.ToString(), out selectedDcode);
+        ComputeKpis();
+        await RenderChartsAsync();
+    }
+
+    private async Task OnBranchFilterChanged(ChangeEventArgs e)
+    {
+        selectedBranch = e.Value?.ToString() ?? "";
+        ComputeKpis();
+        await RenderChartsAsync();
+    }
+
+    private void ToggleQuickAccess()
+    {
+        showQuickAccess = !showQuickAccess;
+        StateHasChanged();
+    }
+
+    // ── Data Loading ───────────────────────────────────────────────────────
     private async Task LoadDataAsync()
     {
         isLoading = true;
+        StateHasChanged();
         try
         {
-            var ipTask = IpService.GetIpRegistrationsAsync("");
-            var bedsTask = BedService.GetBedMastersAsync();
-            var doctorsTask = DoctorService.GetDoctorsAsync();
+            // Load all 5 sources in parallel
+            var admittedTask      = IpService.GetIpRegistrationsAsync("ADMITTED");
+            var dischargedTask    = IpService.GetIpRegistrationsAsync("DISCHARGED");
+            var availBedsTask     = BedMasterSvc.GetAvailableBedsAsync();          // api/BedMaster/get-available
+            var pendingCleanTask  = BedStatusSvc.GetPendingCleaningBedsAsync();    // api/BedStatus/pending-cleaning
+            var allBedStatusTask  = BedStatusSvc.GetBedStatusesAsync();            // api/BedStatus/get
+            var doctorsTask       = DoctorService.GetDoctorsAsync();
 
-            await Task.WhenAll(ipTask, bedsTask, doctorsTask);
+            await Task.WhenAll(admittedTask, dischargedTask, availBedsTask, pendingCleanTask, allBedStatusTask, doctorsTask);
 
-            ipList = await ipTask ?? new();
-            bedsList = await bedsTask ?? new();
-            doctorsList = await doctorsTask ?? new();
+            ipList             = await admittedTask     ?? new();
+            dischargedList     = await dischargedTask   ?? new();
+            availableBedsList  = await availBedsTask    ?? new();
+            pendingCleaningList = await pendingCleanTask ?? new();
+            allBedStatusList   = await allBedStatusTask ?? new();
+            doctorsList        = await doctorsTask      ?? new();
 
-            admittedCount = ipList.Count(i => string.Equals(i.ip_status, "ADMITTED", StringComparison.OrdinalIgnoreCase));
-            dischargedCount = ipList.Count(i => string.Equals(i.ip_status, "DISCHARGED", StringComparison.OrdinalIgnoreCase));
-
-            totalBedsCount = bedsList.Any() ? bedsList.Count : (admittedCount + 10);
-            availableBedsCount = bedsList.Any() 
-                ? bedsList.Count(b => string.Equals(b.bed_status, "AVAILABLE", StringComparison.OrdinalIgnoreCase) || string.Equals(b.bed_status, "VACANT", StringComparison.OrdinalIgnoreCase))
-                : Math.Max(0, totalBedsCount - admittedCount);
+            ComputeKpis();
         }
         catch (Exception ex)
         {
@@ -256,25 +494,91 @@
         finally
         {
             isLoading = false;
+            _chartsRendered = false;
+            StateHasChanged();
         }
     }
 
+    private void ComputeKpis()
+    {
+        var targetDate = selectedDate.ToDateTime(TimeOnly.MinValue).Date;
+
+        // ipList = ADMITTED records only (loaded via GetIpRegistrationsAsync("ADMITTED"))
+        var activeAdmissions = ipList
+            .Where(i => !i.isdeleted)
+            .Where(i => selectedDcode == 0 || i.dcode == selectedDcode)
+            .ToList();
+
+        // Active admissions = ALL currently in hospital (not date-filtered)
+        admittedCount = activeAdmissions.Count;
+
+        // Use IST (Indian Standard Time) for date comparisons — same as OPDashboard BuildHourlyData
+        // Discharged TODAY — compare discharge date in IST
+        dischargedTodayCount = dischargedList.Count(i => !i.isdeleted &&
+            i.dischargedate.HasValue &&
+            Booking.Helpers.DateTimeExtensions.ToIndianTime(i.dischargedate.Value).Date == targetDate &&
+            (selectedDcode == 0 || i.dcode == selectedDcode));
+
+        // Admitted TODAY — compare admit date in IST (from currently ADMITTED list)
+        admittedTodayCount = ipList.Count(i => !i.isdeleted &&
+            Booking.Helpers.DateTimeExtensions.ToIndianTime(i.admitdate).Date == targetDate &&
+            (selectedDcode == 0 || i.dcode == selectedDcode));
+
+        // Also count patients admitted today who are already discharged
+        admittedTodayCount += dischargedList.Count(i => !i.isdeleted &&
+            Booking.Helpers.DateTimeExtensions.ToIndianTime(i.admitdate).Date == targetDate &&
+            (selectedDcode == 0 || i.dcode == selectedDcode));
+
+        // Emergency Cases for selected date (all-time emergency total in footer)
+        var allIp = ipList.Concat(dischargedList).ToList();
+        emergencyCasesCount = allIp.Count(i => !i.isdeleted &&
+            string.Equals(i.admission_type, "EMERGENCY", StringComparison.OrdinalIgnoreCase) &&
+            (selectedDcode == 0 || i.dcode == selectedDcode));
+
+        // ── Bed Counts from 3 dedicated endpoints ─────────────────────────
+        // 1. Available beds  →  api/BedMaster/get-available
+        availableBedsCount  = availableBedsList.Count;
+
+        // 2. Not-cleaned beds  →  api/BedStatus/pending-cleaning
+        notCleanedBedsCount = pendingCleaningList.Count;
+
+        // 3. Occupied beds  →  api/BedStatus/get  (status == "OCCUPIED")
+        occupiedBedsCount   = allBedStatusList.Count(b =>
+            string.Equals(b.status, "OCCUPIED", StringComparison.OrdinalIgnoreCase));
+
+        // Total = sum of all three sources
+        totalBedsCount = availableBedsCount + occupiedBedsCount + notCleanedBedsCount;
+    }
+
+    // ── Chart Rendering ────────────────────────────────────────────────────
     private async Task RenderChartsAsync()
     {
         try
         {
-            var days = new[] { "Week 1", "Week 2", "Week 3", "Week 4" };
-            var admissionData = new[] { 14, 22, 18, Math.Max(5, admittedCount) };
+            // Chart 1: Monthly Weekwise Admissions vs Discharges (Grouped Bar Chart)
+            var weekLabels = new[] { "Week 1", "Week 2", "Week 3", "Week 4" };
+            var weeklyAdmissions = BuildWeeklyData(isAdmission: true);
+            var weeklyDischarges = BuildWeeklyData(isAdmission: false);
 
-            await JSRuntime.InvokeVoidAsync("dashboardCharts.initAreaLineChart",
-                "ipBedOccupancyChart", days, admissionData, "IP Admissions", "#2563eb", "#2563eb");
+            await JSRuntime.InvokeVoidAsync("dashboardCharts.initGroupedBarChart",
+                "ipMonthlyBarChart", weekLabels,
+                "Admissions", weeklyAdmissions, "#2563eb",
+                "Discharges", weeklyDischarges, "#f97316");
 
-            var statusLabels = new[] { "Occupied Beds", "Available Beds", "Discharged Today" };
-            var statusCounts = new[] { Math.Max(1, admittedCount), Math.Max(1, availableBedsCount), Math.Max(0, dischargedCount) };
-            var statusColors = new[] { "#2563eb", "#10b981", "#f97316" };
+            // Chart 2: Bed Status Allocation Pie Chart (Occupied vs Available vs Not Cleaned)
+            var statusLabels = new[] { "Occupied Beds", "Available Beds", "Not Cleaned Beds" };
+            var statusCounts = new[] { Math.Max(0, occupiedBedsCount), Math.Max(0, availableBedsCount), Math.Max(0, notCleanedBedsCount) };
+            var statusColors = new[] { "#8b5cf6", "#10b981", "#f59e0b" };
+
+            if (statusCounts.All(c => c == 0))
+            {
+                statusLabels = new[] { "No Bed Data" };
+                statusCounts = new[] { 1 };
+                statusColors = new[] { "#e2e8f0" };
+            }
 
             await JSRuntime.InvokeVoidAsync("dashboardCharts.initCustomDoughnutChart",
-                "ipWardStatusChart", statusLabels, statusCounts, statusColors);
+                "ipBedStatusPieChart", statusLabels, statusCounts, statusColors);
         }
         catch (Exception ex)
         {
@@ -282,10 +586,51 @@
         }
     }
 
+    private int[] BuildWeeklyData(bool isAdmission)
+    {
+        var weeks = new int[4];
+        var targetMonth = selectedDate.Month;
+        var targetYear = selectedDate.Year;
+
+        // For admissions: use ipList (ADMITTED) + dischargedList (those that were admitted this month)
+        // For discharges: use dischargedList only
+        IEnumerable<IPRegistrationModel.IpRegistrationModel> records;
+        if (isAdmission)
+        {
+            records = ipList.Concat(dischargedList)
+                .Where(i => !i.isdeleted && (selectedDcode == 0 || i.dcode == selectedDcode));
+        }
+        else
+        {
+            records = dischargedList
+                .Where(i => !i.isdeleted && (selectedDcode == 0 || i.dcode == selectedDcode));
+        }
+
+        foreach (var r in records)
+        {
+            DateTime rawDate;
+            if (isAdmission)
+                rawDate = r.admitdate;
+            else
+                rawDate = r.dischargedate ?? DateTime.MinValue;
+
+            if (rawDate == DateTime.MinValue) continue;
+
+            // Convert to IST for correct month/week grouping
+            var date = Booking.Helpers.DateTimeExtensions.ToIndianTime(rawDate);
+            if (date.Month == targetMonth && date.Year == targetYear)
+            {
+                var weekIdx = Math.Min(3, (date.Day - 1) / 7);
+                weeks[weekIdx]++;
+            }
+        }
+
+        return weeks;
+    }
+
     private async Task RefreshData()
     {
         await LoadDataAsync();
-        await RenderChartsAsync();
     }
 
     private string GetDoctorName(int dcode)
