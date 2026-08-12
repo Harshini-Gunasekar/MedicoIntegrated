@@ -510,6 +510,115 @@ window.dashboardCharts = {
                 }
             }
         });
+    },
+
+    // Dual-Axis Grouped Bar Chart (Primary Y for Valuation, Secondary Y for Qty)
+    initDualAxisGroupedBarChart: function (canvasId, labels, dataset1Label, dataset1Data, dataset1Color, dataset2Label, dataset2Data, dataset2Color) {
+        this.destroyChart(canvasId);
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+
+        const defaultLabels = labels && labels.length ? labels : ['Item A', 'Item B', 'Item C'];
+        const d1 = dataset1Data && dataset1Data.length ? dataset1Data : [1000, 3000, 4500];
+        const d2 = dataset2Data && dataset2Data.length ? dataset2Data : [75, 80, 92];
+
+        this.instances[canvasId] = new Chart(ctx, {
+            type: 'bar',
+            data: {
+                labels: defaultLabels,
+                datasets: [
+                    {
+                        label: dataset1Label || 'Valuation (₹)',
+                        data: d1,
+                        backgroundColor: '#ef4444',
+                        hoverBackgroundColor: '#dc2626',
+                        yAxisID: 'yValuation',
+                        borderRadius: 8,
+                        borderSkipped: false,
+                        barPercentage: 0.6,
+                        categoryPercentage: 0.7
+                    },
+                    {
+                        label: dataset2Label || 'Qty (Units)',
+                        data: d2,
+                        backgroundColor: '#06b6d4',
+                        hoverBackgroundColor: '#0891b2',
+                        yAxisID: 'yQty',
+                        borderRadius: 8,
+                        borderSkipped: false,
+                        barPercentage: 0.6,
+                        categoryPercentage: 0.7
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 900, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: { color: '#334155', font: { size: 11, weight: '700' }, usePointStyle: true, pointStyle: 'circle', padding: 12 }
+                    },
+                    tooltip: {
+                        backgroundColor: '#0f172a',
+                        titleFont: { size: 12, weight: '700' },
+                        bodyFont: { size: 11, weight: '600' },
+                        cornerRadius: 10,
+                        padding: 12,
+                        shadowOffsetX: 0,
+                        shadowOffsetY: 4,
+                        shadowBlur: 10,
+                        shadowColor: 'rgba(0,0,0,0.15)',
+                        callbacks: {
+                            label: function (context) {
+                                let label = context.dataset.label || '';
+                                if (label) label += ': ';
+                                if (context.dataset.yAxisID === 'yValuation') {
+                                    label += '₹' + Number(context.raw).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                } else {
+                                    label += Number(context.raw).toLocaleString() + ' Units';
+                                }
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#475569', font: { size: 10, weight: '700' }, maxRotation: 20, minRotation: 0 }
+                    },
+                    yValuation: {
+                        type: 'linear',
+                        position: 'left',
+                        title: { display: true, text: 'Valuation (₹)', color: '#dc2626', font: { size: 11, weight: '700' } },
+                        grid: { color: 'rgba(226, 232, 240, 0.6)' },
+                        ticks: { 
+                            color: '#dc2626', 
+                            font: { size: 10, weight: '600' },
+                            callback: function(val) {
+                                return '₹' + Number(val).toLocaleString('en-IN');
+                            }
+                        }
+                    },
+                    yQty: {
+                        type: 'linear',
+                        position: 'right',
+                        title: { display: true, text: 'Qty (Units)', color: '#0891b2', font: { size: 11, weight: '700' } },
+                        grid: { display: false },
+                        ticks: { 
+                            color: '#0891b2', 
+                            font: { size: 10, weight: '600' },
+                            callback: function(val) {
+                                return Number(val).toLocaleString() + ' u';
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 };
 
