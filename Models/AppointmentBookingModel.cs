@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
 using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
 
 namespace Booking.Models
 {
@@ -27,6 +28,7 @@ namespace Booking.Models
         public DateTime? cancelled_at { get; set; }
         public string? notes { get; set; }
         public string? tenant_code { get; set; }
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool isdeleted { get; set; } = false;
         public DateTime created_at { get; set; } =
             DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
@@ -35,10 +37,19 @@ namespace Booking.Models
 
         public string? patient_name { get; set; }
         public string? mobile { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableBoolConverter))]
         public bool? isvip { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableBoolConverter))]
         public bool? is_vip { get; set; }
+
         public string? viprole { get; set; }
+
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool is_dressing { get; set; } = false;
+
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
     }
 
@@ -163,8 +174,10 @@ namespace Booking.Models
         public string? booking_type { get; set; }
         public string? reg_type { get; set; }
         public string? notes { get; set; }
+        [JsonConverter(typeof(FlexibleNullableBoolConverter))]
         public bool? isvip { get; set; }
         public string? viprole { get; set; }
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
     }
 }

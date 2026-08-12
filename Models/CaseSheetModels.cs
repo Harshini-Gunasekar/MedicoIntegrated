@@ -1,3 +1,7 @@
+using System;
+using System.Collections.Generic;
+using System.Text.Json.Serialization;
+using Booking.Models;
 using Dapper.Contrib.Extensions;
 
 
@@ -30,12 +34,15 @@ namespace medico_backend.Model
 
 
         // Status
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool is_consulted { get; set; } = false;
         public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
 
 
         public string? tenant_code { get; set; }
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool isdeleted { get; set; } = false;
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
@@ -269,6 +276,7 @@ namespace medico_backend.Model
 
 
         // Sheet status
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
         public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
 
@@ -424,8 +432,10 @@ namespace medico_backend.Model
 
 
         // Status
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool is_consulted { get; set; }
         public string? sheet_status { get; set; }
+        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
 
 

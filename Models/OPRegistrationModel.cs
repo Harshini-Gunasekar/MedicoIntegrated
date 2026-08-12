@@ -1,4 +1,5 @@
 using System;
+                                                                                                                using System.Text.Json.Serialization;
 using Dapper.Contrib.Extensions;
 
 namespace Booking.Models
@@ -25,15 +26,23 @@ namespace Booking.Models
             public string visit_status { get; set; } = "WAITING";
             public string? notes { get; set; }
             public string? tenant_code { get; set; }
+
+            [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool isdeleted { get; set; } = false;
+
             public DateTime created_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
             public DateTime updated_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+            [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool is_direct_walkin { get; set; } = false;
+
             public int? duty_dcode { get; set; }
             public int? transferred_to_dcode { get; set; }
             public string? transfer_reason { get; set; }
+
+            [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool is_dressing { get; set; } = false;
 
             [Write(false)]
@@ -43,16 +52,34 @@ namespace Booking.Models
             public string? mobile { get; set; }
 
             [Write(false)]
+            [JsonConverter(typeof(FlexibleNullableBoolConverter))]
             public bool? isvip { get; set; }
 
             [Write(false)]
+            [JsonConverter(typeof(FlexibleNullableBoolConverter))]
             public bool? is_vip { get; set; }
 
             [Write(false)]
             public string? viprole { get; set; }
 
             [Write(false)]
+            [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool refer_to_ip { get; set; } = false;
+
+            [Write(false)]
+            public string? doctor_name { get; set; }
+
+            [Write(false)]
+            public string? billed_status { get; set; }
+
+            [Write(false)]
+            public bool? unbilled_status { get; set; }
+
+            [Write(false)]
+            public TimeOnly? slot_start_time { get; set; }
+
+            [Write(false)]
+            public TimeOnly? slot_end_time { get; set; }
         }
 
         [Table("patient_vitals")]
@@ -158,6 +185,7 @@ namespace Booking.Models
             public string? booking_type { get; set; }
 
             public string? notes { get; set; }
+            [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool refer_to_ip { get; set; } = false;
         }
         public class DressingRegistrationRequest

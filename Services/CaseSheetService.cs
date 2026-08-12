@@ -98,8 +98,15 @@ namespace Booking.Services
                 var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
                 var url = $"api/CaseSheet/by-visit{queryString}";
 
+                var response = await _http.GetAsync(url);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return null;
+                }
+                response.EnsureSuccessStatusCode();
+
                 var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                var vm = await _http.GetFromJsonAsync<CaseSheetViewModel>(url, options);
+                var vm = await response.Content.ReadFromJsonAsync<CaseSheetViewModel>(options);
                 if (vm != null)
                 {
                     AdjustViewModelDatesToIst(vm);
@@ -129,9 +136,20 @@ namespace Booking.Services
                 }
 
                 var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
-                var response = await _http.GetFromJsonAsync<CaseSheetPrescriptionViewModel>($"api/CaseSheet/prescription{queryString}");
-                AdjustPrescriptionDatesToIst(response);
-                return response;
+                var url = $"api/CaseSheet/prescription{queryString}";
+                var response = await _http.GetAsync(url);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return null;
+                }
+                response.EnsureSuccessStatusCode();
+
+                var result = await response.Content.ReadFromJsonAsync<CaseSheetPrescriptionViewModel>();
+                if (result != null)
+                {
+                    AdjustPrescriptionDatesToIst(result);
+                }
+                return result;
             }
             catch (Exception ex)
             {
