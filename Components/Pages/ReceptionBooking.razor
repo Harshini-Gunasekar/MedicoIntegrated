@@ -1234,20 +1234,12 @@
         bookingInProgress = true;
         try
         {
-            // Resolve booking type dynamically based on capacity limits
-            string resolvedBookingType = "WALKIN";
-            if (selectedWalkinSlot.max_walkin == 0 || 
-                (selectedWalkinSlot.typeofslot != null && selectedWalkinSlot.typeofslot.Equals("ONLINE", StringComparison.OrdinalIgnoreCase)) ||
-                (selectedWalkinSlot.max_walkin > 0 && selectedWalkinSlot.walkin_count >= selectedWalkinSlot.max_walkin && selectedWalkinSlot.remaining_seats > 0))
-            {
-                resolvedBookingType = "ONLINE";
-            }
+            // Force the booking and OP workflow to ONLINE-only to match the API contract.
+            // This prevents the backend from selecting a walk-in token range on slots that do not support it.
+            const string resolvedBookingType = "ONLINE";
 
-            string finalNotes = walkinNotes;
-            if (resolvedBookingType == "ONLINE")
-            {
-                finalNotes = "[WALKIN]" + (string.IsNullOrWhiteSpace(walkinNotes) ? "" : " " + walkinNotes);
-            }
+            string finalNotes = string.IsNullOrWhiteSpace(walkinNotes) ? "Walk-in booking" : walkinNotes;
+            finalNotes = finalNotes.Replace("[WALKIN]", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
 
             var newBooking = new AppointmentBookingModel
             {
@@ -1265,10 +1257,13 @@
                 isdeleted = false
             };
 
-            var res = await BookingService.BookAppointmentAsync(newBooking);
+            var docObj = doctors.FirstOrDefault(d => d.dcode == walkinDcode);
+            int? deptCode = docObj?.spcode > 0 ? docObj.spcode : 3;
+
+            var (res, opRes, tokenNo, bookingId) = await BookingService.BookAppointmentWithOpRegistrationAsync(newBooking, deptCode);
             if (res.StartsWith("Success", StringComparison.OrdinalIgnoreCase))
             {
-                ToastService.ShowSuccess("Walk-in appointment created successfully!");
+                ToastService.ShowSuccess("Walk-in appointment and OP registration created successfully!");
                 showWalkinModal = false;
                 await LoadBookingsAsync();
             }
@@ -1291,9 +1286,7 @@
     private void OpenRegisterModal(AppointmentBookingModel booking)
     {
         selectedBookingForReg = booking;
-        
-        string regType = (booking.booking_type == "WALKIN" || (booking.booking_type == "ONLINE" && booking.notes != null && booking.notes.StartsWith("[WALKIN]"))) ? "WALKIN" : "ONLINE";
-        
+
         newOpRequest = new OPRegistrationModel.OpRegistrationModel
         {
             booking_id = booking.booking_id,
@@ -1303,7 +1296,8 @@
             dcode = booking.dcode,
             department_code = 3,
             visit_type = "NEWVISIT",
-            reg_type = regType,
+            reg_type = "ONLINE",
+            is_direct_walkin = false,
             notes = "Patient arrived",
             visit_date = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime())
         };

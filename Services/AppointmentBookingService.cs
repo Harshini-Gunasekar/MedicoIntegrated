@@ -40,6 +40,19 @@ namespace Booking.Services
         {
             try
             {
+                var normalizedBookingType = string.IsNullOrWhiteSpace(booking.booking_type) || booking.booking_type.Equals("WALKIN", StringComparison.OrdinalIgnoreCase)
+                    ? "ONLINE"
+                    : booking.booking_type;
+
+                var normalizedNotes = booking.notes;
+                if (!string.IsNullOrWhiteSpace(normalizedNotes) && normalizedNotes.StartsWith("[WALKIN]", StringComparison.OrdinalIgnoreCase))
+                {
+                    normalizedNotes = normalizedNotes.Substring("[WALKIN]".Length).Trim();
+                }
+
+                booking.booking_type = normalizedBookingType;
+                booking.notes = string.IsNullOrWhiteSpace(normalizedNotes) ? null : normalizedNotes;
+
                 // Convert slot times to UTC for backend API requirement
                 var apiPayload = new AppointmentBookingModel
                 {
@@ -53,7 +66,7 @@ namespace Booking.Services
                     slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(booking.slot_start_time),
                     slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(booking.slot_end_time),
                     token_no = booking.token_no,
-                    booking_type = booking.booking_type,
+                    booking_type = normalizedBookingType,
                     booking_status = booking.booking_status,
                     rescheduled_from = booking.rescheduled_from,
                     reschedule_reason = booking.reschedule_reason,
@@ -85,6 +98,106 @@ namespace Booking.Services
                 Console.WriteLine($"Error booking appointment: {ex.Message}");
                 return $"Error|{ex.Message}";
             }
+        }
+
+        public async Task<(string BookingResult, string? OpResult, int TokenNo, Guid BookingId)> BookAppointmentWithOpRegistrationAsync(AppointmentBookingModel booking, int? departmentCode = null)
+        {
+            var bookingResult = await BookAppointmentAsync(booking);
+            string? opResult = null;
+            int tokenNo = booking.token_no;
+            Guid bookingId = booking.booking_id;
+
+            if (bookingResult.StartsWith("Success", StringComparison.OrdinalIgnoreCase))
+            {
+                var parts = bookingResult.Split('|');
+                foreach (var part in parts)
+                {
+                    if (part.StartsWith("Token:", StringComparison.OrdinalIgnoreCase) && int.TryParse(part.Substring(6), out var t))
+                    {
+                        tokenNo = t;
+                    }
+                    else if (part.StartsWith("BookingId:", StringComparison.OrdinalIgnoreCase) && Guid.TryParse(part.Substring(10), out var g))
+                    {
+                        bookingId = g;
+                    }
+                }
+
+                try
+                {
+                    var savedBooking = await GetBookingByIdAsync(bookingId);
+                    if (savedBooking == null)
+                    {
+                        savedBooking = booking;
+                        savedBooking.booking_id = bookingId;
+                        savedBooking.booking_no ??= booking.booking_no;
+                        savedBooking.booking_type = "ONLINE";
+                        savedBooking.notes = string.IsNullOrWhiteSpace(booking.notes) ? null : booking.notes.Replace("[WALKIN]", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+                    }
+                    else
+                    {
+                        savedBooking.booking_type = "ONLINE";
+                        if (!string.IsNullOrWhiteSpace(savedBooking.notes))
+                        {
+                            savedBooking.notes = savedBooking.notes.Replace("[WALKIN]", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
+                        }
+                    }
+
+                    var opRegistration = new OPRegistrationModel.OpRegistrationModel
+                    {
+                        op_id = Guid.NewGuid(),
+                        op_no = "",
+                        booking_id = savedBooking.booking_id,
+                        booking_no = savedBooking.booking_no ?? booking.booking_no ?? "",
+                        slot_detail_id = savedBooking.slot_detail_id,
+                        custid = savedBooking.custid,
+                        dcode = savedBooking.dcode,
+                        department_code = departmentCode ?? 3,
+                        visit_type = "NEWVISIT",
+                        reg_type = "ONLINE",
+                        visit_date = savedBooking.appointment_date,
+                        token_no = tokenNo > 0 ? tokenNo : null,
+                        queue_no = null,
+                        visit_status = "WAITING",
+                        notes = savedBooking.notes,
+                        tenant_code = savedBooking.tenant_code ?? booking.tenant_code,
+                        isdeleted = false,
+                        created_at = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
+                        updated_at = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
+                        is_direct_walkin = false,
+                        duty_dcode = null,
+                        transferred_to_dcode = null,
+                        transfer_reason = null,
+                        is_dressing = false
+                    };
+
+                    opResult = await RegisterOpAsync(opRegistration);
+                    Console.WriteLine($"[AppointmentBookingService] OP Registration response: {opResult}");
+
+                    if (opResult != null && opResult.StartsWith("Success", StringComparison.OrdinalIgnoreCase))
+                    {
+                        try
+                        {
+                            var allOps = await GetAllOpRegistrationsAsync();
+                            var match = allOps.FirstOrDefault(x => (savedBooking.booking_id != Guid.Empty && x.booking_id == savedBooking.booking_id) || x.op_id == opRegistration.op_id);
+                            if (match != null && match.token_no.HasValue && match.token_no.Value > 0)
+                            {
+                                tokenNo = match.token_no.Value;
+                            }
+                        }
+                        catch (Exception fetchEx)
+                        {
+                            Console.WriteLine($"[AppointmentBookingService] Error fetching updated OP token: {fetchEx.Message}");
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[AppointmentBookingService] Error creating OP Registration: {ex.Message}");
+                    opResult = $"Error|{ex.Message}";
+                }
+            }
+
+            return (bookingResult, opResult, tokenNo, bookingId);
         }
 
         public async Task<List<AppointmentBookingModel>> GetAllBookingsAsync()
@@ -188,6 +301,20 @@ namespace Booking.Services
             }
         }
 
+        public async Task<AppointmentBookingModel?> GetBookingByIdAsync(Guid bookingId)
+        {
+            try
+            {
+                var bookings = await GetAllBookingsAsync();
+                return bookings.FirstOrDefault(b => b.booking_id == bookingId);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting booking by id: {ex.Message}");
+                return null;
+            }
+        }
+
         public async Task<List<AppointmentBookingModel>> GetBookingsByCustomerAsync(decimal custid)
         {
             try
@@ -225,6 +352,13 @@ namespace Booking.Services
         {
             try
             {
+                request.reg_type = "ONLINE";
+                request.is_direct_walkin = false;
+                if (!string.IsNullOrWhiteSpace(request.notes) && request.notes.StartsWith("[WALKIN]", StringComparison.OrdinalIgnoreCase))
+                {
+                    request.notes = request.notes.Substring("[WALKIN]".Length).Trim();
+                }
+
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
                 Console.WriteLine("--- CREATE OP PAYLOAD ---");
@@ -237,6 +371,21 @@ namespace Booking.Services
                 Console.WriteLine("--- CREATE OP RESPONSE ---");
                 Console.WriteLine(rawResponse);
                 Console.WriteLine("--------------------------");
+
+                // The backend rejects walk-in token ranges for slots not configured for them.
+                // This path always uses ONLINE token allocation and should not retry with WALKIN.
+                if (rawResponse != null && rawResponse.Contains("token range not configured", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("--- RETRYING OP REGISTRATION WITH reg_type = 'ONLINE' ---");
+                    request.reg_type = "ONLINE";
+                    request.is_direct_walkin = false;
+                    var retryResponse = await _http.PostAsJsonAsync("api/OpRegistration/create", request);
+                    rawResponse = await retryResponse.Content.ReadAsStringAsync();
+
+                    Console.WriteLine("--- RETRY OP RESPONSE ---");
+                    Console.WriteLine(rawResponse);
+                    Console.WriteLine("-------------------------");
+                }
 
                 return rawResponse;
             }

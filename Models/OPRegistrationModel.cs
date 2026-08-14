@@ -19,7 +19,7 @@ namespace Booking.Models
             public int dcode { get; set; }
             public int? department_code { get; set; }
             public string visit_type { get; set; } = "NEWVISIT";
-            public string reg_type { get; set; } = "WALKIN";    // ✅ NEW — WALKIN / ONLINE
+            public string reg_type { get; set; } = "ONLINE";    // Use ONLINE token allocation for slot-driven registrations; backend walk-in ranges are not always configured.
             public DateOnly visit_date { get; set; }
             public int? token_no { get; set; }
             public int? queue_no { get; set; }
