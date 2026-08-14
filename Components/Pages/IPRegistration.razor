@@ -18,6 +18,8 @@
 @inject NavigationManager Navigation
 @inject IHttpClientFactory ClientFactory
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+
 
 <PageTitle>Inpatient Registration</PageTitle>
 
@@ -330,6 +332,12 @@
                                             <div class="actions-dropdown-menu" @onclick:stopPropagation>
                                                 @if (a.ip_status == "ADMITTED")
                                                 {
+                                                    <button type="button" class="action-icon-btn preview-bill" title="Preview Consolidated Bill" @onclick="() => { PreviewConsolidatedBill(a); ToggleDropdown(a.ip_id); }">
+                                                        <i class="bi bi-printer-fill"></i>
+                                                    </button>
+                                                    <button type="button" class="action-icon-btn download-bill" title="Download Consolidated Bill PDF" @onclick="() => { DownloadConsolidatedBillPdf(a); ToggleDropdown(a.ip_id); }">
+                                                        <i class="bi bi-file-earmark-pdf-fill"></i>
+                                                    </button>
                                                     @if (hasEditRight)
                                                     {
                                                         <button type="button" class="action-icon-btn update" title="Update" @onclick="() => { OpenUpdateModal(a); ToggleDropdown(a.ip_id); }">
@@ -357,6 +365,12 @@
                                                 }
                                                 else
                                                 {
+                                                    <button type="button" class="action-icon-btn preview-bill" title="Preview Consolidated Bill" @onclick="() => { PreviewConsolidatedBill(a); ToggleDropdown(a.ip_id); }">
+                                                        <i class="bi bi-printer-fill"></i>
+                                                    </button>
+                                                    <button type="button" class="action-icon-btn download-bill" title="Download Consolidated Bill PDF" @onclick="() => { DownloadConsolidatedBillPdf(a); ToggleDropdown(a.ip_id); }">
+                                                        <i class="bi bi-file-earmark-pdf-fill"></i>
+                                                    </button>
                                                     @if (hasDischargeViewRight)
                                                     {
                                                         <button type="button" class="action-icon-btn discharge" title="Discharge Summary" @onclick="() => { OpenDischargeSummaryForIp(a); ToggleDropdown(a.ip_id); }">
@@ -1497,6 +1511,179 @@
             {
                 SelectPatientFromDropdown(filteredPatientsForDropdown[activeDropdownIndex]);
             }
+        }
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("DoctorApi");
+        var tenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : "0010";
+        client.DefaultRequestHeaders.Remove("tenantcode");
+        client.DefaultRequestHeaders.Remove("tenant_code");
+        client.DefaultRequestHeaders.Remove("tenant-code");
+        client.DefaultRequestHeaders.Add("tenantcode", tenant);
+        client.DefaultRequestHeaders.Add("tenant_code", tenant);
+        client.DefaultRequestHeaders.Add("tenant-code", tenant);
+        if (!string.IsNullOrEmpty(AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+        }
+        return client;
+    }
+
+    private bool isPrintingBill = false;
+    private bool isDownloadingBillPdf = false;
+
+    private async Task<string> FetchConsolidatedBillBase64(Guid requestGuid)
+    {
+        string tenant = !string.IsNullOrWhiteSpace(TenantCode) ? TenantCode : (TenantState?.TenantCode ?? "0010");
+        string token = !string.IsNullOrWhiteSpace(AuthToken) ? AuthToken : (TenantState?.AuthToken ?? "");
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            try
+            {
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                if (!tokenResult.Success || string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    tokenResult = await _sessionStorage.GetAsync<string>("auth_token");
+                }
+                if (tokenResult.Success && !string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    token = tokenResult.Value;
+                }
+            }
+            catch {}
+        }
+
+        var candidateUrls = new List<string>
+        {
+            $"https://medicoapi.iscansoft.com/api/report/getconsolidatedbill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"api/report/getconsolidatedbill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"api/Report/getconsolidatedbill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"api/Report/GetConsolidatedBill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}"
+        };
+
+        var client = CreateClient();
+        string lastError = "";
+
+        foreach (var url in candidateUrls)
+        {
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                if (!string.IsNullOrEmpty(token))
+                {
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                }
+                req.Headers.Add("tenantcode", tenant);
+                req.Headers.Add("tenant_code", tenant);
+                req.Headers.Add("tenant-code", tenant);
+
+                var response = await client.SendAsync(req);
+
+                if (response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NoContent)
+                {
+                    var contentStr = await response.Content.ReadAsStringAsync();
+                    contentStr = contentStr.Trim('"').Trim();
+
+                    string base64Data = contentStr;
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(contentStr);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            if (root.TryGetProperty("data", out var dProp)) base64Data = dProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("base64", out var bProp)) base64Data = bProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("file", out var fProp)) base64Data = fProp.GetString() ?? contentStr;
+                        }
+                        else if (root.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            base64Data = root.GetString() ?? contentStr;
+                        }
+                    }
+                    catch { }
+
+                    if (!string.IsNullOrWhiteSpace(base64Data) && base64Data.Length >= 50)
+                    {
+                        return base64Data;
+                    }
+                }
+                else
+                {
+                    var errContent = await response.Content.ReadAsStringAsync();
+                    lastError = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}): {errContent}";
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        throw new Exception(string.IsNullOrEmpty(lastError) ? "Backend report endpoint returned empty data." : lastError);
+    }
+
+    private async Task PreviewConsolidatedBill(IPRegistrationModel.IpRegistrationModel admission)
+    {
+        try
+        {
+            isPrintingBill = true;
+            StateHasChanged();
+
+            Guid requestGuid = admission.ip_id;
+            string base64Data = await FetchConsolidatedBillBase64(requestGuid);
+
+            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            {
+                await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64Data, $"Consolidated Bill - {admission.ip_no}");
+            }
+            else
+            {
+                ToastService.ShowError("Unable to load PDF preview: Invalid report data returned.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading consolidated bill: {ex.Message}");
+        }
+        finally
+        {
+            isPrintingBill = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task DownloadConsolidatedBillPdf(IPRegistrationModel.IpRegistrationModel admission)
+    {
+        try
+        {
+            isDownloadingBillPdf = true;
+            StateHasChanged();
+
+            Guid requestGuid = admission.ip_id;
+            string base64Data = await FetchConsolidatedBillBase64(requestGuid);
+
+            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            {
+                string filename = $"Consolidated_Bill_{admission.ip_no}.pdf";
+                await JSRuntime.InvokeVoidAsync("downloadPdfFile", base64Data, filename);
+                ToastService.ShowSuccess("Consolidated bill PDF downloaded successfully.");
+            }
+            else
+            {
+                ToastService.ShowError("Unable to download PDF: Invalid report data returned.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error downloading consolidated bill: {ex.Message}");
+        }
+        finally
+        {
+            isDownloadingBillPdf = false;
+            StateHasChanged();
         }
     }
 }

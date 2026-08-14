@@ -61,58 +61,61 @@ namespace Booking.Models
 
     public class PurchaseDetailModel
     {
-       
         public long purchasedetailcode { get; set; }
 
-    public long purchasecode { get; set; }
+        public long purchasecode { get; set; }
 
-    public long itemcode { get; set; }
+        public long itemcode { get; set; }
 
-    public decimal quantity { get; set; }
+        public decimal quantity { get; set; }
 
-    public decimal freequantity { get; set; }
+        public decimal freequantity { get; set; }
 
-    public long? uomcode { get; set; }
+        public long? uomcode { get; set; }
 
-    public decimal rate { get; set; }
+        public decimal rate { get; set; }
 
-    public decimal discountpercentage { get; set; }
+        public decimal discountpercentage { get; set; }
 
-    public decimal discountamount { get; set; }
+        public decimal discountamount { get; set; }
 
-    public decimal taxpercentage { get; set; }
+        public decimal taxpercentage { get; set; }
 
-    public decimal taxamount { get; set; }
+        public decimal taxamount { get; set; }
 
-    public decimal amount { get; set; }
+        public decimal amount { get; set; }
 
-    public decimal totalamount { get; set; }
+        public decimal totalamount { get; set; }
 
-    public string? batchno { get; set; }
+        public string? batchno { get; set; }
 
-    public DateTime? manufacturingdate { get; set; }
+        public DateTime? manufacturingdate { get; set; }
 
-    public DateTime? expirydate { get; set; }
+        public DateTime? expirydate { get; set; }
 
-    // New Fields
+        // New Fields
 
-    public decimal orderedqty { get; set; }
+        public decimal orderedqty { get; set; }
 
-    public decimal receivedqty { get; set; }
+        public decimal receivedqty { get; set; }
 
-    public decimal rejectedqty { get; set; }
+        public decimal rejectedqty { get; set; }
+        public decimal returnedqty { get; set; }
+        public decimal issuedqty { get; set; }
 
-    // Warehouse / Store
-    public long warehousecode { get; set; }
+        // Warehouse / Store
+        public long warehousecode { get; set; }
 
-    // Packaging
-    public string? packaging { get; set; }
+        // Packaging
+        public string? packaging { get; set; }
 
-    // Manufacturer
-    public long manufacturercode { get; set; }
+        // Manufacturer
+        public long manufacturercode { get; set; }
 
-    public string? tenantcode { get; set; }
-
+        public string? tenantcode { get; set; }
+        public int packsize { get; set; }
+        public decimal packg { get; set; }
+        public decimal mrp { get; set; }
     }
 
     public class PurchaseRequest
