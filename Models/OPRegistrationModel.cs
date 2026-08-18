@@ -201,5 +201,10 @@ namespace Booking.Models
             public Guid? slot_detail_id { get; set; }
             public string? notes { get; set; }
         }
+        public class CancelOpRegistrationRequest
+        {
+            public Guid op_id { get; set; }
+            public string? cancel_reason { get; set; }
+        }
     } 
 }

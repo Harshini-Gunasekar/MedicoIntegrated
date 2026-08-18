@@ -664,5 +664,38 @@ namespace Booking.Services
                 return new List<DoctorBookingListModel>();
             }
         }
+
+        public async Task<string> CancelOpRegistrationAsync(OPRegistrationModel.CancelOpRegistrationRequest request)
+        {
+            try
+            {
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("=================== CANCEL OP REGISTRATION PAYLOAD ===================");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("======================================================================");
+
+                var response = await _http.PostAsJsonAsync("api/OpRegistration/cancel", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("=================== CANCEL OP REGISTRATION RESPONSE ===================");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("=======================================================================");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return string.IsNullOrWhiteSpace(rawResponse) || rawResponse.Contains("Success", StringComparison.OrdinalIgnoreCase)
+                        ? "Success"
+                        : rawResponse;
+                }
+
+                return string.IsNullOrWhiteSpace(rawResponse) ? $"Error: HTTP {(int)response.StatusCode}" : rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error cancelling OP registration: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
     }
 }
