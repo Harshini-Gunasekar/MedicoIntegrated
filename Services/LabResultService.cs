@@ -41,7 +41,35 @@ namespace Booking.Services
                 var response = await client.GetAsync($"api/labresult/viewresultsearch?fromdate={fromDate}&todate={toDate}");
                 if (response.IsSuccessStatusCode)
                 {
-                    return await response.Content.ReadFromJsonAsync<List<ViewResultSearch>>() ?? new();
+                    var list = await response.Content.ReadFromJsonAsync<List<ViewResultSearch>>() ?? new();
+                    try
+                    {
+                        var testTask = client.GetFromJsonAsync<List<Booking.Models.TestMasterModel>>("api/Test/get");
+                        var groupTask = client.GetFromJsonAsync<List<Booking.Models.GroupMasterModel>>("api/GroupMaster/get");
+                        await Task.WhenAll(testTask, groupTask);
+
+                        var tests = await testTask;
+                        var groups = await groupTask;
+
+                        var lockedTcodes = tests?.Where(t => t.lockresult).Select(t => (long)t.tcode).ToHashSet() ?? new();
+                        var treatmentGcodes = groups?.Where(g => g.istreatment == true).Select(g => (long)g.gcode).ToHashSet() ?? new();
+
+                        return list.Where(item => {
+                            if (!string.IsNullOrWhiteSpace(item.tcode))
+                            {
+                                var clean = item.tcode.Replace("T-", "").Trim();
+                                if (long.TryParse(clean, out long tc) && lockedTcodes.Contains(tc))
+                                    return false;
+                            }
+                            if (item.gcode.HasValue && treatmentGcodes.Contains((long)item.gcode.Value))
+                                return false;
+                            return true;
+                        }).ToList();
+                    }
+                    catch
+                    {
+                        return list;
+                    }
                 }
             }
             catch (Exception ex)

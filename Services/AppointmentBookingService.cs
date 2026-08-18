@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
+using Booking.Helpers;
 using Booking.Models;
 
 namespace Booking.Services
@@ -20,14 +22,18 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.GetFromJsonAsync<List<AvailableSlotModel>>($"api/AppointmentBooking/get-available-slots?dcode={dcode}&appointment_date={appointmentDate:yyyy-MM-dd}");
-                var slots = response ?? new List<AvailableSlotModel>();
-                foreach (var s in slots)
+                var response = await _http.GetAsync($"api/AppointmentBooking/get-available-slots?dcode={dcode}&appointment_date={appointmentDate:yyyy-MM-dd}");
+                if (response.IsSuccessStatusCode)
                 {
-                    s.slot_start_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(s.slot_start_time);
-                    s.slot_end_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(s.slot_end_time);
+                    var slots = await response.Content.ReadFromJsonAsync<List<AvailableSlotModel>>() ?? new List<AvailableSlotModel>();
+                    foreach (var s in slots)
+                    {
+                        s.slot_start_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(s.slot_start_time);
+                        s.slot_end_time = Booking.Helpers.DateTimeExtensions.ToIndianTime(s.slot_end_time);
+                    }
+                    return slots;
                 }
-                return slots;
+                return new List<AvailableSlotModel>();
             }
             catch (Exception ex)
             {
@@ -413,6 +419,75 @@ namespace Booking.Services
                 Console.WriteLine(rawResponse);
                 Console.WriteLine("------------------------------");
 
+                if (!response.IsSuccessStatusCode || 
+                    rawResponse.Contains("token range not configured", StringComparison.OrdinalIgnoreCase) || 
+                    rawResponse.Contains("not configured on this slot", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("[DirectWalkinAsync] Token range error detected. Attempting Fallback 1: nullifying slot_detail_id...");
+                    var originalSlotId = request.slot_detail_id;
+                    request.slot_detail_id = null;
+
+                    var fallbackResponse = await _http.PostAsJsonAsync("api/OpRegistration/direct-walkin", request);
+                    var fallbackRaw = await fallbackResponse.Content.ReadAsStringAsync();
+
+                    Console.WriteLine("--- FALLBACK 1 DIRECT WALKIN RESPONSE ---");
+                    Console.WriteLine(fallbackRaw);
+                    Console.WriteLine("------------------------------------------");
+
+                    if (fallbackResponse.IsSuccessStatusCode && 
+                        !fallbackRaw.Contains("token range not configured", StringComparison.OrdinalIgnoreCase) && 
+                        !fallbackRaw.Contains("not configured on this slot", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return fallbackRaw;
+                    }
+
+                    // Fallback 2: Pre-book appointment first then register OP
+                    request.slot_detail_id = originalSlotId;
+                    if (originalSlotId.HasValue && originalSlotId.Value != Guid.Empty && request.custid > 0)
+                    {
+                        Console.WriteLine("[DirectWalkinAsync] Fallback 1 failed. Attempting Fallback 2: Pre-booking appointment...");
+                        var targetDcode = request.dcode ?? request.duty_dcode ?? 0;
+                        if (targetDcode > 0)
+                        {
+                            var newBooking = new AppointmentBookingModel
+                            {
+                                booking_id = Guid.NewGuid(),
+                                custid = request.custid,
+                                dcode = targetDcode,
+                                slot_detail_id = originalSlotId.Value,
+                                appointment_date = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime()),
+                                booking_type = "ONLINE",
+                                booking_status = "CONFIRMED",
+                                notes = request.notes
+                            };
+
+                            var bookResult = await BookAppointmentAsync(newBooking);
+                            if (bookResult != null && bookResult.Contains("SUCCESS", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var regModel = new OPRegistrationModel.OpRegistrationModel
+                                {
+                                    booking_id = newBooking.booking_id,
+                                    custid = request.custid,
+                                    dcode = targetDcode,
+                                    slot_detail_id = originalSlotId.Value,
+                                    visit_date = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime()),
+                                    reg_type = "OP",
+                                    visit_status = "ARRIVED",
+                                    notes = request.notes
+                                };
+
+                                var opResult = await RegisterOpAsync(regModel);
+                                if (!string.IsNullOrWhiteSpace(opResult) && opResult.Contains("SUCCESS", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    return opResult;
+                                }
+                            }
+                        }
+                    }
+
+                    return fallbackRaw;
+                }
+
                 return rawResponse;
             }
             catch (Exception ex)
@@ -438,6 +513,18 @@ namespace Booking.Services
                 Console.WriteLine("--- DRESSING REGISTRATION RESPONSE ---");
                 Console.WriteLine(rawResponse);
                 Console.WriteLine("------------------------------");
+
+                if (!response.IsSuccessStatusCode || 
+                    rawResponse.Contains("token range not configured", StringComparison.OrdinalIgnoreCase) || 
+                    rawResponse.Contains("not configured on this slot", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("[DressingRegistrationAsync] Token range error detected. Nullifying slot_detail_id...");
+                    request.slot_detail_id = null;
+
+                    var fallbackResponse = await _http.PostAsJsonAsync("api/OpRegistration/dressing", request);
+                    var fallbackRaw = await fallbackResponse.Content.ReadAsStringAsync();
+                    return fallbackRaw;
+                }
 
                 return rawResponse;
             }
@@ -548,8 +635,14 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.GetFromJsonAsync<List<OPRegistrationModel.OpRegistrationModel>>("api/OpRegistration/all");
-                return response ?? new List<OPRegistrationModel.OpRegistrationModel>();
+                var response = await _http.GetAsync("api/OpRegistration/all");
+                if (response.IsSuccessStatusCode)
+                {
+                    var list = await response.Content.ReadFromJsonAsync<List<OPRegistrationModel.OpRegistrationModel>>();
+                    return list ?? new List<OPRegistrationModel.OpRegistrationModel>();
+                }
+                Console.WriteLine($"[GetAllOpRegistrationsAsync] Non-success status: {response.StatusCode}");
+                return new List<OPRegistrationModel.OpRegistrationModel>();
             }
             catch (Exception ex)
             {

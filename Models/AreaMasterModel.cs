@@ -26,6 +26,8 @@ namespace Medico_Backend.Model
 
         public string? description { get; set; }
 
+        public string? type { get; set; }
+
         public bool deleted { get; set; } = false;
 
         public int usercode { get; set; } = 1;

@@ -239,7 +239,7 @@
         </div>
         @if (activeTab == "collect" || activeTab == "history")
         {
-            <button class="btn-history-filter-trigger @(IsFilterOpen() ? "active" : "")" @onclick="ToggleActiveFilter" style="margin-left: auto; display: flex; align-items: center; gap: 0.5rem; background: #ffffff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.6rem 1.2rem; font-size: 0.9rem; font-weight: 500; color: #475569; transition: all 0.2s;">
+            <button class="btn-history-filter-trigger @(IsFilterOpen() ? "active" : "")" @onclick="ToggleActiveFilter">
                 <i class="bi bi-funnel"></i> Filter
             </button>
         }
@@ -337,7 +337,7 @@
                                      <label>PATIENT</label>
                                      <div class="autocomplete-search-wrapper" style="position: relative;">
                                          <input type="text" class="filter-input" placeholder="Search Patient Name or Mobile..." 
-                                                @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="width: 100%;" />
+                                                value="@patientSearchQuery" @oninput="OnPatientSearchInput" style="width: 100%;" />
                                          @if (showPatientDropdown && searchedPatients.Count > 0)
                                          {
                                              <div class="autocomplete-dropdown" style="position: absolute; top: 100%; left: 0; right: 0; background: #ffffff; border: 1.5px solid #cbd5e1; border-radius: 8px; box-shadow: 0 10px 25px rgba(0, 0, 0, 0.15); max-height: 260px; overflow-y: auto; z-index: 1050; margin-top: 4px;">
@@ -1121,8 +1121,16 @@
         return client;
     }
 
-    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    private System.Threading.CancellationTokenSource? _patientSearchCts;
+
+    private async Task OnPatientSearchInput(ChangeEventArgs e)
     {
+        patientSearchQuery = e.Value?.ToString() ?? "";
+
+        _patientSearchCts?.Cancel();
+        _patientSearchCts = new System.Threading.CancellationTokenSource();
+        var token = _patientSearchCts.Token;
+
         if (string.IsNullOrWhiteSpace(patientSearchQuery))
         {
             searchedPatients.Clear();
@@ -1130,21 +1138,31 @@
             filterPatient = "";
             isPatientSearched = false;
             await LoadDueBills();
+            StateHasChanged();
             return;
         }
 
         try
         {
+            await Task.Delay(250, token);
+
             using var client = CreateClient(true); // LabCareUrl endpoint matching Billing portal
-            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}");
+            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}", token);
+
+            if (token.IsCancellationRequested) return;
+
             if (!response.IsSuccessStatusCode)
             {
-                response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}");
+                response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}", token);
             }
+
+            if (token.IsCancellationRequested) return;
 
             if (response.IsSuccessStatusCode)
             {
-                var rawJson = await response.Content.ReadAsStringAsync();
+                var rawJson = await response.Content.ReadAsStringAsync(token);
+                if (token.IsCancellationRequested) return;
+
                 var settings = new Newtonsoft.Json.JsonSerializerSettings 
                 { 
                     NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
@@ -1153,8 +1171,8 @@
                 List<Booking.Models.CustomerWithOpModel> list = new();
                 try
                 {
-                    var token = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
-                    if (token is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
+                    var jToken = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
+                    if (jToken is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
                     {
                         list = obj["value"].ToObject<List<Booking.Models.CustomerWithOpModel>>(Newtonsoft.Json.JsonSerializer.Create(settings)) ?? new();
                     }
@@ -1186,14 +1204,28 @@
                 showPatientDropdown = false;
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Cancelled due to newer user input
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Error searching patients: {ex.Message}");
             searchedPatients.Clear();
             showPatientDropdown = false;
         }
+        finally
+        {
+            if (!token.IsCancellationRequested)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
 
-        StateHasChanged();
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        // Retained for backward compatibility
     }
 
     private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)

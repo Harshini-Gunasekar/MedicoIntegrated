@@ -29,7 +29,7 @@
                 <div class="search-input-wrapper">
                     <div class="autocomplete-search-wrapper" style="width: 100%;">
                         <input type="text" class="filter-control" placeholder="Search Patient MobileNo..."
-                               @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="width: 100%; height: 42px; border-radius: 8px;" />
+                               value="@patientSearchQuery" @oninput="OnPatientSearchInput" style="width: 100%; height: 42px; border-radius: 8px;" />
                         @if (showPatientDropdown && searchedPatients.Count > 0)
                         {
                             <div class="autocomplete-dropdown">
@@ -176,7 +176,7 @@
                                             </td>
                                             <td>
                                                 <div class="action-buttons-cell" style="justify-content: center;">
-                                                    @if (book.booking_status == "CONFIRMED" || book.booking_status == "BOOKED" || book.booking_status == "RESCHEDULED")
+                                                    @if (book.booking_status == "BOOKED")
                                                     {
                                                         @if (TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))
                                                         {
@@ -190,6 +190,18 @@
                                                                 <i class="bi bi-trash"></i>
                                                             </button>
                                                         }
+                                                    }
+                                                    @if (book.booking_status == "CONFIRMED")
+                                                    {
+                                                        <span style="font-size: 0.75rem; color:#10b981; font-weight:700;">
+                                                            Confirmed
+                                                        </span>
+                                                    }
+                                                    @if (book.booking_status == "RESCHEDULED")
+                                                    {
+                                                        <span style="font-size: 0.75rem; color:#d97706; font-weight:600;" title="@book.reschedule_reason">
+                                                            Rescheduled
+                                                        </span>
                                                     }
                                                     @if (book.booking_status == "CANCELLED")
                                                     {
@@ -382,19 +394,29 @@
     private string patientSearchQuery = "";
     private bool showPatientDropdown = false;
     private List<SharedComponents.Rcl.Models.CustomerModel> searchedPatients = new();
+    private System.Threading.CancellationTokenSource? _patientSearchCts;
 
-    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    private async Task OnPatientSearchInput(ChangeEventArgs e)
     {
+        patientSearchQuery = e.Value?.ToString() ?? "";
+
+        _patientSearchCts?.Cancel();
+        _patientSearchCts = new System.Threading.CancellationTokenSource();
+        var token = _patientSearchCts.Token;
+
         if (string.IsNullOrWhiteSpace(patientSearchQuery))
         {
             searchedPatients.Clear();
             showPatientDropdown = false;
             searchCustId = 0;
+            StateHasChanged();
             return;
         }
 
         try
         {
+            await Task.Delay(250, token);
+
             using var client = ClientFactory.CreateClient("LabCareUrl");
             if (!string.IsNullOrEmpty(TenantState.TenantCode))
             {
@@ -407,11 +429,15 @@
             }
 
             var requestUrl = $"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}";
-            var response = await client.GetAsync(requestUrl);
-            var rawJson = await response.Content.ReadAsStringAsync();
+            var response = await client.GetAsync(requestUrl, token);
+
+            if (token.IsCancellationRequested) return;
 
             if (response.IsSuccessStatusCode)
             {
+                var rawJson = await response.Content.ReadAsStringAsync(token);
+                if (token.IsCancellationRequested) return;
+
                 var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson) ?? new();
                 searchedPatients = list.Take(10).ToList();
                 showPatientDropdown = searchedPatients.Count > 0;
@@ -422,12 +448,28 @@
                 showPatientDropdown = false;
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Task cancelled due to newer user input
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Error searching patients in CustomerBookingHistory: {ex.Message}");
             searchedPatients.Clear();
             showPatientDropdown = false;
         }
+        finally
+        {
+            if (!token.IsCancellationRequested)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        // Retained for backward compatibility
     }
 
     private async Task SelectCustomerPatient(SharedComponents.Rcl.Models.CustomerModel pat)

@@ -29,13 +29,9 @@ namespace Booking.Handlers
         {
             var originalUrl = request.RequestUri?.ToString() ?? "";
             
-            // Match the specific endpoints called by UserRightsManagement
+            // Match the specific endpoints called by UserRightsManagement & ProductFeatureManagement
             if (originalUrl.Contains("/Tenant/GetTenantProducts", StringComparison.OrdinalIgnoreCase) ||
-                originalUrl.Contains("/User/GetProductFeatures", StringComparison.OrdinalIgnoreCase) ||
-                originalUrl.Contains("/User/allstaff", StringComparison.OrdinalIgnoreCase) ||
-                originalUrl.Contains("/User/GetRoleTemplates", StringComparison.OrdinalIgnoreCase) ||
-                originalUrl.Contains("/User/GetPermissions", StringComparison.OrdinalIgnoreCase) ||
-                originalUrl.Contains("/User/SavePermissions", StringComparison.OrdinalIgnoreCase))
+                originalUrl.Contains("/User/", StringComparison.OrdinalIgnoreCase))
             {
                 if (originalUrl.StartsWith(_baseUrl, StringComparison.OrdinalIgnoreCase))
                 {
@@ -118,6 +114,7 @@ namespace Booking.Handlers
                     {
                         System.IO.Directory.CreateDirectory(logDir);
                     }
+                    var respBody = response.Content != null ? await response.Content.ReadAsStringAsync() : "";
                     var logStr = $"[{DateTime.Now}] Intercepted:\n" +
                                  $"  Method: {request.Method}\n" +
                                  $"  Original URL: {originalUrl}\n" +
@@ -125,7 +122,7 @@ namespace Booking.Handlers
                                  $"  Headers:\n" +
                                  string.Join("\n", request.Headers.Select(h => $"    {h.Key}: {string.Join(", ", h.Value)}")) + "\n" +
                                  $"  Response: {response.StatusCode}\n" +
-                                 $"  Response Body: {await (response.Content?.ReadAsStringAsync() ?? Task.FromResult(""))}\n\n";
+                                 $"  Response Body: {respBody}\n\n";
                     System.IO.File.AppendAllText(System.IO.Path.Combine(logDir, "route_debug.txt"), logStr);
                 }
                 catch { /* Ignore log file write errors */ }

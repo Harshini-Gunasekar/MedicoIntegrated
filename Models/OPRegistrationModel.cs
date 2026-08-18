@@ -73,7 +73,12 @@ namespace Booking.Models
             public string? billed_status { get; set; }
 
             [Write(false)]
+            [JsonConverter(typeof(FlexibleNullableBoolConverter))]
             public bool? unbilled_status { get; set; }
+
+            [Write(false)]
+            [JsonConverter(typeof(FlexibleNullableBoolConverter))]
+            public bool? paid_status { get; set; }
 
             [Write(false)]
             public TimeOnly? slot_start_time { get; set; }

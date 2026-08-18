@@ -76,7 +76,7 @@
                         <label>CUSTOMER</label>
                         <div class="autocomplete-search-wrapper">
                             <input type="text" class="hist-input" placeholder="Search ID, Name, Mobile..."
-                                   @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="width: 100%;" />
+                                   value="@patientSearchQuery" @oninput="OnPatientSearchInput" style="width: 100%;" />
                             @if (showPatientDropdown && searchedPatients.Count > 0)
                             {
                                 <div class="autocomplete-dropdown">
@@ -871,24 +871,40 @@
         return client;
     }
 
-    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    private System.Threading.CancellationTokenSource? _patientSearchCts;
+
+    private async Task OnPatientSearchInput(ChangeEventArgs e)
     {
+        patientSearchQuery = e.Value?.ToString() ?? "";
+
+        _patientSearchCts?.Cancel();
+        _patientSearchCts = new System.Threading.CancellationTokenSource();
+        var token = _patientSearchCts.Token;
+
         if (string.IsNullOrWhiteSpace(patientSearchQuery))
         {
             searchedPatients.Clear();
             showPatientDropdown = false;
             filterPatient = "";
             await RunHistoryFilter();
+            StateHasChanged();
             return;
         }
 
         try
         {
+            await Task.Delay(250, token);
+
             using var client = CreateClient(false);
-            var response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}");
+            var response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}", token);
+
+            if (token.IsCancellationRequested) return;
+
             if (response.IsSuccessStatusCode)
             {
-                var rawJson = await response.Content.ReadAsStringAsync();
+                var rawJson = await response.Content.ReadAsStringAsync(token);
+                if (token.IsCancellationRequested) return;
+
                 var settings = new Newtonsoft.Json.JsonSerializerSettings 
                 { 
                     NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
@@ -903,12 +919,28 @@
                 showPatientDropdown = false;
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Cancelled due to newer user input
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Error searching patients: {ex.Message}");
             searchedPatients.Clear();
             showPatientDropdown = false;
         }
+        finally
+        {
+            if (!token.IsCancellationRequested)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        // Retained for backward compatibility
     }
 
     private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)

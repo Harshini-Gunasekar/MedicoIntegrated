@@ -531,7 +531,7 @@
     style.textContent = '@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }';
     document.head.appendChild(style);
 
-    window.openBase64Pdf = function (base64String) {
+    window.openBase64Pdf = function (base64String, title) {
         if (!base64String) return;
         
         // Execute asynchronously in background to prevent Blazor interop block/deadlock
@@ -542,6 +542,10 @@
                 }
                 const cleanBase64 = base64String.replace(/\s/g, '');
                 
+                // Show PDF preview modal on screen so user can view/print/download
+                window.openPdfPreviewModal(cleanBase64, title || 'Report Preview');
+
+                // Trigger labcareprint:// protocol handler in background for silent printing if configured
                 if (cleanBase64.length > 32000) {
                     console.warn('[LabCare] Data too large for direct URL. Using clipboard print...');
                     try {
@@ -624,10 +628,13 @@
                     <span style="font-size:22px;color:#4f46e5;">📄</span>
                     <div>
                         <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">${title || 'Lab Report Preview'}</h3>
-                        <p style="margin:0;font-size:12px;color:#64748b;">Medical Laboratory Results</p>
+                        <p style="margin:0;font-size:12px;color:#64748b;">Medical Laboratory & Billing Reports</p>
                     </div>
                 </div>
                 <div style="display:flex;align-items:center;gap:10px;">
+                    <button id="pdfModalPrintBtn" style="padding:7px 14px;background:#4f46e5;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.15s;">
+                        <span>🖨️ Print</span>
+                    </button>
                     <button id="pdfModalDownloadBtn" style="padding:7px 14px;background:#16a34a;color:#fff;border:none;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:6px;transition:all 0.15s;">
                         <span>⬇️ Download</span>
                     </button>
@@ -638,6 +645,7 @@
             modalContent.appendChild(header);
 
             const iframe = document.createElement('iframe');
+            iframe.id = 'pdfPreviewFrame';
             iframe.src = blobUrl;
             iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%;background:#525659;';
             modalContent.appendChild(iframe);
@@ -650,8 +658,23 @@
                 URL.revokeObjectURL(blobUrl);
             };
             document.getElementById('pdfModalDownloadBtn').onclick = () => {
-                window.downloadPdfFile(cleanBase64, 'Lab_Report.pdf');
+                const fileName = (title ? title.replace(/[^a-zA-Z0-9_-]/g, '_') : 'Lab_Report') + '.pdf';
+                window.downloadPdfFile(cleanBase64, fileName);
             };
+            const printBtn = document.getElementById('pdfModalPrintBtn');
+            if (printBtn) {
+                printBtn.onclick = () => {
+                    try {
+                        const iframeWin = iframe.contentWindow || iframe.contentDocument.defaultView;
+                        if (iframeWin) {
+                            iframeWin.focus();
+                            iframeWin.print();
+                        }
+                    } catch (e) {
+                        console.error('Print iframe failed:', e);
+                    }
+                };
+            }
             modal.onclick = (e) => {
                 if (e.target === modal) {
                     modal.remove();

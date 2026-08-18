@@ -6,7 +6,9 @@
 @inject NavigationManager Navigation
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject IHttpClientFactory ClientFactory
+@inject Booking.Services.LabSettingService LabSettingService
 @using Booking.Helpers
+@using Medico_Backend.Model
 
 <div class="animated-background">
     <div class="floating-blob blob-1"></div>
@@ -22,7 +24,7 @@
             <p>Monitor patient queues, verify bookings, transition statuses, and handle rescheduling pipelines.</p>
         </div>
         <div style="display:flex; gap:0.5rem; align-items: center; position: relative;">
-            <button class="btn-header-action secondary" @onclick="() => showStatsPopover = !showStatsPopover" style="background: #ffffff; color: #475569; border: 1px solid #cbd5e1; font-weight: 700; height: 38px;">
+            <button class="btn-header-action secondary" @onclick="() => showStatsPopover = !showStatsPopover" style="height: 38px;">
                 <i class="bi bi-bar-chart-fill" style="color: #0284c7;"></i>
                 <span>@(showStatsPopover ? "Hide Stats" : "Show Stats")</span>
             </button>
@@ -103,16 +105,19 @@
                     <option value="WALKIN">WALKIN</option>
                 </select>
             </div>
-            <div class="filter-group">
-                <label>Time Slot</label>
-                <select class="filter-control" @bind="filterSlot" @bind:after="OnFiltersChanged">
-                    <option value="ALL">All Slots</option>
-                    @foreach (var slot in GetDistinctSlots())
-                    {
-                        <option value="@slot.Value">@slot.Text</option>
-                    }
-                </select>
-            </div>
+            @if (labSetting.is_slot_required != false)
+            {
+                <div class="filter-group">
+                    <label>Time Slot</label>
+                    <select class="filter-control" @bind="filterSlot" @bind:after="OnFiltersChanged">
+                        <option value="ALL">All Slots</option>
+                        @foreach (var slot in GetDistinctSlots())
+                        {
+                            <option value="@slot.Value">@slot.Text</option>
+                        }
+                    </select>
+                </div>
+            }
             <div class="filter-group">
                 <label>Search Patient / Doctor</label>
                 <input type="text" class="filter-control" @bind="filterSearch" @bind:event="oninput" @bind:after="OnFiltersChanged" placeholder="e.g. CUST-1001, 2026..." />
@@ -208,7 +213,7 @@
                                         <select class="status-dropdown @book.booking_status.ToLower()" 
                                                 @key="@($"{book.booking_id}_{selectRefreshKey}")"
                                                 value="@book.booking_status"
-                                                disabled='@(book.booking_status == "CANCELLED" || book.booking_status == "CONFIRMED" || !TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))'
+                                                disabled='@(book.booking_status == "CANCELLED" || book.booking_status == "CONFIRMED" || book.booking_status == "RESCHEDULED" || !TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))'
                                                 @onchange='(e) => UpdateBookingStatus(book, e.Value?.ToString() ?? "")'>
                                             <option value="BOOKED">Booked</option>
                                             <option value="CONFIRMED">Confirm</option>
@@ -225,7 +230,7 @@
                                     </td>
                                     <td>
                                         <div class="action-buttons-cell" style="justify-content: center;">
-                                            @if (book.booking_status == "BOOKED" || book.booking_status == "RESCHEDULED")
+                                            @if (book.booking_status == "BOOKED")
                                             {
                                                 @if (TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))
                                                 {
@@ -244,6 +249,12 @@
                                             {
                                                 <span style="font-size: 0.75rem; color:#10b981; font-weight:700;">
                                                     Confirmed
+                                                </span>
+                                            }
+                                            @if (book.booking_status == "RESCHEDULED")
+                                            {
+                                                <span style="font-size: 0.75rem; color:#d97706; font-weight:600;" title="@book.reschedule_reason">
+                                                    Rescheduled
                                                 </span>
                                             }
                                             @if (book.booking_status == "CANCELLED")
@@ -317,22 +328,7 @@
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: start;">
                 <!-- Left Column: Form Fields -->
                 <div style="display: flex; flex-direction: column; gap: 1.25rem;">
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label>Select Doctor Specialist</label>
-                        <select class="filter-control" @bind="walkinDcode" @bind:after="OnWalkinDoctorOrDateChanged" style="height: 42px; border-radius: 8px;">
-                            <option value="0">Select Doctor</option>
-                            @foreach (var doc in doctors)
-                            {
-                                <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
-                            }
-                        </select>
-                    </div>
-
-                    <div class="form-group" style="margin-bottom: 0;">
-                        <label>Appointment Date</label>
-                        <input type="date" class="filter-control" @bind="walkinDate" @bind:after="OnWalkinDoctorOrDateChanged" style="height: 42px; border-radius: 8px;" />
-                    </div>
-
+                    <!-- 1. Patient Selection -->
                     <div class="form-group" style="margin-bottom: 0; position: relative;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
                             <label style="margin: 0; font-weight: 600;">Search Patient MobileNo <span style="color:#ef4444;">*</span></label>
@@ -342,7 +338,7 @@
                         </div>
                         <div class="autocomplete-search-wrapper">
                             <input type="text" class="filter-control" placeholder="Search Patient MobileNo..."
-                                   @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="height: 42px; border-radius: 8px; width: 100%;" />
+                                   value="@patientSearchQuery" @oninput="OnPatientSearchInput" style="height: 42px; border-radius: 8px; width: 100%;" />
                             @if (showPatientDropdown && searchedPatients.Count > 0)
                             {
                                 <div class="autocomplete-dropdown">
@@ -362,7 +358,77 @@
                             }
                         </div>
                     </div>
-                    
+
+                    <!-- 2. Appointment Date -->
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Appointment Date</label>
+                        <input type="date" class="filter-control" @bind="walkinDate" @bind:after="OnWalkinDoctorOrDateChanged" style="height: 42px; border-radius: 8px;" />
+                    </div>
+
+                    <!-- 3. Doctor Selection -->
+                    <div class="form-group" style="margin-bottom: 0;">
+                        <label>Select Doctor Specialist</label>
+                        <div class="doctor-selector-wrapper">
+                            <button type="button" class="doctor-selector-button @(showWalkinDoctorDropdown ? "active" : "")" @onclick="() => showWalkinDoctorDropdown = !showWalkinDoctorDropdown">
+                                <span>
+                                    @if (walkinDcode > 0)
+                                    {
+                                        @($"Dr. {(doctors.FirstOrDefault(d => d.dcode == walkinDcode)?.name ?? "Selected")}")
+                                    }
+                                    else
+                                    {
+                                        <span style="color: #94a3b8;">Select Doctor</span>
+                                    }
+                                </span>
+                                <i class="bi bi-chevron-down dropdown-icon"></i>
+                            </button>
+                            @if (showWalkinDoctorDropdown)
+                            {
+                                <div class="doctor-selector-dropdown">
+                                    @foreach (var doc in doctors)
+                                    {
+                                        var avail = doctorAvailableSlotsMap.ContainsKey(doc.dcode) ? doctorAvailableSlotsMap[doc.dcode] : -1;
+                                        var rawName = string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name;
+                                        var docName = rawName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) ? rawName : $"Dr. {rawName}";
+                                        var isSelected = walkinDcode == doc.dcode;
+                                        var hasSlots = labSetting.is_slot_required != false ? avail > 0 : true;
+
+                                        <div class="doctor-option-item @(isSelected ? "selected" : "")" 
+                                             @onclick="async () => { walkinDcode = doc.dcode; showWalkinDoctorDropdown = false; await OnWalkinDoctorOrDateChanged(); }">
+                                            <div class="doctor-availability-indicator @(hasSlots ? "available" : "unavailable")">
+                                                @if (hasSlots)
+                                                {
+                                                    <i class="bi bi-check-circle"></i>
+                                                }
+                                                else
+                                                {
+                                                    <i class="bi bi-x-circle"></i>
+                                                }
+                                            </div>
+                                            <div class="doctor-option-content">
+                                                <div class="doctor-option-name">@docName</div>
+                                                <div class="doctor-option-slots">
+                                                    @if (labSetting.is_slot_required != false)
+                                                    {
+                                                        @if (avail > 0)
+                                                        {
+                                                            <span>@avail Available Slots</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span style="color: #ef4444; font-weight: 600;">No Slots Available</span>
+                                                        }
+                                                    }
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- 4. Notes -->
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Notes</label>
                         <textarea class="filter-control" style="min-height:90px; border-radius: 8px; line-height: 1.4; resize: none;" @bind="walkinNotes" placeholder="Reason for walk-in consultation..."></textarea>
@@ -390,7 +456,10 @@
                                         @foreach (var s in walkinSlots)
                                         {
                                             var isSelected = selectedWalkinSlot?.slot_detail_id == s.slot_detail_id;
-                                            var availWalkin = s.max_walkin > 0 ? Math.Max(0, s.max_walkin - s.walkin_count) : Math.Max(0, s.remaining_seats);
+                                            var availWalkin = s.remaining_online > 0 ? s.remaining_online :
+                                                              (s.remaining_seats > 0 ? s.remaining_seats :
+                                                              (s.remaining_walkin > 0 ? s.remaining_walkin :
+                                                              (s.max_patients > 0 ? Math.Max(0, s.max_patients - s.patient_count) : Math.Max(0, s.max_online - s.online_count))));
                                             var isFull = availWalkin <= 0;
                                             <div class="slot-subitem @(isSelected ? "selected" : "") @(isFull ? "disabled" : "")" 
                                                  @onclick="() => { if (!isFull) selectedWalkinSlot = s; }">
@@ -491,12 +560,39 @@
 
                     <div class="form-group" style="margin-bottom: 0;">
                         <label>Select Doctor Specialist</label>
-                        <select class="filter-control" @bind="rescheduleDcode" @bind:after="LoadRescheduleSlotsAsync" style="height: 42px; border-radius: 8px;">
-                            @foreach (var d in doctors)
+                        <div class="doctor-selector-wrapper">
+                            <button type="button" class="doctor-selector-button @(showRescheduleDoctorDropdown ? "active" : "")" @onclick="() => showRescheduleDoctorDropdown = !showRescheduleDoctorDropdown">
+                                <span>
+                                    @if (rescheduleDcode > 0)
+                                    {
+                                        @($"Dr. {(doctors.FirstOrDefault(d => d.dcode == rescheduleDcode)?.name ?? doctors.FirstOrDefault(d => d.dcode == rescheduleDcode)?.doctorfullname ?? "Selected")}")
+                                    }
+                                    else
+                                    {
+                                        <span style="color: #94a3b8;">Select Doctor</span>
+                                    }
+                                </span>
+                                <i class="bi bi-chevron-down dropdown-icon"></i>
+                            </button>
+                            @if (showRescheduleDoctorDropdown)
                             {
-                                <option value="@d.dcode">Dr. @(string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name)</option>
+                                <div class="doctor-selector-dropdown">
+                                    @foreach (var doc in doctors)
+                                    {
+                                        var isSelected = rescheduleDcode == doc.dcode;
+                                        <div class="doctor-option-item @(isSelected ? "selected" : "")" 
+                                             @onclick="async () => { rescheduleDcode = doc.dcode; showRescheduleDoctorDropdown = false; await LoadRescheduleSlotsAsync(); }">
+                                            <div class="doctor-availability-indicator available">
+                                                <i class="bi bi-check-circle"></i>
+                                            </div>
+                                            <div class="doctor-option-content">
+                                                <div class="doctor-option-name">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</div>
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
                             }
-                        </select>
+                        </div>
                     </div>
 
                     <div class="form-group" style="margin-bottom: 0;">
@@ -587,13 +683,39 @@
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
                         <div class="form-group" style="margin-bottom: 0;">
                             <label style="font-weight: 700; font-size: 0.82rem; margin-bottom: 0.35rem; color:#475569;">Doctor</label>
-                            <select class="filter-control" @bind="wholeSourceDcode" @bind:after="OnWholeSourceChanged" style="padding: 0.5rem 0.75rem; font-size:0.875rem; height:42px; border-radius:8px;">
-                                <option value="0">Select Doctor</option>
-                                @foreach (var doc in doctors)
+                            <div class="doctor-selector-wrapper">
+                                <button type="button" class="doctor-selector-button @(showWholeSrcDoctorDropdown ? "active" : "")" @onclick="() => showWholeSrcDoctorDropdown = !showWholeSrcDoctorDropdown" style="height: 42px;">
+                                    <span style="font-size: 0.875rem;">
+                                        @if (wholeSourceDcode > 0)
+                                        {
+                                            @($"Dr. {(doctors.FirstOrDefault(d => d.dcode == wholeSourceDcode)?.name ?? doctors.FirstOrDefault(d => d.dcode == wholeSourceDcode)?.doctorfullname ?? "Selected")}")
+                                        }
+                                        else
+                                        {
+                                            <span style="color: #94a3b8;">Select Doctor</span>
+                                        }
+                                    </span>
+                                    <i class="bi bi-chevron-down dropdown-icon"></i>
+                                </button>
+                                @if (showWholeSrcDoctorDropdown)
                                 {
-                                    <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                                    <div class="doctor-selector-dropdown">
+                                        @foreach (var doc in doctors)
+                                        {
+                                            var isSelected = wholeSourceDcode == doc.dcode;
+                                            <div class="doctor-option-item @(isSelected ? "selected" : "")" 
+                                                 @onclick="async () => { wholeSourceDcode = doc.dcode; showWholeSrcDoctorDropdown = false; await OnWholeSourceChanged(); }">
+                                                <div class="doctor-availability-indicator available">
+                                                    <i class="bi bi-check-circle"></i>
+                                                </div>
+                                                <div class="doctor-option-content">
+                                                    <div class="doctor-option-name" style="font-size: 0.9rem;">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</div>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
                                 }
-                            </select>
+                            </div>
                         </div>
                         
                         <div class="form-group" style="margin-bottom: 0;">
@@ -641,13 +763,39 @@
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.25rem;">
                         <div class="form-group" style="margin-bottom: 0;">
                             <label style="font-weight: 700; font-size: 0.82rem; margin-bottom: 0.35rem; color:#026aa7;">Doctor</label>
-                            <select class="filter-control" @bind="wholeTargetDcode" @bind:after="OnWholeTargetChanged" style="padding: 0.5rem 0.75rem; font-size:0.875rem; height:42px; border-radius:8px;">
-                                <option value="0">Select Doctor</option>
-                                @foreach (var doc in doctors)
+                            <div class="doctor-selector-wrapper">
+                                <button type="button" class="doctor-selector-button @(showWholeTgtDoctorDropdown ? "active" : "")" @onclick="() => showWholeTgtDoctorDropdown = !showWholeTgtDoctorDropdown" style="height: 42px;">
+                                    <span style="font-size: 0.875rem;">
+                                        @if (wholeTargetDcode > 0)
+                                        {
+                                            @($"Dr. {(doctors.FirstOrDefault(d => d.dcode == wholeTargetDcode)?.name ?? doctors.FirstOrDefault(d => d.dcode == wholeTargetDcode)?.doctorfullname ?? "Selected")}")
+                                        }
+                                        else
+                                        {
+                                            <span style="color: #94a3b8;">Select Doctor</span>
+                                        }
+                                    </span>
+                                    <i class="bi bi-chevron-down dropdown-icon"></i>
+                                </button>
+                                @if (showWholeTgtDoctorDropdown)
                                 {
-                                    <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
+                                    <div class="doctor-selector-dropdown">
+                                        @foreach (var doc in doctors)
+                                        {
+                                            var isSelected = wholeTargetDcode == doc.dcode;
+                                            <div class="doctor-option-item @(isSelected ? "selected" : "")" 
+                                                 @onclick="async () => { wholeTargetDcode = doc.dcode; showWholeTgtDoctorDropdown = false; await OnWholeTargetChanged(); }">
+                                                <div class="doctor-availability-indicator available">
+                                                    <i class="bi bi-check-circle"></i>
+                                                </div>
+                                                <div class="doctor-option-content">
+                                                    <div class="doctor-option-name" style="font-size: 0.9rem;">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</div>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
                                 }
-                            </select>
+                            </div>
                         </div>
                         
                         <div class="form-group" style="margin-bottom: 0;">
@@ -798,6 +946,7 @@
 
     // Walk-in booking state
     private bool showWalkinModal = false;
+    private bool showWalkinDoctorDropdown = false;
     private int walkinDcode = 0;
     private DateTime walkinDate = DateTime.UtcNow.ToIndianTime().Date;
     private List<AvailableSlotModel> walkinSlots = new();
@@ -809,22 +958,30 @@
     private string patientSearchQuery = "";
     private bool showPatientDropdown = false;
     private List<SharedComponents.Rcl.Models.CustomerModel> searchedPatients = new();
+    private System.Threading.CancellationTokenSource? _patientSearchCts;
 
-    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    private async Task OnPatientSearchInput(ChangeEventArgs e)
     {
-        Console.WriteLine($"[ReceptionBooking] OnPatientSearchKeyUp query: '{patientSearchQuery}'");
+        patientSearchQuery = e.Value?.ToString() ?? "";
+
+        _patientSearchCts?.Cancel();
+        _patientSearchCts = new System.Threading.CancellationTokenSource();
+        var token = _patientSearchCts.Token;
+
         if (string.IsNullOrWhiteSpace(patientSearchQuery))
         {
             searchedPatients.Clear();
             showPatientDropdown = false;
             walkinCustid = 0;
+            StateHasChanged();
             return;
         }
 
         try
         {
+            await Task.Delay(250, token);
+
             using var client = ClientFactory.CreateClient("LabCareUrl");
-            Console.WriteLine($"[ReceptionBooking] TenantCode: '{TenantState.TenantCode}', AuthToken length: {TenantState.AuthToken?.Length ?? 0}");
 
             if (!string.IsNullOrEmpty(TenantState.TenantCode))
             {
@@ -837,19 +994,20 @@
             }
 
             var requestUrl = $"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}";
-            Console.WriteLine($"[ReceptionBooking] Fetching URL: {requestUrl}");
+            var response = await client.GetAsync(requestUrl, token);
 
-            var response = await client.GetAsync(requestUrl);
-            var rawJson = await response.Content.ReadAsStringAsync();
-            
+            if (token.IsCancellationRequested) return;
 
             if (response.IsSuccessStatusCode)
             {
+                var rawJson = await response.Content.ReadAsStringAsync(token);
+                if (token.IsCancellationRequested) return;
+
                 List<SharedComponents.Rcl.Models.CustomerModel> list = new();
                 try
                 {
-                    var token = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
-                    if (token is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
+                    var jToken = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
+                    if (jToken is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
                     {
                         list = obj["value"].ToObject<List<SharedComponents.Rcl.Models.CustomerModel>>() ?? new();
                     }
@@ -865,7 +1023,6 @@
 
                 searchedPatients = list.Take(10).ToList();
                 showPatientDropdown = searchedPatients.Count > 0;
-                Console.WriteLine($"[ReceptionBooking] Found {searchedPatients.Count} patients");
             }
             else
             {
@@ -873,12 +1030,28 @@
                 showPatientDropdown = false;
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Cancelled due to newer user input
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Error searching patients in ReceptionBooking: {ex.Message}");
             searchedPatients.Clear();
             showPatientDropdown = false;
         }
+        finally
+        {
+            if (!token.IsCancellationRequested)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        // Retained for backward compatibility
     }
 
     private void SelectCustomerPatient(SharedComponents.Rcl.Models.CustomerModel pat)
@@ -939,6 +1112,7 @@
 
     // Rescheduling single appointment state
     private bool showRescheduleModal = false;
+    private bool showRescheduleDoctorDropdown = false;
     private AppointmentBookingModel? selectedBookingToReschedule;
     private int rescheduleDcode = 0;
     private DateTime rescheduleDate = DateTime.UtcNow.ToIndianTime().Date;
@@ -949,6 +1123,8 @@
 
     // Reschedule WHOLE SLOT state
     private bool showRescheduleWholeSlotModal = false;
+    private bool showWholeSrcDoctorDropdown = false;
+    private bool showWholeTgtDoctorDropdown = false;
     private int wholeSourceDcode = 0;
     private DateTime wholeSourceDate = DateTime.UtcNow.ToIndianTime().Date;
     private List<AvailableSlotModel> wholeSourceSlots = new();
@@ -963,8 +1139,15 @@
     private bool loadingWholeSourceSlots = false;
     private bool loadingWholeTargetSlots = false;
 
+    private LabSettingModel labSetting = new();
+
     protected override async Task OnInitializedAsync()
     {
+        try
+        {
+            labSetting = await LabSettingService.GetLabSettingAsync() ?? new LabSettingModel();
+        }
+        catch { }
         await LoadDoctorsAsync();
         await LoadBookingsAsync();
     }
@@ -1223,6 +1406,43 @@
     }
 
     // Modal 1: Walk-in Booking logic
+    private Dictionary<int, int> doctorAvailableSlotsMap = new();
+
+    private async Task LoadDoctorSlotsStatusAsync()
+    {
+        doctorAvailableSlotsMap.Clear();
+        if (doctors == null || !doctors.Any()) return;
+
+        var dateOnly = DateOnly.FromDateTime(walkinDate);
+        var tasks = doctors.Select(async doc =>
+        {
+            try
+            {
+                var slots = await BookingService.GetAvailableSlotsAsync(doc.dcode, dateOnly);
+                if (slots == null || !slots.Any()) return (dcode: doc.dcode, count: 0);
+
+                var totalAvail = slots.Sum(s => 
+                    s.remaining_online > 0 ? s.remaining_online : 
+                    (s.remaining_seats > 0 ? s.remaining_seats : 
+                    (s.remaining_walkin > 0 ? s.remaining_walkin : 
+                    Math.Max(0, s.max_patients - s.patient_count)))
+                );
+                return (dcode: doc.dcode, count: totalAvail);
+            }
+            catch
+            {
+                return (dcode: doc.dcode, count: 0);
+            }
+        });
+
+        var results = await Task.WhenAll(tasks);
+        foreach (var r in results)
+        {
+            doctorAvailableSlotsMap[r.dcode] = r.count;
+        }
+        StateHasChanged();
+    }
+
     private void OpenWalkinModal()
     {
         walkinDcode = 0;
@@ -1236,6 +1456,8 @@
         patientSearchQuery = "";
         showPatientDropdown = false;
         searchedPatients.Clear();
+
+        _ = LoadDoctorSlotsStatusAsync();
     }
 
     private void CloseWalkinModal()
@@ -1251,9 +1473,15 @@
         try
         {
             var allSlots = await BookingService.GetAvailableSlotsAsync(walkinDcode, DateOnly.FromDateTime(walkinDate));
-            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            walkinSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+            walkinSlots = allSlots ?? new List<AvailableSlotModel>();
+
+            var totalAvail = walkinSlots.Sum(s => 
+                s.remaining_online > 0 ? s.remaining_online : 
+                (s.remaining_seats > 0 ? s.remaining_seats : 
+                (s.remaining_walkin > 0 ? s.remaining_walkin : 
+                Math.Max(0, s.max_patients - s.patient_count)))
+            );
+            doctorAvailableSlotsMap[walkinDcode] = totalAvail;
         }
         catch (Exception ex)
         {
@@ -1454,9 +1682,7 @@
         try
         {
             var allSlots = await BookingService.GetAvailableSlotsAsync(rescheduleDcode, DateOnly.FromDateTime(rescheduleDate));
-            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            rescheduleSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+            rescheduleSlots = allSlots ?? new List<AvailableSlotModel>();
         }
         catch (Exception ex)
         {
@@ -1560,9 +1786,7 @@
         {
             // We fetch the slots. The slots returnbooked_count representing how many patients are locked in
             var allSlots = await BookingService.GetAvailableSlotsAsync(wholeSourceDcode, DateOnly.FromDateTime(wholeSourceDate));
-            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            wholeSourceSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+            wholeSourceSlots = allSlots ?? new List<AvailableSlotModel>();
         }
         catch (Exception ex)
         {
@@ -1582,9 +1806,7 @@
         try
         {
             var allSlots = await BookingService.GetAvailableSlotsAsync(wholeTargetDcode, DateOnly.FromDateTime(wholeTargetDate));
-            var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            var nowTime = TimeOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
-            wholeTargetSlots = allSlots.Where(s => s.appointment_date > today || (s.appointment_date == today && s.slot_end_time > nowTime)).ToList();
+            wholeTargetSlots = allSlots ?? new List<AvailableSlotModel>();
         }
         catch (Exception ex)
         {

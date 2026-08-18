@@ -1,3 +1,14 @@
+function getChartThemeColors() {
+    const isDark = document.documentElement.getAttribute('data-theme') === 'dark' || document.body.classList.contains('dark-mode');
+    return {
+        isDark: isDark,
+        tickColor: isDark ? '#94a3b8' : '#64748b',
+        labelColor: isDark ? '#cbd5e1' : '#334155',
+        gridColor: isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(226, 232, 240, 0.6)',
+        emptyColor: isDark ? '#334155' : '#e2e8f0'
+    };
+}
+
 window.dashboardCharts = {
     instances: {},
 
@@ -14,6 +25,7 @@ window.dashboardCharts = {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
+        const theme = getChartThemeColors();
         const defaultLabels = labels && labels.length ? labels : ['No Store Data'];
         const defaultData = data && data.length ? data : [0];
         const barColors = ['#10b981', '#8b5cf6', '#06b6d4', '#f59e0b', '#ec4899', '#3b82f6', '#f43f5e', '#64748b'];
@@ -53,14 +65,14 @@ window.dashboardCharts = {
                 },
                 scales: {
                     x: {
-                        grid: { color: 'rgba(226, 232, 240, 0.6)' },
-                        ticks: { color: '#64748b', font: { size: 10, weight: '700' } }
+                        grid: { color: theme.gridColor },
+                        ticks: { color: theme.tickColor, font: { size: 10, weight: '700' } }
                     },
                     y: {
                         grid: { display: false },
                         ticks: {
                             autoSkip: false,
-                            color: '#334155',
+                            color: theme.labelColor,
                             font: { size: 10, weight: '700' }
                         }
                     }
@@ -75,6 +87,7 @@ window.dashboardCharts = {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
+        const theme = getChartThemeColors();
         if (Array.isArray(labels) && (Array.isArray(labData) || Array.isArray(scanData))) {
             const defaultLabels = labels.length ? labels : ['Doctor'];
             const lData = labData || [];
@@ -117,7 +130,7 @@ window.dashboardCharts = {
                         legend: {
                             display: true,
                             position: 'top',
-                            labels: { color: '#475569', font: { size: 9, weight: '700' }, boxWidth: 10, padding: 6 }
+                            labels: { color: theme.labelColor, font: { size: 9, weight: '700' }, boxWidth: 10, padding: 6 }
                         },
                         tooltip: { backgroundColor: '#1e293b', padding: 8, cornerRadius: 6 }
                     },
@@ -125,12 +138,12 @@ window.dashboardCharts = {
                         x: {
                             stacked: true,
                             grid: { display: false },
-                            ticks: { autoSkip: false, color: '#475569', font: { size: 9, weight: '700' } }
+                            ticks: { autoSkip: false, color: theme.labelColor, font: { size: 9, weight: '700' } }
                         },
                         y: {
                             stacked: true,
-                            grid: { color: 'rgba(226, 232, 240, 0.6)' },
-                            ticks: { color: '#64748b', font: { size: 10, weight: '700' }, stepSize: 1 }
+                            grid: { color: theme.gridColor },
+                            ticks: { color: theme.tickColor, font: { size: 10, weight: '700' }, stepSize: 1 }
                         }
                     }
                 }
@@ -164,11 +177,11 @@ window.dashboardCharts = {
                     scales: {
                         x: {
                             grid: { display: false },
-                            ticks: { autoSkip: false, color: '#475569', font: { size: 10, weight: '700' } }
+                            ticks: { autoSkip: false, color: theme.labelColor, font: { size: 10, weight: '700' } }
                         },
                         y: {
-                            grid: { color: 'rgba(226, 232, 240, 0.6)' },
-                            ticks: { color: '#64748b', font: { size: 10, weight: '700' }, stepSize: 1 }
+                            grid: { color: theme.gridColor },
+                            ticks: { color: theme.tickColor, font: { size: 10, weight: '700' }, stepSize: 1 }
                         }
                     }
                 }
@@ -182,6 +195,7 @@ window.dashboardCharts = {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
+        const theme = getChartThemeColors();
         const chartCtx = ctx.getContext('2d');
         const fillGradient = chartCtx.createLinearGradient(0, 0, 0, 200);
         fillGradient.addColorStop(0, 'rgba(244, 63, 94, 0.25)');
@@ -223,12 +237,12 @@ window.dashboardCharts = {
                 },
                 scales: {
                     x: {
-                        grid: { color: 'rgba(241, 245, 249, 0.8)' },
-                        ticks: { color: '#64748b', font: { size: 10, weight: '700' } }
+                        grid: { color: theme.gridColor },
+                        ticks: { color: theme.tickColor, font: { size: 10, weight: '700' } }
                     },
                     y: {
-                        grid: { color: 'rgba(226, 232, 240, 0.6)' },
-                        ticks: { color: '#64748b', font: { size: 10, weight: '700' }, stepSize: 1 }
+                        grid: { color: theme.gridColor },
+                        ticks: { color: theme.tickColor, font: { size: 10, weight: '700' }, stepSize: 1 }
                     }
                 }
             }
@@ -241,13 +255,14 @@ window.dashboardCharts = {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
+        const theme = getChartThemeColors();
         const l = labPct !== undefined && !isNaN(labPct) ? Number(labPct) : 0;
         const s = scanPct !== undefined && !isNaN(scanPct) ? Number(scanPct) : 0;
         const e = ecgPct !== undefined && !isNaN(ecgPct) ? Number(ecgPct) : 0;
 
         const isZero = (l === 0 && s === 0 && e === 0);
         const dataVals = isZero ? [1] : [l, s, e];
-        const bgColors = isZero ? ['#e2e8f0'] : ['#06b6d4', '#8b5cf6', '#f43f5e'];
+        const bgColors = isZero ? [theme.emptyColor] : ['#06b6d4', '#8b5cf6', '#f43f5e'];
         const chartLabels = isZero ? ['No Data'] : ['Lab Completion', 'Scan Completion', 'ECG Completion'];
 
         this.instances[canvasId] = new Chart(ctx, {
@@ -280,13 +295,14 @@ window.dashboardCharts = {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
+        const theme = getChartThemeColors();
         const l = labDur !== undefined && !isNaN(labDur) ? Number(labDur) : 0;
         const s = scanDur !== undefined && !isNaN(scanDur) ? Number(scanDur) : 0;
         const e = ecgDur !== undefined && !isNaN(ecgDur) ? Number(ecgDur) : 0;
 
         const isZero = (l === 0 && s === 0 && e === 0);
         const dataVals = isZero ? [1] : [l, s, e];
-        const bgColors = isZero ? ['#e2e8f0'] : ['#06b6d4', '#8b5cf6', '#f43f5e'];
+        const bgColors = isZero ? [theme.emptyColor] : ['#06b6d4', '#8b5cf6', '#f43f5e'];
         const chartLabels = isZero ? ['No Data'] : ['Lab Processing', 'Scan Imaging', 'ECG Recording'];
 
         this.instances[canvasId] = new Chart(ctx, {
@@ -319,13 +335,14 @@ window.dashboardCharts = {
         const ctx = document.getElementById(canvasId);
         if (!ctx) return;
 
+        const theme = getChartThemeColors();
         const c = compVal !== undefined && !isNaN(compVal) ? Number(compVal) : 0;
         const a = activeVal !== undefined && !isNaN(activeVal) ? Number(activeVal) : 0;
         const w = waitVal !== undefined && !isNaN(waitVal) ? Number(waitVal) : 0;
 
         const isZero = (c === 0 && a === 0 && w === 0);
         const dataVals = isZero ? [1] : [c, a, w];
-        const bgColors = isZero ? ['#e2e8f0'] : ['#10b981', '#f59e0b', '#f43f5e'];
+        const bgColors = isZero ? [theme.emptyColor] : ['#10b981', '#f59e0b', '#f43f5e'];
         const chartLabels = isZero ? ['No Data'] : (customLabels || ['Completed (Report Received)', 'In Consultation', 'Pending / Waiting']);
 
         this.instances[canvasId] = new Chart(ctx, {
@@ -619,6 +636,108 @@ window.dashboardCharts = {
                 }
             }
         });
+    },
+
+    // Daily IP Revenue vs OP Revenue Comparison Chart
+    initDailyRevenueComparisonChart: function (canvasId, labels, ipData, opData) {
+        this.destroyChart(canvasId);
+        const ctx = document.getElementById(canvasId);
+        if (!ctx) return;
+
+        const chartCtx = ctx.getContext('2d');
+        
+        const ipGradient = chartCtx.createLinearGradient(0, 0, 0, 240);
+        ipGradient.addColorStop(0, 'rgba(37, 99, 235, 0.35)');
+        ipGradient.addColorStop(1, 'rgba(37, 99, 235, 0.02)');
+
+        const opGradient = chartCtx.createLinearGradient(0, 0, 0, 240);
+        opGradient.addColorStop(0, 'rgba(16, 185, 129, 0.35)');
+        opGradient.addColorStop(1, 'rgba(16, 185, 129, 0.02)');
+
+        const defaultLabels = labels && labels.length ? labels : ['03 Aug', '05 Aug', '08 Aug', '10 Aug', '12 Aug', '14 Aug'];
+        const dIp = ipData && ipData.length ? ipData : [4500, 7200, 6800, 9100, 11200, 9500];
+        const dOp = opData && opData.length ? opData : [3200, 4800, 5200, 6100, 7400, 6900];
+
+        this.instances[canvasId] = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: defaultLabels,
+                datasets: [
+                    {
+                        label: 'IP Revenue (₹)',
+                        data: dIp,
+                        borderColor: '#2563eb',
+                        borderWidth: 3,
+                        backgroundColor: ipGradient,
+                        fill: true,
+                        tension: 0.35,
+                        pointBackgroundColor: '#2563eb',
+                        pointBorderColor: '#ffffff',
+                        pointBorderWidth: 2,
+                        pointRadius: 4,
+                        pointHoverRadius: 7
+                    },
+                    {
+                        label: 'OP Revenue (₹)',
+                        data: dOp,
+                        borderColor: '#10b981',
+                        borderWidth: 3,
+                        backgroundColor: opGradient,
+                        fill: true,
+                        tension: 0.35,
+                        pointBackgroundColor: '#10b981',
+                        pointBorderColor: '#ffffff',
+                        pointBorderWidth: 2,
+                        pointRadius: 4,
+                        pointHoverRadius: 7
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                animation: { duration: 900, easing: 'easeOutQuart' },
+                plugins: {
+                    legend: {
+                        display: true,
+                        position: 'top',
+                        labels: { color: '#334155', font: { size: 11, weight: '700' }, usePointStyle: true, pointStyle: 'circle', padding: 12 }
+                    },
+                    tooltip: {
+                        backgroundColor: '#0f172a',
+                        titleFont: { size: 12, weight: '700' },
+                        bodyFont: { size: 11, weight: '600' },
+                        cornerRadius: 10,
+                        padding: 12,
+                        callbacks: {
+                            label: function (context) {
+                                let label = context.dataset.label || '';
+                                if (label) label += ': ';
+                                label += '₹' + Number(context.raw).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+                                return label;
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    x: {
+                        grid: { display: false },
+                        ticks: { color: '#475569', font: { size: 10, weight: '700' } }
+                    },
+                    y: {
+                        grid: { color: 'rgba(226, 232, 240, 0.6)' },
+                        ticks: {
+                            color: '#64748b',
+                            font: { size: 10, weight: '600' },
+                            callback: function (val) {
+                                return '₹' + Number(val).toLocaleString('en-IN');
+                            }
+                        }
+                    }
+                }
+            }
+        });
     }
 };
+
 

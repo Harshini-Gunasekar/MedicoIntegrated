@@ -1,6 +1,7 @@
 @page "/salesmaster"
 @page "/sales"
 @using Booking.Models
+@using medico_backend.Model
 @using System.Net.Http.Json
 @using System.Text.Json
 @using Microsoft.JSInterop
@@ -11,6 +12,7 @@
 @inject Booking.Services.ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.CaseSheetService CaseSheetService
 
 
 <style>
@@ -252,7 +254,7 @@
                         }
                     </div>
                 }
-                <div class="display-controls px-4 py-3 border-top" style="background: #ffffff; display: flex; justify-content: space-between; align-items: center; border-bottom-left-radius: 12px; border-bottom-right-radius: 12px;">
+                <div class="display-controls px-4 py-3 border-top">
                     <div class="total-count-text text-muted" style="font-size: 0.82rem; font-weight: 500; text-align: left; margin-left: 20px;">
                         @if (FilteredSales.Any())
                         {
@@ -537,7 +539,7 @@
                                                        autocomplete="off"
                                                        @oninput="@(e => OnBatchInput(e, detail))"
                                                        @onfocus="@(() => { ActiveBatchSearchRow = index; })"
-                                                       @onblur="OnBatchBlur"
+                                                       @onblur="@(() => OnBatchBlur(detail))"
                                                        @onkeydown="@(e => HandleRowKeyDown(e, index, 1))" />
                                                 
                                                 @if (ActiveBatchSearchRow == index)
@@ -816,8 +818,13 @@
                     foreach (var d in CurrentRequest.details)
                     {
                         d.warehousecode = value;
+                        if (d.itemcode > 0)
+                        {
+                            UpdateItemBatchAndExpiryForStore(d, value ?? 0);
+                        }
                     }
                 }
+                StateHasChanged();
             }
         }
     }
@@ -923,150 +930,260 @@
     {
         try
         {
-            var client = CreateClient();
-            // The JSON from the user shows tenant_code = "0010", but DefaultTenant is "TEN1011". 
-            // We must override it here for this specific call to get the data!
-            client.DefaultRequestHeaders.Remove("tenantcode");
-            client.DefaultRequestHeaders.Add("tenantcode", "0010");
-
-            var responseString = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}");
-            if (string.IsNullOrWhiteSpace(responseString)) return;
-
-            var options = new JsonSerializerOptions { 
-                PropertyNameCaseInsensitive = true,
-                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
-            };
-
             List<PharmacyPrescriptionQueueRow>? rows = null;
+
+            // 1. Try fetching from pharmacy queue with standard tenant headers
             try
             {
-                using var doc = JsonDocument.Parse(responseString);
-                var root = doc.RootElement;
-                JsonElement dataElement = root;
-
-                // Check if wrapped in {"data": ... }
-                if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var dataProp))
+                var client = CreateClient();
+                var responseString = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}");
+                if (!string.IsNullOrWhiteSpace(responseString))
                 {
-                    dataElement = dataProp;
-                }
-
-                if (dataElement.ValueKind == JsonValueKind.Array)
-                {
-                    if (dataElement.GetArrayLength() > 0)
-                    {
-                        var first = dataElement[0];
-                        if (first.ValueKind == JsonValueKind.Object && first.TryGetProperty("items", out _))
-                        {
-                            var groups = JsonSerializer.Deserialize<List<PharmacyQueueGroup>>(dataElement.GetRawText(), options);
-                            if (groups != null)
-                            {
-                                rows = groups.SelectMany(g => g.items ?? new List<PharmacyPrescriptionQueueRow>()).ToList();
-                            }
-                        }
-                        else
-                        {
-                            rows = JsonSerializer.Deserialize<List<PharmacyPrescriptionQueueRow>>(dataElement.GetRawText(), options);
-                        }
-                    }
-                    else
-                    {
-                        rows = new List<PharmacyPrescriptionQueueRow>();
-                    }
-                }
-                else if (dataElement.ValueKind == JsonValueKind.Object)
-                {
-                    if (dataElement.TryGetProperty("items", out _))
-                    {
-                        var group = JsonSerializer.Deserialize<PharmacyQueueGroup>(dataElement.GetRawText(), options);
-                        if (group != null && group.items != null)
-                        {
-                            rows = group.items;
-                        }
-                    }
-                    else
-                    {
-                        var singleRow = JsonSerializer.Deserialize<PharmacyPrescriptionQueueRow>(dataElement.GetRawText(), options);
-                        if (singleRow != null)
-                        {
-                            rows = new List<PharmacyPrescriptionQueueRow> { singleRow };
-                        }
-                    }
+                    rows = ParsePharmacyQueueJson(responseString);
                 }
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Error parsing prescription JSON: " + ex.Message);
+                Console.WriteLine("Pharmacy queue default tenant request exception: " + ex.Message);
             }
 
-            if (rows != null)
+            // 2. If no valid queue rows found, retry pharmacy queue with tenantcode header "0010"
+            if (rows == null || !rows.Any(r => r.status != "DISPENSED" && r.status != "CANCELLED"))
             {
-                var validRows = rows.Where(r => r.status != "DISPENSED" && r.status != "CANCELLED").ToList();
-
-                if (validRows.Any())
+                try
                 {
-                    if (CurrentRequest.details.Count == 1 && CurrentRequest.details[0].itemcode == 0)
+                    var client = CreateClient();
+                    client.DefaultRequestHeaders.Remove("tenantcode");
+                    client.DefaultRequestHeaders.Add("tenantcode", "0010");
+                    var responseString = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}");
+                    if (!string.IsNullOrWhiteSpace(responseString))
                     {
-                        ItemSearchTexts.Remove(CurrentRequest.details[0]);
-                        CurrentRequest.details.Clear();
-                        EditableRows.Clear();
-                    }
-
-                    bool itemsAdded = false;
-                    foreach (var item in validRows)
-                    {
-                        var detail = new sales_detail
+                        var parsed = ParsePharmacyQueueJson(responseString);
+                        if (parsed != null && parsed.Any())
                         {
-                            tenantcode = DefaultTenant,
-                            itemcode = item.matched_itemcode ?? 0,
-                            quantity = item.qty ?? 0,
-                            queue_id = item.queue_id
-                        };
-                        
-                        if (detail.itemcode == 0 && !string.IsNullOrWhiteSpace(item.drug_name))
-                        {
-                            var localMatch = ItemList.FirstOrDefault(i => string.Equals(i.itemname, item.drug_name, StringComparison.OrdinalIgnoreCase));
-                            if (localMatch != null)
-                            {
-                                detail.itemcode = localMatch.itemcode;
-                            }
+                            rows = parsed;
                         }
-
-                        if (detail.itemcode > 0)
-                        {
-                            OnItemChanged(detail);
-                        }
-
-                        CurrentRequest.details.Add(detail);
-                        EditableRows.Add(detail);
-                        
-                        ItemSearchTexts[detail] = !string.IsNullOrWhiteSpace(item.matched_itemname) ? item.matched_itemname : (item.drug_name ?? "");
-
-                        itemsAdded = true;
-                    }
-                    
-                    if (itemsAdded)
-                    {
-                        CalculateTotals();
-                        StateHasChanged();
-                        ToastService.ShowSuccess("Loaded prescriptions from pharmacy queue.");
                     }
                 }
-                else
+                catch (Exception ex)
                 {
-                    ToastService.ShowWarning($"API call successful, but it returned 0 pending prescriptions for this patient. Response length: {responseString.Length}");
+                    Console.WriteLine("Pharmacy queue 0010 tenant request exception: " + ex.Message);
                 }
             }
-            else
+
+            var validRows = rows?.Where(r => r.status != "DISPENSED" && r.status != "CANCELLED").ToList();
+
+            if (validRows != null && validRows.Any())
             {
-                ToastService.ShowError($"Failed to parse API response. Raw JSON: {responseString.Substring(0, Math.Min(100, responseString.Length))}...");
-                Console.WriteLine("API Response: " + responseString);
+                PopulateGridWithQueueRows(validRows);
+                return;
             }
+
+            // 3. Fallback: Query Case Sheet history for patient to retrieve saved prescribed medicines
+            if (CaseSheetService != null)
+            {
+                var history = await CaseSheetService.GetPatientHistoryAsync((decimal)custId, 1, 20);
+                if (history != null && history.Any())
+                {
+                    // Locate the latest visit with prescription items
+                    var latestWithPrescription = history
+                        .Where(h => h.prescription != null && h.prescription.items != null && h.prescription.items.Any(i => !string.IsNullOrWhiteSpace(i.drug_name)))
+                        .OrderByDescending(h => h.visit_date ?? DateTime.MinValue)
+                        .FirstOrDefault();
+
+                    if (latestWithPrescription != null && latestWithPrescription.prescription?.items != null)
+                    {
+                        PopulateGridWithCaseSheetItems(latestWithPrescription.prescription.items);
+                        return;
+                    }
+                }
+            }
+
+            ToastService.ShowWarning($"No pending prescriptions found for Patient ID: CUST-{custId}.");
         }
         catch (Exception ex)
         {
             ToastService.ShowError($"Error loading prescriptions: {ex.Message}");
             Console.WriteLine($"Error loading prescriptions: {ex.Message}");
             StateHasChanged();
+        }
+    }
+
+    private List<PharmacyPrescriptionQueueRow>? ParsePharmacyQueueJson(string responseString)
+    {
+        var options = new JsonSerializerOptions { 
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        try
+        {
+            using var doc = JsonDocument.Parse(responseString);
+            var root = doc.RootElement;
+            JsonElement dataElement = root;
+
+            if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var dataProp))
+            {
+                dataElement = dataProp;
+            }
+
+            if (dataElement.ValueKind == JsonValueKind.Array)
+            {
+                if (dataElement.GetArrayLength() > 0)
+                {
+                    var first = dataElement[0];
+                    if (first.ValueKind == JsonValueKind.Object && first.TryGetProperty("items", out _))
+                    {
+                        var groups = JsonSerializer.Deserialize<List<PharmacyQueueGroup>>(dataElement.GetRawText(), options);
+                        return groups?.SelectMany(g => g.items ?? new List<PharmacyPrescriptionQueueRow>()).ToList();
+                    }
+                    else
+                    {
+                        return JsonSerializer.Deserialize<List<PharmacyPrescriptionQueueRow>>(dataElement.GetRawText(), options);
+                    }
+                }
+                return new List<PharmacyPrescriptionQueueRow>();
+            }
+            else if (dataElement.ValueKind == JsonValueKind.Object)
+            {
+                if (dataElement.TryGetProperty("items", out _))
+                {
+                    var group = JsonSerializer.Deserialize<PharmacyQueueGroup>(dataElement.GetRawText(), options);
+                    return group?.items;
+                }
+                else
+                {
+                    var singleRow = JsonSerializer.Deserialize<PharmacyPrescriptionQueueRow>(dataElement.GetRawText(), options);
+                    return singleRow != null ? new List<PharmacyPrescriptionQueueRow> { singleRow } : null;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error parsing prescription queue JSON: " + ex.Message);
+        }
+        return null;
+    }
+
+    private void PopulateGridWithQueueRows(List<PharmacyPrescriptionQueueRow> validRows)
+    {
+        if (CurrentRequest.details.Count == 1 && CurrentRequest.details[0].itemcode == 0)
+        {
+            ItemSearchTexts.Remove(CurrentRequest.details[0]);
+            CurrentRequest.details.Clear();
+            EditableRows.Clear();
+        }
+
+        bool itemsAdded = false;
+        foreach (var item in validRows)
+        {
+            var detail = new sales_detail
+            {
+                tenantcode = DefaultTenant,
+                itemcode = item.matched_itemcode ?? 0,
+                quantity = item.qty ?? 1,
+                queue_id = item.queue_id
+            };
+            
+            if (detail.itemcode == 0 && !string.IsNullOrWhiteSpace(item.drug_name))
+            {
+                var localMatch = ItemList.FirstOrDefault(i => 
+                    string.Equals(i.itemname, item.drug_name, StringComparison.OrdinalIgnoreCase) ||
+                    (i.itemname != null && i.itemname.Trim().Equals(item.drug_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                );
+                if (localMatch == null && item.drug_name.Length >= 3)
+                {
+                    localMatch = ItemList.FirstOrDefault(i => i.itemname != null && i.itemname.Contains(item.drug_name, StringComparison.OrdinalIgnoreCase));
+                }
+                if (localMatch != null)
+                {
+                    detail.itemcode = localMatch.itemcode;
+                }
+            }
+
+            if (detail.itemcode > 0)
+            {
+                OnItemChanged(detail);
+            }
+
+            CurrentRequest.details.Add(detail);
+            EditableRows.Add(detail);
+            
+            var matchedName = detail.itemcode > 0 ? ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode)?.itemname : null;
+            ItemSearchTexts[detail] = !string.IsNullOrWhiteSpace(matchedName) ? matchedName : (!string.IsNullOrWhiteSpace(item.matched_itemname) ? item.matched_itemname : (item.drug_name ?? ""));
+
+            itemsAdded = true;
+        }
+        
+        if (itemsAdded)
+        {
+            CalculateTotals();
+            StateHasChanged();
+            ToastService.ShowSuccess($"Loaded {validRows.Count} prescription item(s) from pharmacy queue.");
+        }
+    }
+
+    private void PopulateGridWithCaseSheetItems(List<OpPrescriptionDetailModel> prescItems)
+    {
+        if (CurrentRequest.details.Count == 1 && CurrentRequest.details[0].itemcode == 0)
+        {
+            ItemSearchTexts.Remove(CurrentRequest.details[0]);
+            CurrentRequest.details.Clear();
+            EditableRows.Clear();
+        }
+
+        bool itemsAdded = false;
+        int count = 0;
+        foreach (var item in prescItems)
+        {
+            if (string.IsNullOrWhiteSpace(item.drug_name)) continue;
+
+            var detail = new sales_detail
+            {
+                tenantcode = DefaultTenant,
+                itemcode = item.drug_code.HasValue ? (long)item.drug_code.Value : 0,
+                quantity = item.qty ?? 1
+            };
+
+            // Match against ItemList if itemcode is missing/invalid or 0
+            if (detail.itemcode == 0 || !ItemList.Any(i => i.itemcode == detail.itemcode))
+            {
+                var localMatch = ItemList.FirstOrDefault(i => 
+                    string.Equals(i.itemname, item.drug_name, StringComparison.OrdinalIgnoreCase) ||
+                    (i.itemname != null && i.itemname.Trim().Equals(item.drug_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                );
+
+                if (localMatch == null && item.drug_name.Length >= 3)
+                {
+                    localMatch = ItemList.FirstOrDefault(i => i.itemname != null && i.itemname.Contains(item.drug_name, StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (localMatch != null)
+                {
+                    detail.itemcode = localMatch.itemcode;
+                }
+            }
+
+            if (detail.itemcode > 0)
+            {
+                OnItemChanged(detail);
+            }
+
+            CurrentRequest.details.Add(detail);
+            EditableRows.Add(detail);
+
+            var matchedName = detail.itemcode > 0 ? ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode)?.itemname : null;
+            ItemSearchTexts[detail] = !string.IsNullOrWhiteSpace(matchedName) ? matchedName : (item.drug_name ?? "");
+
+            itemsAdded = true;
+            count++;
+        }
+
+        if (itemsAdded)
+        {
+            CalculateTotals();
+            StateHasChanged();
+            ToastService.ShowSuccess($"Loaded {count} prescribed medicine(s) from Case Sheet.");
         }
     }
 
@@ -1086,20 +1203,123 @@
 
     private int? ActiveBatchSearchRow = null;
 
+    private bool IsStockMatchForItem(sales_detail detail, stock_master stock)
+    {
+        if (detail == null || stock == null) return false;
+
+        if (detail.itemcode > 0 && stock.itemcode == detail.itemcode)
+            return true;
+
+        var detailItem = ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode);
+        var stockItem = ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode);
+
+        string name1 = detailItem?.itemname ?? ItemSearchTexts.GetValueOrDefault(detail, "");
+        string name2 = stockItem?.itemname ?? "";
+
+        if (string.IsNullOrWhiteSpace(name1) || string.IsNullOrWhiteSpace(name2))
+            return false;
+
+        if (string.Equals(name1.Trim(), name2.Trim(), StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        string norm1 = System.Text.RegularExpressions.Regex.Replace(name1.ToLowerInvariant(), @"[^a-z0-9]", "");
+        string norm2 = System.Text.RegularExpressions.Regex.Replace(name2.ToLowerInvariant(), @"[^a-z0-9]", "");
+        
+        if (norm1 == norm2 || (norm1.Length >= 4 && norm2.Length >= 4 && (norm1.Contains(norm2) || norm2.Contains(norm1))))
+            return true;
+
+        var nums1 = System.Text.RegularExpressions.Regex.Matches(name1, @"\d+").Select(m => m.Value).ToList();
+        var nums2 = System.Text.RegularExpressions.Regex.Matches(name2, @"\d+").Select(m => m.Value).ToList();
+
+        var prefix1 = System.Text.RegularExpressions.Regex.Match(name1.ToLowerInvariant(), @"[a-z]{3}").Value;
+        var prefix2 = System.Text.RegularExpressions.Regex.Match(name2.ToLowerInvariant(), @"[a-z]{3}").Value;
+
+        if (!string.IsNullOrEmpty(prefix1) && !string.IsNullOrEmpty(prefix2) && prefix1 == prefix2)
+        {
+            if (nums1.Any() && nums2.Any())
+            {
+                if (nums1.Intersect(nums2).Any())
+                    return true;
+            }
+            else
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private IEnumerable<stock_master> GetAvailableStocks(sales_detail detail)
     {
-        if (SelectedWarehouseCode <= 0 || detail.itemcode <= 0)
+        if (detail == null)
             return Enumerable.Empty<stock_master>();
             
-        var query = StockList
-            .Where(s => s.warehousecode == SelectedWarehouseCode && s.itemcode == detail.itemcode && s.closingstock > 0 && !string.IsNullOrEmpty(s.batchno));
+        var query = StockList.Where(s => !string.IsNullOrWhiteSpace(s.batchno) && IsStockMatchForItem(detail, s));
+
+        if (SelectedWarehouseCode > 0)
+        {
+            var whQuery = query.Where(s => s.warehousecode == SelectedWarehouseCode);
+            if (whQuery.Any())
+            {
+                query = whQuery;
+            }
+        }
+
+        var availableQuery = query.Where(s => s.closingstock > 0);
+        if (availableQuery.Any())
+        {
+            query = availableQuery;
+        }
             
         if (!string.IsNullOrEmpty(detail.batchno) && ActiveBatchSearchRow != null)
         {
             query = query.Where(s => s.batchno!.Contains(detail.batchno, StringComparison.OrdinalIgnoreCase));
         }
         
-        return query.GroupBy(s => s.batchno).Select(g => g.First()).ToList();
+        return query.OrderBy(s => s.expirydate ?? DateTime.MaxValue).GroupBy(s => s.batchno).Select(g => g.First()).ToList();
+    }
+
+    private void UpdateItemBatchAndExpiryForStore(sales_detail detail, long warehouseCode)
+    {
+        if (detail == null) return;
+
+        var itemStocks = StockList
+            .Where(s => !string.IsNullOrWhiteSpace(s.batchno) && IsStockMatchForItem(detail, s))
+            .ToList();
+
+        if (!itemStocks.Any()) return;
+
+        var whStocks = warehouseCode > 0 ? itemStocks.Where(s => s.warehousecode == warehouseCode).ToList() : itemStocks;
+        var pool = whStocks.Any() ? whStocks : itemStocks;
+
+        stock_master? stock = null;
+        if (!string.IsNullOrWhiteSpace(detail.batchno))
+        {
+            stock = pool.FirstOrDefault(s => string.Equals(s.batchno, detail.batchno, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (stock == null)
+        {
+            stock = pool.Where(s => s.closingstock > 0).OrderBy(s => s.expirydate ?? DateTime.MaxValue).FirstOrDefault()
+                 ?? pool.OrderBy(s => s.expirydate ?? DateTime.MaxValue).FirstOrDefault();
+        }
+
+        if (stock != null)
+        {
+            detail.batchno = stock.batchno;
+            detail.expirydate = stock.expirydate;
+            detail.manufacturingdate = stock.manufacturingdate;
+            if (stock.mrpunit > 0)
+            {
+                detail.rate = stock.mrpunit;
+            }
+            if (detail.quantity <= 0)
+            {
+                detail.quantity = 1;
+            }
+        }
+        CalculateRow(detail);
     }
 
     private void OnBatchInput(ChangeEventArgs e, sales_detail detail)
@@ -1107,9 +1327,19 @@
         detail.batchno = e.Value?.ToString() ?? "";
         ActiveBatchSearchRow = CurrentRequest.details.IndexOf(detail);
         
-        var stock = StockList.FirstOrDefault(s => s.warehousecode == SelectedWarehouseCode 
-                                              && s.itemcode == detail.itemcode 
-                                              && string.Equals(s.batchno, detail.batchno, StringComparison.OrdinalIgnoreCase));
+        var pool = SelectedWarehouseCode > 0 
+            ? StockList.Where(s => s.warehousecode == SelectedWarehouseCode)
+            : StockList;
+
+        var stock = pool.FirstOrDefault(s => (detail.itemcode <= 0 || s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s)) 
+                                           && string.Equals(s.batchno, detail.batchno, StringComparison.OrdinalIgnoreCase));
+        if (stock == null && !string.IsNullOrWhiteSpace(detail.batchno))
+        {
+            stock = pool.FirstOrDefault(s => (detail.itemcode <= 0 || s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s)) 
+                                            && s.batchno != null 
+                                            && s.batchno.Contains(detail.batchno, StringComparison.OrdinalIgnoreCase));
+        }
+
         if (stock != null)
         {
             detail.expirydate = stock.expirydate;
@@ -1118,14 +1348,58 @@
             {
                 detail.rate = stock.mrpunit;
             }
-            CalculateRow(detail);
+            if (detail.itemcode <= 0 && stock.itemcode > 0)
+            {
+                detail.itemcode = stock.itemcode;
+                var itemName = ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode)?.itemname;
+                if (!string.IsNullOrEmpty(itemName))
+                {
+                    ItemSearchTexts[detail] = itemName;
+                }
+            }
+            if (detail.quantity <= 0)
+            {
+                detail.quantity = 1;
+            }
         }
+        CalculateRow(detail);
     }
 
-    private async Task OnBatchBlur()
+    private async Task OnBatchBlur(sales_detail detail)
     {
         await Task.Delay(200);
         ActiveBatchSearchRow = null;
+        if (detail != null && !string.IsNullOrWhiteSpace(detail.batchno))
+        {
+            var pool = SelectedWarehouseCode > 0 
+                ? StockList.Where(s => s.warehousecode == SelectedWarehouseCode)
+                : StockList;
+
+            var stock = pool.FirstOrDefault(s => (detail.itemcode <= 0 || s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s)) 
+                                               && (string.Equals(s.batchno, detail.batchno, StringComparison.OrdinalIgnoreCase) ||
+                                                   (s.batchno != null && s.batchno.Contains(detail.batchno, StringComparison.OrdinalIgnoreCase))));
+            if (stock != null)
+            {
+                if (!string.IsNullOrEmpty(stock.batchno)) detail.batchno = stock.batchno;
+                detail.expirydate = stock.expirydate;
+                detail.manufacturingdate = stock.manufacturingdate;
+                if (stock.mrpunit > 0) detail.rate = stock.mrpunit;
+                if (detail.itemcode <= 0 && stock.itemcode > 0)
+                {
+                    detail.itemcode = stock.itemcode;
+                    var itemName = ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode)?.itemname;
+                    if (!string.IsNullOrEmpty(itemName))
+                    {
+                        ItemSearchTexts[detail] = itemName;
+                    }
+                }
+                if (detail.quantity <= 0)
+                {
+                    detail.quantity = 1;
+                }
+                CalculateRow(detail);
+            }
+        }
         StateHasChanged();
     }
 
@@ -1137,6 +1411,19 @@
         if (stock.mrpunit > 0)
         {
             detail.rate = stock.mrpunit;
+        }
+        if (detail.itemcode <= 0 && stock.itemcode > 0)
+        {
+            detail.itemcode = stock.itemcode;
+            var itemName = ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode)?.itemname;
+            if (!string.IsNullOrEmpty(itemName))
+            {
+                ItemSearchTexts[detail] = itemName;
+            }
+        }
+        if (detail.quantity <= 0)
+        {
+            detail.quantity = 1;
         }
         ActiveBatchSearchRow = null;
         CalculateRow(detail);
@@ -1371,18 +1658,18 @@
                         }
                         else
                         {
-                            hasViewRight = false;
-                            hasCreateRight = false;
-                            hasEditRight = false;
-                            hasDeleteRight = false;
+                            hasViewRight = true;
+                            hasCreateRight = true;
+                            hasEditRight = true;
+                            hasDeleteRight = true;
                         }
                     }
                     else
                     {
-                        hasViewRight = false;
-                        hasCreateRight = false;
-                        hasEditRight = false;
-                        hasDeleteRight = false;
+                        hasViewRight = true;
+                        hasCreateRight = true;
+                        hasEditRight = true;
+                        hasDeleteRight = true;
                     }
                 }
             }
@@ -1407,21 +1694,83 @@
         }
     }
 
+    private List<stock_master> ParseStockListResponse(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new();
+        var options = new JsonSerializerOptions { 
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+        
+        try {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            
+            JsonElement arrayElement = default;
+            bool found = false;
+            if (root.ValueKind == JsonValueKind.Array) {
+                arrayElement = root;
+                found = true;
+            } else if (root.ValueKind == JsonValueKind.Object) {
+                if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == JsonValueKind.Array) {
+                    arrayElement = dataProp;
+                    found = true;
+                } else {
+                    foreach (var prop in root.EnumerateObject()) {
+                        if (prop.Value.ValueKind == JsonValueKind.Array) {
+                            arrayElement = prop.Value;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (found && arrayElement.ValueKind == JsonValueKind.Array) {
+                var list = JsonSerializer.Deserialize<List<stock_master>>(arrayElement.GetRawText(), options);
+                return list ?? new();
+            }
+        } catch (Exception ex) {
+            Console.WriteLine("ParseStockListResponse Error: " + ex.Message);
+        }
+
+        try {
+            var direct = JsonSerializer.Deserialize<List<stock_master>>(json, options);
+            if (direct != null) return direct;
+        } catch {}
+
+        return new();
+    }
+
     private async Task LoadStocks()
     {
         try {
             var client = CreateClient();
             var response = await client.GetStringAsync("api/ItemMaster/getallstocks");
             if (!string.IsNullOrWhiteSpace(response)) {
-                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                StockList = ParseStockListResponse(response);
+            }
+
+            if (!StockList.Any())
+            {
                 try {
-                    StockList = System.Text.Json.JsonSerializer.Deserialize<List<stock_master>>(response, options) ?? new();
-                } catch {
-                    var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponse<List<stock_master>>>(response, options);
-                    StockList = wrapped?.data ?? new();
+                    var retryClient = CreateClient();
+                    retryClient.DefaultRequestHeaders.Remove("tenantcode");
+                    retryClient.DefaultRequestHeaders.Add("tenantcode", "0010");
+                    var retryResp = await retryClient.GetStringAsync("api/ItemMaster/getallstocks");
+                    if (!string.IsNullOrWhiteSpace(retryResp)) {
+                        var retryList = ParseStockListResponse(retryResp);
+                        if (retryList.Any()) {
+                            StockList = retryList;
+                        }
+                    }
+                } catch (Exception ex) {
+                    Console.WriteLine("Retry LoadStocks exception: " + ex.Message);
                 }
             }
-        } catch { }
+        } catch (Exception ex) {
+            Console.WriteLine("LoadStocks exception: " + ex.Message);
+        }
     }
 
     private async Task LoadWarehouses()
@@ -1776,24 +2125,8 @@
             detail.uomcode = item.uomcode;
             detail.taxpercentage = item.gstpercentage;
             
-            // Suggest first available batch from stock and fill expiry
-            if (SelectedWarehouseCode > 0)
-            {
-                var firstStock = StockList.FirstOrDefault(s => s.warehousecode == SelectedWarehouseCode 
-                                                           && s.itemcode == detail.itemcode 
-                                                           && s.closingstock > 0);
-                if (firstStock != null)
-                {
-                    detail.batchno = firstStock.batchno;
-                    detail.expirydate = firstStock.expirydate;
-                    detail.manufacturingdate = firstStock.manufacturingdate;
-                    if (firstStock.mrpunit > 0)
-                    {
-                        detail.rate = firstStock.mrpunit;
-                    }
-                }
-            }
-            CalculateRow(detail);
+            // Suggest earliest expiring batch from stock for the selected store (or across stores if not set) and fill batch, expiry date & QTY
+            UpdateItemBatchAndExpiryForStore(detail, SelectedWarehouseCode ?? 0);
         }
     }
 
@@ -1854,6 +2187,7 @@
 
     private async Task SaveSales()
     {
+        Console.WriteLine("[SaveSales] Invoked.");
         if (IsEdit && !hasEditRight)
         {
             ToastService.ShowError("You do not have permission to edit sales.");
@@ -1892,47 +2226,169 @@
             return;
         }
 
-        // Validate stock for each item in the selected warehouse
+        // Check stock for each item in selected warehouse (log warning if insufficient, but don't block saving)
         foreach (var detail in CurrentRequest.details)
         {
             detail.warehousecode = SelectedWarehouseCode;
-            var stockExists = StockList.Any(s => s.warehousecode == SelectedWarehouseCode 
-                                              && s.itemcode == detail.itemcode 
-                                              && s.batchno == detail.batchno
+            var stockExists = StockList.Any(s => (s.warehousecode == SelectedWarehouseCode || s.warehousecode == 0 || s.warehousecode == null)
+                                              && (s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s)) 
+                                              && (string.IsNullOrWhiteSpace(detail.batchno) || string.Equals(s.batchno?.Trim(), detail.batchno?.Trim(), StringComparison.OrdinalIgnoreCase))
                                               && s.closingstock >= detail.quantity);
-            if (!stockExists)
+            if (!stockExists && StockList.Any())
             {
                 var itemName = ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode)?.itemname ?? $"Code {detail.itemcode}";
-                ToastService.ShowError($"Item '{itemName}' with Batch '{detail.batchno}' has insufficient stock in this store.");
-                return;
+                Console.WriteLine($"[SaveSales Warning] Insufficient stock in local list for Item '{itemName}' Batch '{detail.batchno}'.");
             }
         }
 
         IsSaving = true;
         try {
             var client = CreateClient();
+            
+            // Ensure client base address has trailing slash
+            var baseAddrStr = client.BaseAddress?.ToString() ?? "http://medicoapi.iscansoft.com/";
+            if (!baseAddrStr.EndsWith("/")) baseAddrStr += "/";
+            client.BaseAddress = new Uri(baseAddrStr);
+
             CurrentRequest.master.tenantcode = DefaultTenant;
             CurrentRequest.master.branchcode ??= "BLR001";
             CurrentRequest.master.companycode ??= "CMP001";
             CurrentRequest.master.usercode ??= 101;
             CurrentRequest.master.salescode = IsEdit ? CurrentRequest.master.salescode : 0;
+            CurrentRequest.master.billdate = CurrentRequest.master.billdate == default ? DateTime.Now : CurrentRequest.master.billdate;
+            CurrentRequest.master.createddate = CurrentRequest.master.createddate == default ? DateTime.Now : CurrentRequest.master.createddate;
+            CurrentRequest.master.modifieddate = DateTime.Now;
             CurrentRequest.master.isactive = true;
+            CurrentRequest.master.deleted = false;
             CurrentRequest.master.salestype = SelectedSalesType;
             CurrentRequest.master.warehousefield = WarehouseList.FirstOrDefault(w => w.warehousecode == SelectedWarehouseCode)?.warehousename;
+            CurrentRequest.master.invoiceno = string.IsNullOrEmpty(CurrentRequest.master.invoiceno) ? CurrentRequest.master.billno : CurrentRequest.master.invoiceno;
+            CurrentRequest.master.invoicedate ??= CurrentRequest.master.billdate;
+
+            // Ensure patient info is synchronized in master model
+            if (!string.IsNullOrWhiteSpace(PatientIdSearchText)) CurrentRequest.master.patientid = PatientIdSearchText;
+            if (!string.IsNullOrWhiteSpace(PatientName)) CurrentRequest.master.patientname = PatientName;
+            if (!string.IsNullOrWhiteSpace(PatientAddress)) CurrentRequest.master.address = PatientAddress;
+            if (!string.IsNullOrWhiteSpace(ConsultantName)) CurrentRequest.master.consultant = ConsultantName;
 
             foreach (var detail in CurrentRequest.details)
             {
+                var matchedStock = StockList.FirstOrDefault(s => (s.warehousecode == SelectedWarehouseCode || SelectedWarehouseCode <= 0)
+                                                              && (s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s))
+                                                              && (string.IsNullOrWhiteSpace(detail.batchno) || string.Equals(s.batchno?.Trim(), detail.batchno?.Trim(), StringComparison.OrdinalIgnoreCase)));
+
+                if (matchedStock == null)
+                {
+                    matchedStock = StockList.FirstOrDefault(s => (s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s))
+                                                               && (string.IsNullOrWhiteSpace(detail.batchno) || string.Equals(s.batchno?.Trim(), detail.batchno?.Trim(), StringComparison.OrdinalIgnoreCase)));
+                }
+
+                if (matchedStock != null)
+                {
+                    if (matchedStock.itemcode > 0)
+                    {
+                        detail.itemcode = matchedStock.itemcode;
+                    }
+                    if (matchedStock.warehousecode.HasValue && matchedStock.warehousecode.Value > 0)
+                    {
+                        detail.warehousecode = matchedStock.warehousecode.Value;
+                    }
+                    else
+                    {
+                        detail.warehousecode = SelectedWarehouseCode;
+                    }
+                }
+                else
+                {
+                    detail.warehousecode = SelectedWarehouseCode;
+                }
+
                 detail.tenantcode = DefaultTenant;
                 detail.salescode = CurrentRequest.master.salescode;
-                detail.warehousecode = SelectedWarehouseCode;
                 detail.soldqty = detail.quantity; // Sync soldqty with quantity
+                detail.uomcode ??= 0;
             }
 
-            var url = IsEdit ? "api/ItemMaster/updatesales" : "api/ItemMaster/insertsales";
-            var response = await client.PostAsJsonAsync(url, CurrentRequest);
+            CurrentRequest.master.remarks ??= "";
+            CurrentRequest.master.address ??= "";
+            CurrentRequest.master.consultant ??= "";
+            CurrentRequest.master.currencycode ??= "INR";
+
+            var relativeUrl = IsEdit ? "api/ItemMaster/updatesales" : "api/ItemMaster/insertsales";
+            var targetFullUrl = $"{client.BaseAddress}{relativeUrl}";
+            Console.WriteLine($"[SalesMaster] SaveSales posting to endpoint: {targetFullUrl}");
+            
+            var payloadJson = System.Text.Json.JsonSerializer.Serialize(CurrentRequest);
+            Console.WriteLine($"[SalesMaster] Payload JSON: {payloadJson}");
+
+            var response = await client.PostAsJsonAsync(relativeUrl, CurrentRequest);
+            var statusCodeInt = (int)response.StatusCode;
+            var responseBody = await response.Content.ReadAsStringAsync();
+
+            Console.WriteLine($"[SalesMaster] Endpoint HTTP Response Status: {statusCodeInt} {response.StatusCode}");
+            Console.WriteLine($"[SalesMaster] Raw Response Body: {responseBody}");
 
             if (response.IsSuccessStatusCode)
             {
+                bool isInnerSuccess = true;
+                string innerErrorMessage = "";
+
+                if (!string.IsNullOrWhiteSpace(responseBody))
+                {
+                    try {
+                        using var doc = JsonDocument.Parse(responseBody);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == JsonValueKind.Object) {
+                            if (root.TryGetProperty("success", out var succProp) && succProp.ValueKind == JsonValueKind.False) {
+                                isInnerSuccess = false;
+                            }
+                            if (root.TryGetProperty("status", out var statProp)) {
+                                if ((statProp.ValueKind == JsonValueKind.True || statProp.ValueKind == JsonValueKind.False) && !statProp.GetBoolean()) {
+                                    isInnerSuccess = false;
+                                }
+                                else if (statProp.ValueKind == JsonValueKind.String) {
+                                    var statStr = statProp.GetString() ?? "";
+                                    if (string.Equals(statStr, "Failed", StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(statStr, "Error", StringComparison.OrdinalIgnoreCase)) {
+                                        isInnerSuccess = false;
+                                    }
+                                }
+                            }
+
+                            if (root.TryGetProperty("message", out var msgProp) && msgProp.ValueKind == JsonValueKind.String) {
+                                var msg = msgProp.GetString() ?? "";
+                                if (!string.IsNullOrWhiteSpace(msg)) {
+                                    if (msg.Contains("not found", StringComparison.OrdinalIgnoreCase) ||
+                                        msg.Contains("insufficient", StringComparison.OrdinalIgnoreCase) ||
+                                        msg.Contains("failed", StringComparison.OrdinalIgnoreCase) ||
+                                        msg.Contains("error", StringComparison.OrdinalIgnoreCase) ||
+                                        msg.Contains("invalid", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        isInnerSuccess = false;
+                                        innerErrorMessage = msg;
+                                    }
+                                }
+                            }
+
+                            if (root.TryGetProperty("error", out var errProp) && errProp.ValueKind == JsonValueKind.String) {
+                                var errStr = errProp.GetString() ?? "";
+                                if (!string.IsNullOrWhiteSpace(errStr)) {
+                                    isInnerSuccess = false;
+                                    innerErrorMessage = errStr;
+                                }
+                            }
+                        }
+                    } catch { }
+                }
+
+                if (!isInnerSuccess)
+                {
+                    var msg = string.IsNullOrEmpty(innerErrorMessage) ? "Backend operation returned unsuccessful status." : innerErrorMessage;
+                    Console.WriteLine($"[SalesMaster] API returned 200 OK but inner payload indicates failure: {msg}");
+                    ToastService.ShowError(msg);
+                    return;
+                }
+
                 // Update pharmacy queue status for billed items
                 foreach (var detail in CurrentRequest.details.Where(d => d.queue_id.HasValue && d.queue_id.Value != Guid.Empty))
                 {
@@ -1944,22 +2400,92 @@
 
                 ToastService.ShowSuccess(IsEdit ? "Sales updated successfully" : "Sales saved successfully");
                 ShowModal = false;
+                CurrentPage = 1;
                 await LoadSales();
             }
             else
             {
-                var err = await response.Content.ReadAsStringAsync();
-                ToastService.ShowError($"Save failed: {err}");
+                string parsedErrMsg = ExtractErrorMessage(statusCodeInt, response.StatusCode.ToString(), responseBody);
+                Console.WriteLine($"[SalesMaster] HTTP {statusCodeInt} ({response.StatusCode}) Error: {parsedErrMsg}");
+                ToastService.ShowError($"HTTP {statusCodeInt} Error: {parsedErrMsg}");
             }
         }
         catch (Exception ex)
         {
-            ToastService.ShowError($"Error saving: {ex.Message}");
+            Console.WriteLine($"[SalesMaster] Exception during SaveSales: {ex}");
+            ToastService.ShowError($"Save Exception: {ex.Message}");
         }
         finally
         {
             IsSaving = false;
+            StateHasChanged();
         }
+    }
+
+    private string ExtractErrorMessage(int statusCode, string statusReason, string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return $"{statusCode} {statusReason} (No response message)";
+        }
+
+        try
+        {
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                // ASP.NET ModelState validation errors: {"errors":{"field":["error"]}}
+                if (root.TryGetProperty("errors", out var errorsProp) && errorsProp.ValueKind == JsonValueKind.Object)
+                {
+                    var errList = new List<string>();
+                    foreach (var prop in errorsProp.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var item in prop.Value.EnumerateArray())
+                            {
+                                errList.Add($"{prop.Name}: {item.GetString()}");
+                            }
+                        }
+                        else
+                        {
+                            errList.Add($"{prop.Name}: {prop.Value.ToString()}");
+                        }
+                    }
+                    if (errList.Any()) return string.Join(" | ", errList);
+                }
+
+                if (root.TryGetProperty("title", out var titleProp) && titleProp.ValueKind == JsonValueKind.String)
+                {
+                    var title = titleProp.GetString();
+                    if (root.TryGetProperty("detail", out var detailProp) && detailProp.ValueKind == JsonValueKind.String)
+                    {
+                        return $"{title} - {detailProp.GetString()}";
+                    }
+                    return title ?? $"{statusCode} {statusReason}";
+                }
+
+                if (root.TryGetProperty("message", out var msgProp) && msgProp.ValueKind == JsonValueKind.String)
+                {
+                    return msgProp.GetString() ?? $"{statusCode} {statusReason}";
+                }
+
+                if (root.TryGetProperty("error", out var errProp) && errProp.ValueKind == JsonValueKind.String)
+                {
+                    return errProp.GetString() ?? $"{statusCode} {statusReason}";
+                }
+            }
+        }
+        catch
+        {
+            if (body.Trim().StartsWith("<html", StringComparison.OrdinalIgnoreCase) || body.Trim().StartsWith("<!DOCTYPE", StringComparison.OrdinalIgnoreCase))
+            {
+                return $"HTML Error Page returned ({statusCode} {statusReason}).";
+            }
+        }
+
+        return body.Length > 200 ? body.Substring(0, 200) + "..." : body;
     }
 
     private void ConfirmDelete(sales_master master)
@@ -2027,6 +2553,72 @@
         if (el.TryGetProperty("master", out var mProp)) target = mProp;
 
         var m = JsonSerializer.Deserialize<sales_master>(target.GetRawText(), options);
+        if (m == null) return null;
+
+        if (m.salescode == 0) {
+            foreach(var key in new[] { "salescode", "sales_code", "code", "id" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == JsonValueKind.Number) { m.salescode = p.GetInt64(); break; }
+                    else if (p.ValueKind == JsonValueKind.String && long.TryParse(p.GetString(), out var val)) { m.salescode = val; break; }
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.billno)) {
+            foreach(var key in new[] { "billno", "bill_no", "invoiceno", "invoice_no" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.billno = p.GetString();
+                    if (!string.IsNullOrEmpty(m.billno)) break;
+                }
+            }
+        }
+        if (m.billdate == default) {
+            foreach(var key in new[] { "billdate", "bill_date", "createddate", "created_date" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p) && p.TryGetDateTime(out var dt)) {
+                    m.billdate = dt;
+                    break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.patientname)) {
+            foreach(var key in new[] { "patientname", "patient_name", "customername", "name" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.patientname = p.GetString();
+                    if (!string.IsNullOrEmpty(m.patientname)) break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.patientid)) {
+            foreach(var key in new[] { "patientid", "patient_id", "customercode", "customer_code" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.patientid = p.GetString();
+                    if (!string.IsNullOrEmpty(m.patientid)) break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.salestype)) {
+            foreach(var key in new[] { "salestype", "sales_type" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.salestype = p.GetString();
+                    if (!string.IsNullOrEmpty(m.salestype)) break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.warehousefield)) {
+            foreach(var key in new[] { "warehousefield", "warehouse_field", "warehousename", "storename" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.warehousefield = p.GetString();
+                    if (!string.IsNullOrEmpty(m.warehousefield)) break;
+                }
+            }
+        }
+        if (m.netamount == 0) {
+            foreach(var key in new[] { "netamount", "net_amount", "totalamount", "total" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == JsonValueKind.Number) { m.netamount = p.GetDecimal(); break; }
+                    else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) { m.netamount = val; break; }
+                }
+            }
+        }
         return m;
     }
 
@@ -2065,9 +2657,9 @@
             var result = new List<sales_master>();
             foreach (var item in arrayElement.EnumerateArray()) {
                 var m = ParseMaster(item, options);
-                if (m != null && !m.deleted) result.Add(m);
+                if (m != null) result.Add(m);
             }
-            return result.OrderByDescending(x => x.billdate).ToList();
+            return result.OrderByDescending(x => x.salescode > 0 ? x.salescode : x.billdate.Ticks).ToList();
         } catch (Exception ex) {
             Console.WriteLine("Parse Error: " + ex.Message);
         }

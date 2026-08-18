@@ -453,8 +453,8 @@
                     }
                     else if (FilteredUsers.Any())
                     {
-                        int sno = 1;
-                        @foreach (var u in FilteredUsers)
+                        int sno = ((currentPage - 1) * pageSize) + 1;
+                        @foreach (var u in PaginatedUsers)
                         {
                             <tr>
                                 <td>@(sno++)</td>
@@ -550,6 +550,46 @@
                 </tbody>
             </table>
         </div>
+
+        <!-- ════════════════════════════════════
+             PAGINATION FOOTER
+        ════════════════════════════════════ -->
+        @if (FilteredUsers.Any())
+        {
+            <div class="table-pagination-footer">
+                <div class="pagination-info">
+                    Showing <span class="font-bold">@(((currentPage - 1) * pageSize) + 1)</span> to <span class="font-bold">@(Math.Min(currentPage * pageSize, FilteredUsers.Count()))</span> of <span class="font-bold">@FilteredUsers.Count()</span> users
+                </div>
+                @if (TotalPages > 1)
+                {
+                    <div class="pagination-controls">
+                        <button type="button" class="pg-btn pg-nav" disabled="@(currentPage <= 1)" @onclick="() => ChangePage(currentPage - 1)">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/>
+                            </svg>
+                            <span>Previous</span>
+                        </button>
+
+                        <div class="pg-numbers">
+                            @for (int i = 1; i <= TotalPages; i++)
+                            {
+                                var pageNum = i;
+                                <button type="button" class="pg-btn pg-num @(currentPage == pageNum ? "active" : "")" @onclick="() => ChangePage(pageNum)">
+                                    @pageNum
+                                </button>
+                            }
+                        </div>
+
+                        <button type="button" class="pg-btn pg-nav" disabled="@(currentPage >= TotalPages)" @onclick="() => ChangePage(currentPage + 1)">
+                            <span>Next</span>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
+                                <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/>
+                            </svg>
+                        </button>
+                    </div>
+                }
+            </div>
+        }
     </div>
 <!-- </div> -->
 
@@ -606,12 +646,42 @@
     private bool isSaving = false;
     private bool ShowPwd = false;
 
-    private string SearchQuery = "";
+    private string _searchQuery = "";
+    private string SearchQuery
+    {
+        get => _searchQuery;
+        set
+        {
+            if (_searchQuery != value)
+            {
+                _searchQuery = value;
+                currentPage = 1;
+            }
+        }
+    }
 
     private string newPassword = "";
 
     private string? errorMessage;
     private string? formError;
+
+    // ── Pagination ────────────────────────────────────────────────────────────
+    private int currentPage = 1;
+    private int pageSize = 10;
+
+    private int TotalPages => (int)Math.Ceiling((double)FilteredUsers.Count() / pageSize);
+
+    private IEnumerable<user_master> PaginatedUsers =>
+        FilteredUsers.Skip((currentPage - 1) * pageSize).Take(pageSize);
+
+    private void ChangePage(int page)
+    {
+        if (page >= 1 && page <= Math.Max(1, TotalPages))
+        {
+            currentPage = page;
+            StateHasChanged();
+        }
+    }
 
     // Image handling fields
     private byte[]? selectedUserPhotoBytes;
@@ -1156,9 +1226,8 @@
         authorizedGroups.Clear();
         selectedGroupCodeToAuthorize = 0;
         selectedModuleId = 0;
-        selectedProductId = "";
+        selectedProductId = rclProducts.FirstOrDefault()?.ProductId ?? "MEDICO_APP";
         selectedRoleTemplateName = "";
-        rclRoleTemplates.Clear();
     }
 
     // ── Delete ────────────────────────────────────────────────────────────────
@@ -1750,17 +1819,63 @@
             if (response.IsSuccessStatusCode)
             {
                 var jsonStr = await response.Content.ReadAsStringAsync();
-                rclProducts = Newtonsoft.Json.JsonConvert.DeserializeObject<List<ProductList>>(jsonStr) ?? new();
+                var rawProducts = Newtonsoft.Json.JsonConvert.DeserializeObject<List<ProductList>>(jsonStr) ?? new();
+                var medicoProd = rawProducts.FirstOrDefault(p =>
+                    (p.ProductName != null && p.ProductName.Contains("MEDICO", StringComparison.OrdinalIgnoreCase)) ||
+                    (p.ProductId != null && p.ProductId.Contains("MEDICO", StringComparison.OrdinalIgnoreCase)));
+
+                if (medicoProd != null)
+                {
+                    rclProducts = new List<ProductList> { medicoProd };
+                    selectedProductId = medicoProd.ProductId;
+                }
+                else if (rawProducts.Any())
+                {
+                    var filtered = rawProducts.Where(p =>
+                        (p.ProductName != null && p.ProductName.Contains("MEDICO", StringComparison.OrdinalIgnoreCase)) ||
+                        (p.ProductId != null && p.ProductId.Contains("MEDICO", StringComparison.OrdinalIgnoreCase))).ToList();
+
+                    if (filtered.Any())
+                    {
+                        rclProducts = filtered;
+                    }
+                    else
+                    {
+                        rclProducts = new List<ProductList>
+                        {
+                            new ProductList { ProductId = "MEDICO_APP", ProductName = "MEDICO" }
+                        };
+                    }
+                    selectedProductId = rclProducts.First().ProductId;
+                }
+                else
+                {
+                    rclProducts = new List<ProductList>
+                    {
+                        new ProductList { ProductId = "MEDICO_APP", ProductName = "MEDICO" }
+                    };
+                    selectedProductId = "MEDICO_APP";
+                }
+                await LoadRclRoleTemplates();
             }
             else
             {
-                var body = await response.Content.ReadAsStringAsync();
-                Console.WriteLine($"[RCL Sync] Failed to load products: {response.StatusCode} - {body}");
+                rclProducts = new List<ProductList>
+                {
+                    new ProductList { ProductId = "MEDICO_APP", ProductName = "MEDICO" }
+                };
+                selectedProductId = "MEDICO_APP";
+                await LoadRclRoleTemplates();
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[RCL Sync] Error loading products: {ex.Message}");
+            rclProducts = new List<ProductList>
+            {
+                new ProductList { ProductId = "MEDICO_APP", ProductName = "MEDICO" }
+            };
+            selectedProductId = "MEDICO_APP";
         }
     }
 

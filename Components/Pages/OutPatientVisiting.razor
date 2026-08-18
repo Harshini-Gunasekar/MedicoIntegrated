@@ -13,6 +13,8 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject LabSettingService LabSettingService
 @inject CaseSheetService CaseSheetService
+@inject IJSRuntime JSRuntime
+@using Microsoft.JSInterop
 
 <PageTitle>Outpatient Visiting</PageTitle>
 
@@ -182,7 +184,7 @@
                                 }
                                 <th>Doctor</th>
                                 <th>Status</th>
-                                <th>Fee Status / Type</th>
+                                <th>Bill & Paid Status</th>
                                 <th style="text-align: center;">Actions</th>
                             </tr>
                         </thead>
@@ -195,13 +197,21 @@
                                 var isRegistered = opRegistrations.ContainsKey(booking.booking_id);
                                 var opData = isRegistered ? opRegistrations[booking.booking_id] : null;
 
-                                var displayType = booking.booking_type;
+                                var isVip = booking.isvip == true || booking.is_vip == true || (isRegistered && opData != null && (opData.isvip == true || opData.is_vip == true));
+                                var isIpReferred = booking.refer_to_ip == true || (isRegistered && opData != null && opData.refer_to_ip == true);
+
+                                var displayType = booking.booking_type ?? "ONLINE";
                                 if (booking.booking_type == "ONLINE" && booking.notes != null && booking.notes.StartsWith("[WALKIN]"))
                                 {
                                     displayType = "WALKIN";
                                 }
 
-                                <tr class="@(booking.isvip == true || booking.is_vip == true ? "vip-row" : "")">
+                                var rowClasses = new List<string>();
+                                if (isVip) rowClasses.Add("vip-row");
+                                if (isIpReferred) rowClasses.Add("ip-referred-row");
+                                var rowClassStr = string.Join(" ", rowClasses);
+
+                                <tr class="@rowClassStr">
                                     <td>
                                         @if (booking.token_no > 0)
                                         {
@@ -267,51 +277,71 @@
                                      <td>
                                          @if (isRegistered && opData != null)
                                          {
-                                             if (opData.is_dressing)
-                                             {
-                                                 <span class="btn-bill-status paid" style="background: #e0f2fe; color: #0369a1; border-color: #bae6fd;">Dressing</span>
-                                             }
-                                             else if (opData.unbilled_status == true)
-                                             {
-                                                 <span class="btn-bill-status paid">Paid</span>
-                                             }
-                                             else if (!string.IsNullOrWhiteSpace(opData.billed_status))
-                                             {
-                                                 var isPaidStatus = opData.billed_status.Equals("Paid", StringComparison.OrdinalIgnoreCase);
-                                                 <span class="btn-bill-status @(isPaidStatus ? "paid" : "unpaid")">
-                                                     @opData.billed_status
-                                                 </span>
-                                             }
-                                             else
-                                             {
-                                                 var opId = opData.op_id;
-                                                 var patName = string.IsNullOrWhiteSpace(booking.patient_name) ? $"CUST-{booking.custid}" : booking.patient_name;
-                                                 if (visitUnbilledCharges.TryGetValue(opId, out var charges))
+                                             <div class="bill-paid-status-container">
+                                                 @* --- BILLED / UNBILLED BADGE --- *@
+                                                 @if (opData.unbilled_status != true)
                                                  {
-                                                     var unpaidConsultation = charges.Where(c => c.billedstatus != true && (c.entrytype == null || c.entrytype.Equals("CONSULTATION", StringComparison.OrdinalIgnoreCase))).ToList();
-                                                     var unpaid = charges.Where(c => c.billedstatus != true).ToList();
-                                                     if (unpaidConsultation.Count == 0)
-                                                     {
-                                                         <span class="btn-bill-status paid">Paid</span>
-                                                     }
-                                                     else
-                                                     {
-                                                         <button type="button" @onclick="() => ShowUnpaidDetails(unpaid, patName)" class="btn-bill-status unpaid">
-                                                             Unpaid
-                                                         </button>
-                                                     }
+                                                     <span class="status-badge-pill unbilled" title="Unbilled Status">
+                                                         <i class="bi bi-file-earmark-text-fill"></i> Unbilled
+                                                     </span>
                                                  }
                                                  else
                                                  {
-                                                     <span class="btn-bill-status unpaid">Unpaid</span>
+                                                     <span class="status-badge-pill billed" title="Billed Status">
+                                                         <i class="bi bi-file-earmark-check-fill"></i> Billed
+                                                     </span>
                                                  }
-                                             }
+
+                                                 @* --- PAID / UNPAID BADGE --- *@
+                                                 @if (opData.is_dressing)
+                                                 {
+                                                     <span class="btn-bill-status paid" style="background: #e0f2fe; color: #0369a1; border-color: #bae6fd;">
+                                                         <i class="bi bi-bandaid-fill"></i> Dressing
+                                                     </span>
+                                                 }
+                                                 else if (opData.paid_status == true)
+                                                 {
+                                                     <span class="btn-bill-status paid">
+                                                         <i class="bi bi-check-circle-fill"></i> Paid
+                                                     </span>
+                                                 }
+                                                 else if (opData.paid_status == false)
+                                                 {
+                                                     <span class="btn-bill-status unpaid">
+                                                         <i class="bi bi-exclamation-circle-fill"></i> Unpaid
+                                                     </span>
+                                                 }
+                                                 else
+                                                 {
+                                                     var opId = opData.op_id;
+                                                     var patName = string.IsNullOrWhiteSpace(booking.patient_name) ? $"CUST-{booking.custid}" : booking.patient_name;
+                                                     if (visitUnbilledCharges.TryGetValue(opId, out var charges))
+                                                     {
+                                                         var unpaidConsultation = charges.Where(c => c.billedstatus != true && (c.entrytype == null || c.entrytype.Equals("CONSULTATION", StringComparison.OrdinalIgnoreCase))).ToList();
+                                                         var unpaid = charges.Where(c => c.billedstatus != true).ToList();
+                                                         if (unpaidConsultation.Count == 0)
+                                                         {
+                                                             <span class="btn-bill-status paid"><i class="bi bi-check-circle-fill"></i> Paid</span>
+                                                         }
+                                                         else
+                                                         {
+                                                             <button type="button" @onclick="() => ShowUnpaidDetails(unpaid, patName)" class="btn-bill-status unpaid">
+                                                                 <i class="bi bi-exclamation-circle-fill"></i> Unpaid
+                                                             </button>
+                                                         }
+                                                     }
+                                                     else
+                                                     {
+                                                         <span class="btn-bill-status unpaid"><i class="bi bi-exclamation-circle-fill"></i> Unpaid</span>
+                                                     }
+                                                 }
+                                             </div>
                                          }
                                          else
                                          {
                                              if (booking.is_dressing)
                                              {
-                                                 <span class="btn-bill-status paid" style="background: #e0f2fe; color: #0369a1; border-color: #bae6fd;">Dressing</span>
+                                                 <span class="btn-bill-status paid" style="background: #e0f2fe; color: #0369a1; border-color: #bae6fd;"><i class="bi bi-bandaid-fill"></i> Dressing</span>
                                              }
                                              else
                                              {
@@ -320,20 +350,20 @@
                                          }
                                      </td>
                                     <td>
-                                        <div class="btn-group-actions" style="justify-content: center;">
-                                            @if (!isRegistered)
-                                            {
-                                                <!-- <button class="btn-action register" @onclick="() => OpenRegisterModal(booking)" title="Register Patient OP">
-                                                    <i class="bi bi-person-plus-fill"></i>
-                                                </button> -->
-                                            }
-                                            else
-                                            {
-                                                <button class="btn-action vitals" @onclick="() => OpenVitalsModal(opData!)" title="Patient Vitals">
-                                                    <i class="bi bi-heart-pulse-fill"></i>
-                                                </button>
-                                            }
-                                        </div>
+                                         <div class="btn-group-actions" style="justify-content: center; display: flex; gap: 4px;">
+                                             @if (isRegistered && opData != null)
+                                             {
+                                                 <button class="btn-action case-sheet" style="background: #e0f2fe; color: #0284c7; border: 1px solid #bae6fd; padding: 0.25rem 0.5rem; border-radius: 6px; cursor: pointer;" @onclick="() => OpenCaseSheetForOp(opData)" title="Clinical Case Sheet">
+                                                     <i class="bi bi-file-earmark-medical-fill"></i>
+                                                 </button>
+                                                 <button class="btn-action vitals" @onclick="() => OpenVitalsModal(opData)" title="Patient Vitals">
+                                                     <i class="bi bi-heart-pulse-fill"></i>
+                                                 </button>
+                                             }
+                                             <button class="btn-action screenshot" style="background: #ede9fe; color: #6d28d9; border: 1px solid #ddd6fe; padding: 0.25rem 0.5rem; border-radius: 6px; cursor: pointer;" @onclick="() => OpenScreenshotModal(booking)" title="Screenshot Pop-up">
+                                                 <i class="bi bi-camera-fill"></i>
+                                             </button>
+                                         </div>
                                     </td>
                                 </tr>
                             }
@@ -371,6 +401,19 @@
         </div>
     }
 </div>
+
+<!-- Clinical Case Sheet Modal -->
+<CaseSheetComponent @bind-Visible="showCaseSheetModal"
+                    OpId="selectedOpId"
+                    IpId="selectedIpId"
+                    OpNo="@selectedOpNo"
+                    IpNo="@selectedIpNo"
+                    CustId="selectedCustId"
+                    Dcode="selectedDcode"
+                    PatientName="@selectedPatientName"
+                    VisitDate="selectedVisitDate"
+                    OpStatus="@selectedOpStatus"
+                    OnSaved="LoadDataAsync" />
 
 @if (showRegisterModal && selectedBooking != null)
 {
@@ -640,6 +683,66 @@
     </div>
 }
 
+@if (showScreenshotModal && screenshotBooking != null)
+{
+    <div class="modal-backdrop" @onclick="() => showScreenshotModal = false"></div>
+    <div class="glass-modal" style="max-width: 600px; padding: 0; border-radius: 16px; overflow: hidden; background: white;">
+        <div class="modal-header" style="background: linear-gradient(135deg, #4f46e5, #3730a3); color: white; padding: 1.25rem 1.5rem; display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; align-items: center; gap: 0.75rem;">
+                <i class="bi bi-camera-fill" style="font-size: 1.5rem;"></i>
+                <div>
+                    <h3 style="margin: 0; color: white; font-size: 1.15rem; font-weight: 700;">Patient Card Preview</h3>
+                    <span style="font-size: 0.8rem; opacity: 0.85;">OP Registration Screenshot Summary</span>
+                </div>
+            </div>
+            <button class="close-btn" style="color: white; font-size: 1.5rem; background: transparent; border: none; cursor: pointer;" @onclick="() => showScreenshotModal = false">×</button>
+        </div>
+        <div class="modal-body" style="padding: 1.5rem; background: #f8fafc;">
+            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.25rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+                <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #4f46e5; padding-bottom: 0.75rem; margin-bottom: 1rem;">
+                    <div>
+                        <h4 style="margin: 0; font-size: 1.2rem; font-weight: 800; color: #0f172a;">@screenshotBooking.patient_name</h4>
+                        <div style="font-size: 0.85rem; color: #64748b; margin-top: 0.25rem;">
+                            📞 Mobile: <strong>@(string.IsNullOrEmpty(screenshotBooking.mobile) ? "-" : screenshotBooking.mobile)</strong>
+                        </div>
+                    </div>
+                    <div style="text-align: right;">
+                        <span style="background: #e0e7ff; color: #3730a3; padding: 0.35rem 0.75rem; border-radius: 20px; font-size: 0.75rem; font-weight: 800; text-transform: uppercase;">
+                            @screenshotBooking.booking_status
+                        </span>
+                        <div style="font-size: 0.75rem; color: #64748b; margin-top: 0.35rem;">Date: @screenshotBooking.appointment_date.ToString("dd-MM-yyyy")</div>
+                    </div>
+                </div>
+
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; font-size: 0.85rem;">
+                    <div>
+                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">DOCTOR NAME</span>
+                        <strong style="color: #1e293b;">@GetDoctorName(screenshotBooking.dcode)</strong>
+                    </div>
+                    <div>
+                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">TOKEN NO / OP ID</span>
+                        <strong style="color: #4f46e5; font-size: 1rem;">#@screenshotBooking.token_no</strong>
+                    </div>
+                    <div>
+                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">VISIT TYPE</span>
+                        <strong>@screenshotBooking.booking_type</strong>
+                    </div>
+                    <div>
+                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">CONSULTATION FEE</span>
+                        <strong style="color: #16a34a;">₹ @(opRegistrations.TryGetValue(screenshotBooking.booking_id, out var reg) ? (reg.notes ?? "Paid") : "Standard")</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="modal-footer" style="padding: 1rem 1.5rem; background: white; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between;">
+            <button class="btn-modal cancel" @onclick="() => showScreenshotModal = false">Close</button>
+            <button class="btn-modal confirm" style="background: #4f46e5; color: white;" @onclick="CaptureScreenshotPrint">
+                <i class="bi bi-printer-fill" style="margin-right: 0.5rem;"></i> Print / Capture Screenshot
+            </button>
+        </div>
+    </div>
+}
+
 @if (showDirectWalkinModal)
 {
     <div class="modal-backdrop" @onclick="CloseDirectWalkinModal"></div>
@@ -655,7 +758,7 @@
                     <label class="walkin-label-bold">Search Patient MobileNo</label>
                     <div class="autocomplete-search-wrapper">
                         <input type="text" class="walkin-input" placeholder="Search Patient MobileNo..."
-                               @bind="patientSearchQuery" @bind:event="oninput" @onkeyup="OnPatientSearchKeyUp" style="width: 100%;" />
+                               value="@patientSearchQuery" @oninput="OnPatientSearchInput" style="width: 100%;" />
                         @if (showPatientDropdown && searchedPatients.Count > 0)
                         {
                             <div class="autocomplete-dropdown">
@@ -692,13 +795,64 @@
                     <label class="walkin-label-bold">DOCTOR SPECIALIST SELECTION</label>
                     @if (walkinRegType == "DRESSING")
                     {
-                        <select class="walkin-input" @bind="directWalkinSelectedDcode" @bind:after="OnDirectWalkinDoctorChanged">
-                            <option value="0">-- Select Specialist Doctor --</option>
-                            @foreach (var doc in doctors)
+                        <div class="doctor-selector-wrapper">
+                            <button type="button" class="doctor-selector-button @(showDressingDoctorDropdown ? "active" : "")" @onclick="() => showDressingDoctorDropdown = !showDressingDoctorDropdown">
+                                <span>
+                                    @if (directWalkinSelectedDcode > 0)
+                                    {
+                                        @($"Dr. {(doctors.FirstOrDefault(d => d.dcode == directWalkinSelectedDcode)?.name ?? "Selected")}")
+                                    }
+                                    else
+                                    {
+                                        <span style="color: #94a3b8;">-- Select Specialist Doctor --</span>
+                                    }
+                                </span>
+                                <i class="bi bi-chevron-down dropdown-icon"></i>
+                            </button>
+                            @if (showDressingDoctorDropdown)
                             {
-                                <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name)</option>
+                                <div class="doctor-selector-dropdown">
+                                    @foreach (var doc in doctors)
+                                    {
+                                        var avail = doctorAvailableSlotsMap.ContainsKey(doc.dcode) ? doctorAvailableSlotsMap[doc.dcode] : -1;
+                                        var rawName = string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name;
+                                        var docName = rawName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) ? rawName : $"Dr. {rawName}";
+                                        var isSelected = directWalkinSelectedDcode == doc.dcode;
+                                        var hasSlots = labSetting.is_slot_required != false ? avail > 0 : true;
+
+                                        <div class="doctor-option-item @(isSelected ? "selected" : "")" 
+                                             @onclick="async () => { directWalkinSelectedDcode = doc.dcode; showDressingDoctorDropdown = false; await OnDirectWalkinDoctorChanged(); }">
+                                            <div class="doctor-availability-indicator @(hasSlots ? "available" : "unavailable")">
+                                                @if (hasSlots)
+                                                {
+                                                    <i class="bi bi-check-circle"></i>
+                                                }
+                                                else
+                                                {
+                                                    <i class="bi bi-x-circle"></i>
+                                                }
+                                            </div>
+                                            <div class="doctor-option-content">
+                                                <div class="doctor-option-name">@docName</div>
+                                                <div class="doctor-option-slots">
+                                                    @if (labSetting.is_slot_required != false)
+                                                    {
+                                                        @if (avail > 0)
+                                                        {
+                                                            <span>@avail Available Slots</span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <span style="color: #ef4444; font-weight: 600;">No Slots Available</span>
+                                                        }
+                                                    }
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
                             }
-                        </select>
+                        </div>
                     }
                     else
                     {
@@ -713,23 +867,125 @@
                         
                         @if (directWalkinSelectedDcode != -1)
                         {
-                            <select class="walkin-input" @bind="directWalkinSelectedDcode" @bind:after="OnDirectWalkinDoctorChanged">
-                                <option value="0">-- Select Specialist Doctor --</option>
-                                @foreach (var doc in doctors)
+                            <div class="doctor-selector-wrapper">
+                                <button type="button" class="doctor-selector-button @(showSpecialistDoctorDropdown ? "active" : "")" @onclick="() => showSpecialistDoctorDropdown = !showSpecialistDoctorDropdown">
+                                    <span>
+                                        @if (directWalkinSelectedDcode > 0)
+                                        {
+                                            @($"Dr. {(doctors.FirstOrDefault(d => d.dcode == directWalkinSelectedDcode)?.name ?? "Selected")}")
+                                        }
+                                        else
+                                        {
+                                            <span style="color: #94a3b8;">-- Select Specialist Doctor --</span>
+                                        }
+                                    </span>
+                                    <i class="bi bi-chevron-down dropdown-icon"></i>
+                                </button>
+                                @if (showSpecialistDoctorDropdown)
                                 {
-                                    <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name)</option>
+                                    <div class="doctor-selector-dropdown">
+                                        @foreach (var doc in doctors)
+                                        {
+                                            var avail = doctorAvailableSlotsMap.ContainsKey(doc.dcode) ? doctorAvailableSlotsMap[doc.dcode] : -1;
+                                            var rawName = string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name;
+                                            var docName = rawName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) ? rawName : $"Dr. {rawName}";
+                                            var isSelected = directWalkinSelectedDcode == doc.dcode;
+                                            var hasSlots = labSetting.is_slot_required != false ? avail > 0 : true;
+
+                                            <div class="doctor-option-item @(isSelected ? "selected" : "")" 
+                                                 @onclick="async () => { directWalkinSelectedDcode = doc.dcode; showSpecialistDoctorDropdown = false; await OnDirectWalkinDoctorChanged(); }">
+                                                <div class="doctor-availability-indicator @(hasSlots ? "available" : "unavailable")">
+                                                    @if (hasSlots)
+                                                    {
+                                                        <i class="bi bi-check-circle"></i>
+                                                    }
+                                                    else
+                                                    {
+                                                        <i class="bi bi-x-circle"></i>
+                                                    }
+                                                </div>
+                                                <div class="doctor-option-content">
+                                                    <div class="doctor-option-name">@docName</div>
+                                                    <div class="doctor-option-slots">
+                                                        @if (labSetting.is_slot_required != false)
+                                                        {
+                                                            @if (avail > 0)
+                                                            {
+                                                                <span>@avail Available Slots</span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <span style="color: #ef4444; font-weight: 600;">No Slots Available</span>
+                                                            }
+                                                        }
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
                                 }
-                            </select>
+                            </div>
                         }
                         else
                         {
-                            <select class="walkin-input" @bind="directWalkinDutyDcode" @bind:after="OnDirectWalkinDoctorChanged">
-                                <option value="0">-- Select Duty Doctor --</option>
-                                @foreach (var doc in doctors)
+                            <div class="doctor-selector-wrapper">
+                                <button type="button" class="doctor-selector-button @(showDutyDoctorDropdown ? "active" : "")" @onclick="() => showDutyDoctorDropdown = !showDutyDoctorDropdown">
+                                    <span>
+                                        @if (directWalkinDutyDcode > 0)
+                                        {
+                                            @($"Dr. {(doctors.FirstOrDefault(d => d.dcode == directWalkinDutyDcode)?.name ?? "Selected")}")
+                                        }
+                                        else
+                                        {
+                                            <span style="color: #94a3b8;">-- Select Duty Doctor --</span>
+                                        }
+                                    </span>
+                                    <i class="bi bi-chevron-down dropdown-icon"></i>
+                                </button>
+                                @if (showDutyDoctorDropdown)
                                 {
-                                    <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name)</option>
+                                    <div class="doctor-selector-dropdown">
+                                        @foreach (var doc in doctors)
+                                        {
+                                            var avail = doctorAvailableSlotsMap.ContainsKey(doc.dcode) ? doctorAvailableSlotsMap[doc.dcode] : -1;
+                                            var rawName = string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name;
+                                            var docName = rawName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) ? rawName : $"Dr. {rawName}";
+                                            var isSelected = directWalkinDutyDcode == doc.dcode;
+                                            var hasSlots = labSetting.is_slot_required != false ? avail > 0 : true;
+
+                                            <div class="doctor-option-item @(isSelected ? "selected" : "")" 
+                                                 @onclick="async () => { directWalkinDutyDcode = doc.dcode; showDutyDoctorDropdown = false; await OnDirectWalkinDoctorChanged(); }">
+                                                <div class="doctor-availability-indicator @(hasSlots ? "available" : "unavailable")">
+                                                    @if (hasSlots)
+                                                    {
+                                                        <i class="bi bi-check-circle"></i>
+                                                    }
+                                                    else
+                                                    {
+                                                        <i class="bi bi-x-circle"></i>
+                                                    }
+                                                </div>
+                                                <div class="doctor-option-content">
+                                                    <div class="doctor-option-name">@docName</div>
+                                                    <div class="doctor-option-slots">
+                                                        @if (labSetting.is_slot_required != false)
+                                                        {
+                                                            @if (avail > 0)
+                                                            {
+                                                                <span>@avail Available Slots</span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <span style="color: #ef4444; font-weight: 600;">No Slots Available</span>
+                                                            }
+                                                        }
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
                                 }
-                            </select>
+                            </div>
                         }
                     }
                 </div>
@@ -879,6 +1135,9 @@
 
     // Direct Walk-in Modal State
     private bool showDirectWalkinModal = false;
+    private bool showDressingDoctorDropdown = false;
+    private bool showSpecialistDoctorDropdown = false;
+    private bool showDutyDoctorDropdown = false;
     private string walkinRegType = "OP";
     private OPRegistrationModel.DirectWalkinRequest directWalkinRequest = new();
     private List<AvailableSlotModel> directWalkinSlots = new();
@@ -901,26 +1160,51 @@
     private int directWalkinDutyDcode = 0;
     private DateTime directWalkinDate = DateTime.UtcNow.ToIndianTime().Date;
     private LabSettingModel labSetting = new();
+    private bool showScreenshotModal = false;
+    private AppointmentBookingModel? screenshotBooking;
+
+    private void OpenScreenshotModal(AppointmentBookingModel booking)
+    {
+        screenshotBooking = booking;
+        showScreenshotModal = true;
+    }
+
+    private async Task CaptureScreenshotPrint()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("window.print");
+        }
+        catch { }
+    }
 
     private string patientSearchQuery = "";
     private bool showPatientDropdown = false;
     private List<SharedComponents.Rcl.Models.CustomerModel> searchedPatients = new();
+    private System.Threading.CancellationTokenSource? _patientSearchCts;
 
-    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    private async Task OnPatientSearchInput(ChangeEventArgs e)
     {
-        Console.WriteLine($"[OutPatientVisiting] OnPatientSearchKeyUp query: '{patientSearchQuery}'");
+        patientSearchQuery = e.Value?.ToString() ?? "";
+
+        _patientSearchCts?.Cancel();
+        _patientSearchCts = new System.Threading.CancellationTokenSource();
+        var token = _patientSearchCts.Token;
+
         if (string.IsNullOrWhiteSpace(patientSearchQuery))
         {
             searchedPatients.Clear();
             showPatientDropdown = false;
-            directWalkinRequest.custid = 0;
+            if (directWalkinRequest != null) directWalkinRequest.custid = 0;
+            StateHasChanged();
             return;
         }
 
         try
         {
+            await Task.Delay(250, token);
+
             using var client = ClientFactory.CreateClient("LabCareUrl");
-            Console.WriteLine($"[OutPatientVisiting] TenantCode: '{TenantState.TenantCode}', AuthToken length: {TenantState.AuthToken?.Length ?? 0}");
 
             if (!string.IsNullOrEmpty(TenantState.TenantCode))
             {
@@ -933,18 +1217,18 @@
             }
 
             var requestUrl = $"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}";
-            Console.WriteLine($"[OutPatientVisiting] Fetching URL: {requestUrl}");
+            var response = await client.GetAsync(requestUrl, token);
 
-            var response = await client.GetAsync(requestUrl);
-            var rawJson = await response.Content.ReadAsStringAsync();
-            Console.WriteLine($"[OutPatientVisiting] Response Code: {response.StatusCode}, Content: {rawJson}");
+            if (token.IsCancellationRequested) return;
 
             if (response.IsSuccessStatusCode)
             {
+                var rawJson = await response.Content.ReadAsStringAsync(token);
+                if (token.IsCancellationRequested) return;
+
                 var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson) ?? new();
                 searchedPatients = list.Take(10).ToList();
                 showPatientDropdown = searchedPatients.Count > 0;
-                Console.WriteLine($"[OutPatientVisiting] Found {searchedPatients.Count} patients");
             }
             else
             {
@@ -952,12 +1236,28 @@
                 showPatientDropdown = false;
             }
         }
+        catch (OperationCanceledException)
+        {
+            // Task cancelled due to newer input - ignore
+        }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"Error searching patients in OutPatientVisiting: {ex.Message}");
             searchedPatients.Clear();
             showPatientDropdown = false;
         }
+        finally
+        {
+            if (!token.IsCancellationRequested)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        // Retained for backward compatibility
     }
 
     private void SelectCustomerPatient(SharedComponents.Rcl.Models.CustomerModel pat)
@@ -988,6 +1288,34 @@
     private OPRegistrationModel.OpRegistrationModel? currentOp;
     private OPRegistrationModel.PatientVitalsModel vitalsRequest = new();
 
+    // Case Sheet modal state
+    private bool showCaseSheetModal = false;
+    private Guid selectedOpId = Guid.Empty;
+    private Guid? selectedIpId = null;
+    private string selectedOpNo = "";
+    private string selectedIpNo = "";
+    private decimal selectedCustId = 0;
+    private int selectedDcode = 0;
+    private string selectedPatientName = "";
+    private DateTime? selectedVisitDate = null;
+    private string selectedOpStatus = "WAITING";
+
+    private void OpenCaseSheetForOp(OPRegistrationModel.OpRegistrationModel opData)
+    {
+        if (opData == null) return;
+        selectedOpId = opData.op_id;
+        selectedIpId = null;
+        selectedOpNo = opData.op_no ?? "";
+        selectedIpNo = "";
+        selectedCustId = opData.custid;
+        selectedDcode = opData.dcode;
+        selectedPatientName = string.IsNullOrWhiteSpace(opData.patient_name) ? $"CUST-{opData.custid}" : opData.patient_name;
+        selectedVisitDate = opData.visit_date.ToDateTime(TimeOnly.MinValue);
+        selectedOpStatus = opData.visit_status ?? "WAITING";
+        showCaseSheetModal = true;
+        StateHasChanged();
+    }
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -1008,6 +1336,7 @@
         {
             var raw = await DoctorService.GetDoctorsAsync();
             doctors = raw.Where(d => !d.deleted).OrderBy(d => string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name).ToList();
+            _ = LoadDoctorSlotsStatusAsync();
         }
         catch (Exception ex)
         {
@@ -1344,6 +1673,42 @@
         return $"Doctor #{dcode}";
     }
 
+    private Dictionary<int, int> doctorAvailableSlotsMap = new();
+
+    private async Task LoadDoctorSlotsStatusAsync()
+    {
+        doctorAvailableSlotsMap.Clear();
+        if (doctors == null || !doctors.Any()) return;
+
+        var dateOnly = DateOnly.FromDateTime(directWalkinDate);
+        var tasks = doctors.Select(async doc =>
+        {
+            try
+            {
+                var slots = await BookingService.GetAvailableSlotsAsync(doc.dcode, dateOnly);
+                if (slots == null || !slots.Any()) return (dcode: doc.dcode, count: 0);
+
+                var totalAvail = slots.Sum(s => 
+                    s.remaining_walkin > 0 ? s.remaining_walkin : 
+                    (s.max_walkin > 0 ? Math.Max(0, s.max_walkin - s.walkin_count) : 
+                    Math.Max(0, s.remaining_seats > 0 ? s.remaining_seats : (s.max_patients - s.patient_count)))
+                );
+                return (dcode: doc.dcode, count: totalAvail);
+            }
+            catch
+            {
+                return (dcode: doc.dcode, count: 0);
+            }
+        });
+
+        var results = await Task.WhenAll(tasks);
+        foreach (var r in results)
+        {
+            doctorAvailableSlotsMap[r.dcode] = r.count;
+        }
+        StateHasChanged();
+    }
+
     private void OpenDirectWalkinModal()
     {
         directWalkinRequest = new OPRegistrationModel.DirectWalkinRequest
@@ -1364,6 +1729,8 @@
         patientSearchQuery = "";
         showPatientDropdown = false;
         searchedPatients.Clear();
+
+        _ = LoadDoctorSlotsStatusAsync();
     }
 
     private void SelectKnowsSpecialist()

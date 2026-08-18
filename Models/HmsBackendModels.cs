@@ -42,6 +42,12 @@ namespace Booking.Models
         public string? opvisitid { get; set; }
         public string? dateofbirth { get; set; }
         public int? dcode { get; set; }
+        public int? usercode { get; set; }
+        public int? user_code { get; set; }
+        public int? euser_code { get; set; }
+        public string? username { get; set; }
+        public string? user_name { get; set; }
+        public string? created_by { get; set; }
     }
 
     public class HmsBillResponse
@@ -87,6 +93,12 @@ namespace Booking.Models
         public string? receiptguid { get; set; }
         public string? receipt_no { get; set; }
         public string? receipt_barcode { get; set; }
+        public int? usercode { get; set; }
+        public int? user_code { get; set; }
+        public int? euser_code { get; set; }
+        public string? username { get; set; }
+        public string? user_name { get; set; }
+        public string? created_by { get; set; }
         public List<HmsBillLineResponse> items { get; set; } = new();
     }
 
