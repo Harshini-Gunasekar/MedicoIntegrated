@@ -100,4 +100,34 @@ namespace Booking.Models
         public double amount { get; set; }
         public double quantity { get; set; } = 1;
     }
+
+    public class UpdateUnbilledChargeRequest
+    {
+        public string unbilledid { get; set; } = string.Empty;
+        public double? rate { get; set; }
+        public double? quantity { get; set; }
+        public double? amount { get; set; }
+        public double? discount { get; set; }
+        public double? charityamount { get; set; }
+        public string? tenant_code { get; set; }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string? unbilled_id { get => unbilledid; set { if (!string.IsNullOrEmpty(value)) unbilledid = value; } }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public double? qty { get => quantity; set { if (value.HasValue) quantity = value; } }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public double? concession { get => discount; set { if (value.HasValue) discount = value; } }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public double? charity { get => charityamount; set { if (value.HasValue) charityamount = value; } }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public string? tenantcode { get => tenant_code; set { if (!string.IsNullOrEmpty(value)) tenant_code = value; } }
+
+        public void SynchronizeAliases()
+        {
+        }
+    }
 }

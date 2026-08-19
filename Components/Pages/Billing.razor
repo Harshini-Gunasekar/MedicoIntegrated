@@ -1540,6 +1540,66 @@
         if (allItems == null) allItems = new();
     }
 
+    private async Task<SharedComponents.Rcl.Models.CustomerModel?> FetchCustomerByIdAsync(decimal custId)
+    {
+        if (custId <= 0) return null;
+
+        var cached = allCustomersCache.FirstOrDefault(c => c.custid == custId);
+        if (cached != null && !string.IsNullOrWhiteSpace(cached.name))
+        {
+            return cached;
+        }
+
+        try
+        {
+            using var client = CreateClient(true);
+            var response = await client.GetAsync($"api/Customer/search?key={custId}");
+            if (response.IsSuccessStatusCode)
+            {
+                var rawJson = await response.Content.ReadAsStringAsync();
+                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson);
+                var match = list?.FirstOrDefault(c => c.custid == custId) ?? list?.FirstOrDefault();
+                if (match != null)
+                {
+                    if (!allCustomersCache.Any(c => c.custid == match.custid))
+                    {
+                        allCustomersCache.Add(match);
+                    }
+                    return match;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FetchCustomerByIdAsync] Error searching customer {custId}: {ex.Message}");
+        }
+
+        try
+        {
+            using var client = CreateClient(true);
+            var response = await client.GetAsync($"api/Customer/get?custid={custId}");
+            if (response.IsSuccessStatusCode)
+            {
+                var rawJson = await response.Content.ReadAsStringAsync();
+                var cust = Newtonsoft.Json.JsonConvert.DeserializeObject<SharedComponents.Rcl.Models.CustomerModel>(rawJson);
+                if (cust != null && !string.IsNullOrWhiteSpace(cust.name))
+                {
+                    if (!allCustomersCache.Any(c => c.custid == cust.custid))
+                    {
+                        allCustomersCache.Add(cust);
+                    }
+                    return cust;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FetchCustomerByIdAsync] Error getting customer {custId}: {ex.Message}");
+        }
+
+        return null;
+    }
+
     private async Task LoadExistingBillOrRegistrationAsync(Guid opId)
     {
         try
@@ -1562,13 +1622,24 @@
                     }
                 }
 
+                string patName = billResp.patient_name;
+                if (string.IsNullOrWhiteSpace(patName) || patName.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
+                {
+                    var custMatch = await FetchCustomerByIdAsync(billResp.custid ?? 0);
+                    if (custMatch != null)
+                    {
+                        var resolved = string.IsNullOrEmpty(custMatch.namewithinitials) ? custMatch.name : custMatch.namewithinitials;
+                        if (!string.IsNullOrWhiteSpace(resolved)) patName = resolved;
+                    }
+                }
+
                 billModel = new HmsBillModel
                 {
                     requestguid = billResp.requestguid,
                     op_id = billResp.op_id, 
                     ip_id = billResp.ip_id,
                     custid = billResp.custid ?? 0,
-                    patient_name = billResp.patient_name,
+                    patient_name = patName,
                     mobileno = billResp.mobileno,
                     gender = billResp.gender,
                     dateofbirth = billResp.dateofbirth,
@@ -1654,6 +1725,12 @@
                     dobSelected = parsedDob;
                 }
 
+                patientSearchQuery = string.IsNullOrWhiteSpace(billModel.patient_name) 
+                    ? $"CUST-{billModel.custid}" 
+                    : $"{billModel.patient_name} (CUST-{billModel.custid})";
+                selectedPatientBadgeVisible = true;
+                showPatientDropdown = false;
+
                 for(int i = 0; i < billModel.items.Count; i++) billModel.items[i].sno = i + 1;
 
                 RecalculateTotals();
@@ -1667,6 +1744,16 @@
             if (existingBill != null)
             {
                 billModel = existingBill;
+                if (string.IsNullOrWhiteSpace(billModel.patient_name) || billModel.patient_name.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
+                {
+                    var custMatch = await FetchCustomerByIdAsync(billModel.custid);
+                    if (custMatch != null)
+                    {
+                        var resolved = string.IsNullOrEmpty(custMatch.namewithinitials) ? custMatch.name : custMatch.namewithinitials;
+                        if (!string.IsNullOrWhiteSpace(resolved)) billModel.patient_name = resolved;
+                    }
+                }
+
                 var regMatch = allRegistrations.FirstOrDefault(r => r.op_id == opId);
                 selectedOpNo = regMatch?.op_no ?? billModel.op_id;
 
@@ -1707,6 +1794,12 @@
                     dobSelected = parsedDob;
                 }
 
+                patientSearchQuery = string.IsNullOrWhiteSpace(billModel.patient_name) 
+                    ? $"CUST-{billModel.custid}" 
+                    : $"{billModel.patient_name} (CUST-{billModel.custid})";
+                selectedPatientBadgeVisible = true;
+                showPatientDropdown = false;
+
                 totalBaseAmount = 0;
                 foreach (var item in billModel.items)
                 {
@@ -1731,41 +1824,75 @@
 
             // 2. If no bill exists yet, pull the patient OP registration details to prefill the invoice
             var reg = allRegistrations.FirstOrDefault(r => r.op_id == opId);
+            if (reg == null)
+            {
+                var allRegs = await AppointmentBookingService.GetAllOpRegistrationsAsync();
+                if (allRegs != null)
+                {
+                    allRegistrations = allRegs;
+                    reg = allRegistrations.FirstOrDefault(r => r.op_id == opId);
+                }
+            }
+
             if (reg != null)
             {
-                var bk = bookingsCache.FirstOrDefault(b => b.custid == reg.custid);
-                string patientName = bk?.patient_name ?? string.Empty;
-                string mobile = bk?.notes ?? reg.op_no;
+                string patientName = !string.IsNullOrWhiteSpace(reg.patient_name) ? reg.patient_name : "";
+                string mobile = !string.IsNullOrWhiteSpace(reg.mobile) ? reg.mobile : reg.notes ?? reg.op_no;
 
-                if (string.IsNullOrEmpty(patientName))
+                if (string.IsNullOrEmpty(patientName) || patientName.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
+                {
+                    var bk = bookingsCache.FirstOrDefault(b => b.custid == reg.custid);
+                    if (bk != null && !string.IsNullOrWhiteSpace(bk.patient_name) && !bk.patient_name.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
+                    {
+                        patientName = bk.patient_name;
+                        if (!string.IsNullOrWhiteSpace(bk.notes)) mobile = bk.notes;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(patientName) || patientName.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
                 {
                     // Query doctor bookings on the day of registration to get the patient name
                     var bookingsOnDay = await AppointmentBookingService.GetDoctorBookingsAsync(reg.dcode, reg.visit_date);
                     var match = bookingsOnDay?.FirstOrDefault(b => b.custid == reg.custid);
-                    if (match != null)
+                    if (match != null && !string.IsNullOrWhiteSpace(match.patient_name) && !match.patient_name.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
                     {
-                        patientName = match.patient_name ?? "";
-                        mobile = match.notes ?? reg.op_no;
+                        patientName = match.patient_name;
+                        if (!string.IsNullOrWhiteSpace(match.notes)) mobile = match.notes;
                     }
                 }
 
-                if (string.IsNullOrEmpty(patientName) || patientName.StartsWith("Patient ID"))
+                // Query customer API directly by custid to guarantee real name, age, dob, gender, mobile
+                var custMatch = await FetchCustomerByIdAsync(reg.custid);
+                if (custMatch != null)
                 {
-                    var cust = allCustomersCache.FirstOrDefault(c => c.custid == reg.custid);
-                    if (cust != null && !string.IsNullOrWhiteSpace(cust.name))
+                    var resolvedName = string.IsNullOrEmpty(custMatch.namewithinitials) ? custMatch.name : custMatch.namewithinitials;
+                    if (!string.IsNullOrWhiteSpace(resolvedName))
                     {
-                        patientName = string.IsNullOrEmpty(cust.namewithinitials) ? cust.name : cust.namewithinitials;
+                        patientName = resolvedName;
                     }
-                    else if (!string.IsNullOrEmpty(billModel.patient_name) && !billModel.patient_name.StartsWith("Patient ID"))
+                    if (!string.IsNullOrWhiteSpace(custMatch.mobile))
                     {
-                        patientName = billModel.patient_name;
+                        mobile = custMatch.mobile;
                     }
-                    else
+                    if (!string.IsNullOrWhiteSpace(custMatch.gender))
                     {
-                        patientName = $"Patient ID {reg.custid}";
+                        billModel.gender = custMatch.gender;
+                    }
+                    billModel.ageyears = custMatch.ageyears.ToString();
+                    billModel.agemonths = custMatch.agemonths.ToString();
+                    billModel.agedays = custMatch.agedays.ToString();
+                    if (custMatch.dateofbirth.HasValue)
+                    {
+                        billModel.dateofbirth = custMatch.dateofbirth.Value.ToString("yyyy-MM-dd");
+                        dobSelected = DateOnly.FromDateTime(custMatch.dateofbirth.Value);
                     }
                 }
-                
+
+                if (string.IsNullOrEmpty(patientName))
+                {
+                    patientName = $"Patient ID {reg.custid}";
+                }
+
                 if (string.IsNullOrEmpty(mobile) || mobile == reg.op_no)
                 {
                     if (!string.IsNullOrEmpty(billModel.mobileno) && billModel.mobileno != "-")
@@ -1780,6 +1907,10 @@
                 billModel.op_id = reg.op_id.ToString();
                 billModel.dcode = reg.dcode;
                 billModel.consultantdcode = reg.dcode;
+
+                patientSearchQuery = $"{patientName} (CUST-{reg.custid})";
+                selectedPatientBadgeVisible = true;
+                showPatientDropdown = false;
                 
                 // Note: Auto-loading tests from the doctor's case sheet directly into the grid is disabled.
                 // Users should now explicitly add them from the "Unbilled Charges / Pending Copay" panel above.

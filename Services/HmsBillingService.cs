@@ -5,15 +5,45 @@ using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Booking.Models;
 
+using SharedComponents.Rcl.Services;
+
 namespace Booking.Services
 {
     public class HmsBillingService
     {
         private readonly HttpClient _http;
+        private readonly IHttpClientFactory? _clientFactory;
+        private readonly TenantSessionState? _session;
 
-        public HmsBillingService(HttpClient http)
+        public HmsBillingService(HttpClient http, IHttpClientFactory? clientFactory = null, TenantSessionState? session = null)
         {
             _http = http;
+            _clientFactory = clientFactory;
+            _session = session;
+        }
+
+        private HttpClient GetClient(string? tenantCode = null)
+        {
+            var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+            if (_clientFactory != null)
+            {
+                var client = _clientFactory.CreateClient("DoctorApi");
+                client.DefaultRequestHeaders.Remove("tenantcode");
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Remove("tenant-code");
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                {
+                    client.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                    client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                    client.DefaultRequestHeaders.Add("tenant-code", effectiveTenant);
+                }
+                if (!string.IsNullOrEmpty(_session?.AuthToken))
+                {
+                    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                }
+                return client;
+            }
+            return _http;
         }
 
         public async Task<string> SaveBillAsync(HmsBillModel bill)
@@ -391,6 +421,63 @@ namespace Booking.Services
             {
                 Console.WriteLine($"Error fetching IP room rent summary: {ex.Message}");
                 return new List<UnbilledChargeSummary>();
+            }
+        }
+
+        public async Task<bool> UpdateUnbilledChargeAsync(UpdateUnbilledChargeRequest request)
+        {
+            try
+            {
+                if (request == null || string.IsNullOrWhiteSpace(request.unbilledid))
+                {
+                    Console.WriteLine("[UpdateUnbilledCharge] Error: unbilledid is missing or request is null.");
+                    return false;
+                }
+
+                var options = new System.Text.Json.JsonSerializerOptions 
+                { 
+                    DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+                    WriteIndented = true
+                };
+
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, options);
+
+                Console.WriteLine("=================================================");
+                Console.WriteLine($"[UpdateUnbilledCharge] Calling POST api/UnbilledCharges/update");
+                Console.WriteLine($"[UpdateUnbilledCharge] Payload:\n{jsonPayload}");
+                Console.WriteLine("=================================================");
+
+                var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+                var response = await _http.PostAsync("api/UnbilledCharges/update", content);
+                var responseBody = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine($"[UpdateUnbilledCharge] Response Status: {(int)response.StatusCode} ({response.StatusCode})");
+                Console.WriteLine($"[UpdateUnbilledCharge] Response Body: {responseBody}");
+                Console.WriteLine("=================================================");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return true;
+                }
+
+                // Fallback to PUT if POST is not allowed
+                if (response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed || 
+                    response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    var putContent = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+                    var putResponse = await _http.PutAsync("api/UnbilledCharges/update", putContent);
+                    var putResponseBody = await putResponse.Content.ReadAsStringAsync();
+                    Console.WriteLine($"[UpdateUnbilledCharge] PUT Response Status: {(int)putResponse.StatusCode} ({putResponse.StatusCode})");
+                    Console.WriteLine($"[UpdateUnbilledCharge] PUT Response Body: {putResponseBody}");
+                    if (putResponse.IsSuccessStatusCode) return true;
+                }
+
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[UpdateUnbilledCharge] Error updating unbilled charge: {ex.Message}");
+                return false;
             }
         }
 

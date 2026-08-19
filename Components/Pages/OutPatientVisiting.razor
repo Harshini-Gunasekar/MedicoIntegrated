@@ -12,8 +12,8 @@
 @inject IHttpClientFactory ClientFactory
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject LabSettingService LabSettingService
-@inject CaseSheetService CaseSheetService
 @inject IJSRuntime JSRuntime
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @using Microsoft.JSInterop
 
 <PageTitle>Outpatient Visiting</PageTitle>
@@ -40,7 +40,7 @@
 </div>
 
 <div class="dashboard-container">
-    <DnaLoader IsLoading="@loading" Message="Loading Outpatients..." />
+    <DnaLoader IsLoading="@(loading || isPrintingBill || isDownloadingBillPdf)" Message="@(isPrintingBill ? "Generating Consolidated Bill..." : (isDownloadingBillPdf ? "Downloading Consolidated Bill..." : "Loading Outpatients..."))" />
     <!-- Header -->
     <div class="dashboard-header">
         <div class="dashboard-title">
@@ -351,24 +351,44 @@
                                               }
                                           }
                                       </td>
-                                     <td>
-                                          <div class="btn-group-actions" style="justify-content: center; display: flex; gap: 4px;">
-                                              @if (isRegistered && opData != null)
-                                              {
-                                                  <button class="btn-action case-sheet" style="background: #e0f2fe; color: #0284c7; border: 1px solid #bae6fd; padding: 0.25rem 0.5rem; border-radius: 6px; cursor: pointer;" @onclick="() => OpenCaseSheetForOp(opData)" title="Clinical Case Sheet">
-                                                      <i class="bi bi-file-earmark-medical-fill"></i>
-                                                  </button>
-                                                  <button class="btn-action vitals" @onclick="() => OpenVitalsModal(opData)" title="Patient Vitals">
-                                                      <i class="bi bi-heart-pulse-fill"></i>
-                                                  </button>
-                                                  <button class="btn-action cancel-op" style="background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; padding: 0.25rem 0.5rem; border-radius: 6px; cursor: pointer;" @onclick="() => OpenCancelOpModal(opData)" title="Cancel OP Registration">
-                                                      <i class="bi bi-x-circle-fill"></i>
-                                                  </button>
-                                              }
-                                              <button class="btn-action screenshot" style="background: #ede9fe; color: #6d28d9; border: 1px solid #ddd6fe; padding: 0.25rem 0.5rem; border-radius: 6px; cursor: pointer;" @onclick="() => OpenScreenshotModal(booking)" title="Screenshot Pop-up">
-                                                  <i class="bi bi-camera-fill"></i>
-                                              </button>
-                                          </div>
+                                     <td style="text-align: center; position: relative;">
+                                         <div class="actions-dropdown-container">
+                                             @if (isRegistered && opData != null)
+                                             {
+                                                 <button type="button" 
+                                                         class="btn-action-dots @(activeDropdownBookingId == booking.booking_id ? "active" : "")" 
+                                                         @onclick="() => ToggleDropdown(booking.booking_id)" 
+                                                         @onclick:stopPropagation 
+                                                         title="Actions">
+                                                     <i class="bi bi-three-dots-vertical"></i>
+                                                 </button>
+
+                                                 @if (activeDropdownBookingId == booking.booking_id)
+                                                 {
+                                                     <div class="actions-dropdown-menu" @onclick:stopPropagation>
+                                                         <button type="button" class="action-icon-btn preview-bill" title="Preview Consolidated Bill" @onclick="() => { PreviewConsolidatedBill(opData); ToggleDropdown(booking.booking_id); }">
+                                                             <i class="bi bi-printer-fill"></i>
+                                                         </button>
+                                                         <button type="button" class="action-icon-btn download-bill" title="Download Consolidated Bill PDF" @onclick="() => { DownloadConsolidatedBillPdf(opData); ToggleDropdown(booking.booking_id); }">
+                                                             <i class="bi bi-file-earmark-pdf-fill"></i>
+                                                         </button>
+                                                         <button type="button" class="action-icon-btn vitals" title="Patient Vitals" @onclick="() => { OpenVitalsModal(opData); ToggleDropdown(booking.booking_id); }">
+                                                             <i class="bi bi-heart-pulse-fill"></i>
+                                                         </button>
+                                                         <button type="button" class="action-icon-btn billing" title="Billing" @onclick="() => { NavigateToBilling(opData); ToggleDropdown(booking.booking_id); }">
+                                                             <i class="bi bi-receipt-cutoff"></i>
+                                                         </button>
+                                                         <button type="button" class="action-icon-btn cancel" title="Cancel OP" @onclick="() => { OpenCancelOpModal(opData); ToggleDropdown(booking.booking_id); }">
+                                                             <i class="bi bi-trash-fill"></i>
+                                                         </button>
+                                                     </div>
+                                                 }
+                                             }
+                                             else
+                                             {
+                                                 <span class="text-muted">-</span>
+                                             }
+                                         </div>
                                      </td>
                                 </tr>
                             }
@@ -403,62 +423,142 @@
                     }
                 }
             }
+            @if (activeDropdownBookingId != null)
+            {
+                <div class="dropdown-backdrop" @onclick="CloseDropdown"></div>
+            }
         </div>
     }
 </div>
 
-<!-- Clinical Case Sheet Modal -->
-<CaseSheetComponent @bind-Visible="showCaseSheetModal"
-                    OpId="selectedOpId"
-                    IpId="selectedIpId"
-                    OpNo="@selectedOpNo"
-                    IpNo="@selectedIpNo"
-                    CustId="selectedCustId"
-                    Dcode="selectedDcode"
-                    PatientName="@selectedPatientName"
-                    VisitDate="selectedVisitDate"
-                    OpStatus="@selectedOpStatus"
-                    OnSaved="LoadDataAsync" />
-
 @if (showCancelOpModal && cancelOpData != null)
 {
     <div class="modal-backdrop" @onclick="CloseCancelOpModal"></div>
-    <div class="glass-modal" style="max-width: 540px;">
-        <div class="modal-header" style="background: linear-gradient(135deg, #ef4444, #dc2626); color: white;">
-            <h3><i class="bi bi-x-circle-fill me-2"></i>Cancel Outpatient Registration</h3>
-            <button class="close-btn" style="color: white;" @onclick="CloseCancelOpModal">×</button>
-        </div>
-        <div class="modal-body" style="padding: 1.5rem;">
-            <div class="alert alert-warning d-flex align-items-center gap-2 mb-3" style="font-size: 0.88rem; border-radius: 8px; background: #fffbebf5; border: 1px solid #fde68a; color: #92400e;">
-                <i class="bi bi-exclamation-triangle-fill fs-5" style="color: #d97706;"></i>
-                <div>
-                    Are you sure you want to cancel the OP visit for <strong>@(string.IsNullOrWhiteSpace(cancelOpData.patient_name) ? $"CUST-{cancelOpData.custid}" : cancelOpData.patient_name)</strong> (OP No: <strong>@cancelOpData.op_no</strong>)?
+    <div class="cancel-modal-wrapper">
+        <div class="cancel-card">
+            <!-- Modal Header -->
+            <div class="cancel-card-header">
+                <div class="cancel-header-left">
+                    <div class="cancel-icon-bubble">
+                        <i class="bi bi-exclamation-octagon-fill"></i>
+                    </div>
+                    <div class="cancel-header-titles">
+                        <h3>Cancel Outpatient Visit</h3>
+                        <p>Confirm cancellation of patient OP registration</p>
+                    </div>
                 </div>
+                <button type="button" class="cancel-close-btn" @onclick="CloseCancelOpModal" title="Close">
+                    <i class="bi bi-x-lg"></i>
+                </button>
             </div>
 
-            <div class="form-group mb-3">
-                <label class="fw-bold mb-1" style="font-size: 0.85rem; color: #374151;">Cancellation Reason <span class="text-danger">*</span></label>
-                <textarea class="filter-control" style="width: 100%; border-radius: 6px; border: 1px solid #d1d5db; padding: 0.5rem;" @bind="cancelReason" rows="3" placeholder="Enter reason for cancellation..."></textarea>
-            </div>
+            <!-- Modal Body -->
+            <div class="cancel-card-body">
+                <!-- Patient & Visit Summary Box -->
+                <div class="cancel-patient-summary">
+                    <div class="patient-summary-main">
+                        <div class="patient-avatar-badge">
+                            <i class="bi bi-person-fill"></i>
+                        </div>
+                        <div class="patient-name-block">
+                            <span class="patient-name-text">@(string.IsNullOrWhiteSpace(cancelOpData.patient_name) ? $"CUST-{cancelOpData.custid}" : cancelOpData.patient_name)</span>
+                            <span class="patient-sub-info">Patient ID: #@cancelOpData.custid</span>
+                        </div>
+                        @if (cancelOpData.token_no > 0)
+                        {
+                            <div class="token-pill-badge" title="Token Number">
+                                <span class="token-pill-label">TOKEN</span>
+                                <span class="token-pill-val">#@cancelOpData.token_no</span>
+                            </div>
+                        }
+                    </div>
 
-            <div class="form-group">
-                <details class="payload-details">
-                    <summary class="text-muted small fw-bold" style="cursor:pointer; outline:none; user-select:none;">
-                        <i class="bi bi-code-slash"></i> View API Payload Preview (/api/OpRegistration/cancel)
-                    </summary>
-                    <pre class="bg-dark text-light p-2 rounded mt-2 small" style="max-height: 180px; overflow-y: auto; font-family: monospace; font-size: 0.8rem; text-align: left; background: #1e293b !important;">@System.Text.Json.JsonSerializer.Serialize(new {
+                    <div class="patient-summary-grid">
+                        <div class="summary-chip">
+                            <span class="summary-chip-label">OP NUMBER</span>
+                            <span class="summary-chip-value op-no">@(string.IsNullOrWhiteSpace(cancelOpData.op_no) ? "-" : cancelOpData.op_no)</span>
+                        </div>
+                        <div class="summary-chip">
+                            <span class="summary-chip-label">DOCTOR</span>
+                            <span class="summary-chip-value">@(string.IsNullOrWhiteSpace(cancelOpData.doctor_name) ? $"Dr. {GetDoctorName(cancelOpData.dcode)}" : cancelOpData.doctor_name)</span>
+                        </div>
+                        <div class="summary-chip">
+                            <span class="summary-chip-label">VISIT DATE</span>
+                            <span class="summary-chip-value">@cancelOpData.visit_date.ToString("dd-MMM-yyyy")</span>
+                        </div>
+                    </div>
+
+                    <div class="cancel-warning-banner">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        <span>This visit will be marked as cancelled and removed from the active consultation queue.</span>
+                    </div>
+                </div>
+
+                <!-- Cancellation Reason Input -->
+                <div class="cancel-reason-section">
+                    <div class="reason-section-header">
+                        <label class="reason-label">
+                            Reason for Cancellation <span class="required-star">*</span>
+                        </label>
+                        <span class="reason-hint">Select a quick reason or type below</span>
+                    </div>
+
+                    <!-- Quick Reason Chips -->
+                    <div class="quick-reasons-row">
+                        <button type="button" class="quick-reason-chip @(cancelReason == "Patient requested cancellation" ? "selected" : "")" @onclick='() => SetCancelReason("Patient requested cancellation")'>
+                            Patient Request
+                        </button>
+                        <button type="button" class="quick-reason-chip @(cancelReason == "Doctor unavailable" ? "selected" : "")" @onclick='() => SetCancelReason("Doctor unavailable")'>
+                            Doctor Unavailable
+                        </button>
+                        <button type="button" class="quick-reason-chip @(cancelReason == "Patient did not show up" ? "selected" : "")" @onclick='() => SetCancelReason("Patient did not show up")'>
+                            No-Show
+                        </button>
+                        <button type="button" class="quick-reason-chip @(cancelReason == "Duplicate registration" ? "selected" : "")" @onclick='() => SetCancelReason("Duplicate registration")'>
+                            Duplicate Entry
+                        </button>
+                        <button type="button" class="quick-reason-chip @(cancelReason == "Rescheduled to another date" ? "selected" : "")" @onclick='() => SetCancelReason("Rescheduled to another date")'>
+                            Rescheduled
+                        </button>
+                    </div>
+
+                    <div class="reason-textarea-container">
+                        <textarea class="cancel-reason-textarea" @bind="cancelReason" rows="3" placeholder="Provide detailed cancellation reason..."></textarea>
+                    </div>
+                </div>
+
+                <!-- API Payload Details (collapsible) -->
+                <div class="cancel-payload-wrapper">
+                    <details class="payload-details">
+                        <summary class="payload-summary">
+                            <i class="bi bi-code-slash"></i> View API Request Details
+                        </summary>
+                        <pre class="payload-code-block">@System.Text.Json.JsonSerializer.Serialize(new {
     op_id = cancelOpData.op_id,
     cancel_reason = cancelReason
 }, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull })</pre>
-                </details>
+                    </details>
+                </div>
             </div>
-        </div>
-        <div class="modal-footer" style="padding: 1rem 1.5rem; background: #f8fafc; border-top: 1px solid #e2e8f0; display: flex; justify-content: flex-end; gap: 8px;">
-            <button class="btn-walkin-secondary" style="padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer;" @onclick="CloseCancelOpModal">Close</button>
-            <button class="btn-walkin-primary" style="background: #dc2626; color: white; border: none; padding: 0.5rem 1.25rem; border-radius: 6px; cursor: pointer; font-weight: 600;" @onclick="SubmitCancelOpAsync" disabled="@saving">
-                @if (saving) { <span class="spinner-border spinner-border-sm me-2"></span> }
-                Confirm Cancellation
-            </button>
+
+            <!-- Modal Footer -->
+            <div class="cancel-card-footer">
+                <button type="button" class="btn-cancel-modal keep-btn" @onclick="CloseCancelOpModal">
+                    <i class="bi bi-arrow-left"></i> Keep Visit
+                </button>
+                <button type="button" class="btn-cancel-modal confirm-btn" @onclick="SubmitCancelOpAsync" disabled="@saving">
+                    @if (saving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                        <span>Cancelling...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-x-circle-fill"></i>
+                        <span>Confirm Cancellation</span>
+                    }
+                </button>
+            </div>
         </div>
     </div>
 }
@@ -519,38 +619,122 @@
 @if (showUnpaidModal)
 {
     <div class="modal-backdrop" @onclick="CloseUnpaidModal"></div>
-    <div class="glass-modal">
+    <div class="glass-modal" style="max-width: 800px; width: 95%;">
         <div class="modal-header">
-             <h3>Unpaid Bill Details</h3>
+             <div class="d-flex align-items-center gap-2">
+                 <i class="bi bi-receipt-cutoff text-primary" style="font-size: 1.2rem;"></i>
+                 <h3 style="margin: 0;">Unpaid / Unbilled Charges Details</h3>
+             </div>
              <button class="close-btn" @onclick="CloseUnpaidModal">×</button>
         </div>
         <div class="modal-body" style="max-height: 60vh; overflow-y: auto;">
-             <div class="mb-3">
-                 Patient Name: <strong class="text-dark">@unpaidPatientName</strong>
+             <div class="d-flex justify-content-between align-items-center mb-3">
+                 <div>Patient Name: <strong class="text-dark">@unpaidPatientName</strong></div>
+                 <span class="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle px-2 py-1" style="font-size:0.75rem; font-weight:700;">
+                     @unpaidChargesList.Count Pending Charges
+                 </span>
              </div>
              <div class="table-responsive">
                  <table class="medico-table">
                      <thead>
                          <tr>
                              <th>Entry Type</th>
+                             <th>Charge Name</th>
                              <th>Date</th>
-                             <th class="text-end">Quantity</th>
-                             <th class="text-end">Rate</th>
-                             <th class="text-end">Amount</th>
+                             <th class="text-end">Qty</th>
+                             <th class="text-end">Rate (₹)</th>
+                             <th class="text-end">Disc (₹)</th>
+                             <th class="text-end">Amount (₹)</th>
+                             <th class="text-center" style="width: 90px;">Action</th>
                          </tr>
                      </thead>
                      <tbody>
                          @foreach (var uc in unpaidChargesList)
                          {
-                             <tr>
-                                 <td class="font-bold">@uc.entrytype</td>
-                                 <td>@uc.chargedate?.ToIndianTime().ToString("dd-MM-yyyy hh:mm tt")</td>
-                                 <td class="text-end">@uc.quantity</td>
-                                 <td class="text-end">@(uc.rate?.ToString("0.00") ?? "-")</td>
-                                 <td class="text-end" style="font-weight: 700; color: #b91c1c;">@(uc.amount?.ToString("0.00") ?? "-")</td>
+                             var isEditing = editingUnpaidId == uc.unbilledid;
+                             <tr class="@(isEditing ? "bg-primary-subtle" : "")">
+                                 <td class="font-bold">
+                                     <span class="badge bg-primary-subtle text-primary border border-primary-subtle" style="font-size:0.72rem; font-weight:700;">
+                                         @(uc.entrytype ?? "CHARGE")
+                                     </span>
+                                 </td>
+                                 <td>
+                                     <strong style="color: #0f172a;">@(string.IsNullOrWhiteSpace(uc.item_name) ? (uc.entrytype ?? "Charge") : uc.item_name)</strong>
+                                     @if (!string.IsNullOrEmpty(uc.unbilledid))
+                                     {
+                                         <span style="display: block; font-size: 0.65rem; color: #94a3b8; font-family: monospace;">Ref: @(uc.unbilledid.Length > 8 ? uc.unbilledid.Substring(0, 8) + "..." : uc.unbilledid)</span>
+                                     }
+                                 </td>
+                                 <td style="font-size:0.75rem; color: #64748b;">@uc.chargedate?.ToIndianTime().ToString("dd-MM-yyyy hh:mm tt")</td>
+                                 
+                                 @if (isEditing)
+                                 {
+                                     <td class="text-end">
+                                         <input type="number" min="1" step="1" class="form-control form-control-sm text-end" style="width: 65px; display: inline-block; height: 28px; padding: 0.15rem 0.35rem;"
+                                                @bind="editUnpaidRequest.quantity" @bind:after="RecalculateEditUnpaidAmount" />
+                                     </td>
+                                     <td class="text-end">
+                                         <input type="number" min="0" step="0.01" class="form-control form-control-sm text-end font-monospace" style="width: 80px; display: inline-block; height: 28px; padding: 0.15rem 0.35rem;"
+                                                @bind="editUnpaidRequest.rate" @bind:after="RecalculateEditUnpaidAmount" />
+                                     </td>
+                                     <td class="text-end">
+                                         <input type="number" min="0" step="0.01" class="form-control form-control-sm text-end font-monospace" style="width: 75px; display: inline-block; height: 28px; padding: 0.15rem 0.35rem;"
+                                                @bind="editUnpaidRequest.discount" @bind:after="RecalculateEditUnpaidAmount" />
+                                     </td>
+                                     <td class="text-end font-monospace" style="font-weight: 700; color: #0284c7;">
+                                         ₹ @((editUnpaidRequest.amount ?? 0).ToString("N2"))
+                                     </td>
+                                     <td class="text-center">
+                                         <div class="d-flex justify-content-center gap-1">
+                                             <button class="btn btn-sm btn-success px-2 py-0" style="font-size: 0.72rem; height: 26px;"
+                                                     disabled="@savingUnpaidUpdate" @onclick="SaveUnpaidChargeUpdateAsync" title="Save">
+                                                 @if (savingUnpaidUpdate)
+                                                 {
+                                                     <span class="spinner-border spinner-border-sm" role="status"></span>
+                                                 }
+                                                 else
+                                                 {
+                                                     <i class="bi bi-check-lg"></i>
+                                                 }
+                                             </button>
+                                             <button class="btn btn-sm btn-outline-secondary px-2 py-0" style="font-size: 0.72rem; height: 26px;"
+                                                     disabled="@savingUnpaidUpdate" @onclick="CancelEditUnpaid" title="Cancel">
+                                                 <i class="bi bi-x-lg"></i>
+                                             </button>
+                                         </div>
+                                     </td>
+                                 }
+                                 else
+                                 {
+                                     <td class="text-end font-monospace">@uc.quantity</td>
+                                     <td class="text-end font-monospace">₹ @(uc.rate?.ToString("N2") ?? "-")</td>
+                                     <td class="text-end font-monospace text-muted">₹ @(uc.discount?.ToString("N2") ?? "0.00")</td>
+                                     <td class="text-end font-monospace" style="font-weight: 700; color: #b91c1c;">₹ @(uc.amount?.ToString("N2") ?? "-")</td>
+                                     <td class="text-center">
+                                         @if (uc.billedstatus != true && !string.IsNullOrEmpty(uc.unbilledid))
+                                         {
+                                             <button type="button" class="btn btn-sm btn-outline-primary px-2 py-0" style="font-size:0.72rem; font-weight:600; height: 26px;" @onclick="() => StartEditUnpaid(uc)">
+                                                 <i class="bi bi-pencil-square me-1"></i>Edit
+                                             </button>
+                                         }
+                                         else
+                                         {
+                                             <span class="text-muted small">-</span>
+                                         }
+                                     </td>
+                                 }
                              </tr>
                          }
                      </tbody>
+                     <tfoot>
+                         <tr style="font-weight: 700; background: #f8fafc; border-top: 2px solid #cbd5e1;">
+                             <td colspan="6" class="text-end text-uppercase" style="font-size: 0.75rem; color: #475569;">Total Unpaid Amount:</td>
+                             <td class="text-end font-monospace" style="color: #b91c1c; font-size: 0.95rem;">
+                                 ₹ @unpaidChargesList.Sum(c => c.amount ?? 0).ToString("N2")
+                             </td>
+                             <td></td>
+                         </tr>
+                     </tfoot>
                  </table>
              </div>
         </div>
@@ -731,65 +915,7 @@
     </div>
 }
 
-@if (showScreenshotModal && screenshotBooking != null)
-{
-    <div class="modal-backdrop" @onclick="() => showScreenshotModal = false"></div>
-    <div class="glass-modal" style="max-width: 600px; padding: 0; border-radius: 16px; overflow: hidden; background: white;">
-        <div class="modal-header" style="background: linear-gradient(135deg, #4f46e5, #3730a3); color: white; padding: 1.25rem 1.5rem; display: flex; justify-content: space-between; align-items: center;">
-            <div style="display: flex; align-items: center; gap: 0.75rem;">
-                <i class="bi bi-camera-fill" style="font-size: 1.5rem;"></i>
-                <div>
-                    <h3 style="margin: 0; color: white; font-size: 1.15rem; font-weight: 700;">Patient Card Preview</h3>
-                    <span style="font-size: 0.8rem; opacity: 0.85;">OP Registration Screenshot Summary</span>
-                </div>
-            </div>
-            <button class="close-btn" style="color: white; font-size: 1.5rem; background: transparent; border: none; cursor: pointer;" @onclick="() => showScreenshotModal = false">×</button>
-        </div>
-        <div class="modal-body" style="padding: 1.5rem; background: #f8fafc;">
-            <div style="background: white; border: 1px solid #e2e8f0; border-radius: 12px; padding: 1.25rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-                <div style="display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 2px solid #4f46e5; padding-bottom: 0.75rem; margin-bottom: 1rem;">
-                    <div>
-                        <h4 style="margin: 0; font-size: 1.2rem; font-weight: 800; color: #0f172a;">@screenshotBooking.patient_name</h4>
-                        <div style="font-size: 0.85rem; color: #64748b; margin-top: 0.25rem;">
-                            📞 Mobile: <strong>@(string.IsNullOrEmpty(screenshotBooking.mobile) ? "-" : screenshotBooking.mobile)</strong>
-                        </div>
-                    </div>
-                    <div style="text-align: right;">
-                        <span style="background: #e0e7ff; color: #3730a3; padding: 0.35rem 0.75rem; border-radius: 20px; font-size: 0.75rem; font-weight: 800; text-transform: uppercase;">
-                            @screenshotBooking.booking_status
-                        </span>
-                        <div style="font-size: 0.75rem; color: #64748b; margin-top: 0.35rem;">Date: @screenshotBooking.appointment_date.ToString("dd-MM-yyyy")</div>
-                    </div>
-                </div>
 
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; font-size: 0.85rem;">
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">DOCTOR NAME</span>
-                        <strong style="color: #1e293b;">@GetDoctorName(screenshotBooking.dcode)</strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">TOKEN NO / OP ID</span>
-                        <strong style="color: #4f46e5; font-size: 1rem;">#@screenshotBooking.token_no</strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">VISIT TYPE</span>
-                        <strong>@screenshotBooking.booking_type</strong>
-                    </div>
-                    <div>
-                        <span style="color: #64748b; display: block; font-size: 0.75rem; font-weight: 600;">CONSULTATION FEE</span>
-                        <strong style="color: #16a34a;">₹ @(opRegistrations.TryGetValue(screenshotBooking.booking_id, out var reg) ? (reg.notes ?? "Paid") : "Standard")</strong>
-                    </div>
-                </div>
-            </div>
-        </div>
-        <div class="modal-footer" style="padding: 1rem 1.5rem; background: white; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between;">
-            <button class="btn-modal cancel" @onclick="() => showScreenshotModal = false">Close</button>
-            <button class="btn-modal confirm" style="background: #4f46e5; color: white;" @onclick="CaptureScreenshotPrint">
-                <i class="bi bi-printer-fill" style="margin-right: 0.5rem;"></i> Print / Capture Screenshot
-            </button>
-        </div>
-    </div>
-}
 
 @if (showDirectWalkinModal)
 {
@@ -1153,6 +1279,34 @@
     private string filterSlot = "ALL";
     private string filterSearch = string.Empty;
 
+    // Actions dropdown state
+    private Guid? activeDropdownBookingId = null;
+
+    private void ToggleDropdown(Guid bookingId)
+    {
+        if (activeDropdownBookingId == bookingId)
+        {
+            activeDropdownBookingId = null;
+        }
+        else
+        {
+            activeDropdownBookingId = bookingId;
+        }
+    }
+
+    private void CloseDropdown()
+    {
+        activeDropdownBookingId = null;
+    }
+
+    private void NavigateToBilling(OPRegistrationModel.OpRegistrationModel opData)
+    {
+        if (opData != null && opData.op_id != Guid.Empty)
+        {
+            NavigationManager.NavigateTo($"/billing/{opData.op_id}");
+        }
+    }
+
     private List<(string Value, string Text)> GetDistinctSlots()
     {
         var query = allBookings.AsEnumerable();
@@ -1208,23 +1362,7 @@
     private int directWalkinDutyDcode = 0;
     private DateTime directWalkinDate = DateTime.UtcNow.ToIndianTime().Date;
     private LabSettingModel labSetting = new();
-    private bool showScreenshotModal = false;
-    private AppointmentBookingModel? screenshotBooking;
 
-    private void OpenScreenshotModal(AppointmentBookingModel booking)
-    {
-        screenshotBooking = booking;
-        showScreenshotModal = true;
-    }
-
-    private async Task CaptureScreenshotPrint()
-    {
-        try
-        {
-            await JSRuntime.InvokeVoidAsync("window.print");
-        }
-        catch { }
-    }
 
     private string patientSearchQuery = "";
     private bool showPatientDropdown = false;
@@ -1336,33 +1474,7 @@
     private OPRegistrationModel.OpRegistrationModel? currentOp;
     private OPRegistrationModel.PatientVitalsModel vitalsRequest = new();
 
-    // Case Sheet modal state
-    private bool showCaseSheetModal = false;
-    private Guid selectedOpId = Guid.Empty;
-    private Guid? selectedIpId = null;
-    private string selectedOpNo = "";
-    private string selectedIpNo = "";
-    private decimal selectedCustId = 0;
-    private int selectedDcode = 0;
-    private string selectedPatientName = "";
-    private DateTime? selectedVisitDate = null;
-    private string selectedOpStatus = "WAITING";
 
-    private void OpenCaseSheetForOp(OPRegistrationModel.OpRegistrationModel opData)
-    {
-        if (opData == null) return;
-        selectedOpId = opData.op_id;
-        selectedIpId = null;
-        selectedOpNo = opData.op_no ?? "";
-        selectedIpNo = "";
-        selectedCustId = opData.custid;
-        selectedDcode = opData.dcode;
-        selectedPatientName = string.IsNullOrWhiteSpace(opData.patient_name) ? $"CUST-{opData.custid}" : opData.patient_name;
-        selectedVisitDate = opData.visit_date.ToDateTime(TimeOnly.MinValue);
-        selectedOpStatus = opData.visit_status ?? "WAITING";
-        showCaseSheetModal = true;
-        StateHasChanged();
-    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -1948,23 +2060,129 @@
         }
     }
 
+    private string editingUnpaidId = "";
+    private UpdateUnbilledChargeRequest editUnpaidRequest = new();
+    private bool savingUnpaidUpdate = false;
+
     private void ShowUnpaidDetails(List<UnbilledChargeSummary> unpaid, string patientName)
     {
         unpaidChargesList = unpaid;
         unpaidPatientName = patientName;
+        editingUnpaidId = "";
+        editUnpaidRequest = new();
         showUnpaidModal = true;
     }
 
     private void CloseUnpaidModal()
     {
         showUnpaidModal = false;
+        editingUnpaidId = "";
+        editUnpaidRequest = new();
         unpaidChargesList.Clear();
+    }
+
+    private void StartEditUnpaid(UnbilledChargeSummary uc)
+    {
+        editingUnpaidId = uc.unbilledid ?? "";
+        editUnpaidRequest = new UpdateUnbilledChargeRequest
+        {
+            unbilledid = uc.unbilledid ?? "",
+            quantity = uc.quantity ?? 1,
+            rate = uc.rate ?? 0,
+            amount = uc.amount ?? 0,
+            discount = uc.discount ?? 0,
+            charityamount = uc.charityamount ?? 0
+        };
+        RecalculateEditUnpaidAmount();
+    }
+
+    private void CancelEditUnpaid()
+    {
+        editingUnpaidId = "";
+        editUnpaidRequest = new();
+    }
+
+    private void RecalculateEditUnpaidAmount()
+    {
+        var qty = editUnpaidRequest.quantity ?? 1;
+        var rate = editUnpaidRequest.rate ?? 0;
+        var discount = editUnpaidRequest.discount ?? 0;
+        var charity = editUnpaidRequest.charityamount ?? 0;
+        editUnpaidRequest.amount = Math.Max(0, (qty * rate) - discount - charity);
+    }
+
+    private async Task SaveUnpaidChargeUpdateAsync()
+    {
+        if (string.IsNullOrWhiteSpace(editUnpaidRequest.unbilledid)) return;
+
+        savingUnpaidUpdate = true;
+        StateHasChanged();
+
+        RecalculateEditUnpaidAmount();
+
+        var payloadJson = System.Text.Json.JsonSerializer.Serialize(editUnpaidRequest, new System.Text.Json.JsonSerializerOptions 
+        { 
+            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            WriteIndented = true 
+        });
+
+        Console.WriteLine("=================================================");
+        Console.WriteLine("[Doctor Patient List / Outpatient Visiting] Updating Record Payload:");
+        Console.WriteLine(payloadJson);
+        Console.WriteLine("=================================================");
+
+        var success = await HmsBillingService.UpdateUnbilledChargeAsync(editUnpaidRequest);
+        savingUnpaidUpdate = false;
+
+        if (success)
+        {
+            ToastService.ShowSuccess("Charge updated successfully.");
+            
+            // Update in-memory item
+            var existing = unpaidChargesList.FirstOrDefault(u => u.unbilledid == editUnpaidRequest.unbilledid);
+            if (existing != null)
+            {
+                existing.quantity = editUnpaidRequest.quantity;
+                existing.rate = editUnpaidRequest.rate;
+                existing.discount = editUnpaidRequest.discount;
+                existing.charityamount = editUnpaidRequest.charityamount;
+                existing.amount = editUnpaidRequest.amount;
+            }
+
+            // Also update visitUnbilledCharges dictionary so the UI reflects immediately
+            foreach (var kvp in visitUnbilledCharges)
+            {
+                var match = kvp.Value.FirstOrDefault(u => u.unbilledid == editUnpaidRequest.unbilledid);
+                if (match != null)
+                {
+                    match.quantity = editUnpaidRequest.quantity;
+                    match.rate = editUnpaidRequest.rate;
+                    match.discount = editUnpaidRequest.discount;
+                    match.charityamount = editUnpaidRequest.charityamount;
+                    match.amount = editUnpaidRequest.amount;
+                }
+            }
+
+            editingUnpaidId = "";
+            editUnpaidRequest = new();
+            await LoadDataAsync();
+        }
+        else
+        {
+            ToastService.ShowError("Failed to update charge.");
+        }
+        StateHasChanged();
     }
 
     // --- Cancel OP Registration ---
     private bool showCancelOpModal = false;
     private OPRegistrationModel.OpRegistrationModel? cancelOpData;
     private string cancelReason = "Patient requested cancellation";
+
+    private void SetCancelReason(string reason)
+    {
+        cancelReason = reason;
+    }
 
     private void OpenCancelOpModal(OPRegistrationModel.OpRegistrationModel opData)
     {
@@ -2025,6 +2243,196 @@
         finally
         {
             saving = false;
+        }
+    }
+
+    // --- Consolidated Bill Preview & Reporting ---
+    private bool isPrintingBill = false;
+
+    private async Task<string> FetchConsolidatedBillBase64(Guid opId)
+    {
+        string tenant = !string.IsNullOrWhiteSpace(TenantState?.TenantCode) ? TenantState.TenantCode : "0010";
+        string token = !string.IsNullOrWhiteSpace(TenantState?.AuthToken) ? TenantState.AuthToken : "";
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            try
+            {
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                if (!tokenResult.Success || string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    tokenResult = await _sessionStorage.GetAsync<string>("auth_token");
+                }
+                if (tokenResult.Success && !string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    token = tokenResult.Value;
+                }
+            }
+            catch { }
+        }
+
+        if (string.IsNullOrWhiteSpace(tenant) || tenant == "0010")
+        {
+            try
+            {
+                var tenantResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (!tenantResult.Success || string.IsNullOrEmpty(tenantResult.Value))
+                {
+                    tenantResult = await _sessionStorage.GetAsync<string>("tenantcode");
+                }
+                if (tenantResult.Success && !string.IsNullOrEmpty(tenantResult.Value))
+                {
+                    tenant = tenantResult.Value;
+                }
+            }
+            catch { }
+        }
+
+        string opIdStr = opId.ToString();
+        var candidateUrls = new List<string>
+        {
+            $"https://medicoapi.iscansoft.com/api/report/getconsolidatedbill?op_id={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"https://medicoapi.iscansoft.com/api/report/getconsolidatedbill?op_id={opIdStr}",
+            $"https://medicoapi.iscansoft.com/api/report/getconsolidatedbill?requestguid={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"api/report/getconsolidatedbill?op_id={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"api/report/getconsolidatedbill?op_id={opIdStr}",
+            $"api/Report/getconsolidatedbill?op_id={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"api/Report/GetConsolidatedBill?op_id={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}"
+        };
+
+        var client = ClientFactory.CreateClient("LabCareUrl");
+        string lastError = "";
+
+        foreach (var url in candidateUrls)
+        {
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                if (!string.IsNullOrEmpty(token))
+                {
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                }
+                req.Headers.Add("tenantcode", tenant);
+                req.Headers.Add("tenant_code", tenant);
+                req.Headers.Add("tenant-code", tenant);
+
+                var response = await client.SendAsync(req);
+
+                if (response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NoContent)
+                {
+                    var contentStr = await response.Content.ReadAsStringAsync();
+                    contentStr = contentStr.Trim('"').Trim();
+
+                    string base64Data = contentStr;
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(contentStr);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            if (root.TryGetProperty("data", out var dProp)) base64Data = dProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("base64", out var bProp)) base64Data = bProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("file", out var fProp)) base64Data = fProp.GetString() ?? contentStr;
+                        }
+                        else if (root.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            base64Data = root.GetString() ?? contentStr;
+                        }
+                    }
+                    catch { }
+
+                    if (!string.IsNullOrWhiteSpace(base64Data) && base64Data.Length >= 50)
+                    {
+                        return base64Data;
+                    }
+                }
+                else
+                {
+                    var errContent = await response.Content.ReadAsStringAsync();
+                    lastError = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}): {errContent}";
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        throw new Exception(string.IsNullOrEmpty(lastError) ? "Backend report endpoint returned empty data." : lastError);
+    }
+
+    private async Task PreviewConsolidatedBill(OPRegistrationModel.OpRegistrationModel opData)
+    {
+        if (opData == null || opData.op_id == Guid.Empty)
+        {
+            ToastService.ShowWarning("Invalid Outpatient visit record.");
+            return;
+        }
+
+        try
+        {
+            isPrintingBill = true;
+            StateHasChanged();
+
+            string base64Data = await FetchConsolidatedBillBase64(opData.op_id);
+
+            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            {
+                string billTitle = string.IsNullOrWhiteSpace(opData.op_no) ? "Consolidated Bill" : $"Consolidated Bill - {opData.op_no}";
+                await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64Data, billTitle);
+            }
+            else
+            {
+                ToastService.ShowError("Unable to load PDF preview: Invalid report data returned.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading consolidated bill: {ex.Message}");
+        }
+        finally
+        {
+            isPrintingBill = false;
+            StateHasChanged();
+        }
+    }
+
+    private bool isDownloadingBillPdf = false;
+
+    private async Task DownloadConsolidatedBillPdf(OPRegistrationModel.OpRegistrationModel opData)
+    {
+        if (opData == null || opData.op_id == Guid.Empty)
+        {
+            ToastService.ShowWarning("Invalid Outpatient visit record.");
+            return;
+        }
+
+        try
+        {
+            isDownloadingBillPdf = true;
+            StateHasChanged();
+
+            string base64Data = await FetchConsolidatedBillBase64(opData.op_id);
+
+            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            {
+                string filename = string.IsNullOrWhiteSpace(opData.op_no) ? $"Consolidated_Bill_{opData.custid}.pdf" : $"Consolidated_Bill_{opData.op_no}.pdf";
+                await JSRuntime.InvokeVoidAsync("downloadPdfFile", base64Data, filename);
+                ToastService.ShowSuccess("Consolidated bill PDF downloaded successfully.");
+            }
+            else
+            {
+                ToastService.ShowError("Unable to download PDF: Invalid report data returned.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error downloading consolidated bill: {ex.Message}");
+        }
+        finally
+        {
+            isDownloadingBillPdf = false;
+            StateHasChanged();
         }
     }
 }

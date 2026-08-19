@@ -6,15 +6,45 @@ using System.Threading.Tasks;
 using Booking.Models;
 using medico_backend.Model;
 
+using SharedComponents.Rcl.Services;
+
 namespace Booking.Services
 {
     public class CaseSheetService
     {
         private readonly HttpClient _http;
+        private readonly IHttpClientFactory? _clientFactory;
+        private readonly TenantSessionState? _session;
 
-        public CaseSheetService(HttpClient http)
+        public CaseSheetService(HttpClient http, IHttpClientFactory? clientFactory = null, TenantSessionState? session = null)
         {
             _http = http;
+            _clientFactory = clientFactory;
+            _session = session;
+        }
+
+        private HttpClient GetClient(string? tenantCode = null)
+        {
+            var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+            if (_clientFactory != null)
+            {
+                var client = _clientFactory.CreateClient("DoctorApi");
+                client.DefaultRequestHeaders.Remove("tenantcode");
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Remove("tenant-code");
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                {
+                    client.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                    client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                    client.DefaultRequestHeaders.Add("tenant-code", effectiveTenant);
+                }
+                if (!string.IsNullOrEmpty(_session?.AuthToken))
+                {
+                    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                }
+                return client;
+            }
+            return _http;
         }
 
         public async Task<string> SaveCaseSheetAsync(SaveCaseSheetRequest request)
@@ -230,40 +260,169 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<item_master>> GetAllItemsAsync()
+        public async Task<List<item_master>> GetAllItemsAsync(string? tenantCode = null)
         {
             try
             {
-                var request = new HttpRequestMessage(HttpMethod.Get, "api/ItemMaster/getallitems");
-                request.Headers.Add("tenantcode", "TEN1011");
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                var client = GetClient(effectiveTenant);
                 
-                var response = await _http.SendAsync(request);
-                response.EnsureSuccessStatusCode();
-                
-                var rawJson = await response.Content.ReadAsStringAsync();
-                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                
-                if (rawJson.TrimStart().StartsWith("{"))
+                string[] endpoints = new[] { "api/ItemMaster/getallitems", "ItemMaster/getallitems", "api/ItemMaster/getallitem", "Item/getallitems" };
+                string? rawJson = null;
+
+                foreach (var ep in endpoints)
                 {
-                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
-                    foreach (var prop in doc.RootElement.EnumerateObject())
+                    try
                     {
-                        if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        var response = await client.GetAsync(ep);
+                        if (response.IsSuccessStatusCode)
                         {
-                            return System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(prop.Value.GetRawText(), options) ?? new List<item_master>();
+                            var text = await response.Content.ReadAsStringAsync();
+                            if (!string.IsNullOrWhiteSpace(text) && text.TrimStart().StartsWith("[") || text.TrimStart().StartsWith("{"))
+                            {
+                                rawJson = text;
+                                break;
+                            }
                         }
                     }
-                    Console.WriteLine("No array found in JSON object wrapper.");
+                    catch { }
+                }
+
+                if (string.IsNullOrWhiteSpace(rawJson))
+                {
                     return new List<item_master>();
                 }
                 
-                var items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(rawJson, options);
-                return items ?? new List<item_master>();
+                var options = new System.Text.Json.JsonSerializerOptions 
+                { 
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                };
+                
+                List<item_master> items = new();
+                if (rawJson.TrimStart().StartsWith("{"))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(dataProp.GetRawText(), options) ?? new();
+                    }
+                    else
+                    {
+                        foreach (var prop in root.EnumerateObject())
+                        {
+                            if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                            {
+                                items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(prop.Value.GetRawText(), options) ?? new();
+                                break;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(rawJson, options) ?? new();
+                }
+
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    var tenantFiltered = items.Where(x => !x.deleted && (string.IsNullOrWhiteSpace(x.tenantcode) || x.tenantcode.Equals(effectiveTenant, StringComparison.OrdinalIgnoreCase))).ToList();
+                    if (tenantFiltered.Count > 0)
+                    {
+                        return tenantFiltered;
+                    }
+                }
+
+                return items.Where(x => !x.deleted).ToList();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error getting all items: {ex.Message}");
                 return new List<item_master>();
+            }
+        }
+
+        public async Task<List<stock_master>> GetAllStocksAsync(string? tenantCode = null)
+        {
+            try
+            {
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                var client = GetClient(effectiveTenant);
+                
+                string[] endpoints = new[] { "api/ItemMaster/getallstocks", "ItemMaster/getallstocks", "Stock/getallstocks" };
+                string? rawJson = null;
+
+                foreach (var ep in endpoints)
+                {
+                    try
+                    {
+                        var response = await client.GetAsync(ep);
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var text = await response.Content.ReadAsStringAsync();
+                            if (!string.IsNullOrWhiteSpace(text) && text.TrimStart().StartsWith("[") || text.TrimStart().StartsWith("{"))
+                            {
+                                rawJson = text;
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrWhiteSpace(rawJson))
+                {
+                    return new List<stock_master>();
+                }
+                
+                var options = new System.Text.Json.JsonSerializerOptions 
+                { 
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                };
+                
+                List<stock_master> stocks = new();
+                if (rawJson.TrimStart().StartsWith("{"))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                    var root = doc.RootElement;
+                    if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        stocks = System.Text.Json.JsonSerializer.Deserialize<List<stock_master>>(dataProp.GetRawText(), options) ?? new();
+                    }
+                    else
+                    {
+                        foreach (var prop in root.EnumerateObject())
+                        {
+                            if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                            {
+                                stocks = System.Text.Json.JsonSerializer.Deserialize<List<stock_master>>(prop.Value.GetRawText(), options) ?? new();
+                                break;
+                            }
+                        }
+                    }
+                }
+                else
+                {
+                    stocks = System.Text.Json.JsonSerializer.Deserialize<List<stock_master>>(rawJson, options) ?? new();
+                }
+
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    var tenantFiltered = stocks.Where(x => !x.deleted && (string.IsNullOrWhiteSpace(x.tenantcode) || x.tenantcode.Equals(effectiveTenant, StringComparison.OrdinalIgnoreCase))).ToList();
+                    if (tenantFiltered.Count > 0)
+                    {
+                        return tenantFiltered;
+                    }
+                }
+
+                return stocks.Where(x => !x.deleted).ToList();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting all stocks: {ex.Message}");
+                return new List<stock_master>();
             }
         }
 
