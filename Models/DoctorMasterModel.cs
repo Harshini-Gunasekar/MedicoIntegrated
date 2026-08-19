@@ -127,7 +127,8 @@ namespace Booking.Models
         public double? offhoursconsultationfee { get; set; }
         public long? group_id { get; set; }
         public int? room_no { get; set; }
-           [NotMapped] public string? DoctorImageBase64 { get; set; }
+        public string? token_prefix { get; set; }
+        [NotMapped] public string? DoctorImageBase64 { get; set; }
 
         public string GetFormattedName()
         {

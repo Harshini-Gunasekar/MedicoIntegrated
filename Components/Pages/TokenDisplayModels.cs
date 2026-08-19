@@ -243,6 +243,9 @@ namespace Medico.Components.Pages
         [JsonConverter(typeof(FlexibleStringConverter))]
         public string? room_no { get; set; }
 
+        [JsonConverter(typeof(FlexibleStringConverter))]
+        public string? token_prefix { get; set; }
+
         [JsonConverter(typeof(FlexibleIntConverter))]
         public int? group_id { get; set; }
 

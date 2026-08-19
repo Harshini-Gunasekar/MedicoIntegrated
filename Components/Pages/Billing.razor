@@ -22,6 +22,7 @@
 @inject Booking.Services.PaymodeMasterService PaymodeService
 @inject Booking.Services.IpRegistrationService IpRegistrationService
 @inject IJSRuntime JS
+@inject Booking.Services.LabSettingService LabSettingService
 
 
 <div class="billing-wrapper">
@@ -698,7 +699,7 @@
             }
             else
             {
-                <button type="button" class="btn-billing-footer clear" @onclick="ClearForm">
+                <button type="button" class="btn-billing-footer clear" @onclick="ClearFormAsync">
                     <i class="bi bi-arrow-counterclockwise"></i> Clear
                 </button>
                 
@@ -1262,6 +1263,66 @@
         }
     }
 
+    private async Task<int> GetDefaultCounterCodeAsync()
+    {
+        var available = GetFilteredCounters().ToList();
+        if (!available.Any()) return 1;
+
+        // 1. Try saved counter code from Session Storage
+        try
+        {
+            var cntCodeResult = await _sessionStorage.GetAsync<string>("cntcode");
+            if (cntCodeResult.Success && !string.IsNullOrEmpty(cntCodeResult.Value) && int.TryParse(cntCodeResult.Value, out int savedCnt) && savedCnt > 0)
+            {
+                if (available.Any(c => c.cntcode == savedCnt))
+                {
+                    return savedCnt;
+                }
+            }
+        }
+        catch { }
+
+        // 2. Try TenantState.CounterCode
+        if (TenantState.CounterCode.HasValue && TenantState.CounterCode.Value > 0)
+        {
+            int tenantCnt = TenantState.CounterCode.Value;
+            if (available.Any(c => c.cntcode == tenantCnt))
+            {
+                return tenantCnt;
+            }
+        }
+
+        // 3. Try UserDetails from Session Storage
+        try
+        {
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value?.CounterCode != null && userDetailsResult.Value.CounterCode > 0)
+            {
+                int userCnt = userDetailsResult.Value.CounterCode.Value;
+                if (available.Any(c => c.cntcode == userCnt))
+                {
+                    return userCnt;
+                }
+            }
+        }
+        catch { }
+
+        // 4. Try active open shift counter for this branch
+        try
+        {
+            var openCounters = await HmsBillingService.GetOpenCountersAsync();
+            var openCnt = available.FirstOrDefault(c => openCounters.Any(s => s.cntcode == (int)c.cntcode && (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode)));
+            if (openCnt != null)
+            {
+                return (int)openCnt.cntcode;
+            }
+        }
+        catch { }
+
+        // 5. Fall back to first available counter for this branch
+        return (int)available.First().cntcode;
+    }
+
     private async Task LoadCountersAsync()
     {
         try
@@ -1286,13 +1347,15 @@
                 };
             }
 
-            if (billModel.cntcode <= 0 && countersList.Any())
+            int defaultCnt = await GetDefaultCounterCodeAsync();
+            if (defaultCnt > 0)
             {
-                var available = GetFilteredCounters();
-                if (available.Any())
+                billModel.cntcode = defaultCnt;
+                try
                 {
-                    billModel.cntcode = (int)available.First().cntcode;
+                    await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
                 }
+                catch { }
             }
         }
         catch (Exception ex)
@@ -1326,7 +1389,13 @@
         var availableCounters = GetFilteredCounters();
         if (availableCounters.Any())
         {
-            billModel.cntcode = (int)availableCounters.First().cntcode;
+            int defaultCnt = await GetDefaultCounterCodeAsync();
+            billModel.cntcode = defaultCnt;
+            try
+            {
+                await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
+            }
+            catch { }
             await CheckCounterShiftOpenAsync(showPrompt: true);
         }
         else
@@ -1337,6 +1406,15 @@
 
     private async Task OnCounterSelectionChanged()
     {
+        if (billModel.cntcode > 0)
+        {
+            try
+            {
+                await _sessionStorage.SetAsync("cntcode", billModel.cntcode.ToString());
+            }
+            catch { }
+        }
+
         if (billModel.cntcode > 0 && billModel.enteredbhcode > 0)
         {
             await CheckCounterShiftOpenAsync(showPrompt: true);
@@ -1647,7 +1725,7 @@
                     dcode = resolvedDcode,
                     consultantdcode = resolvedDcode,
                     enteredbhcode = billResp.enteredbhcode ?? 1,
-                    cntcode = billResp.cntcode ?? 2,
+                    cntcode = billResp.cntcode ?? (billModel.cntcode > 0 ? billModel.cntcode : 1),
                     paidamount = (decimal)(billResp.paid_amount ?? 0),
                     discountper = (decimal)(billResp.general_concession_per ?? 0),
                     discountamount = (decimal)(billResp.general_concession_amount ?? 0),
@@ -2139,7 +2217,11 @@
         try
         {
             using var client = CreateClient(true);
-            var response = await client.GetAsync("api/Customer/get");
+            Booking.Models.LabSettingModel? setting = null;
+            try { setting = await LabSettingService.GetLabSettingAsync(); } catch { }
+
+            string endpoint = (setting?.show_all_customers ?? true) ? "api/Customer/get" : "api/customer/getcus";
+            var response = await client.GetAsync(endpoint);
             if (response.IsSuccessStatusCode)
             {
                 allCustomersCache = await response.Content.ReadFromJsonAsync<List<CustomerModel>>() ?? new();
@@ -2208,6 +2290,13 @@
                     Console.Error.WriteLine($"Error parsing search results JSON: {ex.Message}");
                 }
                 
+                var currentSetting = await LabSettingService.GetLabSettingAsync();
+                bool showAll = currentSetting?.show_all_customers ?? true;
+                if (!showAll)
+                {
+                    list = list.Where(p => string.IsNullOrEmpty(p.tenant_code) || string.Equals(p.tenant_code, TenantCode, StringComparison.OrdinalIgnoreCase)).ToList();
+                }
+
                 var lowerQuery = patientSearchQuery.ToLower();
                 var filtered = list.Where(p => 
                     (p.name != null && p.name.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)) ||
@@ -2873,10 +2962,17 @@
 
         int resolvedUserCode = activeUserCode > 0 ? activeUserCode : (TenantState.UserCode > 0 ? TenantState.UserCode : 1);
 
+        int initialCounterCode = 1;
+        var availableCounters = GetFilteredCounters().ToList();
+        if (availableCounters.Any())
+        {
+            initialCounterCode = (int)availableCounters.First().cntcode;
+        }
+
         billModel = new HmsBillModel
         {
             enteredbhcode = initialBranchCode,
-            cntcode = 2,
+            cntcode = initialCounterCode,
             usercode = resolvedUserCode,
             computercode = 1,
             ftcode = 1,
@@ -2928,6 +3024,22 @@
         showPaymode3 = false;
         
         RecalculateTotals();
+    }
+
+    private async Task ClearFormAsync()
+    {
+        ClearForm();
+        int defaultCnt = await GetDefaultCounterCodeAsync();
+        if (defaultCnt > 0)
+        {
+            billModel.cntcode = defaultCnt;
+            try
+            {
+                await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
+            }
+            catch { }
+        }
+        StateHasChanged();
     }
 
     private void ClearPaymode1()
@@ -3010,11 +3122,11 @@
         }
     }
 
-    private void CloseSavedBillView()
+    private async Task CloseSavedBillView()
     {
         savedRequestGuid = null;
         printWithLetterhead = true;
-        ClearForm();
+        await ClearFormAsync();
         StateHasChanged();
     }
 }

@@ -1,0 +1,672 @@
+@page "/bill-items"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using System.Net.Http.Json
+@using Newtonsoft.Json
+@using LIMS_Backend.Model
+@using LabCare.Models
+@using SharedComponents.Rcl.Models
+@using Microsoft.JSInterop
+@using Medico_Backend.Model
+
+@inject IHttpClientFactory ClientFactory
+@inject IJSRuntime JS
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage SessionStorage
+@inject Booking.Services.ToastService Toast
+@inject LabCare.Services.TestService TestSvc
+@inject Booking.Services.SampleMasterService BookingSampleSvc
+@inject Booking.Services.GroupMasterService BookingGroupSvc
+@inject Booking.Services.TestTypeMasterService BookingTestTypeSvc
+@inject NavigationManager NavigationManager
+@implements IDisposable
+
+<div class="tm-bill-container">
+    <div class="tm-bill-header flex-between">
+        <h1 class="tm-bill-title">BILL ITEMS CONFIGURATION</h1>
+        <button type="button" class="tm-btn-outline font-bold flex-center gap-4" @onclick="ResetForm">
+            <i class="material-symbols-outlined" style="font-size: 16px;">add_circle</i>
+            <span>NEW / CLEAR</span>
+        </button>
+    </div>
+
+    <div class="tm-bill-content">
+        <!-- TOP ROW: FORMS (SIDE BY SIDE) -->
+        <div class="tm-forms-row">
+            <!-- CARD 1: TEST DETAILS -->
+            <div class="tm-compact-card flex-1">
+                <div class="tm-card-header">
+                    <div class="tm-card-icon">
+                        <i class="material-symbols-outlined">medical_services</i>
+                    </div>
+                    <span class="tm-card-title-text">TEST DETAILS</span>
+                </div>
+
+                <div class="tm-form-row">
+                    <div class="tm-form-col" style="flex: 2;">
+                        <label class="tm-elite-label">TEST NAME <span class="text-danger">*</span></label>
+                        <InputText class="tm-elite-input" @bind-Value="testData.TestMaster.name" placeholder="Enter test name..." />
+                    </div>
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">AMOUNT <span class="text-danger">*</span></label>
+                        <InputNumber class="tm-elite-input" @bind-Value="testData.TestMaster.amount" placeholder="0" />
+                    </div>
+                </div>
+
+                <div class="tm-form-row mt-4">
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">SAMPLE TYPE</label>
+                        <InputSelect @bind-Value="testData.TestMaster.scode" class="tm-elite-input">
+                            <option value="0">Select Specimen</option>
+                            @foreach (var s in specimens)
+                            {
+                                <option value="@s.scode">@s.name</option>
+                            }
+                        </InputSelect>
+                    </div>
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">GROUP</label>
+                        <InputSelect @bind-Value="testData.TestMaster.gcode" class="tm-elite-input">
+                            <option value="0">Select Group</option>
+                            @foreach (var g in groups)
+                            {
+                                <option value="@g.gcode">@g.name</option>
+                            }
+                        </InputSelect>
+                    </div>
+                </div>
+
+                <div class="tm-form-row mt-4">
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">ORDER NO</label>
+                        <InputNumber class="tm-elite-input" @bind-Value="testData.TestMaster.orderno" />
+                    </div>
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">SHORT NAME</label>
+                        <InputText class="tm-elite-input" @bind-Value="testData.TestMaster.shortname" placeholder="Short name..." />
+                    </div>
+                </div>
+            </div>
+
+            <!-- CARD 2: ADDITIONAL -->
+            <div class="tm-compact-card flex-1">
+                <div class="tm-card-header">
+                    <div class="tm-card-icon">
+                        <i class="material-symbols-outlined">clinical_notes</i>
+                    </div>
+                    <span class="tm-card-title-text">ADDITIONAL DETAILS</span>
+                </div>
+
+                <div class="tm-form-row">
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">ICD CODE</label>
+                        <InputText class="tm-elite-input" @bind-Value="testData.TestMaster.icd_code" placeholder="ICD code..." />
+                    </div>
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">TEST TYPE</label>
+                        <InputSelect @bind-Value="testData.TestMaster.ttid" class="tm-elite-input">
+                            <option value="0">Select Type</option>
+                            @foreach (var tt in testTypes)
+                            {
+                                <option value="@tt.ttid">@tt.name</option>
+                            }
+                        </InputSelect>
+                    </div>
+                </div>
+
+                <div class="tm-form-row mt-4">
+                    <div class="tm-form-col flex-1">
+                        <label class="tm-elite-label">REPORTING TIME</label>
+                        <div style="display: flex; gap: 4px; width: 100%;">
+                            <div class="bl-age-box">
+                                <input type="number" class="bl-age-input" @bind="reportingDays" @bind:after="UpdateReportingTextFromTime" placeholder="0" />
+                                <span class="bl-age-lbl">DD</span>
+                            </div>
+                            <div class="bl-age-box">
+                                <input type="number" class="bl-age-input" @bind="reportingHours" @bind:after="UpdateReportingTextFromTime" placeholder="0" />
+                                <span class="bl-age-lbl">HH</span>
+                            </div>
+                            <div class="bl-age-box">
+                                <input type="number" class="bl-age-input" @bind="reportingMins" @bind:after="UpdateReportingTextFromTime" placeholder="0" />
+                                <span class="bl-age-lbl">MM</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="tm-form-col flex-1 display-flex align-center justify-center mt-4">
+                        <div style="display: flex; align-items: center; gap: 4px;">
+                            <i class="material-symbols-outlined" style="font-size: 13px; color: #4f46e5;">schedule</i>
+                            <span style="font-size: 11px; font-weight: 700; color: #4338ca;">@GetReportingDisplayText()</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tm-form-row mt-4">
+                    <div class="tm-form-col w-100">
+                        <label class="tm-elite-label">OPTIONS</label>
+                        <div class="tm-elite-checkbox-group">
+                            <div class="tm-elite-checkbox-item @(testData.TestMaster.locksms ? "active" : "")" @onclick="() => testData.TestMaster.locksms = !testData.TestMaster.locksms">
+                                <div class="tm-elite-checkbox-box"><i class="material-symbols-outlined">check</i></div>
+                                <span class="tm-elite-checkbox-label">SMS</span>
+                            </div>
+                            <div class="tm-elite-checkbox-item @(testData.TestMaster.isdc == true ? "active" : "")" @onclick="() => testData.TestMaster.isdc = !(testData.TestMaster.isdc ?? false)">
+                                <div class="tm-elite-checkbox-box"><i class="material-symbols-outlined">check</i></div>
+                                <span class="tm-elite-checkbox-label">DC</span>
+                            </div>
+                            <div class="tm-elite-checkbox-item @(testData.TestMaster.iscontrast == true ? "active" : "")" @onclick="() => testData.TestMaster.iscontrast = !(testData.TestMaster.iscontrast ?? false)">
+                                <div class="tm-elite-checkbox-box"><i class="material-symbols-outlined">check</i></div>
+                                <span class="tm-elite-checkbox-label">Contrast</span>
+                            </div>
+                            <div class="tm-elite-checkbox-item @(testData.TestMaster.isnoic == true ? "active" : "")" @onclick="() => testData.TestMaster.isnoic = !(testData.TestMaster.isnoic ?? false)">
+                                <div class="tm-elite-checkbox-box"><i class="material-symbols-outlined">check</i></div>
+                                <span class="tm-elite-checkbox-label">NoIC</span>
+                            </div>
+                            <div class="tm-elite-checkbox-item @(testData.TestMaster.lockresult ? "active" : "")" @onclick="() => testData.TestMaster.lockresult = !testData.TestMaster.lockresult">
+                                <div class="tm-elite-checkbox-box"><i class="material-symbols-outlined">check</i></div>
+                                <span class="tm-elite-checkbox-label">Lock</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tm-form-row mt-4 align-center justify-between">
+                    <div class="tm-elite-checkbox-item @(testData.TestMaster.printinseparatepage ? "active" : "")" @onclick="() => testData.TestMaster.printinseparatepage = !testData.TestMaster.printinseparatepage">
+                        <div class="tm-elite-checkbox-box"><i class="material-symbols-outlined">check</i></div>
+                        <span class="tm-elite-checkbox-label">Print in Separate Page</span>
+                    </div>
+                    <button type="button" class="tm-btn-primary px-4 py-2" @onclick="SaveBillItem">
+                        <i class="material-symbols-outlined" style="font-size: 15px; margin-right: 4px;">save</i>
+                        <span>@(testData.TestMaster.tcode == 0 ? "ADD BILL ITEM" : "SAVE CHANGES")</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- BOTTOM ROW: DIRECTORY TABLE -->
+        <div class="tm-list-pane mt-4">
+            <div class="tm-list-card">
+                <div class="tm-list-header flex-between">
+                    <span class="tm-list-title">CONFIGURED BILLING ITEMS (@allTests.Count)</span>
+                    <div class="search-box">
+                        <input type="text" class="tm-search-input" placeholder="Search bill items..." @bind="searchQuery" @bind:event="oninput" />
+                    </div>
+                </div>
+
+                <div class="table-wrapper">
+                    <table class="tm-bill-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px;">SR.NO</th>
+                                <th style="width: 100px;">CODE</th>
+                                <th>TEST / BILL ITEM NAME</th>
+                                <th style="width: 120px;">SHORT NAME</th>
+                                <th style="width: 140px;">GROUP</th>
+                                <th style="width: 130px;">SAMPLE TYPE</th>
+                                <th style="width: 100px; text-align: right;">AMOUNT</th>
+                                <th style="width: 100px;">ICD CODE</th>
+                                <th style="width: 120px;">TEST TYPE</th>
+                                <th style="width: 130px;">REPORT TIME</th>
+                                <th style="width: 180px;">OPTIONS ACTIVE</th>
+                                <th style="width: 100px; text-align: center;">SEP. PAGE</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (FilteredTests.Any())
+                            {
+                                int idx = 1;
+                                @foreach (var test in FilteredTests)
+                                {
+                                    <tr class="@(test.tcode == testData.TestMaster.tcode ? "selected-row" : "")" @onclick="() => LoadTestByCode(test.tcode)" style="cursor: pointer;">
+                                        <td>@idx.ToString("D2")</td>
+                                        <td><span class="code-pill">T-@test.tcode</span></td>
+                                        <td><strong>@test.name</strong></td>
+                                        <td>@test.shortname</td>
+                                        <td>@groups.FirstOrDefault(g => g.gcode == test.gcode)?.name</td>
+                                        <td>
+                                            @if (test.scode > 0)
+                                            {
+                                                <span class="specimen-pill">@specimens.FirstOrDefault(s => s.scode == test.scode)?.name?.ToUpper()</span>
+                                            }
+                                        </td>
+                                        <td style="text-align: right; font-weight: 700;">@test.amount.ToString("N2")</td>
+                                        <td><span class="icd-pill">@test.icd_code</span></td>
+                                        <td>@testTypes.FirstOrDefault(tt => tt.ttid == test.ttid)?.name</td>
+                                        <td>
+                                            @{
+                                                var matchedReport = reportings.FirstOrDefault(r => r.recode == test.rtcode);
+                                                var timeStr = matchedReport?.name ?? "";
+                                            }
+                                            <span class="time-label"><i class="material-symbols-outlined" style="font-size: 11px; vertical-align: middle; margin-right: 2px;">schedule</i>@FormatTimeLabel(timeStr)</span>
+                                        </td>
+                                        <td>
+                                            <div class="badges-row">
+                                                @if (test.locksms) { <span class="opt-badge">SMS</span> }
+                                                @if (test.isdc == true) { <span class="opt-badge">DC</span> }
+                                                @if (test.iscontrast == true) { <span class="opt-badge">Contrast</span> }
+                                                @if (test.isnoic == true) { <span class="opt-badge">NoIC</span> }
+                                                @if (test.lockresult) { <span class="opt-badge">Lock</span> }
+                                            </div>
+                                        </td>
+                                        <td class="text-center">
+                                            @if (test.printinseparatepage)
+                                            {
+                                                <i class="material-symbols-outlined text-success" style="font-size: 16px;">check_circle</i>
+                                            }
+                                            else
+                                            {
+                                                <i class="material-symbols-outlined text-muted" style="font-size: 16px; opacity: 0.4;">cancel</i>
+                                            }
+                                        </td>
+                                    </tr>
+                                    idx++;
+                                }
+                            }
+                            else
+                            {
+                                <tr>
+                                    <td colspan="12" class="text-center text-muted py-4">No billing items found matching search criteria.</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private TestInsertDto testData = new TestInsertDto();
+    private List<test_master> allTests = new();
+    private List<Booking.Models.SampleMasterModel> specimens = new();
+    private List<Booking.Models.GroupMasterModel> groups = new();
+    private List<Booking.Models.TestTypeMasterModel> testTypes = new();
+    private List<ReportingModel> reportings = new();
+
+    private string searchQuery = "";
+    private bool _isDisposed = false;
+
+    private int? reportingDays;
+    private int? reportingHours;
+    private int? reportingMins;
+    private string reportingSearchText = "";
+
+    private IEnumerable<test_master> FilteredTests =>
+        allTests.Where(t =>
+            string.IsNullOrEmpty(searchQuery) ||
+            (t.name != null && t.name.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
+            (t.shortname != null && t.shortname.Contains(searchQuery, StringComparison.OrdinalIgnoreCase)) ||
+            t.tcode.ToString().Contains(searchQuery));
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                if (_isDisposed) return;
+
+                var tenantCodeResult = await SessionStorage.GetAsync<string>("tenant_code");
+                if (_isDisposed) return;
+                string tCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tenantNameResult = await SessionStorage.GetAsync<string>("tenant_name");
+                if (_isDisposed) return;
+                string tName = tenantNameResult.Success ? tenantNameResult.Value ?? "" : "";
+
+                var tokenResult = await SessionStorage.GetAsync<string>("authToken");
+                if (_isDisposed) return;
+                string authTok = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                if (!string.IsNullOrEmpty(authTok))
+                {
+                    TenantState.SetSession(tCode, authTok, tName);
+                    await LoadSpecimens();
+                    await LoadGroups();
+                    await LoadTestTypes();
+                    await LoadReportings();
+                    await LoadTests();
+                    StateHasChanged();
+                }
+                else
+                {
+                    Toast.Error("Access denied: Missing valid session. Please log in again.");
+                }
+            }
+            catch (Exception ex)
+            {
+                Toast.Error($"Initialization error: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadSpecimens()
+    {
+        try { specimens = await BookingSampleSvc.GetSampleMastersAsync(); } catch {}
+    }
+
+    private async Task LoadGroups()
+    {
+        try { groups = await BookingGroupSvc.GetGroupMastersAsync(); } catch {}
+    }
+
+    private async Task LoadTestTypes()
+    {
+        try { testTypes = await BookingTestTypeSvc.GetTestTypeMastersAsync(); } catch {}
+    }
+
+    private async Task LoadReportings()
+    {
+        try { reportings = await TestSvc.GetReportingsAsync(); } catch {}
+    }
+
+    private async Task LoadTests()
+    {
+        try
+        {
+            var results = await TestSvc.GetAllTestsAsync();
+            allTests = results.OrderByDescending(t => t.entereddate).ToList();
+        }
+        catch { /* ignored */ }
+    }
+
+    private void ResetForm()
+    {
+        testData = new TestInsertDto();
+        reportingDays = null;
+        reportingHours = null;
+        reportingMins = null;
+        reportingSearchText = "";
+        StateHasChanged();
+    }
+
+    private async Task LoadTestByCode(long tcode)
+    {
+        if (tcode == 0)
+        {
+            ResetForm();
+            return;
+        }
+
+        try
+        {
+            var testObj = allTests.FirstOrDefault(t => t.tcode == tcode);
+            if (testObj != null)
+            {
+                testData.TestMaster = new test_master
+                {
+                    tcode = testObj.tcode,
+                    name = testObj.name,
+                    shortname = testObj.shortname,
+                    amount = testObj.amount,
+                    scode = testObj.scode,
+                    gcode = testObj.gcode,
+                    orderno = testObj.orderno,
+                    icd_code = testObj.icd_code,
+                    ttid = testObj.ttid,
+                    rtcode = testObj.rtcode,
+                    locksms = testObj.locksms,
+                    isdc = testObj.isdc,
+                    iscontrast = testObj.iscontrast,
+                    isnoic = testObj.isnoic,
+                    lockresult = testObj.lockresult,
+                    printinseparatepage = testObj.printinseparatepage,
+                    tenant_code = testObj.tenant_code
+                };
+
+                var matchedReport = reportings.FirstOrDefault(r => r.recode == testData.TestMaster.rtcode);
+                reportingSearchText = matchedReport?.name ?? "";
+                ParseReportingTime(reportingSearchText);
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Failed to load test details: {ex.Message}");
+        }
+    }
+
+    private void ParseReportingTime(string text)
+    {
+        reportingDays = null;
+        reportingHours = null;
+        reportingMins = null;
+
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        if (text.Contains(":"))
+        {
+            var parts = text.Split(':');
+            if (parts.Length == 3)
+            {
+                if (int.TryParse(parts[0], out int d)) reportingDays = d > 0 ? d : null;
+                if (int.TryParse(parts[1], out int h)) reportingHours = h > 0 ? h : null;
+                if (int.TryParse(parts[2], out int m)) reportingMins = m > 0 ? m : null;
+                return;
+            }
+        }
+
+        var tokens = text.Split(new[] { ' ', ',', ';' }, StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < tokens.Length - 1; i++)
+        {
+            if (int.TryParse(tokens[i], out int val))
+            {
+                var unit = tokens[i + 1].ToLower();
+                if (unit.StartsWith("day"))
+                {
+                    reportingDays = val > 0 ? val : null;
+                }
+                else if (unit.StartsWith("hour") || unit.StartsWith("hr"))
+                {
+                    reportingHours = val > 0 ? val : null;
+                }
+                else if (unit.StartsWith("min"))
+                {
+                    reportingMins = val > 0 ? val : null;
+                }
+            }
+        }
+    }
+
+    private void UpdateReportingTextFromTime()
+    {
+        if (reportingDays == null && reportingHours == null && reportingMins == null)
+        {
+            reportingSearchText = "";
+            return;
+        }
+
+        int d = reportingDays ?? 0;
+        int h = reportingHours ?? 0;
+        int m = reportingMins ?? 0;
+
+        reportingSearchText = $"{d:D2}:{h:D2}:{m:D2}";
+    }
+
+    private string GetReportingDisplayText()
+    {
+        var parts = new List<string>();
+        if (reportingDays.HasValue && reportingDays.Value > 0)
+        {
+            parts.Add($"{reportingDays.Value} {(reportingDays.Value == 1 ? "Day" : "Days")}");
+        }
+        if (reportingHours.HasValue && reportingHours.Value > 0)
+        {
+            parts.Add($"{reportingHours.Value} {(reportingHours.Value == 1 ? "Hour" : "Hours")}");
+        }
+        if (reportingMins.HasValue && reportingMins.Value > 0)
+        {
+            parts.Add($"{reportingMins.Value} {(reportingMins.Value == 1 ? "Min" : "Mins")}");
+        }
+
+        return parts.Any() ? string.Join(" ", parts) : "0 Min";
+    }
+
+    private string FormatTimeLabel(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return "0 Min";
+        ParseReportingTime(text);
+        return GetReportingDisplayText();
+    }
+
+    private async Task SaveBillItem()
+    {
+        if (string.IsNullOrWhiteSpace(testData.TestMaster.name))
+        {
+            Toast.Warning("Please enter a Test Name");
+            return;
+        }
+
+        try
+        {
+            UpdateReportingTextFromTime();
+
+            // Set up reporting template if needed
+            if (!string.IsNullOrWhiteSpace(reportingSearchText))
+            {
+                var existing = reportings.FirstOrDefault(r => r.name != null && r.name.Equals(reportingSearchText, StringComparison.OrdinalIgnoreCase));
+                if (existing != null)
+                {
+                    testData.TestMaster.rtcode = existing.recode;
+                }
+                else
+                {
+                    var newReporting = new ReportingModel
+                    {
+                        name = reportingSearchText,
+                        tenant_code = TenantState.TenantCode
+                    };
+                    try
+                    {
+                        var newRecode = await TestSvc.InsertReportingAsync(newReporting);
+                        if (newRecode > 0)
+                        {
+                            testData.TestMaster.rtcode = newRecode;
+                            newReporting.recode = newRecode;
+                            reportings.Add(newReporting);
+                        }
+                    }
+                    catch
+                    {
+                        Toast.Warning("Failed to create new reporting template.");
+                        testData.TestMaster.rtcode = 0;
+                    }
+                }
+            }
+            else
+            {
+                testData.TestMaster.rtcode = 0;
+            }
+
+            bool ok;
+            if (testData.TestMaster.tcode == 0)
+            {
+                // Verify unique name
+                var nameDup = allTests.FirstOrDefault(t => t.name.Equals(testData.TestMaster.name, StringComparison.OrdinalIgnoreCase));
+                if (nameDup != null)
+                {
+                    Toast.Error($"Test name '{nameDup.name}' already exists. Please choose a unique name.");
+                    return;
+                }
+
+                // Populate defaults
+                testData.TestMaster.tenant_code = TenantState.TenantCode;
+                testData.TestMaster.usercode = 1;
+                testData.TestMaster.computercode = 1;
+                testData.TestMaster.entereddate = DateTime.Now;
+                testData.TestMaster.ibsdate = DateTime.Now;
+                testData.TestMaster.qty = "1";
+                if (testData.TestMaster.ttid == 0) testData.TestMaster.ttid = 1;
+
+                // Setup single default row
+                testData.ResultRows = new List<TestResultRowDto>
+                {
+                    new TestResultRowDto
+                    {
+                        ResultMaster = new test_result_master
+                        {
+                            slno = 1,
+                            testresultid = Guid.NewGuid(),
+                            trguid = Guid.NewGuid(),
+                            cellcontent = testData.TestMaster.name,
+                            col2 = testData.TestMaster.name,
+                            tenant_code = TenantState.TenantCode
+                        },
+                        ResultProperties = new test_result_properties
+                        {
+                            trpid = Guid.NewGuid(),
+                            resultvaluetype = "Numeric",
+                            scode = (int)testData.TestMaster.scode,
+                            tenant_code = TenantState.TenantCode,
+                            decimalvalue = 0
+                        },
+                        DetailedNormalValues = new(),
+                        CalculatedFormulas = new(),
+                        TextNormalValues = new()
+                    }
+                };
+
+                ok = await TestSvc.InsertTestAsync(testData);
+                if (ok)
+                {
+                    Toast.Success("Bill Item created successfully!");
+                }
+            }
+            else
+            {
+                // Update
+                var fullDto = await TestSvc.GetTestResultAsync(testData.TestMaster.tcode);
+                if (fullDto == null)
+                {
+                    Toast.Error("Failed to load existing details from server.");
+                    return;
+                }
+
+                // Copy basic
+                fullDto.TestMaster.name = testData.TestMaster.name;
+                fullDto.TestMaster.amount = testData.TestMaster.amount;
+                fullDto.TestMaster.scode = testData.TestMaster.scode;
+                fullDto.TestMaster.gcode = testData.TestMaster.gcode;
+                fullDto.TestMaster.orderno = testData.TestMaster.orderno;
+                fullDto.TestMaster.shortname = testData.TestMaster.shortname;
+
+                // Copy additional
+                fullDto.TestMaster.icd_code = testData.TestMaster.icd_code;
+                fullDto.TestMaster.ttid = testData.TestMaster.ttid;
+                fullDto.TestMaster.rtcode = testData.TestMaster.rtcode;
+                fullDto.TestMaster.locksms = testData.TestMaster.locksms;
+                fullDto.TestMaster.isdc = testData.TestMaster.isdc;
+                fullDto.TestMaster.iscontrast = testData.TestMaster.iscontrast;
+                fullDto.TestMaster.isnoic = testData.TestMaster.isnoic;
+                fullDto.TestMaster.lockresult = testData.TestMaster.lockresult;
+                fullDto.TestMaster.printinseparatepage = testData.TestMaster.printinseparatepage;
+
+                ok = await TestSvc.UpdateTestAsync(fullDto);
+                if (ok)
+                {
+                    Toast.Success("Bill Item updated successfully!");
+                }
+            }
+
+            if (ok)
+            {
+                ResetForm();
+                await LoadTests();
+                await LoadReportings();
+                StateHasChanged();
+            }
+            else
+            {
+                Toast.Error("Failed to save Bill Item details.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Error: {ex.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        _isDisposed = true;
+    }
+}

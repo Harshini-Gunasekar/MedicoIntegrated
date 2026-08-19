@@ -161,7 +161,7 @@ namespace Booking.Services
                         visit_type = "NEWVISIT",
                         reg_type = "ONLINE",
                         visit_date = savedBooking.appointment_date,
-                        token_no = tokenNo > 0 ? tokenNo : null,
+                        token_no = tokenNo > 0 ? tokenNo.ToString() : null,
                         queue_no = null,
                         visit_status = "WAITING",
                         notes = savedBooking.notes,
@@ -185,9 +185,9 @@ namespace Booking.Services
                         {
                             var allOps = await GetAllOpRegistrationsAsync();
                             var match = allOps.FirstOrDefault(x => (savedBooking.booking_id != Guid.Empty && x.booking_id == savedBooking.booking_id) || x.op_id == opRegistration.op_id);
-                            if (match != null && match.token_no.HasValue && match.token_no.Value > 0)
+                            if (match != null && !string.IsNullOrEmpty(match.token_no) && int.TryParse(match.token_no, out int parsedToken) && parsedToken > 0)
                             {
-                                tokenNo = match.token_no.Value;
+                                tokenNo = parsedToken;
                             }
                         }
                         catch (Exception fetchEx)

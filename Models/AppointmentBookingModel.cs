@@ -179,5 +179,18 @@ namespace Booking.Models
         public string? viprole { get; set; }
         [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
+
+        public Guid op_id { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableBoolConverter))]
+        public bool? paid_status { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableBoolConverter))]
+        public bool? unbilled_status { get; set; }
+
+        [JsonConverter(typeof(FlexibleBoolConverter))]
+        public bool is_dressing { get; set; } = false;
+
+        public string? display_token_no { get; set; }
     }
 }

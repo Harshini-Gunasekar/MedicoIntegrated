@@ -36,7 +36,7 @@
         <div class="filter-grid">
             <div class="filter-item">
                 <label>BRANCH</label>
-                <select class="form-select" @bind="filter.bhcode">
+                <select class="form-select" value="@(filter.bhcode?.ToString() ?? "")" @onchange="OnBranchFilterChanged">
                     <option value="">All Branches</option>
                     @foreach (var b in branches)
                     {
@@ -47,9 +47,8 @@
 
             <div class="filter-item">
                 <label>COUNTER</label>
-                <select class="form-select" @bind="filter.cntcode">
-                    <option value="">All Counters</option>
-                    @foreach (var c in counters)
+                <select class="form-select" value="@(filter.cntcode?.ToString() ?? "")" @onchange="OnCounterFilterChanged">
+                    @foreach (var c in GetFilteredCounters())
                     {
                         <option value="@((int)c.cntcode)">@c.name</option>
                     }
@@ -634,9 +633,97 @@
             LoadPaymodesAsync()
         );
 
-        // Prepopulate filter counter from tenant state if available
         if (TenantState.BranchCode > 0) filter.bhcode = TenantState.BranchCode;
 
+        await SetDefaultCounterAsync();
+
+        await LoadBillsAsync();
+    }
+
+    private IEnumerable<CounterMasterModel> GetFilteredCounters()
+    {
+        if (counters == null || !counters.Any()) return Enumerable.Empty<CounterMasterModel>();
+
+        var filtered = counters.Where(x => filter.bhcode == null || filter.bhcode == 0 || x.bhcode == filter.bhcode || x.bhcode == 0 || x.bhcode == null).ToList();
+        if (!filtered.Any())
+        {
+            filtered = counters.ToList();
+        }
+        return filtered;
+    }
+
+    private async Task SetDefaultCounterAsync()
+    {
+        var available = GetFilteredCounters().ToList();
+        if (!available.Any()) return;
+
+        // 1. Try saved counter code from Session Storage
+        try
+        {
+            var cntResult = await _sessionStorage.GetAsync<string>("cntcode");
+            if (cntResult.Success && !string.IsNullOrEmpty(cntResult.Value) && int.TryParse(cntResult.Value, out int savedCnt) && savedCnt > 0)
+            {
+                if (available.Any(c => c.cntcode == savedCnt))
+                {
+                    filter.cntcode = savedCnt;
+                    return;
+                }
+            }
+        }
+        catch { }
+
+        // 2. Try TenantState.CounterCode
+        if (TenantState.CounterCode.HasValue && TenantState.CounterCode.Value > 0)
+        {
+            int tenantCnt = TenantState.CounterCode.Value;
+            if (available.Any(c => c.cntcode == tenantCnt))
+            {
+                filter.cntcode = tenantCnt;
+                return;
+            }
+        }
+
+        // 3. Fallback to first available counter
+        filter.cntcode = (int)available.First().cntcode;
+    }
+
+    private async Task OnBranchFilterChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int bhCode) && bhCode > 0)
+        {
+            filter.bhcode = bhCode;
+        }
+        else
+        {
+            filter.bhcode = null;
+        }
+
+        var available = GetFilteredCounters().ToList();
+        if (!available.Any(c => c.cntcode == filter.cntcode))
+        {
+            await SetDefaultCounterAsync();
+        }
+
+        filter.page = 1;
+        await LoadBillsAsync();
+    }
+
+    private async Task OnCounterFilterChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int cntCode) && cntCode > 0)
+        {
+            filter.cntcode = cntCode;
+            try
+            {
+                await _sessionStorage.SetAsync("cntcode", cntCode.ToString());
+            }
+            catch { }
+        }
+        else
+        {
+            await SetDefaultCounterAsync();
+        }
+        filter.page = 1;
         await LoadBillsAsync();
     }
 
@@ -691,6 +778,7 @@
         };
         if (TenantState.BranchCode > 0) filter.bhcode = TenantState.BranchCode;
         statusFilter = "ALL";
+        await SetDefaultCounterAsync();
         await LoadBillsAsync();
     }
 
