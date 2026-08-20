@@ -1,0 +1,513 @@
+@page "/service-type-master"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using Booking.Models
+@using Booking.Services
+@using Booking.Helpers
+@using System.Net.Http.Json
+@inject HttpClient Http
+@inject IHttpClientFactory ClientFactory
+@inject ToastService ToastService
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage SessionStorage
+
+<PageTitle>Service Type Master - Medico Portal</PageTitle>
+
+<div class="cm-page">
+    <!-- Header Card -->
+    <div class="cm-header-card">
+        <div class="cm-header-left">
+            <h1 class="cm-title">
+                <i class="bi bi-tags-fill text-primary"></i>
+                Service Type Master
+            </h1>
+            <span class="cm-subtitle">Manage token prefixes and service classification for reception queue</span>
+        </div>
+        <div class="cm-header-right">
+            <div class="cm-search-box">
+                <i class="bi bi-search cm-search-icon"></i>
+                <input type="text" class="cm-search-input" placeholder="Search by service or prefix..." @bind="searchQuery" @bind:event="oninput" />
+            </div>
+            @if (TenantState.HasActionRight("Configuration", "General", "Create") || TenantState.HasActionRight("OP", "Patient Registration OP", "Create") || TenantState.IsAuthenticated)
+            {
+                <button class="cm-btn-new" @onclick="OpenNewModal">
+                    <i class="bi bi-plus-lg"></i>
+                    <span>New Service Type</span>
+                </button>
+            }
+        </div>
+    </div>
+
+    <!-- Table Card -->
+    <div class="cm-table-card">
+        <div class="table-responsive-container">
+            <table class="cm-table">
+                <thead>
+                    <tr>
+                        <th style="width: 70px;">ID</th>
+                        <th>SERVICE NAME</th>
+                        <th>TOKEN PREFIX</th>
+                        <th>SCOPE</th>
+                        <th>CREATED AT</th>
+                        <th>UPDATED AT</th>
+                        <th style="width: 110px; text-align: center;">ACTION</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (isLoading)
+                    {
+                        <tr>
+                            <td colspan="7" class="cm-empty-row">
+                                <div class="spinner-border text-primary mb-2" role="status">
+                                    <span class="visually-hidden">Loading...</span>
+                                </div>
+                                <div>Loading service types...</div>
+                            </td>
+                        </tr>
+                    }
+                    else if (FilteredList.Any())
+                    {
+                        @foreach (var item in PaginatedList)
+                        {
+                            <tr>
+                                <td class="col-id">#@item.service_id</td>
+                                <td class="col-name">
+                                    <div class="d-flex align-items-center gap-2">
+                                        <i class="bi bi-diagram-3 text-indigo opacity-75"></i>
+                                        <span>@item.service_name</span>
+                                    </div>
+                                </td>
+                                <td class="col-prefix">
+                                    @if (!string.IsNullOrWhiteSpace(item.token_prefix))
+                                    {
+                                        <span class="token-prefix-badge">
+                                            <i class="bi bi-hash"></i>@item.token_prefix
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted" style="font-size: 0.8rem;">—</span>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="scope-badge @(item.scope?.ToUpper() == "TENANT" ? "scope-tenant" : "scope-doctor")">@(string.IsNullOrWhiteSpace(item.scope) ? "DOCTOR" : item.scope)</span>
+                                </td>
+                                <td class="col-date">
+                                    @(item.created_at == default ? "—" : item.created_at.ToIndianTime().ToString("dd-MM-yyyy hh:mm tt"))
+                                </td>
+                                <td class="col-date">
+                                    @(item.updated_at == default ? "—" : item.updated_at.ToIndianTime().ToString("dd-MM-yyyy hh:mm tt"))
+                                </td>
+                                <td class="col-action">
+                                    <button class="cm-action-btn edit" title="Edit Service Type" @onclick="() => OpenEditModal(item)">
+                                        <i class="bi bi-pencil-square"></i>
+                                    </button>
+                                    <button class="cm-action-btn delete" title="Delete Service Type" @onclick="() => ConfirmDelete(item)">
+                                        <i class="bi bi-trash"></i>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="7" class="cm-empty-row">
+                                <i class="bi bi-folder-x"></i>
+                                <div>No service types found</div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        @if (!isLoading && FilteredList.Any())
+        {
+            <div class="cm-table-footer">
+                <div class="cm-pagination-info">
+                    Showing <strong>@(((currentPage - 1) * pageSize) + 1)</strong> to <strong>@(Math.Min(currentPage * pageSize, FilteredList.Count()))</strong> of <strong>@FilteredList.Count()</strong> entries
+                </div>
+                @if (TotalPages > 1)
+                {
+                    <div class="cm-pagination-controls">
+                        <button type="button" class="cm-pg-btn" disabled="@(currentPage <= 1)" @onclick="() => ChangePage(currentPage - 1)">
+                            &lsaquo; Previous
+                        </button>
+                        @for (int i = 1; i <= TotalPages; i++)
+                        {
+                            var pageNum = i;
+                            <button type="button" class="cm-pg-btn @(currentPage == pageNum ? "active" : "")" @onclick="() => ChangePage(pageNum)">
+                                @pageNum
+                            </button>
+                        }
+                        <button type="button" class="cm-pg-btn" disabled="@(currentPage >= TotalPages)" @onclick="() => ChangePage(currentPage + 1)">
+                            Next &rsaquo;
+                        </button>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+</div>
+
+<!-- Modal Dialog (Create / Edit) -->
+@if (showModal)
+{
+    <div class="cm-backdrop">
+        <div class="cm-modal">
+            <div class="cm-modal-header">
+                <h2 class="cm-modal-title">
+                    <i class="bi @(isEditMode ? "bi-pencil-square" : "bi-plus-circle-fill") me-1 text-primary"></i>
+                    @(isEditMode ? "Edit Service Type" : "New Service Type")
+                </h2>
+                <button type="button" class="cm-close-btn" @onclick="CloseModal">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+
+            <div class="cm-modal-body">
+                <!-- Service Name -->
+                <div class="cm-field-group">
+                    <label class="cm-label">Service Name <span class="required">*</span></label>
+                    <input type="text" 
+                           class="cm-input" 
+                           placeholder="e.g. Outpatient Consultation, Emergency, Laboratory" 
+                           @bind="currentModel.service_name" />
+                    @if (showValidation && string.IsNullOrWhiteSpace(currentModel.service_name))
+                    {
+                        <span class="text-danger" style="font-size: 0.75rem;">Service Name is required.</span>
+                    }
+                </div>
+
+                <!-- Token Prefix -->
+                <div class="cm-field-group">
+                    <label class="cm-label">Token Prefix</label>
+                    <input type="text" 
+                           class="cm-input" 
+                           placeholder="e.g. OP, EMG, LAB, RAD" 
+                           @bind="currentModel.token_prefix" 
+                           maxlength="10" />
+                    <span class="cm-input-hint">Short prefix assigned to patient queue tokens (e.g. OP-101)</span>
+                </div>
+
+                <!-- Scope -->
+                <div class="cm-field-group">
+                    <label class="cm-label">Scope</label>
+                    <select class="cm-select" @bind="currentModel.scope">
+                        <option value="DOCTOR">DOCTOR</option>
+                        <option value="TENANT">TENANT</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="cm-modal-footer">
+                <button type="button" class="cm-btn-cancel" @onclick="CloseModal" disabled="@isSaving">Cancel</button>
+                <button type="button" class="cm-btn-save" @onclick="SaveServiceTypeAsync" disabled="@isSaving">
+                    @if (isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-check-lg"></i>
+                        <span>@(isEditMode ? "Update" : "Save")</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- Delete Confirmation Modal -->
+@if (showDeleteConfirm && itemToDelete != null)
+{
+    <div class="cm-backdrop">
+        <div class="cm-modal" style="max-width: 440px;">
+            <div class="cm-modal-header" style="background: #fef2f2; border-bottom-color: #fee2e2;">
+                <h2 class="cm-modal-title" style="color: #991b1b;">
+                    <i class="bi bi-exclamation-triangle-fill text-danger me-1"></i>
+                    Confirm Delete
+                </h2>
+                <button type="button" class="cm-close-btn" @onclick="CloseDeleteConfirm">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+
+            <div class="cm-modal-body text-center py-4">
+                <p class="mb-2" style="font-size: 0.95rem; color: #334155;">
+                    Are you sure you want to delete service type <strong>@itemToDelete.service_name</strong>?
+                </p>
+                <p class="text-muted mb-0" style="font-size: 0.8rem;">
+                    This action will delete the record from the active service list.
+                </p>
+            </div>
+
+            <div class="cm-modal-footer">
+                <button type="button" class="cm-btn-cancel" @onclick="CloseDeleteConfirm" disabled="@isSaving">Cancel</button>
+                <button type="button" class="cm-btn-save cm-btn-danger" @onclick="DeleteServiceTypeAsync" disabled="@isSaving">
+                    @if (isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                        <span>Deleting...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-trash"></i>
+                        <span>Delete</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<ServiceTypeModel> serviceTypes = new();
+    private ServiceTypeModel currentModel = new();
+    private ServiceTypeModel? itemToDelete;
+
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private bool showModal = false;
+    private bool isEditMode = false;
+    private bool showDeleteConfirm = false;
+    private bool showValidation = false;
+
+    private string searchQuery = "";
+    private int currentPage = 1;
+    private int pageSize = 12;
+
+    private IEnumerable<ServiceTypeModel> FilteredList
+    {
+        get
+        {
+            var list = serviceTypes.Where(x => !x.deleted);
+            if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                var query = searchQuery.Trim();
+                list = list.Where(x => 
+                    (x.service_name != null && x.service_name.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                    (x.token_prefix != null && x.token_prefix.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                    (x.scope != null && x.scope.Contains(query, StringComparison.OrdinalIgnoreCase)) ||
+                    x.service_id.ToString().Contains(query)
+                );
+            }
+            return list.OrderBy(x => x.service_name);
+        }
+    }
+
+    private List<ServiceTypeModel> PaginatedList =>
+        FilteredList.Skip((currentPage - 1) * pageSize).Take(pageSize).ToList();
+
+    private int TotalPages =>
+        Math.Max(1, (int)Math.Ceiling((double)FilteredList.Count() / pageSize));
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadServiceTypesAsync();
+    }
+
+    private HttpClient GetHttpClient()
+    {
+        HttpClient client;
+        try
+        {
+            client = ClientFactory != null ? ClientFactory.CreateClient("MedicoAPI") : Http;
+        }
+        catch
+        {
+            client = Http;
+        }
+
+        if (!string.IsNullOrEmpty(TenantState?.TenantCode))
+        {
+            if (client.DefaultRequestHeaders.Contains("tenant_code"))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+            }
+            client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+        }
+
+        if (!string.IsNullOrEmpty(TenantState?.AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+        }
+
+        return client;
+    }
+
+    private async Task LoadServiceTypesAsync()
+    {
+        isLoading = true;
+        try
+        {
+            var client = GetHttpClient();
+            var response = await client.GetAsync("api/ServiceType/getall");
+            if (response.IsSuccessStatusCode)
+            {
+                var data = await response.Content.ReadFromJsonAsync<List<ServiceTypeModel>>();
+                serviceTypes = data ?? new List<ServiceTypeModel>();
+            }
+            else
+            {
+                serviceTypes = new List<ServiceTypeModel>();
+                var error = await response.Content.ReadAsStringAsync();
+                Console.Error.WriteLine($"[ServiceTypeMaster] Error fetching service types ({response.StatusCode}): {error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            serviceTypes = new List<ServiceTypeModel>();
+            Console.Error.WriteLine($"[ServiceTypeMaster] Exception fetching service types: {ex.Message}");
+            ToastService.ShowError($"Failed to load service types: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OpenNewModal()
+    {
+        currentModel = new ServiceTypeModel
+        {
+            tenant_code = TenantState.TenantCode ?? "",
+            scope = "DOCTOR",
+            created_at = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
+            updated_at = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc),
+            deleted = false
+        };
+        isEditMode = false;
+        showValidation = false;
+        showModal = true;
+    }
+
+    private void OpenEditModal(ServiceTypeModel item)
+    {
+        currentModel = new ServiceTypeModel
+        {
+            service_id = item.service_id,
+            tenant_code = item.tenant_code ?? TenantState.TenantCode ?? "",
+            service_name = item.service_name ?? "",
+            token_prefix = item.token_prefix,
+            scope = string.IsNullOrWhiteSpace(item.scope) ? "DOCTOR" : item.scope,
+            deleted = item.deleted,
+            created_at = item.created_at,
+            updated_at = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc)
+        };
+        isEditMode = true;
+        showValidation = false;
+        showModal = true;
+    }
+
+    private void CloseModal()
+    {
+        showModal = false;
+        showValidation = false;
+    }
+
+    private async Task SaveServiceTypeAsync()
+    {
+        showValidation = true;
+        if (string.IsNullOrWhiteSpace(currentModel.service_name))
+        {
+            ToastService.ShowWarning("Please enter a valid Service Name.");
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            var client = GetHttpClient();
+            currentModel.service_name = currentModel.service_name.Trim();
+            currentModel.token_prefix = string.IsNullOrWhiteSpace(currentModel.token_prefix) ? null : currentModel.token_prefix.Trim().ToUpper();
+            currentModel.tenant_code = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : (currentModel.tenant_code ?? "");
+            currentModel.updated_at = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+            HttpResponseMessage response;
+            if (isEditMode)
+            {
+                response = await client.PostAsJsonAsync("api/ServiceType/update", currentModel);
+            }
+            else
+            {
+                currentModel.created_at = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+                currentModel.deleted = false;
+                response = await client.PostAsJsonAsync("api/ServiceType/insert", currentModel);
+            }
+
+            if (response.IsSuccessStatusCode)
+            {
+                ToastService.ShowSuccess(isEditMode ? "Service Type updated successfully!" : "Service Type added successfully!");
+                showModal = false;
+                await LoadServiceTypesAsync();
+            }
+            else
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Failed to save ({response.StatusCode}): {error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error saving service type: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ConfirmDelete(ServiceTypeModel item)
+    {
+        itemToDelete = item;
+        showDeleteConfirm = true;
+    }
+
+    private void CloseDeleteConfirm()
+    {
+        showDeleteConfirm = false;
+        itemToDelete = null;
+    }
+
+    private async Task DeleteServiceTypeAsync()
+    {
+        if (itemToDelete == null) return;
+
+        isSaving = true;
+        try
+        {
+            var client = GetHttpClient();
+            var response = await client.GetAsync($"api/ServiceType/softdelete?service_id={itemToDelete.service_id}");
+            if (response.IsSuccessStatusCode)
+            {
+                ToastService.ShowSuccess($"Service Type '{itemToDelete.service_name}' deleted successfully!");
+                showDeleteConfirm = false;
+                itemToDelete = null;
+                await LoadServiceTypesAsync();
+            }
+            else
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Failed to delete ({response.StatusCode}): {error}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error deleting service type: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ChangePage(int page)
+    {
+        currentPage = Math.Max(1, Math.Min(page, TotalPages));
+    }
+}
