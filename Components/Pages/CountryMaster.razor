@@ -5,6 +5,7 @@
 @inject CountryMasterService CountryService
 @inject ToastService ToastService
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@implements IDisposable
 
 <div class="cm-page">
     <!-- Header Card -->
@@ -41,10 +42,10 @@
             <tbody>
                 @if (FilteredCountries.Any())
                 {
-                    @foreach (var item in FilteredCountries)
+                    @foreach (var (item, index) in PaginatedCountries.Select((c, i) => (c, i)))
                     {
                         <tr>
-                            <td class="col-orderno">@item.orderno</td>
+                            <td class="col-orderno">@(((currentPage - 1) * pageSize) + index + 1)</td>
                             <td class="col-shortname">@item.shortname</td>
                             <td class="col-name">
                                 <span class="counter-name-text">@item.countryname</span>
@@ -84,6 +85,32 @@
                 }
             </tbody>
         </table>
+        @if (FilteredCountries.Any())
+        {
+            <div class="cm-table-footer">
+                <div class="cm-pagination-info">
+                    Showing <strong>@(((currentPage - 1) * pageSize) + 1)</strong> to <strong>@(Math.Min(currentPage * pageSize, FilteredCountries.Count()))</strong> of <strong>@FilteredCountries.Count()</strong> entries
+                </div>
+                @if (TotalPages > 1)
+                {
+                    <div class="cm-pagination-controls">
+                        <button type="button" class="cm-pg-btn" disabled="@(currentPage <= 1)" @onclick="() => ChangePage(currentPage - 1)">
+                            &lsaquo; Previous
+                        </button>
+                        @for (int i = 1; i <= TotalPages; i++)
+                        {
+                            var pageNum = i;
+                            <button type="button" class="cm-pg-btn @(currentPage == pageNum ? "active" : "")" @onclick="() => ChangePage(pageNum)">
+                                @pageNum
+                            </button>
+                        }
+                        <button type="button" class="cm-pg-btn" disabled="@(currentPage >= TotalPages)" @onclick="() => ChangePage(currentPage + 1)">
+                            Next &rsaquo;
+                        </button>
+                    </div>
+                }
+            </div>
+        }
     </div>
 </div>
 
@@ -99,17 +126,19 @@
             </div>
 
             <div class="cm-modal-body">
-                <!-- Row 1: Country Name, Display Order -->
-                <div class="cm-form-row two-cols-wide-narrow">
+                <!-- Row 1: Country Name, Short Name -->
+                <div class="cm-form-row two-cols">
                     <div class="cm-field-group" style="position: relative;">
-                        <label class="cm-label">Country Name</label>
-                        <input type="text" 
+                        <label class="cm-label">Country Name <span style="color: #ef4444;">*</span></label>
+                        <input @ref="countryNameInput"
+                               type="text" 
                                class="cm-input" 
                                placeholder="Ex: India" 
                                value="@currentCountry.countryname" 
                                @oninput="OnCountryNameInput"
                                @onfocus="() => showCountryDropdown = true"
-                               @onblur="OnCountryNameBlur" />
+                               @onblur="OnCountryNameBlur"
+                               @onkeydown="OnCountryNameKeyDown" />
 
                         @if (showCountryDropdown && CountrySuggestions.Any())
                         {
@@ -124,20 +153,28 @@
                         }
                     </div>
                     <div class="cm-field-group">
-                        <label class="cm-label">Display Order</label>
-                        <input type="text" class="cm-input" placeholder="20" @bind="displayOrderString" />
+                        <label class="cm-label">Short Name</label>
+                        <input @ref="shortNameInput"
+                               type="text" 
+                               class="cm-input" 
+                               placeholder="Ex: IND" 
+                               @bind="currentCountry.shortname" 
+                               @bind:event="oninput"
+                               @onkeydown="OnShortNameKeyDown" />
                     </div>
                 </div>
 
-                <!-- Row 2: Short Name, Description -->
-                <div class="cm-form-row two-cols-narrow-wide">
-                    <div class="cm-field-group">
-                        <label class="cm-label">Short Name</label>
-                        <input type="text" class="cm-input" placeholder="Ex: IND" @bind="currentCountry.shortname" />
-                    </div>
+                <!-- Row 2: Description -->
+                <div class="cm-form-row full-width">
                     <div class="cm-field-group">
                         <label class="cm-label">Country Description</label>
-                        <input type="text" class="cm-input" placeholder="Specify any specific instructions..." @bind="currentCountry.description" />
+                        <input @ref="descInput"
+                               type="text" 
+                               class="cm-input" 
+                               placeholder="Specify any specific instructions..." 
+                               @bind="currentCountry.description" 
+                               @bind:event="oninput"
+                               @onkeydown="OnDescKeyDown" />
                     </div>
                 </div>
             </div>
@@ -164,7 +201,43 @@
 
 @code {
     private List<CountryMasterModel> countries = new();
-    private string searchQuery = "";
+    private int currentPage = 1;
+    private int pageSize = 10;
+
+    private int TotalPages => (int)Math.Ceiling((double)FilteredCountries.Count() / pageSize);
+
+    private IEnumerable<CountryMasterModel> PaginatedCountries =>
+        FilteredCountries.Skip((currentPage - 1) * pageSize).Take(pageSize);
+
+    private void ChangePage(int page)
+    {
+        if (page >= 1 && page <= Math.Max(1, TotalPages))
+        {
+            currentPage = page;
+            StateHasChanged();
+        }
+    }
+
+    private string _searchQuery = "";
+    private string searchQuery
+    {
+        get => _searchQuery;
+        set
+        {
+            if (_searchQuery != value)
+            {
+                _searchQuery = value;
+                currentPage = 1;
+            }
+        }
+    }
+
+    private IEnumerable<CountryMasterModel> FilteredCountries =>
+        string.IsNullOrWhiteSpace(searchQuery)
+            ? countries
+            : countries.Where(c => 
+                (c.countryname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (c.shortname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
     private bool showModal = false;
     private bool isEditMode = false;
     private CountryMasterModel currentCountry = new();
@@ -207,22 +280,19 @@
         showCountryDropdown = false;
     }
 
-    private string displayOrderString
-    {
-        get => currentCountry.orderno == 0 ? "" : currentCountry.orderno.ToString();
-        set => currentCountry.orderno = int.TryParse(value, out var v) ? v : 0;
-    }
-
-    private IEnumerable<CountryMasterModel> FilteredCountries =>
-        string.IsNullOrWhiteSpace(searchQuery)
-            ? countries
-            : countries.Where(c => 
-                (c.countryname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                (c.shortname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
-
     protected override async Task OnInitializedAsync()
     {
+        TenantState.OnSessionChanged += HandleSessionChanged;
         await LoadCountries();
+    }
+
+    private void HandleSessionChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await LoadCountries();
+            StateHasChanged();
+        });
     }
 
     private async Task LoadCountries()
@@ -232,7 +302,11 @@
             var res = await CountryService.GetCountriesAsync();
             if (res != null)
             {
-                countries = res.Where(c => !string.IsNullOrEmpty(c.tenant_code)).OrderBy(c => c.orderno).ToList();
+                var tenant = TenantState.TenantCode;
+                var list = res.Where(c => string.IsNullOrEmpty(tenant) || string.IsNullOrEmpty(c.tenant_code) || string.Equals(c.tenant_code, tenant, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                // Order by entered date (in the order they are entered), fallback to countrycode
+                countries = list.OrderBy(c => c.entereddate == default ? DateTime.MinValue : c.entereddate).ThenBy(c => c.countrycode).ToList();
             }
         }
         catch (Exception ex)
@@ -241,11 +315,62 @@
         }
     }
 
+    private ElementReference countryNameInput;
+    private ElementReference shortNameInput;
+    private ElementReference descInput;
+    private bool shouldFocusFirstInput = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (shouldFocusFirstInput)
+        {
+            shouldFocusFirstInput = false;
+            try
+            {
+                await Task.Delay(50);
+                await countryNameInput.FocusAsync();
+            }
+            catch { }
+        }
+    }
+
+    private async Task OnCountryNameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            showCountryDropdown = false;
+            await shortNameInput.FocusAsync();
+        }
+    }
+
+    private async Task OnShortNameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await descInput.FocusAsync();
+        }
+    }
+
+    private async Task OnDescKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SaveCountry();
+        }
+    }
+
     private void OpenNewCountryModal()
     {
-        currentCountry = new CountryMasterModel { orderno = 0 };
+        int nextOrderNo = countries.Count + 1;
+
+        currentCountry = new CountryMasterModel 
+        { 
+            orderno = nextOrderNo,
+            tenant_code = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : ""
+        };
         isEditMode = false;
         showModal = true;
+        shouldFocusFirstInput = true;
     }
 
     private void EditCountry(CountryMasterModel country)
@@ -257,10 +382,13 @@
             orderno = country.orderno,
             shortname = country.shortname,
             countryname = country.countryname,
-            description = country.description
+            description = country.description,
+            entereddate = country.entereddate,
+            ibsdate = country.ibsdate
         };
         isEditMode = true;
         showModal = true;
+        shouldFocusFirstInput = true;
     }
 
     private void CloseModal()
@@ -270,32 +398,36 @@
 
     private async Task SaveCountry()
     {
+        if (string.IsNullOrWhiteSpace(currentCountry.countryname))
+        {
+            ToastService.ShowWarning("Please enter a valid Country Name.");
+            return;
+        }
+
         try
         {
             bool success;
             if (isEditMode)
             {
+                currentCountry.ibsdate = DateTime.Now;
                 success = await CountryService.UpdateCountryAsync(currentCountry);
             }
             else
             {
                 currentCountry.entereddate = DateTime.Now;
                 currentCountry.ibsdate = DateTime.Now;
-                currentCountry.tenant_code = "TEN1011";
+                currentCountry.tenant_code = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : (currentCountry.tenant_code ?? "");
+                
+                // Auto-generate order no based on total count of records in this tenant (+1)
+                currentCountry.orderno = countries.Count + 1;
+
                 success = await CountryService.InsertCountryAsync(currentCountry);
             }
 
             if (success)
             {
                 ToastService.ShowSuccess("Country saved successfully.");
-                if (isEditMode)
-                {
-                    showModal = false;
-                }
-                else
-                {
-                    currentCountry = new CountryMasterModel { orderno = 0 };
-                }
+                showModal = false;
                 await LoadCountries();
             }
             else
@@ -329,5 +461,10 @@
         {
             ToastService.ShowError($"Error: {ex.Message}");
         }
+    }
+
+    public void Dispose()
+    {
+        TenantState.OnSessionChanged -= HandleSessionChanged;
     }
 }

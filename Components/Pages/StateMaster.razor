@@ -5,6 +5,7 @@
 @inject StateMasterService StateService
 @inject ToastService ToastService
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@implements IDisposable
 
 <div class="cm-page">
     <!-- Header Card -->
@@ -41,10 +42,10 @@
             <tbody>
                 @if (FilteredStates.Any())
                 {
-                    @foreach (var item in FilteredStates)
+                    @foreach (var (item, index) in PaginatedStates.Select((s, i) => (s, i)))
                     {
                         <tr>
-                            <td class="col-orderno">@item.orderno</td>
+                            <td class="col-orderno">@(((currentPage - 1) * pageSize) + index + 1)</td>
                             <td class="col-shortname">@item.shortname</td>
                             <td class="col-name">
                                 <span class="counter-name-text">@item.statename</span>
@@ -84,6 +85,32 @@
                 }
             </tbody>
         </table>
+        @if (FilteredStates.Any())
+        {
+            <div class="cm-table-footer">
+                <div class="cm-pagination-info">
+                    Showing <strong>@(((currentPage - 1) * pageSize) + 1)</strong> to <strong>@(Math.Min(currentPage * pageSize, FilteredStates.Count()))</strong> of <strong>@FilteredStates.Count()</strong> entries
+                </div>
+                @if (TotalPages > 1)
+                {
+                    <div class="cm-pagination-controls">
+                        <button type="button" class="cm-pg-btn" disabled="@(currentPage <= 1)" @onclick="() => ChangePage(currentPage - 1)">
+                            &lsaquo; Previous
+                        </button>
+                        @for (int i = 1; i <= TotalPages; i++)
+                        {
+                            var pageNum = i;
+                            <button type="button" class="cm-pg-btn @(currentPage == pageNum ? "active" : "")" @onclick="() => ChangePage(pageNum)">
+                                @pageNum
+                            </button>
+                        }
+                        <button type="button" class="cm-pg-btn" disabled="@(currentPage >= TotalPages)" @onclick="() => ChangePage(currentPage + 1)">
+                            Next &rsaquo;
+                        </button>
+                    </div>
+                }
+            </div>
+        }
     </div>
 </div>
 
@@ -99,17 +126,19 @@
             </div>
 
             <div class="cm-modal-body">
-                <!-- Row 1: State Name, Display Order -->
-                <div class="cm-form-row two-cols-wide-narrow">
+                <!-- Row 1: State Name, Short Name -->
+                <div class="cm-form-row two-cols">
                     <div class="cm-field-group" style="position: relative;">
-                        <label class="cm-label">State Name</label>
-                        <input type="text" 
+                        <label class="cm-label">State Name <span style="color: #ef4444;">*</span></label>
+                        <input @ref="stateNameInput"
+                               type="text" 
                                class="cm-input" 
                                placeholder="Ex: Tamil Nadu" 
                                value="@currentState.statename" 
                                @oninput="OnStateNameInput"
                                @onfocus="() => showStateDropdown = true"
-                               @onblur="OnStateNameBlur" />
+                               @onblur="OnStateNameBlur"
+                               @onkeydown="OnStateNameKeyDown" />
 
                         @if (showStateDropdown && StateSuggestions.Any())
                         {
@@ -124,20 +153,28 @@
                         }
                     </div>
                     <div class="cm-field-group">
-                        <label class="cm-label">Display Order</label>
-                        <input type="text" class="cm-input" placeholder="20" @bind="displayOrderString" />
+                        <label class="cm-label">Short Name</label>
+                        <input @ref="shortNameInput"
+                               type="text" 
+                               class="cm-input" 
+                               placeholder="Ex: TN" 
+                               @bind="currentState.shortname" 
+                               @bind:event="oninput"
+                               @onkeydown="OnShortNameKeyDown" />
                     </div>
                 </div>
 
-                <!-- Row 2: Short Name, Description -->
-                <div class="cm-form-row two-cols-narrow-wide">
-                    <div class="cm-field-group">
-                        <label class="cm-label">Short Name</label>
-                        <input type="text" class="cm-input" placeholder="Ex: TN" @bind="currentState.shortname" />
-                    </div>
+                <!-- Row 2: Description -->
+                <div class="cm-form-row full-width">
                     <div class="cm-field-group">
                         <label class="cm-label">State Description</label>
-                        <input type="text" class="cm-input" placeholder="Specify any specific instructions..." @bind="currentState.description" />
+                        <input @ref="descInput"
+                               type="text" 
+                               class="cm-input" 
+                               placeholder="Specify any specific instructions..." 
+                               @bind="currentState.description" 
+                               @bind:event="oninput"
+                               @onkeydown="OnDescKeyDown" />
                     </div>
                 </div>
             </div>
@@ -164,7 +201,43 @@
 
 @code {
     private List<StateMasterModel> states = new();
-    private string searchQuery = "";
+    private int currentPage = 1;
+    private int pageSize = 10;
+
+    private int TotalPages => (int)Math.Ceiling((double)FilteredStates.Count() / pageSize);
+
+    private IEnumerable<StateMasterModel> PaginatedStates =>
+        FilteredStates.Skip((currentPage - 1) * pageSize).Take(pageSize);
+
+    private void ChangePage(int page)
+    {
+        if (page >= 1 && page <= Math.Max(1, TotalPages))
+        {
+            currentPage = page;
+            StateHasChanged();
+        }
+    }
+
+    private string _searchQuery = "";
+    private string searchQuery
+    {
+        get => _searchQuery;
+        set
+        {
+            if (_searchQuery != value)
+            {
+                _searchQuery = value;
+                currentPage = 1;
+            }
+        }
+    }
+
+    private IEnumerable<StateMasterModel> FilteredStates =>
+        string.IsNullOrWhiteSpace(searchQuery)
+            ? states
+            : states.Where(s => 
+                (s.statename?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                (s.shortname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
     private bool showModal = false;
     private bool isEditMode = false;
     private StateMasterModel currentState = new();
@@ -207,22 +280,19 @@
         showStateDropdown = false;
     }
 
-    private string displayOrderString
-    {
-        get => currentState.orderno == 0 ? "" : currentState.orderno.ToString();
-        set => currentState.orderno = int.TryParse(value, out var v) ? v : 0;
-    }
-
-    private IEnumerable<StateMasterModel> FilteredStates =>
-        string.IsNullOrWhiteSpace(searchQuery)
-            ? states
-            : states.Where(s => 
-                (s.statename?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                (s.shortname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
-
     protected override async Task OnInitializedAsync()
     {
+        TenantState.OnSessionChanged += HandleSessionChanged;
         await LoadStates();
+    }
+
+    private void HandleSessionChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await LoadStates();
+            StateHasChanged();
+        });
     }
 
     private async Task LoadStates()
@@ -232,7 +302,11 @@
             var res = await StateService.GetStatesAsync();
             if (res != null)
             {
-                states = res.Where(s => !string.IsNullOrEmpty(s.tenant_code)).OrderBy(s => s.orderno).ToList();
+                var tenant = TenantState.TenantCode;
+                var list = res.Where(s => string.IsNullOrEmpty(tenant) || string.IsNullOrEmpty(s.tenant_code) || string.Equals(s.tenant_code, tenant, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                // Order by entered date (in the order they are entered), fallback to statecode
+                states = list.OrderBy(s => s.entereddate == default ? DateTime.MinValue : s.entereddate).ThenBy(s => s.statecode).ToList();
             }
         }
         catch (Exception ex)
@@ -241,11 +315,62 @@
         }
     }
 
+    private ElementReference stateNameInput;
+    private ElementReference shortNameInput;
+    private ElementReference descInput;
+    private bool shouldFocusFirstInput = false;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (shouldFocusFirstInput)
+        {
+            shouldFocusFirstInput = false;
+            try
+            {
+                await Task.Delay(50);
+                await stateNameInput.FocusAsync();
+            }
+            catch { }
+        }
+    }
+
+    private async Task OnStateNameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            showStateDropdown = false;
+            await shortNameInput.FocusAsync();
+        }
+    }
+
+    private async Task OnShortNameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await descInput.FocusAsync();
+        }
+    }
+
+    private async Task OnDescKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SaveState();
+        }
+    }
+
     private void OpenNewStateModal()
     {
-        currentState = new StateMasterModel { orderno = 0 };
+        int nextOrderNo = states.Count + 1;
+
+        currentState = new StateMasterModel 
+        { 
+            orderno = nextOrderNo,
+            tenant_code = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : ""
+        };
         isEditMode = false;
         showModal = true;
+        shouldFocusFirstInput = true;
     }
 
     private void EditState(StateMasterModel state)
@@ -257,10 +382,13 @@
             orderno = state.orderno,
             shortname = state.shortname,
             statename = state.statename,
-            description = state.description
+            description = state.description,
+            entereddate = state.entereddate,
+            ibsdate = state.ibsdate
         };
         isEditMode = true;
         showModal = true;
+        shouldFocusFirstInput = true;
     }
 
     private void CloseModal()
@@ -270,32 +398,36 @@
 
     private async Task SaveState()
     {
+        if (string.IsNullOrWhiteSpace(currentState.statename))
+        {
+            ToastService.ShowWarning("Please enter a valid State Name.");
+            return;
+        }
+
         try
         {
             bool success;
             if (isEditMode)
             {
+                currentState.ibsdate = DateTime.Now;
                 success = await StateService.UpdateStateAsync(currentState);
             }
             else
             {
                 currentState.entereddate = DateTime.Now;
                 currentState.ibsdate = DateTime.Now;
-                currentState.tenant_code = "TEN1011";
+                currentState.tenant_code = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : (currentState.tenant_code ?? "");
+                
+                // Auto-generate order no based on total count of records in this tenant (+1)
+                currentState.orderno = states.Count + 1;
+
                 success = await StateService.InsertStateAsync(currentState);
             }
 
             if (success)
             {
                 ToastService.ShowSuccess("State saved successfully.");
-                if (isEditMode)
-                {
-                    showModal = false;
-                }
-                else
-                {
-                    currentState = new StateMasterModel { orderno = 0 };
-                }
+                showModal = false;
                 await LoadStates();
             }
             else
@@ -329,5 +461,10 @@
         {
             ToastService.ShowError($"Error: {ex.Message}");
         }
+    }
+
+    public void Dispose()
+    {
+        TenantState.OnSessionChanged -= HandleSessionChanged;
     }
 }
