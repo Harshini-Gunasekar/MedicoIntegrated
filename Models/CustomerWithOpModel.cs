@@ -13,7 +13,7 @@ namespace Booking.Models
         public string? visit_type { get; set; }
         public string? reg_type { get; set; }
         public string? visit_date { get; set; }
-        public int? token_no { get; set; }
+        public object? token_no { get; set; }
         public string? visit_status { get; set; }
         public string? notes { get; set; }
         public bool? is_direct_walkin { get; set; }

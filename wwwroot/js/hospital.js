@@ -177,3 +177,132 @@ window.hospitalAudio = {
         window.speechSynthesis.speak(window._engUtterance);
     }
 };
+
+// ── GLOBAL FORM ENTER KEY NAVIGATION ─────────────────────────────────────
+// Automatically moves focus to the next input field on Enter key press in forms & modals
+document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Enter') return;
+
+    const target = e.target;
+    if (!target) return;
+
+    const tagName = target.tagName ? target.tagName.toUpperCase() : '';
+    if (tagName !== 'INPUT' && tagName !== 'SELECT' && tagName !== 'TEXTAREA') {
+        return;
+    }
+
+    // Ignore Enter on buttons or submit elements so click events trigger normally
+    if (target.type === 'button' || target.type === 'submit') {
+        return;
+    }
+
+    // Allow Enter key multiline in textareas if Shift key is pressed
+    if (tagName === 'TEXTAREA' && e.shiftKey) {
+        return;
+    }
+
+    // Ignore if target is part of an autocomplete dropdown list item or search option
+    if (target.classList.contains('master-search-item') || 
+        target.classList.contains('search-dropdown-item') || 
+        target.classList.contains('autocomplete-item') ||
+        target.classList.contains('inline-dropdown')) {
+        return;
+    }
+
+    // Special handling for Prescription table row:
+    // If target is in the Instructions column (.col-instructions input) or last column of medicine row,
+    // pressing Enter automatically triggers "Add Medicine" to add the next row (S.No 2, 3...)!
+    if (target.closest('.col-instructions, td.col-instructions')) {
+        const addMedBtn = target.closest('.prescription-tab-form, .casesheet-modal, .structured-table-card')
+            ?.querySelector('.btn-add-medicine-dashed, button.btn-add-item');
+        if (addMedBtn && typeof addMedBtn.click === 'function') {
+            e.preventDefault();
+            e.stopPropagation();
+            addMedBtn.click();
+            return;
+        }
+    }
+
+    // Find the closest container card/modal/form section for scoped navigation
+    const container = target.closest(
+        '.casesheet-modal, .casesheet-backdrop, .casesheet-body, .notes-tab-form, .vitals-tab-form, .symptoms-tab-form, .diagnosis-tab-form, .prescription-tab-form, .investigation-tab-form, .tab-content, .modal-overlay, .modal-form-card, .modal-dialog-custom, .modal-content, .modal-body, .glass-modal, .large-modal-custom, .form-grid-layout, .filter-card, .dashboard-container, .referral-page, form'
+    ) || document.body;
+
+    // Selector for focusable input controls
+    const selector = 'input:not([type="hidden"]):not([readonly]):not([disabled]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), select:not([disabled]), textarea:not([disabled]), button.btn-save, button.btn-save-customer, button.btn-primary-custom, button.btn-submit, button.btn-add-item, button.btn-add-medicine-dashed';
+
+    const focusables = Array.from(container.querySelectorAll(selector)).filter(el => {
+        return el.offsetWidth > 0 && el.offsetHeight > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+    });
+
+    const currentIndex = focusables.indexOf(target);
+    if (currentIndex > -1) {
+        if (currentIndex < focusables.length - 1) {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const nextEl = focusables[currentIndex + 1];
+            nextEl.focus();
+
+            if (typeof nextEl.select === 'function' && nextEl.tagName === 'INPUT' && nextEl.type !== 'date' && nextEl.type !== 'datetime-local') {
+                try {
+                    nextEl.select();
+                } catch (ex) { }
+            }
+        } else {
+            // Reached last element -> click the Add Medicine / Save / Submit button if available
+            const saveBtn = container.querySelector('.btn-add-medicine-dashed, .btn-save, .btn-save-customer, .btn-primary-custom, .btn-submit, .btn-add-item');
+            if (saveBtn && typeof saveBtn.click === 'function' && saveBtn !== target) {
+                e.preventDefault();
+                e.stopPropagation();
+                saveBtn.click();
+            }
+        }
+    }
+});
+
+window.focusFirstModalInput = function (containerSelector) {
+    setTimeout(function () {
+        const container = document.querySelector(containerSelector || '.casesheet-modal, .modal-form-card, .modal-dialog-custom, .glass-modal');
+        if (!container) return;
+        const first = container.querySelector('select:not([disabled]), input:not([type="hidden"]):not([readonly]):not([disabled]):not([type="file"]):not([type="checkbox"]), textarea:not([disabled])');
+        if (first) {
+            first.focus();
+            if (typeof first.select === 'function' && first.tagName === 'INPUT') {
+                try { first.select(); } catch (ex) { }
+            }
+        }
+    }, 150);
+};
+
+window.focusLastPrescriptionDrugInput = function (containerSelector) {
+    setTimeout(function () {
+        const container = document.querySelector(containerSelector || '.prescription-tab-form, .casesheet-modal');
+        if (!container) return;
+        const drugInputs = Array.from(container.querySelectorAll('.col-drug input.form-control-input, td.col-drug input, input[placeholder*="Paracetamol"]'));
+        if (drugInputs.length > 0) {
+            const lastInput = drugInputs[drugInputs.length - 1];
+            lastInput.focus();
+            if (typeof lastInput.select === 'function') {
+                try { lastInput.select(); } catch (ex) { }
+            }
+        }
+    }, 150);
+};
+
+window.focusLastDiagnosisInput = function (containerSelector) {
+    setTimeout(function () {
+        const container = document.querySelector(containerSelector || '.diagnosis-tab-form, .casesheet-modal');
+        if (!container) return;
+        const diagInputs = Array.from(container.querySelectorAll('.col-diag-code input, td.col-diag-code input, input[placeholder*="Search ICD"]'));
+        if (diagInputs.length > 0) {
+            const lastInput = diagInputs[diagInputs.length - 1];
+            lastInput.focus();
+            if (typeof lastInput.select === 'function') {
+                try { lastInput.select(); } catch (ex) { }
+            }
+        }
+    }, 150);
+};
+
+

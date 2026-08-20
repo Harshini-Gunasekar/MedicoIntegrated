@@ -74,6 +74,9 @@
         </div>
     }
 
+    <!-- New Patient Registration Modal Component -->
+    <NewPatientRegistration IsVisible="showNewPatientModal" OnClose="CloseNewPatientModal" OnPatientSaved="HandlePatientSaved" />
+
     <!-- Patient Info Horizontal Card -->
     <div class="billing-card patient-top-card" style="margin-bottom: 0.5rem;">
         <div class="patient-top-search">
@@ -102,34 +105,39 @@
 
             <div class="billing-form-group" style="margin-left: auto;">
                 <label>Search Mobile / UID</label>
-                <div class="autocomplete-search-wrapper">
-                    <input type="text" class="billing-input" placeholder="Search Patient Name or Mobile..." 
-                           value="@patientSearchQuery" @oninput="OnPatientSearchInput" @onkeydown="OnPatientSearchKeyDown" />
-                    @if (showPatientDropdown && searchedPatients.Count > 0)
-                    {
-                        <div class="autocomplete-dropdown">
-                            @for (int i = 0; i < searchedPatients.Count; i++)
-                            {
-                                var patIdx = i;
-                                var pat = searchedPatients[i];
-                                <div class="autocomplete-item @(patIdx == activePatientIndex ? "active-focused" : "")" 
-                                     @onclick="() => SelectCustomerPatient(pat)"
-                                     @onmouseover="() => activePatientIndex = patIdx">
-                                    <div>
-                                        <span class="patient-search-title">@(string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials) (CUST-@pat.custid)</span>
-                                        <div class="patient-search-sub">
-                                            📞 @pat.mobile | 📍 @(string.IsNullOrEmpty(pat.area) ? "No Area" : pat.area), @pat.city
-                                            @if (!string.IsNullOrEmpty(pat.op_no))
-                                            {
-                                                <span> | 📄 OP No: @pat.op_no</span>
-                                            }
+                <div style="display: flex; gap: 0.35rem; align-items: center;">
+                    <div class="autocomplete-search-wrapper" style="width: 260px;">
+                        <input type="text" class="billing-input" placeholder="Search Patient Name or Mobile..." 
+                               value="@patientSearchQuery" @oninput="OnPatientSearchInput" @onkeydown="OnPatientSearchKeyDown" />
+                        @if (showPatientDropdown && searchedPatients.Count > 0)
+                        {
+                            <div class="autocomplete-dropdown">
+                                @for (int i = 0; i < searchedPatients.Count; i++)
+                                {
+                                    var patIdx = i;
+                                    var pat = searchedPatients[i];
+                                    <div class="autocomplete-item @(patIdx == activePatientIndex ? "active-focused" : "")" 
+                                         @onclick="() => SelectCustomerPatient(pat)"
+                                         @onmouseover="() => activePatientIndex = patIdx">
+                                        <div>
+                                            <span class="patient-search-title">@(string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials) (CUST-@pat.custid)</span>
+                                            <div class="patient-search-sub">
+                                                📞 @pat.mobile | 📍 @(string.IsNullOrEmpty(pat.area) ? "No Area" : pat.area), @pat.city
+                                                @if (!string.IsNullOrEmpty(pat.op_no))
+                                                {
+                                                    <span> | 📄 OP No: @pat.op_no</span>
+                                                }
+                                            </div>
                                         </div>
+                                        <span class="autocomplete-code">@pat.custcode</span>
                                     </div>
-                                    <span class="autocomplete-code">@pat.custcode</span>
-                                </div>
-                            }
-                        </div>
-                    }
+                                }
+                            </div>
+                        }
+                    </div>
+                    <button type="button" class="btn-new-patient-icon" @onclick="OpenNewPatientModal" title="Add New Patient">
+                        <i class="bi bi-person-plus-fill"></i>
+                    </button>
                 </div>
             </div>
         </div>
@@ -879,6 +887,51 @@
     private bool isVipPatient = false;
     private bool savingInProgress = false;
 
+    // New Patient Registration Modal State
+    private bool showNewPatientModal = false;
+
+    private void OpenNewPatientModal()
+    {
+        showNewPatientModal = true;
+    }
+
+    private void CloseNewPatientModal()
+    {
+        showNewPatientModal = false;
+    }
+
+    private async Task HandlePatientSaved(SharedComponents.Rcl.Models.CustomerModel savedPatient)
+    {
+        showNewPatientModal = false;
+        if (savedPatient != null && savedPatient.custid > 0)
+        {
+            if (allCustomersCache != null && !allCustomersCache.Any(c => c.custid == savedPatient.custid))
+            {
+                allCustomersCache.Add(savedPatient);
+            }
+
+            var pat = new Booking.Models.CustomerWithOpModel
+            {
+                custid = savedPatient.custid,
+                custcode = savedPatient.custcode,
+                name = savedPatient.name,
+                namewithinitials = savedPatient.namewithinitials,
+                mobile = savedPatient.mobile,
+                gender = savedPatient.gender,
+                ageyears = savedPatient.ageyears,
+                agemonths = savedPatient.agemonths,
+                agedays = savedPatient.agedays,
+                dateofbirth = savedPatient.dateofbirth,
+                ftcode = savedPatient.ftcode,
+                area = savedPatient.area,
+                city = savedPatient.city
+            };
+
+            await SelectCustomerPatient(pat);
+            ToastService.ShowSuccess($"New patient '{savedPatient.name}' added successfully!");
+        }
+    }
+
     // Prefixes
     private string patientPrefix = "Mr.";
     private string careOfPrefix = "S/O";
@@ -1312,36 +1365,10 @@
 
     private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
     {
-        // Lookup OP ID using medico api/OpRegistration/customers-with-op
-        try
-        {
-            using var client = CreateClient(false); // Medico URL
-            var searchKey = !string.IsNullOrEmpty(pat.mobile) ? pat.mobile : pat.custid.ToString();
-            var response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(searchKey)}");
-            if (response.IsSuccessStatusCode)
-            {
-                var rawJson = await response.Content.ReadAsStringAsync();
-                var settings = new Newtonsoft.Json.JsonSerializerSettings 
-                { 
-                    NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
-                };
-                var medicoList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings) ?? new();
-                var match = medicoList.FirstOrDefault(m => m.custid == pat.custid && !string.IsNullOrEmpty(m.op_id));
-                if (match != null)
-                {
-                    pat.op_id = match.op_id;
-                    pat.op_no = match.op_no;
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"Error retrieving patient op_id: {ex.Message}");
-        }
-
+        // 1. Immediately set patient details on billModel for zero UI delay
         billModel.custid = pat.custid;
         billModel.op_id = pat.op_id;
-        selectedOpNo = pat.op_no;
+        selectedOpNo = !string.IsNullOrEmpty(pat.op_no) ? pat.op_no : "-";
 
         var activeIp = activeAdmissions.FirstOrDefault(a => a.custid == pat.custid && (string.Equals(a.ip_status, "ADMITTED", StringComparison.OrdinalIgnoreCase) || a.dischargedate == null));
         if (activeIp != null)
@@ -1376,6 +1403,43 @@
         selectedPatientBadgeVisible = true;
         showPatientDropdown = false;
 
+        // Render patient details instantly to UI
+        StateHasChanged();
+
+        // 2. Lookup OP ID asynchronously if not already set
+        if (string.IsNullOrEmpty(pat.op_id))
+        {
+            try
+            {
+                using var client = CreateClient(false); // Medico URL
+                var searchKey = !string.IsNullOrEmpty(pat.mobile) ? pat.mobile : pat.custid.ToString();
+                var response = await client.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(searchKey)}");
+                if (response.IsSuccessStatusCode)
+                {
+                    var rawJson = await response.Content.ReadAsStringAsync();
+                    var settings = new Newtonsoft.Json.JsonSerializerSettings 
+                    { 
+                        NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore,
+                        Error = (sender, args) => { args.ErrorContext.Handled = true; }
+                    };
+                    var medicoList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings) ?? new();
+                    var match = medicoList.FirstOrDefault(m => m.custid == pat.custid && !string.IsNullOrEmpty(m.op_id));
+                    if (match != null)
+                    {
+                        pat.op_id = match.op_id;
+                        pat.op_no = match.op_no;
+                        billModel.op_id = match.op_id;
+                        selectedOpNo = match.op_no;
+                        StateHasChanged();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error retrieving patient op_id: {ex.Message}");
+            }
+        }
+
         // Auto-load ordered tests from Case Sheet and lookup registration details
         if (!string.IsNullOrEmpty(pat.op_id) && Guid.TryParse(pat.op_id, out var opId))
         {
@@ -1388,6 +1452,7 @@
 
         RecalculateTotals();
         SaveStateToService();
+        StateHasChanged();
     }
 
     private string testSearchQuery = string.Empty;
