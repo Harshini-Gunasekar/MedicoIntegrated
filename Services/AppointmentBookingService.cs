@@ -697,5 +697,24 @@ namespace Booking.Services
                 return $"Error|{ex.Message}";
             }
         }
+
+        public async Task<List<ServiceTypeModel>> GetServiceTypesAsync()
+        {
+            try
+            {
+                var response = await _http.GetAsync("api/ServiceType/getall");
+                if (response.IsSuccessStatusCode)
+                {
+                    var data = await response.Content.ReadFromJsonAsync<List<ServiceTypeModel>>();
+                    return data?.Where(x => !x.deleted).OrderBy(x => x.service_name).ToList() ?? new List<ServiceTypeModel>();
+                }
+                return new List<ServiceTypeModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching service types: {ex.Message}");
+                return new List<ServiceTypeModel>();
+            }
+        }
     }
 }

@@ -45,6 +45,12 @@ namespace Booking.Models
             [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool is_dressing { get; set; } = false;
 
+            public int? service_id { get; set; }
+            public int? serviceid { get; set; }
+
+            [Write(false)]
+            public string? service_name { get; set; }
+
             [Write(false)]
             public string? patient_name { get; set; }
 
@@ -159,6 +165,8 @@ namespace Booking.Models
             public Guid? slot_detail_id { get; set; }
             public string visit_type { get; set; } = "NEWVISIT";
             public string? notes { get; set; }
+            public int? serviceid { get; set; }
+            public int? service_id { get; set; }
         }
 
         // Transfer to another doctor after duty doctor consultation

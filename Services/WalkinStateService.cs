@@ -19,6 +19,7 @@ namespace Booking.Services
         public int WalkinDcode { get; set; }
         public int DutyDcode { get; set; }
         public string WalkinRegType { get; set; } = "OP";
+        public int SelectedServiceId { get; set; } = 0;
         public string WalkinNotes { get; set; } = "";
         public AvailableSlotModel? SelectedWalkinSlot { get; set; }
         public Guid? SelectedSlotDetailId { get; set; }
@@ -40,6 +41,7 @@ namespace Booking.Services
             WalkinDcode = 0;
             DutyDcode = 0;
             WalkinRegType = "OP";
+            SelectedServiceId = 0;
             WalkinNotes = "";
             SelectedWalkinSlot = null;
             SelectedSlotDetailId = null;

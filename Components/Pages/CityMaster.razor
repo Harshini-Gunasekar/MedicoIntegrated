@@ -5,6 +5,7 @@
 @inject CityMasterService CityService
 @inject ToastService ToastService
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@implements IDisposable
 
 <div class="cm-page">
     <!-- Header Card -->
@@ -41,10 +42,10 @@
             <tbody>
                 @if (FilteredCities.Any())
                 {
-                    @foreach (var item in PaginatedCities)
+                    @foreach (var (item, index) in PaginatedCities.Select((c, i) => (c, i)))
                     {
                         <tr>
-                            <td class="col-orderno">@item.orderno</td>
+                            <td class="col-orderno">@(((currentPage - 1) * pageSize) + index + 1)</td>
                             <td class="col-shortname">@item.shortname</td>
                             <td class="col-name">
                                 <span class="counter-name-text">@item.cityname</span>
@@ -125,10 +126,10 @@
             </div>
 
             <div class="cm-modal-body">
-                <!-- Row 1: City Name, Display Order -->
-                <div class="cm-form-row two-cols-wide-narrow">
+                <!-- Row 1: City Name, Short Name -->
+                <div class="cm-form-row two-cols">
                     <div class="cm-field-group" style="position: relative;">
-                        <label class="cm-label">City Name</label>
+                        <label class="cm-label">City Name <span style="color: #ef4444;">*</span></label>
                         <input type="text" 
                                class="cm-input" 
                                placeholder="Ex: Chennai" 
@@ -150,17 +151,13 @@
                         }
                     </div>
                     <div class="cm-field-group">
-                        <label class="cm-label">Display Order</label>
-                        <input type="text" class="cm-input" placeholder="20" @bind="displayOrderString" />
-                    </div>
-                </div>
-
-                <!-- Row 2: Short Name, Description -->
-                <div class="cm-form-row two-cols-narrow-wide">
-                    <div class="cm-field-group">
                         <label class="cm-label">Short Name</label>
                         <input type="text" class="cm-input" placeholder="Ex: CHN" @bind="currentCity.shortname" />
                     </div>
+                </div>
+
+                <!-- Row 2: Description -->
+                <div class="cm-form-row full-width">
                     <div class="cm-field-group">
                         <label class="cm-label">City Description</label>
                         <input type="text" class="cm-input" placeholder="Specify any specific instructions..." @bind="currentCity.description" />
@@ -269,15 +266,19 @@
         showCityDropdown = false;
     }
 
-    private string displayOrderString
-    {
-        get => currentCity.orderno == 0 ? "" : currentCity.orderno.ToString();
-        set => currentCity.orderno = int.TryParse(value, out var v) ? v : 0;
-    }
-
     protected override async Task OnInitializedAsync()
     {
+        TenantState.OnSessionChanged += HandleSessionChanged;
         await LoadCities();
+    }
+
+    private void HandleSessionChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            await LoadCities();
+            StateHasChanged();
+        });
     }
 
     private async Task LoadCities()
@@ -287,7 +288,11 @@
             var res = await CityService.GetCitiesAsync();
             if (res != null)
             {
-                cities = res.Where(c => !string.IsNullOrEmpty(c.tenant_code)).OrderBy(c => c.orderno).ToList();
+                var tenant = TenantState.TenantCode;
+                var list = res.Where(c => string.IsNullOrEmpty(tenant) || string.IsNullOrEmpty(c.tenant_code) || string.Equals(c.tenant_code, tenant, StringComparison.OrdinalIgnoreCase)).ToList();
+
+                // Order by entered date (in the order they are entered), fallback to citycode
+                cities = list.OrderBy(c => c.entereddate == default ? DateTime.MinValue : c.entereddate).ThenBy(c => c.citycode).ToList();
             }
         }
         catch (Exception ex)
@@ -298,7 +303,13 @@
 
     private void OpenNewCityModal()
     {
-        currentCity = new CityMasterModel { orderno = 0 };
+        int nextOrderNo = cities.Count + 1;
+
+        currentCity = new CityMasterModel 
+        { 
+            orderno = nextOrderNo,
+            tenant_code = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : ""
+        };
         isEditMode = false;
         showModal = true;
     }
@@ -312,7 +323,9 @@
             orderno = city.orderno,
             shortname = city.shortname,
             cityname = city.cityname,
-            description = city.description
+            description = city.description,
+            entereddate = city.entereddate,
+            ibsdate = city.ibsdate
         };
         isEditMode = true;
         showModal = true;
@@ -325,32 +338,36 @@
 
     private async Task SaveCity()
     {
+        if (string.IsNullOrWhiteSpace(currentCity.cityname))
+        {
+            ToastService.ShowWarning("Please enter a valid City Name.");
+            return;
+        }
+
         try
         {
             bool success;
             if (isEditMode)
             {
+                currentCity.ibsdate = DateTime.Now;
                 success = await CityService.UpdateCityAsync(currentCity);
             }
             else
             {
                 currentCity.entereddate = DateTime.Now;
                 currentCity.ibsdate = DateTime.Now;
-                currentCity.tenant_code = "TEN1011";
+                currentCity.tenant_code = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : (currentCity.tenant_code ?? "");
+                
+                // Auto-generate order no based on total count of records in this tenant (+1)
+                currentCity.orderno = cities.Count + 1;
+
                 success = await CityService.InsertCityAsync(currentCity);
             }
 
             if (success)
             {
                 ToastService.ShowSuccess("City saved successfully.");
-                if (isEditMode)
-                {
-                    showModal = false;
-                }
-                else
-                {
-                    currentCity = new CityMasterModel { orderno = 0 };
-                }
+                showModal = false;
                 await LoadCities();
             }
             else
@@ -384,5 +401,10 @@
         {
             ToastService.ShowError($"Error: {ex.Message}");
         }
+    }
+
+    public void Dispose()
+    {
+        TenantState.OnSessionChanged -= HandleSessionChanged;
     }
 }
