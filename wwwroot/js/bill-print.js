@@ -531,6 +531,57 @@
     style.textContent = '@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }';
     document.head.appendChild(style);
 
+    window.triggerIscanPrint = async function (cleanBase64) {
+        if (!cleanBase64) return;
+        if (cleanBase64.startsWith('data:application/pdf;base64,')) {
+            cleanBase64 = cleanBase64.substring('data:application/pdf;base64,'.length);
+        }
+        cleanBase64 = cleanBase64.replace(/\s/g, '');
+
+        if (cleanBase64.length > 32000) {
+            console.warn('[LabCare/iScan] Data too large for direct URL. Using clipboard print...');
+            try {
+                await navigator.clipboard.writeText(cleanBase64);
+            } catch (clipErr) {
+                console.error('[LabCare/iScan] Clipboard API write failed, trying fallback...', clipErr);
+                try {
+                    const textArea = document.createElement("textarea");
+                    textArea.value = cleanBase64;
+                    textArea.style.position = "fixed";
+                    textArea.style.left = "-999999px";
+                    document.body.appendChild(textArea);
+                    textArea.focus();
+                    textArea.select();
+                    document.execCommand('copy');
+                    document.body.removeChild(textArea);
+                    console.log('[LabCare/iScan] Fallback clipboard copy succeeded.');
+                } catch (fallbackErr) {
+                    console.error('[LabCare/iScan] Fallback clipboard copy failed:', fallbackErr);
+                }
+            }
+            var protocolUrl = 'labcareprint://print?source=clipboard';
+            var a = document.createElement('a');
+            a.href = protocolUrl;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function () {
+                if (document.body.contains(a)) document.body.removeChild(a);
+            }, 500);
+        } else {
+            console.log('[LabCare/iScan] Launching direct URL print...');
+            var protocolUrl = 'labcareprint://print?data=' + encodeURIComponent(cleanBase64);
+            var a = document.createElement('a');
+            a.href = protocolUrl;
+            a.style.display = 'none';
+            document.body.appendChild(a);
+            a.click();
+            setTimeout(function () {
+                if (document.body.contains(a)) document.body.removeChild(a);
+            }, 500);
+        }
+    };
+
     window.openBase64Pdf = function (base64String, title) {
         if (!base64String) return;
         
@@ -545,49 +596,8 @@
                 // Show PDF preview modal on screen so user can view/print/download
                 window.openPdfPreviewModal(cleanBase64, title || 'Report Preview');
 
-                // Trigger labcareprint:// protocol handler in background for silent printing if configured
-                if (cleanBase64.length > 32000) {
-                    console.warn('[LabCare] Data too large for direct URL. Using clipboard print...');
-                    try {
-                        await navigator.clipboard.writeText(cleanBase64);
-                    } catch (clipErr) {
-                        console.error('[LabCare] Clipboard API write failed, trying fallback...', clipErr);
-                        try {
-                            const textArea = document.createElement("textarea");
-                            textArea.value = cleanBase64;
-                            textArea.style.position = "fixed";
-                            textArea.style.left = "-999999px";
-                            document.body.appendChild(textArea);
-                            textArea.focus();
-                            textArea.select();
-                            document.execCommand('copy');
-                            document.body.removeChild(textArea);
-                            console.log('[LabCare] Fallback clipboard copy succeeded.');
-                        } catch (fallbackErr) {
-                            console.error('[LabCare] Fallback clipboard copy failed:', fallbackErr);
-                        }
-                    }
-                    var protocolUrl = 'labcareprint://print?source=clipboard';
-                    var a = document.createElement('a');
-                    a.href = protocolUrl;
-                    a.style.display = 'none';
-                    document.body.appendChild(a);
-                    a.click();
-                    setTimeout(function () {
-                        if (document.body.contains(a)) document.body.removeChild(a);
-                    }, 500);
-                } else {
-                    console.log('[LabCare] Launching direct URL print...');
-                    var protocolUrl = 'labcareprint://print?data=' + encodeURIComponent(cleanBase64);
-                    var a = document.createElement('a');
-                    a.href = protocolUrl;
-                    a.style.display = 'none';
-                    document.body.appendChild(a);
-                    a.click();
-                    setTimeout(function () {
-                        if (document.body.contains(a)) document.body.removeChild(a);
-                    }, 500);
-                }
+                // Trigger labcareprint:// protocol handler in background for silent printing / iScan app
+                await window.triggerIscanPrint(cleanBase64);
             } catch (err) {
                 console.error('[LabCare] openBase64Pdf background handler failed:', err);
             }
@@ -663,7 +673,12 @@
             };
             const printBtn = document.getElementById('pdfModalPrintBtn');
             if (printBtn) {
-                printBtn.onclick = () => {
+                printBtn.onclick = async () => {
+                    try {
+                        await window.triggerIscanPrint(cleanBase64);
+                    } catch (e) {
+                        console.error('Trigger iScan print error:', e);
+                    }
                     try {
                         const iframeWin = iframe.contentWindow || iframe.contentDocument.defaultView;
                         if (iframeWin) {

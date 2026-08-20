@@ -12,6 +12,8 @@ namespace Booking.Services
     {
         private readonly HttpClient _http;
         public static bool? ShowAllCustomersCache { get; set; }
+        public static bool? IsSlotRequiredCache { get; set; }
+        public static bool? OpAgeWiseSplitCache { get; set; }
 
         public LabSettingService(HttpClient http)
         {
@@ -29,6 +31,7 @@ namespace Booking.Services
                 }
                 var list = await _http.GetFromJsonAsync<List<LabSettingModel>>(url);
                 var setting = list?.FirstOrDefault() ?? new LabSettingModel();
+                
                 if (ShowAllCustomersCache.HasValue)
                 {
                     setting.show_all_customers = ShowAllCustomersCache.Value;
@@ -37,6 +40,25 @@ namespace Booking.Services
                 {
                     setting.show_all_customers = setting.show_all_customers ?? true;
                 }
+
+                if (IsSlotRequiredCache.HasValue)
+                {
+                    setting.is_slot_required = IsSlotRequiredCache.Value;
+                }
+                else
+                {
+                    setting.is_slot_required = setting.is_slot_required ?? true;
+                }
+
+                if (OpAgeWiseSplitCache.HasValue)
+                {
+                    setting.op_age_wise_split = OpAgeWiseSplitCache.Value;
+                }
+                else
+                {
+                    setting.op_age_wise_split = setting.op_age_wise_split ?? false;
+                }
+
                 return setting;
             }
             catch (Exception ex)
@@ -46,6 +68,14 @@ namespace Booking.Services
                 if (ShowAllCustomersCache.HasValue)
                 {
                     fallback.show_all_customers = ShowAllCustomersCache.Value;
+                }
+                if (IsSlotRequiredCache.HasValue)
+                {
+                    fallback.is_slot_required = IsSlotRequiredCache.Value;
+                }
+                if (OpAgeWiseSplitCache.HasValue)
+                {
+                    fallback.op_age_wise_split = OpAgeWiseSplitCache.Value;
                 }
                 return fallback;
             }
@@ -75,6 +105,19 @@ namespace Booking.Services
         {
             try
             {
+                if (model.show_all_customers.HasValue)
+                {
+                    ShowAllCustomersCache = model.show_all_customers.Value;
+                }
+                if (model.is_slot_required.HasValue)
+                {
+                    IsSlotRequiredCache = model.is_slot_required.Value;
+                }
+                if (model.op_age_wise_split.HasValue)
+                {
+                    OpAgeWiseSplitCache = model.op_age_wise_split.Value;
+                }
+
                 var response = await _http.PostAsJsonAsync("api/LabSetting/insert", model);
                 if (!response.IsSuccessStatusCode)
                 {
@@ -94,6 +137,19 @@ namespace Booking.Services
         {
             try
             {
+                if (model.show_all_customers.HasValue)
+                {
+                    ShowAllCustomersCache = model.show_all_customers.Value;
+                }
+                if (model.is_slot_required.HasValue)
+                {
+                    IsSlotRequiredCache = model.is_slot_required.Value;
+                }
+                if (model.op_age_wise_split.HasValue)
+                {
+                    OpAgeWiseSplitCache = model.op_age_wise_split.Value;
+                }
+
                 var response = await _http.PostAsJsonAsync("api/LabSetting/update", model);
                 if (!response.IsSuccessStatusCode)
                 {

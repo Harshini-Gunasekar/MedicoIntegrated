@@ -68,7 +68,7 @@
                     <div class="header-card-text">
                         <h2 class="header-card-heading">Pharmacy Billing</h2>
                         <div class="header-card-subheading">
-                            <span class="status-dot"></span> Total billing : @SalesList.Count
+                            <span class="status-dot"></span> Total billing : @(SalesList.Count(s => string.IsNullOrEmpty(DefaultTenant) || string.IsNullOrEmpty(s.tenantcode) || string.Equals(s.tenantcode, DefaultTenant, StringComparison.OrdinalIgnoreCase)))
                         </div>
                     </div>
                 </div>
@@ -189,7 +189,7 @@
                                     <th>NET AMOUNT</th>
                                     <th>PAYMENT MODE</th>
                                     <th>STATUS</th>
-                                    <th style="width: 100px;">ACTION</th>
+                                    <th style="width: 120px; text-align: center;">ACTION</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -209,6 +209,16 @@
                                             </span>
                                         </td>
                                         <td>
+                                            <button class="action-btn btn-report" @onclick="() => PreviewPharmacyBillReport(row.value)" title="Billing Report" disabled="@(activeReportBillNo == (string.IsNullOrEmpty(row.value.billno) ? row.value.salescode.ToString() : row.value.billno))">
+                                                @if (activeReportBillNo == (string.IsNullOrEmpty(row.value.billno) ? row.value.salescode.ToString() : row.value.billno))
+                                                {
+                                                    <span class="spinner-border spinner-border-sm" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>
+                                                }
+                                                else
+                                                {
+                                                    <i class="bi bi-file-earmark-text"></i>
+                                                }
+                                            </button>
                                             @if (hasEditRight)
                                             {
                                                 <button class="action-btn btn-edit" @onclick="async () => await EditSales(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
@@ -233,6 +243,16 @@
                                 <div class="item-card-head">
                                     <span class="card-item-code">#@(string.IsNullOrEmpty(s.billno) ? s.salescode.ToString() : s.billno)</span>
                                     <div>
+                                        <button class="action-btn btn-report" @onclick="() => PreviewPharmacyBillReport(s)" title="Billing Report" disabled="@(activeReportBillNo == (string.IsNullOrEmpty(s.billno) ? s.salescode.ToString() : s.billno))">
+                                            @if (activeReportBillNo == (string.IsNullOrEmpty(s.billno) ? s.salescode.ToString() : s.billno))
+                                            {
+                                                <span class="spinner-border spinner-border-sm" role="status" style="width: 12px; height: 12px; border-width: 2px;"></span>
+                                            }
+                                            else
+                                            {
+                                                <i class="bi bi-file-earmark-text"></i>
+                                            }
+                                        </button>
                                         @if (hasEditRight)
                                         {
                                             <button class="action-btn btn-edit" @onclick="async () => await EditSales(s)" title="Edit"><i class="bi bi-pencil-square"></i></button>
@@ -705,12 +725,6 @@
 
                         <!-- Action Buttons on the right -->
                         <div style="display: flex; flex-direction: row; align-items: center; gap: 12px; margin-top: 10px;">
-                            @if (IsEdit)
-                            {
-                                <button type="button" class="btn btn-outline-secondary" @onclick="() => PrintSalesReportForBill(CurrentRequest.master.billdate)" style="height: 48px; border-radius: 12px; font-weight: 700; padding: 0 1.25rem;">
-                                    <i class="bi bi-printer me-1"></i> Print Bill
-                                </button>
-                            }
                             <button type="button" class="btn-cancel-modal" @onclick="CloseModal" style="background: #f1f5f9; color: #0f172a; border: none; padding: 0.5rem 1.5rem; border-radius: 12px; font-weight: 700; min-width: 100px; transition: all 0.2s;">Cancel</button>
                             <button type="button" @onclick="SaveSales" class="btn-save-premium" disabled="@IsSaving" style="min-width: 150px; height: 48px; margin: 0; position: relative; top: 0;">
                                 @if (IsSaving)
@@ -1535,6 +1549,11 @@
         {
             var query = SalesList.AsEnumerable();
 
+            if (!string.IsNullOrWhiteSpace(DefaultTenant))
+            {
+                query = query.Where(s => string.IsNullOrEmpty(s.tenantcode) || string.Equals(s.tenantcode, DefaultTenant, StringComparison.OrdinalIgnoreCase));
+            }
+
             if (selectedReportWarehouseCode > 0)
             {
                 var whName = WarehouseList.FirstOrDefault(w => w.warehousecode == selectedReportWarehouseCode)?.warehousename;
@@ -1603,6 +1622,10 @@
         {
             var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
             DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+            if (string.IsNullOrWhiteSpace(DefaultTenant) && !string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+            {
+                DefaultTenant = TenantState.TenantCode;
+            }
             
             try
             {
@@ -1918,19 +1941,31 @@
         }
         IsEdit = false;
         
-        // Calculate formatted next bill number from existing sales list (Format: #BILL20260001)
+        var effectiveTenant = !string.IsNullOrWhiteSpace(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? "");
+
+        // Calculate formatted next bill number based on number of billings available in this particular tenant (Format: #BILLYYYYXXXX)
         int currentYear = DateTime.Now.Year;
         string yearPrefix = $"#BILL{currentYear}";
         
-        long nextSeq = 1;
-        var yearBills = SalesList
+        var tenantSales = SalesList
+            .Where(s => string.IsNullOrEmpty(effectiveTenant) 
+                     || string.IsNullOrEmpty(s.tenantcode) 
+                     || string.Equals(s.tenantcode, effectiveTenant, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // Based on the number of billing available in particular tenant
+        long tenantBillCount = tenantSales.Count;
+        long nextSeq = tenantBillCount + 1;
+
+        // Ensure no duplicate if billno with the same prefix exists in this tenant
+        var yearTenantBills = tenantSales
             .Where(s => !string.IsNullOrWhiteSpace(s.billno) && s.billno.StartsWith(yearPrefix, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
-        if (yearBills.Any())
+        if (yearTenantBills.Any())
         {
             long maxSeq = 0;
-            foreach (var b in yearBills)
+            foreach (var b in yearTenantBills)
             {
                 var numPart = b.billno.Substring(yearPrefix.Length);
                 if (long.TryParse(numPart, out var parsed))
@@ -1938,11 +1973,10 @@
                     if (parsed > maxSeq) maxSeq = parsed;
                 }
             }
-            nextSeq = maxSeq + 1;
-        }
-        else if (SalesList.Any())
-        {
-            nextSeq = SalesList.Max(s => s.salescode) + 1;
+            if (maxSeq >= nextSeq)
+            {
+                nextSeq = maxSeq + 1;
+            }
         }
 
         string nextBillNo = $"{yearPrefix}{nextSeq:D4}";
@@ -1950,7 +1984,7 @@
         CurrentRequest = new sales_request { 
             master = new sales_master { 
                 billno = nextBillNo,
-                tenantcode = DefaultTenant, 
+                tenantcode = effectiveTenant, 
                 billdate = DateTime.Now.Date,
                 paymentmode = "Cash",
                 paymentstatus = "Pending",
@@ -2314,16 +2348,105 @@
             CurrentRequest.master.consultant ??= "";
             CurrentRequest.master.currencycode ??= "INR";
 
-            var relativeUrl = IsEdit ? "api/ItemMaster/updatesales" : "api/ItemMaster/insertsales";
-            var targetFullUrl = $"{client.BaseAddress}{relativeUrl}";
-            Console.WriteLine($"[SalesMaster] SaveSales posting to endpoint: {targetFullUrl}");
-            
-            var payloadJson = System.Text.Json.JsonSerializer.Serialize(CurrentRequest);
-            Console.WriteLine($"[SalesMaster] Payload JSON: {payloadJson}");
+            HttpResponseMessage? response = null;
+            string responseBody = "";
+            int statusCodeInt = 0;
 
-            var response = await client.PostAsJsonAsync(relativeUrl, CurrentRequest);
-            var statusCodeInt = (int)response.StatusCode;
-            var responseBody = await response.Content.ReadAsStringAsync();
+            if (IsEdit)
+            {
+                var updateEndpoints = new List<string>
+                {
+                    "api/ItemMaster/updatesales",
+                    "api/SalesMaster/updatesales",
+                    "api/Sales/updatesales"
+                };
+
+                bool updateSucceeded = false;
+                foreach (var ep in updateEndpoints)
+                {
+                    try
+                    {
+                        var res = await client.PostAsJsonAsync(ep, CurrentRequest);
+                        var body = await res.Content.ReadAsStringAsync();
+                        if (res.IsSuccessStatusCode && !body.Contains("\"success\":false") && !body.Contains("\"status\":\"Failed\"") && !body.Contains("orderedqty"))
+                        {
+                            response = res;
+                            responseBody = body;
+                            statusCodeInt = (int)res.StatusCode;
+                            updateSucceeded = true;
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[SalesMaster] Update endpoint '{ep}' returned {res.StatusCode}: {body}");
+                            if (response == null)
+                            {
+                                response = res;
+                                responseBody = body;
+                                statusCodeInt = (int)res.StatusCode;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[SalesMaster] Exception calling '{ep}': {ex.Message}");
+                    }
+                }
+
+                // If updatesales endpoints fail (e.g. backend SQL error with "orderedqty"), fallback to insertsales
+                if (!updateSucceeded)
+                {
+                    Console.WriteLine("[SalesMaster] updatesales endpoints failed. Attempting fallback to insertsales/upsert...");
+                    try
+                    {
+                        var insertRes = await client.PostAsJsonAsync("api/ItemMaster/insertsales", CurrentRequest);
+                        var insertBody = await insertRes.Content.ReadAsStringAsync();
+                        if (insertRes.IsSuccessStatusCode && !insertBody.Contains("\"success\":false") && !insertBody.Contains("\"status\":\"Failed\""))
+                        {
+                            response = insertRes;
+                            responseBody = insertBody;
+                            statusCodeInt = (int)insertRes.StatusCode;
+                            updateSucceeded = true;
+                        }
+                        else if (CurrentRequest.master.salescode > 0)
+                        {
+                            Console.WriteLine($"[SalesMaster] Direct insertsales fallback returned {insertRes.StatusCode}. Attempting delete prior salescode {CurrentRequest.master.salescode} then insert...");
+                            try {
+                                await client.GetAsync($"api/ItemMaster/deletesales?salescode={CurrentRequest.master.salescode}");
+                                await client.DeleteAsync($"api/ItemMaster/deletesales?salescode={CurrentRequest.master.salescode}");
+                            } catch {}
+
+                            var reInsertRes = await client.PostAsJsonAsync("api/ItemMaster/insertsales", CurrentRequest);
+                            var reInsertBody = await reInsertRes.Content.ReadAsStringAsync();
+                            response = reInsertRes;
+                            responseBody = reInsertBody;
+                            statusCodeInt = (int)reInsertRes.StatusCode;
+                        }
+                        else
+                        {
+                            response = insertRes;
+                            responseBody = insertBody;
+                            statusCodeInt = (int)insertRes.StatusCode;
+                        }
+                    }
+                    catch (Exception fallbackEx)
+                    {
+                        Console.WriteLine($"[SalesMaster] Fallback insertsales exception: {fallbackEx.Message}");
+                    }
+                }
+            }
+            else
+            {
+                response = await client.PostAsJsonAsync("api/ItemMaster/insertsales", CurrentRequest);
+                statusCodeInt = (int)response.StatusCode;
+                responseBody = await response.Content.ReadAsStringAsync();
+            }
+
+            if (response == null)
+            {
+                ToastService.ShowError("Failed to save sales: No response from server.");
+                return;
+            }
 
             Console.WriteLine($"[SalesMaster] Endpoint HTTP Response Status: {statusCodeInt} {response.StatusCode}");
             Console.WriteLine($"[SalesMaster] Raw Response Body: {responseBody}");
@@ -2616,6 +2739,14 @@
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
                     if (p.ValueKind == JsonValueKind.Number) { m.netamount = p.GetDecimal(); break; }
                     else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) { m.netamount = val; break; }
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.tenantcode)) {
+            foreach(var key in new[] { "tenantcode", "tenant_code", "tenantCode", "tenant" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.tenantcode = p.GetString();
+                    if (!string.IsNullOrEmpty(m.tenantcode)) break;
                 }
             }
         }
@@ -2919,6 +3050,140 @@
         finally
         {
             isPrintingPdf = false;
+            StateHasChanged();
+        }
+    }
+
+    private string? activeReportBillNo = null;
+
+    private async Task<string> FetchPharmacyBillReportBase64(string rawBillNo)
+    {
+        if (string.IsNullOrWhiteSpace(DefaultTenant))
+        {
+            var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+            DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "0010" : "0010";
+        }
+
+        if (string.IsNullOrWhiteSpace(AuthToken))
+        {
+            try
+            {
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                if (!tokenResult.Success || string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    tokenResult = await _sessionStorage.GetAsync<string>("auth_token");
+                }
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : (TenantState?.AuthToken ?? "");
+            }
+            catch {}
+        }
+
+        string billNo = rawBillNo.TrimStart('#').Trim();
+
+        var candidateUrls = new List<string>
+        {
+            $"https://medicoapi.iscansoft.com/api/report/getpharmacybill?billNo={billNo}&orientation=landscape&tenantcode={DefaultTenant}&tenant_code={DefaultTenant}",
+            $"https://medicoapi.iscansoft.com/api/report/getpharmacybill?billNo={billNo}&orientation=landscape",
+            $"https://medicoapi.iscansoft.com/api/Report/getpharmacybill?billNo={billNo}&orientation=landscape&tenantcode={DefaultTenant}&tenant_code={DefaultTenant}",
+            $"https://medicoapi.iscansoft.com/api/Report/GetPharmacyBill?billNo={billNo}&orientation=landscape",
+            $"api/report/getpharmacybill?billNo={billNo}&orientation=landscape&tenantcode={DefaultTenant}&tenant_code={DefaultTenant}",
+            $"api/report/getpharmacybill?billNo={billNo}&orientation=landscape",
+            $"api/Report/getpharmacybill?billNo={billNo}&orientation=landscape&tenantcode={DefaultTenant}&tenant_code={DefaultTenant}",
+            $"api/Report/GetPharmacyBill?billNo={billNo}&orientation=landscape",
+            $"https://medicoapi.iscansoft.com/api/report/getpharmacybill?billno={billNo}&orientation=landscape",
+            $"api/report/getpharmacybill?billno={billNo}&orientation=landscape"
+        };
+
+        var client = CreateClient();
+        string lastError = "";
+
+        foreach (var url in candidateUrls)
+        {
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                var effectiveToken = !string.IsNullOrEmpty(AuthToken) ? AuthToken : TenantState?.AuthToken;
+                if (!string.IsNullOrEmpty(effectiveToken))
+                {
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+                }
+                req.Headers.Add("tenantcode", DefaultTenant);
+                req.Headers.Add("tenant_code", DefaultTenant);
+                req.Headers.Add("tenant-code", DefaultTenant);
+
+                var response = await client.SendAsync(req);
+
+                if (response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NoContent)
+                {
+                    var contentStr = await response.Content.ReadAsStringAsync();
+                    contentStr = contentStr.Trim('"').Trim();
+
+                    string base64Data = contentStr;
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(contentStr);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            if (root.TryGetProperty("data", out var dProp)) base64Data = dProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("base64", out var bProp)) base64Data = bProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("file", out var fProp)) base64Data = fProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("report", out var rProp)) base64Data = rProp.GetString() ?? contentStr;
+                        }
+                        else if (root.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            base64Data = root.GetString() ?? contentStr;
+                        }
+                    }
+                    catch { }
+
+                    if (!string.IsNullOrWhiteSpace(base64Data) && base64Data.Length >= 50)
+                    {
+                        return base64Data;
+                    }
+                }
+                else
+                {
+                    var errContent = await response.Content.ReadAsStringAsync();
+                    lastError = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}): {errContent}";
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        throw new Exception(string.IsNullOrEmpty(lastError) ? "Backend pharmacy bill report endpoint returned empty data." : lastError);
+    }
+
+    private async Task PreviewPharmacyBillReport(sales_master sales)
+    {
+        var rawBillNo = !string.IsNullOrWhiteSpace(sales.billno) ? sales.billno : sales.salescode.ToString();
+        try
+        {
+            activeReportBillNo = rawBillNo;
+            StateHasChanged();
+
+            string base64Data = await FetchPharmacyBillReportBase64(rawBillNo);
+
+            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            {
+                string cleanBillNo = rawBillNo.TrimStart('#');
+                await JS.InvokeVoidAsync("openPdfPreviewModal", base64Data, $"Pharmacy Bill - {cleanBillNo}");
+            }
+            else
+            {
+                ToastService.ShowError("Unable to load PDF preview: Invalid report data returned.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading pharmacy bill report: {ex.Message}");
+        }
+        finally
+        {
+            activeReportBillNo = null;
             StateHasChanged();
         }
     }
