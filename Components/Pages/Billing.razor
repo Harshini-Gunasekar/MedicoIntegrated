@@ -23,49 +23,12 @@
 @inject Booking.Services.IpRegistrationService IpRegistrationService
 @inject IJSRuntime JS
 @inject Booking.Services.LabSettingService LabSettingService
+@inject Booking.Services.BillingStateService BillingStateSvc
+@implements IDisposable
+
 
 
 <div class="billing-wrapper">
-    @if (showEndShiftConfirmModal)
-    {
-        <div class="modal-backdrop" style="z-index: 1200; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px);" @onclick="CancelEndShift"></div>
-        <div class="confirm-card-modal" style="z-index: 1201;">
-            <div class="confirm-card-header">
-                <div class="confirm-card-icon red">
-                    <i class="bi bi-exclamation-triangle-fill"></i>
-                </div>
-                <div>
-                    <h3 class="confirm-card-title">Confirm End Shift</h3>
-                    <span class="confirm-card-subtitle">Close billing counter session</span>
-                </div>
-                <button type="button" class="confirm-card-close" @onclick="CancelEndShift">×</button>
-            </div>
-            <div class="confirm-card-body">
-                <p>
-                    Are you sure you want to end and close the active shift for counter <strong style="color: #0f172a;">'@shiftEndCounterName'</strong>?
-                </p>
-                <div class="confirm-card-warning">
-                    <i class="bi bi-info-circle-fill"></i>
-                    <span>Closing this shift will finalize all active transactions for this counter session.</span>
-                </div>
-            </div>
-            <div class="confirm-card-footer">
-                <button type="button" class="btn-confirm-cancel" @onclick="CancelEndShift">Cancel</button>
-                <button type="button" class="btn-confirm-action red" @onclick="ConfirmEndShiftForSelectedCounterAsync" disabled="@isEndingShift">
-                    @if (isEndingShift)
-                    {
-                        <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                        <span>Ending...</span>
-                    }
-                    else
-                    {
-                        <i class="bi bi-stop-circle-fill me-1"></i>
-                        <span>End Shift Now</span>
-                    }
-                </button>
-            </div>
-        </div>
-    }
 
     @if (showOpenShiftPromptModal)
     {
@@ -135,20 +98,6 @@
                         }
                     </select>
                 </div>
-                @if (billModel.cntcode > 0)
-                {
-                    <button type="button" class="btn-end-shift-top" @onclick="PromptEndShiftForSelectedCounter" disabled="@isEndingShift" title="End / Close shift for selected counter">
-                        @if (isEndingShift)
-                        {
-                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                        }
-                        else
-                        {
-                            <i class="bi bi-x-circle-fill me-1"></i>
-                        }
-                        End Shift
-                    </button>
-                }
             </div>
 
             <div class="billing-form-group" style="margin-left: auto;">
@@ -730,9 +679,6 @@
     private string? savedRequestGuid = null;
     private bool printWithLetterhead = true;
     private bool isPrintingSavedBill = false;
-    private bool showEndShiftConfirmModal = false;
-    private string shiftEndCounterName = "";
-    private bool isEndingShift = false;
 
     // Shift Open Prompt Modal state
     private bool showOpenShiftPromptModal = false;
@@ -740,82 +686,6 @@
     private string promptBranchName = "";
     private bool isOpeningShiftInBilling = false;
     private bool pendingSaveAfterOpenShift = false;
-
-    private void PromptEndShiftForSelectedCounter()
-    {
-        if (billModel.cntcode <= 0)
-        {
-            ToastService.ShowError("Please select a valid counter first.");
-            return;
-        }
-
-        var counterObj = countersList.FirstOrDefault(c => (int)c.cntcode == billModel.cntcode);
-        shiftEndCounterName = counterObj?.name ?? $"Counter {billModel.cntcode}";
-        showEndShiftConfirmModal = true;
-    }
-
-    private void CancelEndShift()
-    {
-        showEndShiftConfirmModal = false;
-    }
-
-    private async Task ConfirmEndShiftForSelectedCounterAsync()
-    {
-        if (billModel.cntcode <= 0) return;
-
-        isEndingShift = true;
-        StateHasChanged();
-
-        try
-        {
-            var openCounters = await HmsBillingService.GetOpenCountersAsync();
-            var activeShift = openCounters.FirstOrDefault(s => 
-                s.cntcode == billModel.cntcode && 
-                (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode))
-                ?? openCounters.FirstOrDefault(s => s.cntcode == billModel.cntcode);
-
-            if (activeShift == null)
-            {
-                ToastService.ShowError($"No active open shift found for '{shiftEndCounterName}'.");
-                showEndShiftConfirmModal = false;
-                return;
-            }
-
-            var req = new Booking.Models.CloseShiftRequest
-            {
-                cnttid = activeShift.cnttid.ToString(),
-                usercode = activeUserCode > 0 ? activeUserCode : 10
-            };
-
-            var responseStr = await HmsBillingService.CloseShiftAsync(req);
-            if (!string.IsNullOrEmpty(responseStr) && 
-                (responseStr.Contains("safely shut down", StringComparison.OrdinalIgnoreCase) || 
-                 responseStr.Contains("success", StringComparison.OrdinalIgnoreCase) || 
-                 responseStr.Contains("cnttid")))
-            {
-                ToastService.ShowSuccess($"Shift for '{shiftEndCounterName}' ended successfully! Logging out...");
-                billModel.cntcode = 0; // Reset counter selection after ending shift
-                showEndShiftConfirmModal = false;
-                StateHasChanged();
-                await Task.Delay(1000);
-                await PerformLogoutAsync();
-            }
-            else
-            {
-                ToastService.ShowError($"Failed to end shift: {responseStr}");
-            }
-        }
-        catch (Exception ex)
-        {
-            ToastService.ShowError($"Error ending shift: {ex.Message}");
-        }
-        finally
-        {
-            isEndingShift = false;
-            showEndShiftConfirmModal = false;
-            StateHasChanged();
-        }
-    }
 
     private async Task<bool> CheckCounterShiftOpenAsync(bool showPrompt = true)
     {
@@ -1190,7 +1060,11 @@
                 activeBranchCode = savedBhCode;
             }
 
-            if (activeBranchCode > 0 && branchesList.Any(b => b.bh_code == activeBranchCode))
+            if (BillingStateSvc.HasState && billModel.enteredbhcode > 0 && branchesList.Any(b => b.bh_code == billModel.enteredbhcode))
+            {
+                // Keep restored branch code from BillingStateSvc
+            }
+            else if (activeBranchCode > 0 && branchesList.Any(b => b.bh_code == activeBranchCode))
             {
                 billModel.enteredbhcode = activeBranchCode;
             }
@@ -1355,15 +1229,22 @@
                 };
             }
 
-            int defaultCnt = await GetDefaultCounterCodeAsync();
-            if (defaultCnt > 0)
+            if (BillingStateSvc.HasState && billModel.cntcode > 0 && countersList.Any(c => c.cntcode == billModel.cntcode))
             {
-                billModel.cntcode = defaultCnt;
-                try
+                // Keep restored counter code from BillingStateSvc
+            }
+            else
+            {
+                int defaultCnt = await GetDefaultCounterCodeAsync();
+                if (defaultCnt > 0)
                 {
-                    await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
+                    billModel.cntcode = defaultCnt;
+                    try
+                    {
+                        await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
+                    }
+                    catch { }
                 }
-                catch { }
             }
         }
         catch (Exception ex)
@@ -1506,6 +1387,7 @@
         }
 
         RecalculateTotals();
+        SaveStateToService();
     }
 
     private string testSearchQuery = string.Empty;
@@ -1532,6 +1414,10 @@
         if (!string.IsNullOrEmpty(OpIdStr) && Guid.TryParse(OpIdStr, out var opId))
         {
             await LoadExistingBillOrRegistrationAsync(opId);
+        }
+        else if (BillingStateSvc != null && BillingStateSvc.HasState)
+        {
+            RestoreStateFromService();
         }
         else
         {
@@ -2250,6 +2136,7 @@
     {
         patientSearchQuery = e.Value?.ToString() ?? "";
         activePatientIndex = -1;
+        SaveStateToService();
 
         _patientSearchCts?.Cancel();
         _patientSearchCts = new System.Threading.CancellationTokenSource();
@@ -3013,6 +2900,7 @@
 
             if (isSuccess)
             {
+                BillingStateSvc?.Clear();
                 ToastService.ShowSuccess(!string.IsNullOrEmpty(displayMessage) ? displayMessage : "Bill Saved and Posted Successfully!");
                 
                 // Extract saved request GUID to display preview
@@ -3129,6 +3017,7 @@
         showPaymode2 = false;
         showPaymode3 = false;
         
+        BillingStateSvc?.Clear();
         RecalculateTotals();
     }
 
@@ -3234,5 +3123,66 @@
         printWithLetterhead = true;
         await ClearFormAsync();
         StateHasChanged();
+    }
+
+    private void SaveStateToService()
+    {
+        if (BillingStateSvc != null && billModel != null)
+        {
+            BillingStateSvc.SaveState(
+                billModel,
+                patientPrefix,
+                careOfPrefix,
+                careOfName,
+                patientEmail,
+                dobSelected,
+                patientSearchQuery,
+                selectedPatientBadgeVisible,
+                selectedOpNo,
+                selectedIpNo,
+                unbilledCharges,
+                showPaymode2,
+                showPaymode3,
+                showAddConsultationForm,
+                consultationRate,
+                consultationQty,
+                isHuman,
+                isVipPatient,
+                showMoreInfo
+            );
+        }
+    }
+
+    private void RestoreStateFromService()
+    {
+        if (BillingStateSvc != null && BillingStateSvc.HasState && BillingStateSvc.BillModel != null)
+        {
+            billModel = BillingStateSvc.BillModel;
+            patientPrefix = BillingStateSvc.PatientPrefix;
+            careOfPrefix = BillingStateSvc.CareOfPrefix;
+            careOfName = BillingStateSvc.CareOfName;
+            patientEmail = BillingStateSvc.PatientEmail;
+            dobSelected = BillingStateSvc.DobSelected;
+            patientSearchQuery = BillingStateSvc.PatientSearchQuery;
+            selectedPatientBadgeVisible = BillingStateSvc.SelectedPatientBadgeVisible;
+            selectedOpNo = BillingStateSvc.SelectedOpNo;
+            selectedIpNo = BillingStateSvc.SelectedIpNo;
+            unbilledCharges = BillingStateSvc.UnbilledCharges != null ? new List<UnbilledChargeSummary>(BillingStateSvc.UnbilledCharges) : new();
+            showPaymode2 = BillingStateSvc.ShowPaymode2;
+            showPaymode3 = BillingStateSvc.ShowPaymode3;
+            showAddConsultationForm = BillingStateSvc.ShowAddConsultationForm;
+            consultationRate = BillingStateSvc.ConsultationRate;
+            consultationQty = BillingStateSvc.ConsultationQty;
+            isHuman = BillingStateSvc.IsHuman;
+            isVipPatient = BillingStateSvc.IsVipPatient;
+            showMoreInfo = BillingStateSvc.ShowMoreInfo;
+
+            RecalculateTotals();
+        }
+    }
+
+    public void Dispose()
+    {
+        SaveStateToService();
     }
 }

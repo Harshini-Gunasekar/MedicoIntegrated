@@ -36,27 +36,42 @@ namespace Booking.Services
                 {
                     setting.show_all_customers = ShowAllCustomersCache.Value;
                 }
+                else if (setting.show_all_customers.HasValue)
+                {
+                    ShowAllCustomersCache = setting.show_all_customers.Value;
+                }
                 else
                 {
-                    setting.show_all_customers = setting.show_all_customers ?? true;
+                    setting.show_all_customers = true;
+                    ShowAllCustomersCache = true;
                 }
 
                 if (IsSlotRequiredCache.HasValue)
                 {
                     setting.is_slot_required = IsSlotRequiredCache.Value;
                 }
+                else if (setting.is_slot_required.HasValue)
+                {
+                    IsSlotRequiredCache = setting.is_slot_required.Value;
+                }
                 else
                 {
-                    setting.is_slot_required = setting.is_slot_required ?? true;
+                    setting.is_slot_required = true;
+                    IsSlotRequiredCache = true;
                 }
 
                 if (OpAgeWiseSplitCache.HasValue)
                 {
                     setting.op_age_wise_split = OpAgeWiseSplitCache.Value;
                 }
+                else if (setting.op_age_wise_split.HasValue)
+                {
+                    OpAgeWiseSplitCache = setting.op_age_wise_split.Value;
+                }
                 else
                 {
-                    setting.op_age_wise_split = setting.op_age_wise_split ?? false;
+                    setting.op_age_wise_split = false;
+                    OpAgeWiseSplitCache = false;
                 }
 
                 return setting;
@@ -87,11 +102,8 @@ namespace Booking.Services
             {
                 var url = isUpdate ? "api/LabSetting/update" : "api/LabSetting/insert";
                 var response = await _http.PostAsync(url, content);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var errStr = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"[LabSettingService] Multipart Post ({response.StatusCode}): {errStr}");
-                }
+                var errStr = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[LabSettingService] Multipart Post to '{url}' ({response.StatusCode}): {errStr}");
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
@@ -118,12 +130,13 @@ namespace Booking.Services
                     OpAgeWiseSplitCache = model.op_age_wise_split.Value;
                 }
 
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
+                Console.WriteLine($"[LabSettingService] Insert Payload:\n{jsonPayload}");
+
                 var response = await _http.PostAsJsonAsync("api/LabSetting/insert", model);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var errStr = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"[LabSettingService] JSON Insert ({response.StatusCode}): {errStr}");
-                }
+                var errStr = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[LabSettingService] JSON Insert Response ({response.StatusCode}): {errStr}");
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
@@ -150,12 +163,13 @@ namespace Booking.Services
                     OpAgeWiseSplitCache = model.op_age_wise_split.Value;
                 }
 
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
+                Console.WriteLine($"[LabSettingService] Update Payload:\n{jsonPayload}");
+
                 var response = await _http.PostAsJsonAsync("api/LabSetting/update", model);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var errStr = await response.Content.ReadAsStringAsync();
-                    Console.WriteLine($"[LabSettingService] JSON Update ({response.StatusCode}): {errStr}");
-                }
+                var errStr = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[LabSettingService] JSON Update Response ({response.StatusCode}): {errStr}");
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)

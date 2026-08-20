@@ -109,6 +109,8 @@ builder.Services.AddScoped<Booking.Services.AppointmentBookingService>();
 builder.Services.AddScoped<Booking.Services.CaseSheetService>();
 builder.Services.AddScoped<Booking.Services.VitalsService>();
 builder.Services.AddScoped<Booking.Services.HmsBillingService>();
+builder.Services.AddScoped<Booking.Services.BillingStateService>();
+builder.Services.AddScoped<Booking.Services.WalkinStateService>();
 builder.Services.AddScoped<Booking.Services.HmsDueCollectionService>();
 builder.Services.AddScoped<Booking.Services.CounterMasterService>();
 builder.Services.AddScoped<Booking.Services.FeetypeService>();

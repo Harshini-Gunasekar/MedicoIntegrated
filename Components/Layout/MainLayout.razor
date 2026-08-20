@@ -1,10 +1,14 @@
 @inherits LayoutComponentBase
 @using Newtonsoft.Json
+@using Booking.Helpers
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject NavigationManager NavigationManager
 @inject IHttpClientFactory ClientFactory
 @inject Booking.Services.ToastService Toast
+@inject Booking.Services.HmsBillingService HmsBillingService
+@inject Booking.Services.WalkinStateService WalkinStateSvc
+@inject Booking.Services.BillingStateService BillingStateSvc
 @implements IDisposable
 
 <div class="app-container">
@@ -333,6 +337,10 @@
                                 <i class="bi bi-clock-history"></i>
                                 <span>Counter Shift</span>
                             </NavLink>
+                            <button type="button" class="nav-item w-100 text-start bg-transparent border-0 d-flex align-items-center" @onclick="PromptEndShiftInNav" title="End active billing counter shift" style="cursor: pointer; gap: 0.75rem;">
+                                <i class="bi bi-stop-circle-fill text-danger"></i>
+                                <span class="text-danger fw-bold">End Shift</span>
+                            </button>
 
                             <!-- Billing Masters Dropdown -->
                             <button type="button" class="nav-item w-100 text-start bg-transparent border-0 d-flex justify-content-between align-items-center" @onclick="ToggleBillingMasters" style="cursor: pointer;">
@@ -817,6 +825,10 @@
                     <span class="profile-role">@(TenantState.UserData?.Role ?? "")</span>
                 </div>
             </div>
+            <button type="button" class="logout-item mb-1" @onclick="PromptEndShiftInNav" title="End active billing counter shift" style="color: #ef4444; border-top: 1px dashed #e2e8f0; margin-top: 0.5rem; padding-top: 0.75rem;">
+                <i class="bi bi-stop-circle-fill" style="color: #ef4444;"></i>
+                <span style="color: #ef4444; font-weight: 700;">End Shift</span>
+            </button>
             <button type="button" class="logout-item" @onclick="HandleLogout" title="Sign out of your Medico Portal session">
                 <i class="bi bi-box-arrow-right"></i>
                 <span>Logout</span>
@@ -844,9 +856,9 @@
                             var normActiveUrl = NormalizeTabUrl(activeTabUrl);
                             var isTabActive = normTabUrl == normActiveUrl;
                             
-                            <div class="chrome-tab @(isTabActive ? "active" : "")" @onclick="() => SelectTab(tab)" title="@tab.Title">
+                            <div class="chrome-tab @(isTabActive ? "active" : "")" @onclick="() => SelectTab(tab)" title="@GetTabDisplayTitle(tab)">
                                 <i class="bi @tab.Icon tab-icon"></i>
-                                <span class="tab-title">@tab.Title</span>
+                                <span class="tab-title">@GetTabDisplayTitle(tab)</span>
                                 <button type="button" class="tab-close-btn" @onclick:stopPropagation="true" @onclick="() => CloseTab(tab)" title="Close tab">
                                     <i class="bi bi-x"></i>
                                 </button>
@@ -1019,6 +1031,84 @@
                     }
                 </button>
             </div>
+        </div>
+    </div>
+}
+
+@if (showNavEndShiftModal)
+{
+    <div class="operating-branch-modal-overlay" style="z-index: 12000; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(4px); display: flex; align-items: center; justify-content: center;" @onclick="CancelNavEndShift">
+        <div class="operating-branch-card" style="z-index: 12001; max-width: 440px; background: white; border-radius: 16px; padding: 24px; box-shadow: 0 20px 40px rgba(0,0,0,0.2);" @onclick:stopPropagation="true">
+            <div class="operating-branch-icon-container" style="background: #fef2f2; color: #ef4444; width: 56px; height: 56px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 1.5rem; margin: 0 auto 16px auto;">
+                <i class="bi bi-exclamation-triangle-fill"></i>
+            </div>
+            
+            <h2 class="operating-branch-title" style="text-align: center; margin: 0 0 4px 0; font-size: 1.25rem; font-weight: 700; color: #0f172a;">Confirm End Shift</h2>
+            <p class="operating-branch-subtitle" style="text-align: center; margin: 0 0 20px 0; font-size: 0.85rem; color: #64748b;">Close active billing counter session</p>
+
+            @if (navOpenShiftsList != null && navOpenShiftsList.Count > 1)
+            {
+                <div style="margin-bottom: 16px; text-align: left;">
+                    <label style="font-size: 0.85rem; font-weight: 700; color: #334155; margin-bottom: 6px; display: block;">Select Counter Shift to Close:</label>
+                    <select class="form-select" style="font-size: 0.9rem; border-radius: 8px; width: 100%; padding: 8px 12px; border: 1px solid #cbd5e1;" @bind="selectedNavShiftCnttid">
+                        @foreach (var s in navOpenShiftsList)
+                        {
+                            <option value="@s.cnttid">Counter @s.cntcode (Shift #@s.shiftsno)</option>
+                        }
+                    </select>
+                </div>
+            }
+            else
+            {
+                <p style="font-size: 0.9rem; color: #334155; margin-bottom: 16px; text-align: center;">
+                    Are you sure you want to end and close active counter shift <strong style="color: #0f172a;">'@navShiftEndCounterName'</strong>?
+                </p>
+            }
+
+            <div style="background: #fff1f2; border: 1px solid #fecdd3; border-radius: 8px; padding: 12px; color: #991b1b; font-size: 0.82rem; display: flex; align-items: center; gap: 8px; margin-bottom: 20px; text-align: left;">
+                <i class="bi bi-info-circle-fill" style="font-size: 1.1rem; flex-shrink: 0;"></i>
+                <span>Closing this shift will finalize all active billing transactions for this counter session.</span>
+            </div>
+
+            <div style="display: flex; gap: 12px; width: 100%;">
+                <button type="button" class="btn-denied-secondary" style="flex: 1; justify-content: center; padding: 10px 16px; border-radius: 8px; font-weight: 600; border: 1px solid #cbd5e1; background: white; color: #475569; cursor: pointer;" @onclick="CancelNavEndShift">Cancel</button>
+                <button type="button" class="btn-denied-primary" style="flex: 1; justify-content: center; padding: 10px 16px; border-radius: 8px; font-weight: 600; border: none; background: linear-gradient(135deg, #ef4444, #dc2626); color: white; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;" @onclick="ConfirmNavEndShiftAsync" disabled="@isEndingNavShift">
+                    @if (isEndingNavShift)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                        <span>Ending...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-stop-circle-fill me-1"></i>
+                        <span>End Shift Now</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- GLOBAL WALK-IN DRAFT FLOATING CAPSULE ACCESSIBLE ACROSS ALL PAGES -->
+@if (WalkinStateSvc.HasActiveDraft && WalkinStateSvc.IsWalkinMinimized)
+{
+    <div class="walkin-minimized-floating-pill" @onclick="ExpandWalkinFromLayout" title="Click to expand Walk-in Appointment Draft" style="position: fixed; bottom: 28px; right: 28px; z-index: 10000; background: linear-gradient(135deg, #026aa7 0%, #0284c7 100%); color: white; padding: 10px 18px; border-radius: 50px; box-shadow: 0 10px 25px rgba(2, 106, 167, 0.4); display: flex; align-items: center; gap: 12px; cursor: pointer; border: 2px solid #ffffff; transition: transform 0.2s ease, box-shadow 0.2s ease;">
+        <div style="width: 32px; height: 32px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); display: flex; align-items: center; justify-content: center; font-size: 1.1rem; flex-shrink: 0;">
+            <i class="bi bi-person-plus-fill"></i>
+        </div>
+        <div style="display: flex; flex-direction: column; text-align: left;">
+            <span style="font-size: 0.85rem; font-weight: 700; line-height: 1.2;">@WalkinStateSvc.Title</span>
+            <span style="font-size: 0.75rem; opacity: 0.9; max-width: 180px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                @(string.IsNullOrWhiteSpace(WalkinStateSvc.PatientSearchQuery) ? "Draft in progress" : WalkinStateSvc.PatientSearchQuery)
+            </span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px; margin-left: 4px;">
+            <button type="button" @onclick:stopPropagation="true" @onclick="ExpandWalkinFromLayout" style="background: rgba(255,255,255,0.25); border: none; color: white; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;" title="Expand Card">
+                <i class="bi bi-arrows-angle-expand" style="font-size: 0.8rem;"></i>
+            </button>
+            <button type="button" @onclick:stopPropagation="true" @onclick="DiscardWalkinFromLayout" style="background: rgba(255,255,255,0.25); border: none; color: white; width: 26px; height: 26px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer;" title="Close & Discard">
+                <i class="bi bi-x-lg" style="font-size: 0.8rem;"></i>
+            </button>
         </div>
     </div>
 }
@@ -1256,7 +1346,27 @@
     {
         NavigationManager.LocationChanged += OnLocationChanged;
         TenantState.OnSessionChanged += HandleSessionChanged;
+        WalkinStateSvc.OnChange += HandleWalkinStateChanged;
+        BillingStateSvc.OnChange += HandleBillingStateChanged;
         ExpandSubmenuForCurrentUri();
+    }
+
+    private void HandleWalkinStateChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            if (isDisposed) return;
+            StateHasChanged();
+        });
+    }
+
+    private void HandleBillingStateChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            if (isDisposed) return;
+            StateHasChanged();
+        });
     }
 
     private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
@@ -1286,7 +1396,14 @@
 
     private void EvaluateAccess()
     {
-        var relativePath = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
+        var relativePath = NormalizePath(NavigationManager.ToBaseRelativePath(NavigationManager.Uri));
+
+        if (TenantState.IsAuthenticated && (relativePath == "login" || relativePath == "user-login" || relativePath == "admin-login"))
+        {
+            NavigationManager.NavigateTo("/home", replace: true);
+            return;
+        }
+
         hasAccess = CheckPathPermission(relativePath);
         isCheckingAccess = false;
 
@@ -1298,7 +1415,7 @@
         if (!hasAccess && !TenantState.IsAuthenticated && !IsAnonymousPath(relativePath))
         {
             // Not authenticated and trying to access a private path -> Redirect to login page
-            NavigationManager.NavigateTo("/login");
+            NavigationManager.NavigateTo("/user-login", replace: true);
         }
     }
 
@@ -1861,6 +1978,11 @@
     {
         try
         {
+            await JS.InvokeVoidAsync("medicoAllowBack");
+        }
+        catch { }
+        try
+        {
             await _sessionStorage.DeleteAsync("authToken");
             await _sessionStorage.DeleteAsync("tenant_code");
             await _sessionStorage.DeleteAsync("tenant_name");
@@ -1872,7 +1994,7 @@
         }
         catch { }
         TenantState.Clear();
-        NavigationManager.NavigateTo("/login");
+        NavigationManager.NavigateTo("/user-login", replace: true);
     }
 
     private void ExpandSubmenuForCurrentUri()
@@ -1911,6 +2033,47 @@
         isDisposed = true;
         NavigationManager.LocationChanged -= OnLocationChanged;
         TenantState.OnSessionChanged -= HandleSessionChanged;
+        WalkinStateSvc.OnChange -= HandleWalkinStateChanged;
+        BillingStateSvc.OnChange -= HandleBillingStateChanged;
+    }
+
+    private string GetTabDisplayTitle(ChromeTabItem tab)
+    {
+        if (tab == null) return string.Empty;
+        var norm = NormalizeTabUrl(tab.Url);
+        if (norm == "billing" || norm.Contains("billing"))
+        {
+            var pName = BillingStateSvc.GetBillingPatientName();
+            if (!string.IsNullOrWhiteSpace(pName))
+            {
+                return $"Billing - {pName}";
+            }
+            return "Billing";
+        }
+        return tab.Title;
+    }
+
+    private void ExpandWalkinFromLayout()
+    {
+        WalkinStateSvc.IsWalkinMinimized = false;
+        WalkinStateSvc.ShowWalkinModal = true;
+        WalkinStateSvc.NotifyStateChanged();
+        var targetUri = WalkinStateSvc.TargetPageUri;
+        if (!NavigationManager.Uri.Contains(targetUri, StringComparison.OrdinalIgnoreCase))
+        {
+            NavigationManager.NavigateTo(targetUri);
+        }
+    }
+
+    private async Task DiscardWalkinFromLayout()
+    {
+        WalkinStateSvc.Clear();
+        try
+        {
+            await _sessionStorage.DeleteAsync("WalkinDraftState");
+        }
+        catch { }
+        WalkinStateSvc.NotifyStateChanged();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -1926,7 +2089,41 @@
             catch {}
 
             await ValidateAndAuthorizeAsync();
+            if (TenantState.IsAuthenticated)
+            {
+                try
+                {
+                    await JS.InvokeVoidAsync("medicoPreventBackToLogin");
+                }
+                catch {}
+            }
             await RestoreTabsFromStorageAsync();
+
+            try
+            {
+                if (!WalkinStateSvc.HasActiveDraft)
+                {
+                    var res = await _sessionStorage.GetAsync<string>("WalkinDraftState");
+                    if (res.Success && !string.IsNullOrWhiteSpace(res.Value))
+                    {
+                        var model = JsonConvert.DeserializeObject<Booking.Components.Pages.ReceptionBooking.WalkinDraftModel>(res.Value);
+                        if (model != null && model.ShowWalkinModal)
+                        {
+                            WalkinStateSvc.ShowWalkinModal = true;
+                            WalkinStateSvc.IsWalkinMinimized = model.IsWalkinMinimized;
+                            WalkinStateSvc.PatientSearchQuery = model.PatientSearchQuery ?? "";
+                            WalkinStateSvc.WalkinCustid = model.WalkinCustid;
+                            WalkinStateSvc.WalkinDate = model.WalkinDate != default ? model.WalkinDate : DateTime.UtcNow.ToIndianTime().Date;
+                            WalkinStateSvc.WalkinDcode = model.WalkinDcode;
+                            WalkinStateSvc.WalkinNotes = model.WalkinNotes ?? "";
+                            WalkinStateSvc.SelectedSlotDetailId = model.SelectedSlotDetailId;
+                            WalkinStateSvc.NotifyStateChanged();
+                        }
+                    }
+                }
+            }
+            catch { }
+
             var relativePath = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
             SyncCurrentPageToTabs(relativePath);
             StateHasChanged();
@@ -2537,5 +2734,103 @@
             await JS.InvokeVoidAsync("medicoTabs.scrollStrip", direction);
         }
         catch { }
+    }
+
+    private bool showNavEndShiftModal = false;
+    private bool isEndingNavShift = false;
+    private string navShiftEndCounterName = "";
+    private Guid selectedNavShiftCnttid = Guid.Empty;
+    private List<Booking.Models.CounterTimingDto> navOpenShiftsList = new();
+
+    private async Task PromptEndShiftInNav()
+    {
+        CloseSidebar();
+        try
+        {
+            navOpenShiftsList = await HmsBillingService.GetOpenCountersAsync() ?? new();
+            if (!navOpenShiftsList.Any())
+            {
+                Toast.ShowError("No active open counter shift found.");
+                return;
+            }
+
+            int savedCntCode = 0;
+            try
+            {
+                var cntCodeRes = await _sessionStorage.GetAsync<string>("cntcode");
+                if (cntCodeRes.Success && !string.IsNullOrEmpty(cntCodeRes.Value))
+                {
+                    int.TryParse(cntCodeRes.Value, out savedCntCode);
+                }
+            }
+            catch { }
+
+            var active = navOpenShiftsList.FirstOrDefault(s => savedCntCode > 0 && s.cntcode == savedCntCode) 
+                         ?? navOpenShiftsList.First();
+
+            selectedNavShiftCnttid = active.cnttid;
+            navShiftEndCounterName = $"Counter {active.cntcode}";
+            showNavEndShiftModal = true;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Toast.ShowError($"Error checking active shifts: {ex.Message}");
+        }
+    }
+
+    private void CancelNavEndShift()
+    {
+        showNavEndShiftModal = false;
+    }
+
+    private async Task ConfirmNavEndShiftAsync()
+    {
+        if (selectedNavShiftCnttid == Guid.Empty) return;
+
+        isEndingNavShift = true;
+        StateHasChanged();
+
+        try
+        {
+            int userCode = TenantState.UserCode > 0 ? TenantState.UserCode : 10;
+            var req = new Booking.Models.CloseShiftRequest
+            {
+                cnttid = selectedNavShiftCnttid.ToString(),
+                usercode = userCode
+            };
+
+            var responseStr = await HmsBillingService.CloseShiftAsync(req);
+            if (!string.IsNullOrEmpty(responseStr) && 
+                (responseStr.Contains("safely shut down", StringComparison.OrdinalIgnoreCase) || 
+                 responseStr.Contains("success", StringComparison.OrdinalIgnoreCase) || 
+                 responseStr.Contains("cnttid")))
+            {
+                Toast.ShowSuccess($"Counter shift ended successfully! Logging out...");
+                try
+                {
+                    await _sessionStorage.DeleteAsync("cntcode");
+                }
+                catch { }
+                showNavEndShiftModal = false;
+                StateHasChanged();
+                await Task.Delay(1000);
+                await HandleLogout();
+            }
+            else
+            {
+                Toast.ShowError($"Failed to end shift: {responseStr}");
+            }
+        }
+        catch (Exception ex)
+        {
+            Toast.ShowError($"Error ending shift: {ex.Message}");
+        }
+        finally
+        {
+            isEndingNavShift = false;
+            showNavEndShiftModal = false;
+            StateHasChanged();
+        }
     }
 }

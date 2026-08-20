@@ -14,6 +14,8 @@
 @inject LabSettingService LabSettingService
 @inject IJSRuntime JSRuntime
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject Booking.Services.WalkinStateService WalkinStateSvc
+@implements IDisposable
 @using Microsoft.JSInterop
 
 <PageTitle>Outpatient Visiting</PageTitle>
@@ -167,11 +169,56 @@
 
         <div class="table-card">
             <div class="table-bar-header">
-                <div class="d-flex align-items-center gap-2">
+                <div class="d-flex align-items-center gap-2 flex-wrap">
                     <i class="bi bi-person-lines-fill" style="color: #026aa7; font-size: 1.1rem;"></i>
                     <span style="font-weight: 700; color: #1e293b; font-size: 0.95rem;">Outpatient Queue</span>
-                    <span class="kutty-user-badge alt" title="Total users listed in table">
-                        <i class="bi bi-person-check-fill me-1"></i> @filteredBookings.Count @(filteredBookings.Count == 1 ? "User" : "Users")
+                    @{
+                        var baseList = allBookings.AsQueryable();
+                        if (filterDate.HasValue)
+                        {
+                            var dOnly = DateOnly.FromDateTime(filterDate.Value);
+                            baseList = baseList.Where(b => b.appointment_date == dOnly);
+                        }
+                        if (filterDoctor > 0)
+                        {
+                            baseList = baseList.Where(b => b.dcode == filterDoctor);
+                        }
+                        var baseListItems = baseList.ToList();
+
+                        int totalCnt = baseListItems.Count;
+                        int waitCnt = baseListItems.Count(b => 
+                            !opRegistrations.TryGetValue(b.booking_id, out var op) || 
+                            string.IsNullOrEmpty(op?.visit_status) || 
+                            op.visit_status.Equals("WAITING", StringComparison.OrdinalIgnoreCase));
+                        int consultCnt = baseListItems.Count(b => 
+                            opRegistrations.TryGetValue(b.booking_id, out var op) && 
+                            !string.IsNullOrEmpty(op?.visit_status) && 
+                            op.visit_status.Equals("IN_CONSULTATION", StringComparison.OrdinalIgnoreCase));
+                        int compCnt = baseListItems.Count(b => 
+                            opRegistrations.TryGetValue(b.booking_id, out var op) && 
+                            !string.IsNullOrEmpty(op?.visit_status) && 
+                            (op.visit_status.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) || 
+                             op.visit_status.Equals("VISITED", StringComparison.OrdinalIgnoreCase) || 
+                             op.visit_status.Equals("CONFIRMED", StringComparison.OrdinalIgnoreCase)));
+                        int cancelCnt = baseListItems.Count(b => 
+                            opRegistrations.TryGetValue(b.booking_id, out var op) && 
+                            !string.IsNullOrEmpty(op?.visit_status) && 
+                            op.visit_status.Equals("CANCELLED", StringComparison.OrdinalIgnoreCase));
+                    }
+                    <span class="kutty-user-badge alt @(filterStatus == "ALL" ? "active-filter" : "")" style="cursor: pointer;" title="Click to view all patients" @onclick='() => SetStatusFilter("ALL")'>
+                        <i class="bi bi-people-fill me-1"></i> Total: @totalCnt
+                    </span>
+                    <span class="kutty-user-badge status-waiting @(filterStatus == "WAITING" ? "active-filter" : "")" style="cursor: pointer;" title="Click to filter Waiting patients" @onclick='() => SetStatusFilter("WAITING")'>
+                        <i class="bi bi-hourglass-split me-1"></i> Waiting: @waitCnt
+                    </span>
+                    <span class="kutty-user-badge status-in-consultation @(filterStatus == "IN_CONSULTATION" ? "active-filter" : "")" style="cursor: pointer;" title="Click to filter In Consultation patients" @onclick='() => SetStatusFilter("IN_CONSULTATION")'>
+                        <i class="bi bi-activity me-1"></i> In Consultation: @consultCnt
+                    </span>
+                    <span class="kutty-user-badge status-completed @(filterStatus == "COMPLETED" ? "active-filter" : "")" style="cursor: pointer;" title="Click to filter Completed patients" @onclick='() => SetStatusFilter("COMPLETED")'>
+                        <i class="bi bi-check-circle-fill me-1"></i> Completed: @compCnt
+                    </span>
+                    <span class="kutty-user-badge status-cancelled @(filterStatus == "CANCELLED" ? "active-filter" : "")" style="cursor: pointer;" title="Click to filter Cancelled patients" @onclick='() => SetStatusFilter("CANCELLED")'>
+                        <i class="bi bi-x-circle-fill me-1"></i> Cancelled: @cancelCnt
                     </span>
                 </div>
                 @if (filteredBookings.Any())
@@ -191,7 +238,7 @@
             }
             else
             {
-                <div class="table-responsive">
+                <div class="table-responsive" style="overflow-x: hidden !important;">
                     <table class="medico-table">
                         <thead>
                             <tr>
@@ -303,7 +350,7 @@
                                       <td>
                                           @if (isRegistered && opData != null)
                                           {
-                                              <div class="bill-paid-status-container d-flex justify-content-between align-items-center w-100" style="display: flex !important; justify-content: space-between !important; align-items: center !important; width: 100% !important; min-width: 170px;">
+                                               <div class="bill-paid-status-container d-flex flex-row justify-content-between align-items-center w-100" style="display: flex !important; flex-direction: row !important; justify-content: space-between !important; align-items: center !important; gap: 6px !important; width: 100% !important; min-width: 170px !important; white-space: nowrap !important;">
                                                   @* --- BILLED / UNBILLED BADGE (LEFT) --- *@
                                                   <div class="status-left">
                                                       @if (opData.unbilled_status != true)
@@ -945,13 +992,18 @@
 
 
 
-@if (showDirectWalkinModal)
+@if (showDirectWalkinModal && !isDirectWalkinMinimized)
 {
     <div class="modal-backdrop" @onclick="CloseDirectWalkinModal"></div>
     <div class="glass-modal walkin-modal" style="@(labSetting.is_slot_required == false ? "max-width: 500px !important;" : "")">
-        <div class="modal-header">
+        <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
             <h3>Direct Walk-in OP Registration</h3>
-            <button class="close-btn" @onclick="CloseDirectWalkinModal">×</button>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <button type="button" class="btn btn-sm" @onclick="ToggleDirectWalkinMinimize" title="Minimize card to bottom right rounded capsule" style="background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 8px; padding: 4px 10px; font-size: 0.82rem; font-weight: 700; color: #475569; display: flex; align-items: center; gap: 4px;">
+                    <i class="bi bi-dash-lg"></i> Minimize
+                </button>
+                <button class="close-btn" @onclick="CloseDirectWalkinModal">×</button>
+            </div>
         </div>
         <div class="modal-body @(labSetting.is_slot_required == false ? "" : "modal-grid-2")" style="@(labSetting.is_slot_required == false ? "padding: 1.5rem;" : "")">
             <!-- Left: Form inputs -->
@@ -1369,6 +1421,7 @@
 
     // Direct Walk-in Modal State
     private bool showDirectWalkinModal = false;
+    private bool isDirectWalkinMinimized = false;
     private bool showDressingDoctorDropdown = false;
     private bool showSpecialistDoctorDropdown = false;
     private bool showDutyDoctorDropdown = false;
@@ -1388,6 +1441,7 @@
                 OnDirectWalkinDoctorChanged();
             }
         }
+        _ = SaveDirectWalkinDraftAsync();
     }
     private bool loadingDirectWalkinSlots = false;
     private int directWalkinSelectedDcode = 0;
@@ -1407,6 +1461,7 @@
     {
         patientSearchQuery = e.Value?.ToString() ?? "";
         activePatientIndex = -1;
+        _ = SaveDirectWalkinDraftAsync();
 
         _patientSearchCts?.Cancel();
         _patientSearchCts = new System.Threading.CancellationTokenSource();
@@ -1540,6 +1595,7 @@
         patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
         showPatientDropdown = false;
         activePatientIndex = -1;
+        _ = SaveDirectWalkinDraftAsync();
     }
 
     private void ClearFilters()
@@ -1609,6 +1665,14 @@
         await LoadDataAsync();
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await RestoreDirectWalkinDraftAsync();
+        }
+    }
+
     private async Task LoadDoctorsAsync()
     {
         try
@@ -1674,6 +1738,13 @@
         {
             loading = false;
         }
+    }
+
+    private void SetStatusFilter(string status)
+    {
+        filterStatus = status;
+        currentPage = 1;
+        ApplyFilters();
     }
 
     private void ApplyFilters()
@@ -1988,8 +2059,205 @@
         StateHasChanged();
     }
 
+    public void Dispose()
+    {
+        if (showDirectWalkinModal)
+        {
+            WalkinStateSvc.DraftType = "DIRECT_OP";
+            WalkinStateSvc.ShowWalkinModal = showDirectWalkinModal;
+            WalkinStateSvc.IsWalkinMinimized = isDirectWalkinMinimized;
+            WalkinStateSvc.PatientSearchQuery = patientSearchQuery;
+            WalkinStateSvc.WalkinCustid = directWalkinRequest.custid;
+            WalkinStateSvc.WalkinDate = directWalkinDate;
+            WalkinStateSvc.WalkinDcode = directWalkinSelectedDcode;
+            WalkinStateSvc.DutyDcode = directWalkinDutyDcode;
+            WalkinStateSvc.WalkinRegType = walkinRegType;
+            WalkinStateSvc.WalkinNotes = directWalkinRequest.notes ?? "";
+            WalkinStateSvc.SelectedWalkinSlot = selectedDirectWalkinSlot;
+            WalkinStateSvc.SelectedSlotDetailId = selectedDirectWalkinSlot?.slot_detail_id;
+        }
+    }
+
+    private async Task ToggleDirectWalkinMinimize()
+    {
+        isDirectWalkinMinimized = !isDirectWalkinMinimized;
+        await SaveDirectWalkinDraftAsync();
+        StateHasChanged();
+    }
+
+    private async Task SaveDirectWalkinDraftAsync()
+    {
+        if (!showDirectWalkinModal) return;
+
+        WalkinStateSvc.DraftType = "DIRECT_OP";
+        WalkinStateSvc.ShowWalkinModal = showDirectWalkinModal;
+        WalkinStateSvc.IsWalkinMinimized = isDirectWalkinMinimized;
+        WalkinStateSvc.PatientSearchQuery = patientSearchQuery;
+        WalkinStateSvc.WalkinCustid = directWalkinRequest.custid;
+        WalkinStateSvc.WalkinDate = directWalkinDate;
+        WalkinStateSvc.WalkinDcode = directWalkinSelectedDcode;
+        WalkinStateSvc.DutyDcode = directWalkinDutyDcode;
+        WalkinStateSvc.WalkinRegType = walkinRegType;
+        WalkinStateSvc.WalkinNotes = directWalkinRequest.notes ?? "";
+        WalkinStateSvc.SelectedWalkinSlot = selectedDirectWalkinSlot;
+        WalkinStateSvc.SelectedSlotDetailId = selectedDirectWalkinSlot?.slot_detail_id;
+
+        try
+        {
+            var model = new DirectWalkinDraftModel
+            {
+                DraftType = "DIRECT_OP",
+                ShowWalkinModal = showDirectWalkinModal,
+                IsWalkinMinimized = isDirectWalkinMinimized,
+                PatientSearchQuery = patientSearchQuery,
+                WalkinCustid = directWalkinRequest.custid,
+                WalkinDate = directWalkinDate,
+                WalkinDcode = directWalkinSelectedDcode,
+                DutyDcode = directWalkinDutyDcode,
+                WalkinRegType = walkinRegType,
+                WalkinNotes = directWalkinRequest.notes ?? "",
+                SelectedSlotDetailId = selectedDirectWalkinSlot?.slot_detail_id
+            };
+            var json = Newtonsoft.Json.JsonConvert.SerializeObject(model);
+            await _sessionStorage.SetAsync("WalkinDraftState", json);
+        }
+        catch { }
+        WalkinStateSvc.NotifyStateChanged();
+    }
+
+    public class DirectWalkinDraftModel
+    {
+        public string DraftType { get; set; } = "DIRECT_OP";
+        public bool ShowWalkinModal { get; set; }
+        public bool IsWalkinMinimized { get; set; }
+        public string PatientSearchQuery { get; set; } = "";
+        public decimal WalkinCustid { get; set; }
+        public DateTime WalkinDate { get; set; }
+        public int WalkinDcode { get; set; }
+        public int DutyDcode { get; set; }
+        public string WalkinRegType { get; set; } = "OP";
+        public string WalkinNotes { get; set; } = "";
+        public Guid? SelectedSlotDetailId { get; set; }
+    }
+
+    private async Task RestoreDirectWalkinDraftAsync()
+    {
+        try
+        {
+            if (WalkinStateSvc.HasActiveDraft && WalkinStateSvc.DraftType == "DIRECT_OP")
+            {
+                showDirectWalkinModal = WalkinStateSvc.ShowWalkinModal;
+                isDirectWalkinMinimized = WalkinStateSvc.IsWalkinMinimized;
+                patientSearchQuery = WalkinStateSvc.PatientSearchQuery ?? "";
+                directWalkinRequest.custid = WalkinStateSvc.WalkinCustid;
+                directWalkinDate = WalkinStateSvc.WalkinDate != default ? WalkinStateSvc.WalkinDate : DateTime.UtcNow.ToIndianTime().Date;
+                directWalkinSelectedDcode = WalkinStateSvc.WalkinDcode;
+                directWalkinDutyDcode = WalkinStateSvc.DutyDcode;
+                walkinRegType = WalkinStateSvc.WalkinRegType ?? "OP";
+                directWalkinRequest.notes = WalkinStateSvc.WalkinNotes ?? "";
+
+                int targetDcode = directWalkinSelectedDcode == -1 ? directWalkinDutyDcode : directWalkinSelectedDcode;
+                if (targetDcode > 0)
+                {
+                    await FetchDirectWalkinSlotsQuietlyAsync(targetDcode);
+                    if (WalkinStateSvc.SelectedSlotDetailId.HasValue && directWalkinSlots != null)
+                    {
+                        selectedDirectWalkinSlot = directWalkinSlots.FirstOrDefault(s => s.slot_detail_id == WalkinStateSvc.SelectedSlotDetailId.Value);
+                        if (selectedDirectWalkinSlot != null) directWalkinRequest.slot_detail_id = selectedDirectWalkinSlot.slot_detail_id;
+                    }
+                    else
+                    {
+                        selectedDirectWalkinSlot = WalkinStateSvc.SelectedWalkinSlot;
+                        if (selectedDirectWalkinSlot != null) directWalkinRequest.slot_detail_id = selectedDirectWalkinSlot.slot_detail_id;
+                    }
+                }
+                StateHasChanged();
+                return;
+            }
+
+            var res = await _sessionStorage.GetAsync<string>("WalkinDraftState");
+            if (res.Success && !string.IsNullOrWhiteSpace(res.Value))
+            {
+                var model = Newtonsoft.Json.JsonConvert.DeserializeObject<DirectWalkinDraftModel>(res.Value);
+                if (model != null && model.ShowWalkinModal && model.DraftType == "DIRECT_OP")
+                {
+                    showDirectWalkinModal = true;
+                    isDirectWalkinMinimized = model.IsWalkinMinimized;
+                    patientSearchQuery = model.PatientSearchQuery ?? "";
+                    directWalkinRequest.custid = model.WalkinCustid;
+                    directWalkinDate = model.WalkinDate != default ? model.WalkinDate : DateTime.UtcNow.ToIndianTime().Date;
+                    directWalkinSelectedDcode = model.WalkinDcode;
+                    directWalkinDutyDcode = model.DutyDcode;
+                    walkinRegType = model.WalkinRegType ?? "OP";
+                    directWalkinRequest.notes = model.WalkinNotes ?? "";
+
+                    int targetDcode = directWalkinSelectedDcode == -1 ? directWalkinDutyDcode : directWalkinSelectedDcode;
+                    if (targetDcode > 0)
+                    {
+                        await FetchDirectWalkinSlotsQuietlyAsync(targetDcode);
+                        if (model.SelectedSlotDetailId.HasValue && directWalkinSlots != null)
+                        {
+                            selectedDirectWalkinSlot = directWalkinSlots.FirstOrDefault(s => s.slot_detail_id == model.SelectedSlotDetailId.Value);
+                            if (selectedDirectWalkinSlot != null) directWalkinRequest.slot_detail_id = selectedDirectWalkinSlot.slot_detail_id;
+                        }
+                    }
+
+                    WalkinStateSvc.DraftType = "DIRECT_OP";
+                    WalkinStateSvc.ShowWalkinModal = showDirectWalkinModal;
+                    WalkinStateSvc.IsWalkinMinimized = isDirectWalkinMinimized;
+                    WalkinStateSvc.PatientSearchQuery = patientSearchQuery;
+                    WalkinStateSvc.WalkinCustid = directWalkinRequest.custid;
+                    WalkinStateSvc.WalkinDate = directWalkinDate;
+                    WalkinStateSvc.WalkinDcode = directWalkinSelectedDcode;
+                    WalkinStateSvc.DutyDcode = directWalkinDutyDcode;
+                    WalkinStateSvc.WalkinRegType = walkinRegType;
+                    WalkinStateSvc.WalkinNotes = directWalkinRequest.notes ?? "";
+                    WalkinStateSvc.SelectedWalkinSlot = selectedDirectWalkinSlot;
+                    WalkinStateSvc.SelectedSlotDetailId = selectedDirectWalkinSlot?.slot_detail_id;
+
+                    StateHasChanged();
+                }
+            }
+        }
+        catch { }
+    }
+
+    private async Task FetchDirectWalkinSlotsQuietlyAsync(int targetDcode)
+    {
+        if (targetDcode <= 0) return;
+        loadingDirectWalkinSlots = true;
+        try
+        {
+            directWalkinSlots = await BookingService.GetAvailableSlotsAsync(targetDcode, DateOnly.FromDateTime(directWalkinDate));
+        }
+        catch { }
+        finally
+        {
+            loadingDirectWalkinSlots = false;
+        }
+    }
+
+    private async Task ClearDirectWalkinDraftAsync()
+    {
+        WalkinStateSvc.Clear();
+        try
+        {
+            await _sessionStorage.DeleteAsync("WalkinDraftState");
+        }
+        catch { }
+    }
+
     private void OpenDirectWalkinModal()
     {
+        if (WalkinStateSvc.HasActiveDraft && WalkinStateSvc.DraftType == "DIRECT_OP")
+        {
+            showDirectWalkinModal = true;
+            isDirectWalkinMinimized = false;
+            _ = SaveDirectWalkinDraftAsync();
+            StateHasChanged();
+            return;
+        }
+
         directWalkinRequest = new OPRegistrationModel.DirectWalkinRequest
         {
             custid = 0,
@@ -2004,12 +2272,14 @@
         selectedDirectWalkinSlot = null;
         directWalkinSlots.Clear();
         showDirectWalkinModal = true;
+        isDirectWalkinMinimized = false;
         
         patientSearchQuery = "";
         showPatientDropdown = false;
         searchedPatients.Clear();
 
         _ = LoadDoctorSlotsStatusAsync();
+        _ = SaveDirectWalkinDraftAsync();
     }
 
     private void SelectKnowsSpecialist()
@@ -2026,9 +2296,11 @@
         OnDirectWalkinDoctorChanged();
     }
 
-    private void CloseDirectWalkinModal()
+    private async Task CloseDirectWalkinModal()
     {
         showDirectWalkinModal = false;
+        isDirectWalkinMinimized = false;
+        await ClearDirectWalkinDraftAsync();
     }
 
     private async Task OnDirectWalkinDoctorChanged()
@@ -2063,12 +2335,14 @@
                 loadingDirectWalkinSlots = false;
             }
         }
+        _ = SaveDirectWalkinDraftAsync();
     }
 
     private void SelectDirectWalkinSlot(AvailableSlotModel slot)
     {
         selectedDirectWalkinSlot = slot;
         directWalkinRequest.slot_detail_id = slot.slot_detail_id;
+        _ = SaveDirectWalkinDraftAsync();
     }
 
     private async Task SubmitDirectWalkinAsync()
@@ -2161,7 +2435,7 @@
             if (result != null && result.StartsWith("Success"))
             {
                 ToastService.ShowSuccess($"{(walkinRegType == "DRESSING" ? "Dressing" : "Direct Walk-in")} registered successfully!");
-                CloseDirectWalkinModal();
+                await CloseDirectWalkinModal();
                 await LoadDataAsync();
             }
             else
