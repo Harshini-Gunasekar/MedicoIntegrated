@@ -151,5 +151,6 @@ namespace Booking.Models
         public bool? is_slot_required { get; set; }   // false = walk-in registration without picking a slot
         public bool? op_age_wise_split { get; set; } // true = doctor's OP charge is split by age slab
         public bool? show_all_customers { get; set; } // true = show all customers across tenants, false = show current tenant customers only
+        public bool? critical_value_indication { get; set; } = false;
     }
 }

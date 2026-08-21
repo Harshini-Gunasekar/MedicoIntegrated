@@ -14,6 +14,7 @@ namespace Booking.Services
         public static bool? ShowAllCustomersCache { get; set; }
         public static bool? IsSlotRequiredCache { get; set; }
         public static bool? OpAgeWiseSplitCache { get; set; }
+        public static bool? CriticalValueIndicationCache { get; set; }
 
         public LabSettingService(HttpClient http)
         {
@@ -74,6 +75,20 @@ namespace Booking.Services
                     OpAgeWiseSplitCache = false;
                 }
 
+                if (CriticalValueIndicationCache.HasValue)
+                {
+                    setting.critical_value_indication = CriticalValueIndicationCache.Value;
+                }
+                else if (setting.critical_value_indication.HasValue)
+                {
+                    CriticalValueIndicationCache = setting.critical_value_indication.Value;
+                }
+                else
+                {
+                    setting.critical_value_indication = false;
+                    CriticalValueIndicationCache = false;
+                }
+
                 return setting;
             }
             catch (Exception ex)
@@ -91,6 +106,10 @@ namespace Booking.Services
                 if (OpAgeWiseSplitCache.HasValue)
                 {
                     fallback.op_age_wise_split = OpAgeWiseSplitCache.Value;
+                }
+                if (CriticalValueIndicationCache.HasValue)
+                {
+                    fallback.critical_value_indication = CriticalValueIndicationCache.Value;
                 }
                 return fallback;
             }
@@ -129,6 +148,10 @@ namespace Booking.Services
                 {
                     OpAgeWiseSplitCache = model.op_age_wise_split.Value;
                 }
+                if (model.critical_value_indication.HasValue)
+                {
+                    CriticalValueIndicationCache = model.critical_value_indication.Value;
+                }
 
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
@@ -161,6 +184,10 @@ namespace Booking.Services
                 if (model.op_age_wise_split.HasValue)
                 {
                     OpAgeWiseSplitCache = model.op_age_wise_split.Value;
+                }
+                if (model.critical_value_indication.HasValue)
+                {
+                    CriticalValueIndicationCache = model.critical_value_indication.Value;
                 }
 
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
