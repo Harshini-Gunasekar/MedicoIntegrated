@@ -373,6 +373,7 @@
                             var dateOnly = DateOnly.FromDateTime(date);
                             var hasSlots = slots.Any(s => s.dcode == selectedDoctorFilter && 
                                                          (s.slot_date == dateOnly || (s.slot_date == null && s.day_of_week == date.DayOfWeek.ToString().ToUpper())) && 
+                                                         !IsSlotPast(s, date) &&
                                                          !s.isdeleted);
                             @if (hasSlots)
                             {
@@ -407,6 +408,7 @@
                             var docDaySlots = slots
                                 .Where(s => s.dcode == docId)
                                 .Where(s => s.slot_date == dateOnly || (s.slot_date == null && s.day_of_week == currentDate.DayOfWeek.ToString().ToUpper()))
+                                .Where(s => !IsSlotPast(s, currentDate))
                                 .OrderBy(s => s.slot_start_time)
                                 .ToList();
 
@@ -475,6 +477,7 @@
                         var filteredSlots = slots
                             .Where(s => s.dcode == selectedDoctorFilter)
                             .Where(s => s.slot_date == dateOnly || (s.slot_date == null && s.day_of_week == currentDate.DayOfWeek.ToString().ToUpper()))
+                            .Where(s => !IsSlotPast(s, currentDate))
                             .OrderBy(s => s.slot_start_time)
                             .ToList();
 
@@ -540,6 +543,7 @@
                     var daySlots = slots
                         .Where(s => (selectedDoctorFilter == 0 || s.dcode == selectedDoctorFilter))
                         .Where(s => s.slot_date == dateOnly || (s.slot_date == null && s.day_of_week == viewDate.DayOfWeek.ToString().ToUpper()))
+                        .Where(s => !IsSlotPast(s, viewDate))
                         .OrderBy(s => s.slot_start_time)
                         .ToList();
                 }
@@ -556,6 +560,7 @@
                     {
                         var hasSlots = slots.Any(s => s.dcode == selectedDoctorFilter && 
                                                      (s.slot_date == dateOnly || (s.slot_date == null && s.day_of_week == viewDate.DayOfWeek.ToString().ToUpper())) && 
+                                                     !IsSlotPast(s, viewDate) &&
                                                      !s.isdeleted);
                         @if (hasSlots)
                         {
@@ -1010,19 +1015,31 @@
         return string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Unknown Doctor" : doc.name;
     }
 
+    private void GetDefaultTimeRangeForDate(DateTime date, out DateTime startTime, out DateTime endTime) {
+        if (date.Date == DateTime.Today) {
+            var now = DateTime.Now;
+            if (now.Hour < 9) {
+                startTime = DateTime.Today.AddHours(9);
+                endTime = DateTime.Today.AddHours(10);
+            } else {
+                int nextHour = (now.Minute > 0 || now.Second > 0) ? now.Hour + 1 : now.Hour;
+                if (nextHour >= 24) nextHour = 23;
+                startTime = DateTime.Today.AddHours(nextHour);
+                endTime = startTime.AddHours(1);
+            }
+        } else {
+            startTime = DateTime.Today.AddHours(9);
+            endTime = DateTime.Today.AddHours(10);
+        }
+    }
+
     private void CreateNew() {
         currentDcode = selectedDoctorFilter;
         selectedDates.Clear();
         selectedDates.Add(DateTime.Today);
         tempSlots.Clear();
 
-        DateTime startTime = DateTime.Today.AddHours(9);
-        DateTime endTime = DateTime.Today.AddHours(10);
-
-        if (currentDcode > 0)
-        {
-            SetInitialTimeFromLastSlot(currentDcode, DateTime.Today, out startTime, out endTime);
-        }
+        SetInitialTimeFromLastSlot(currentDcode, DateTime.Today, out DateTime startTime, out DateTime endTime);
 
         var patientType = slotTypes.FirstOrDefault(t => !t.deleted && t.name != null && t.name.Trim().Equals("Patient", StringComparison.OrdinalIgnoreCase))
                        ?? slotTypes.FirstOrDefault(t => !t.deleted && t.name != null && t.name.Contains("Patient", StringComparison.OrdinalIgnoreCase))
@@ -1155,8 +1172,7 @@
     }
 
     private void SetInitialTimeFromLastSlot(int dcode, DateTime date, out DateTime startTime, out DateTime endTime) {
-        startTime = DateTime.Today.AddHours(9);
-        endTime = DateTime.Today.AddHours(10);
+        GetDefaultTimeRangeForDate(date, out startTime, out endTime);
 
         var dateOnly = DateOnly.FromDateTime(date);
         var currentDay = date.DayOfWeek.ToString().ToUpper();
@@ -1171,13 +1187,22 @@
         if (existingSlots.Any())
         {
             var lastSlot = existingSlots.Last();
-            startTime = DateTime.Today.Add(lastSlot.slot_end_time.ToTimeSpan());
-            endTime = startTime.AddHours(1);
+            var lastEndDt = DateTime.Today.Add(lastSlot.slot_end_time.ToTimeSpan());
+
+            if (date.Date == DateTime.Today && lastEndDt < startTime)
+            {
+                // Keep upcoming time since last slot ended in the past
+            }
+            else
+            {
+                startTime = lastEndDt;
+                endTime = startTime.AddHours(1);
+            }
         }
     }
 
     private async Task OnDoctorSelectedInForm() {
-        if (isNew && tempSlots.Count == 1 && currentDcode > 0) {
+        if (isNew && tempSlots.Count == 1) {
             var firstDate = selectedDates.FirstOrDefault(DateTime.Today);
             SetInitialTimeFromLastSlot(currentDcode, firstDate, out DateTime startTime, out DateTime endTime);
             tempSlots[0].StartTime = startTime;
@@ -1188,21 +1213,32 @@
 
     private bool IsSlotPast(DoctorAppointmentSlotMasterModel slot, DateTime date)
     {
-        var slotStart = date.Date.Add(slot.slot_start_time.ToTimeSpan());
-        return slotStart < DateTime.Now;
+        if (slot == null) return false;
+        var slotEnd = date.Date.Add(slot.slot_end_time.ToTimeSpan());
+        return slotEnd <= DateTime.Now;
     }
 
 
     private async Task AddSlotTab() {
         var lastSlot = tempSlots.LastOrDefault();
+        var firstDate = selectedDates.FirstOrDefault(DateTime.Today);
+        GetDefaultTimeRangeForDate(firstDate, out DateTime defStart, out DateTime defEnd);
+
         var newSlot = new SlotEntry { 
             SlotTypeId = 0,
             TypeOfSlot = ""
         };
         
         if (lastSlot != null) {
-            newSlot.StartTime = lastSlot.EndTime;
-            newSlot.EndTime = lastSlot.EndTime.AddHours(1);
+            var nextStart = lastSlot.EndTime;
+            if (firstDate.Date == DateTime.Today && nextStart < defStart) {
+                nextStart = defStart;
+            }
+            newSlot.StartTime = nextStart;
+            newSlot.EndTime = nextStart.AddHours(1);
+        } else {
+            newSlot.StartTime = defStart;
+            newSlot.EndTime = defEnd;
         }
 
         var currentStart = TimeOnly.FromDateTime(newSlot.StartTime);
@@ -1603,6 +1639,12 @@
             for (int i = 0; i < days; i++) {
                 selectedDates.Add(DateTime.Today.AddDays(i));
             }
+            if (isNew && tempSlots.Count == 1 && selectedDates.Any()) {
+                var firstDate = selectedDates.OrderBy(d => d).First();
+                SetInitialTimeFromLastSlot(currentDcode, firstDate, out DateTime startTime, out DateTime endTime);
+                tempSlots[0].StartTime = startTime;
+                tempSlots[0].EndTime = endTime;
+            }
             await ValidateAllTempSlots();
         }
     }
@@ -1611,6 +1653,13 @@
         if (date < DateTime.Today) return;
         if (selectedDates.Any(d => d.Date == date.Date)) selectedDates.RemoveAll(d => d.Date == date.Date);
         else selectedDates.Add(date);
+
+        if (isNew && tempSlots.Count == 1 && selectedDates.Any()) {
+            var firstDate = selectedDates.OrderBy(d => d).First();
+            SetInitialTimeFromLastSlot(currentDcode, firstDate, out DateTime startTime, out DateTime endTime);
+            tempSlots[0].StartTime = startTime;
+            tempSlots[0].EndTime = endTime;
+        }
         await ValidateAllTempSlots();
     }
 
@@ -1628,6 +1677,7 @@
         var slotsToEdit = slots
             .Where(s => s.dcode == selectedDoctorFilter && 
                        (s.slot_date == dateOnly || (s.slot_date == null && s.day_of_week == date.DayOfWeek.ToString().ToUpper())) && 
+                       !IsSlotPast(s, date) &&
                        !s.isdeleted)
             .OrderBy(s => s.slot_start_time)
             .ToList();
