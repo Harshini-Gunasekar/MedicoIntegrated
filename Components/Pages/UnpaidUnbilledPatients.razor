@@ -1,0 +1,1579 @@
+@page "/billing/unpaid-unbilled"
+@rendermode InteractiveServer
+@using Booking.Models
+@using Booking.Services
+@using Booking.Helpers
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using Newtonsoft.Json
+@inject HmsBillingService HmsBillingService
+@inject AppointmentBookingService BookingService
+@inject DoctorService DoctorService
+@inject ToastService ToastService
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject IHttpClientFactory ClientFactory
+@inject Booking.Services.CounterMasterService CounterMasterService
+@inject Booking.Services.PaymodeMasterService PaymodeMasterService
+@inject Booking.Services.HmsDueCollectionService DueCollectionService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+
+<PageTitle>Unpaid & Unbilled Patients - Medico Billing</PageTitle>
+
+<div class="unpaid-page-wrapper">
+    <!-- Header Section -->
+    <div class="page-header-card">
+        <div class="header-title-group">
+            <div class="header-icon-box">
+                <i class="bi bi-clock-history"></i>
+            </div>
+            <div>
+                <h2 class="header-title">Unpaid & Unbilled Patients</h2>
+                <div class="header-subtitle">
+                    <span class="status-pulse-dot"></span>
+                    <span>Real-time tracking of unbilled visits and pending bill collections</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Top Metrics Cards -->
+        <div class="header-metrics-row">
+            <div class="metric-card total-card">
+                <div class="metric-icon">
+                    <i class="bi bi-people-fill"></i>
+                </div>
+                <div class="metric-content">
+                    <span class="metric-label">TOTAL PENDING</span>
+                    <span class="metric-val">@filteredItems.Count</span>
+                </div>
+            </div>
+
+            <div class="metric-card unbilled-card">
+                <div class="metric-icon">
+                    <i class="bi bi-file-earmark-text-fill"></i>
+                </div>
+                <div class="metric-content">
+                    <span class="metric-label">UNBILLED CASES</span>
+                    <span class="metric-val">@filteredItems.Count(x => x.IsUnbilled)</span>
+                </div>
+            </div>
+
+            <div class="metric-card unpaid-card">
+                <div class="metric-icon">
+                    <i class="bi bi-exclamation-octagon-fill"></i>
+                </div>
+                <div class="metric-content">
+                    <span class="metric-label">UNPAID BILLS</span>
+                    <span class="metric-val">@filteredItems.Count(x => x.IsUnpaid)</span>
+                </div>
+            </div>
+
+            <div class="metric-card amount-card">
+                <div class="metric-icon">
+                    <i class="bi bi-cash-stack"></i>
+                </div>
+                <div class="metric-content">
+                    <span class="metric-label">TOTAL OUTSTANDING</span>
+                    <span class="metric-val">₹@string.Format("{0:N2}", TotalOutstandingAmount)</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filters Card -->
+    <div class="filters-card">
+        <div class="filters-grid">
+            <!-- Date Filter (From Date) -->
+            <div class="filter-group">
+                <label class="filter-label">FROM DATE</label>
+                <div class="input-with-icon">
+                    <i class="bi bi-calendar-event"></i>
+                    <input type="date" class="form-control filter-control" value="@fromDate.ToString("yyyy-MM-dd")" @onchange="OnFromDateChanged" />
+                </div>
+            </div>
+
+            <!-- Date Filter (To Date) -->
+            <div class="filter-group">
+                <label class="filter-label">TO DATE</label>
+                <div class="input-with-icon">
+                    <i class="bi bi-calendar-event"></i>
+                    <input type="date" class="form-control filter-control" value="@toDate.ToString("yyyy-MM-dd")" @onchange="OnToDateChanged" />
+                </div>
+            </div>
+
+            <!-- Doctor Filter -->
+            <div class="filter-group">
+                <label class="filter-label">DOCTOR</label>
+                <div class="input-with-icon">
+                    <i class="bi bi-person-badge"></i>
+                    <select class="form-select filter-control" value="@selectedDoctorCode" @onchange="OnDoctorChanged">
+                        <option value="0">All Doctors</option>
+                        @foreach (var doc in doctors)
+                        {
+                            <option value="@doc.dcode">@(string.IsNullOrWhiteSpace(doc.name) ? $"Doctor #{doc.dcode}" : $"Dr. {doc.name}")</option>
+                        }
+                    </select>
+                </div>
+            </div>
+
+            <!-- Status Filter Type (All, Unbilled Only, Unpaid Only) -->
+            <div class="filter-group">
+                <label class="filter-label">STATUS CATEGORY</label>
+                <div class="input-with-icon">
+                    <i class="bi bi-funnel"></i>
+                    <select class="form-select filter-control" value="@selectedCategory" @onchange="OnCategoryChanged">
+                        <option value="ALL">All (Unbilled & Unpaid)</option>
+                        <option value="UNBILLED">Unbilled Only</option>
+                        <option value="UNPAID">Unpaid / Due Only</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- Search Bar -->
+            <div class="filter-group filter-search-group">
+                <label class="filter-label">SEARCH PATIENT / OP / BILL</label>
+                <div class="input-with-icon">
+                    <i class="bi bi-search"></i>
+                    <input type="text" class="form-control filter-control" placeholder="Search by Name, OP No, Cust ID, Mobile..." value="@searchQuery" @oninput="OnSearchInput" />
+                    @if (!string.IsNullOrEmpty(searchQuery))
+                    {
+                        <button type="button" class="btn-clear-search" @onclick="ClearSearch" title="Clear search">&times;</button>
+                    }
+                </div>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="filter-actions-group">
+                <button type="button" class="btn-filter-action btn-refresh" @onclick="LoadDataAsync" title="Reload data">
+                    <i class="bi bi-arrow-clockwise @(loading ? "spin" : "")"></i> Refresh
+                </button>
+                <button type="button" class="btn-filter-action btn-reset" @onclick="ResetFilters" title="Reset all filters">
+                    <i class="bi bi-arrow-counterclockwise"></i> Reset
+                </button>
+            </div>
+        </div>
+
+        <!-- Quick Filter Chips -->
+        <div class="quick-chips-row">
+            <div class="chips-left">
+                <button type="button" class="quick-chip @(isTodayFilter ? "active" : "")" @onclick="SetTodayFilter">
+                    <i class="bi bi-calendar-check me-1"></i> Today
+                </button>
+                <button type="button" class="quick-chip @(isYesterdayFilter ? "active" : "")" @onclick="SetYesterdayFilter">
+                    <i class="bi bi-calendar-minus me-1"></i> Yesterday
+                </button>
+                <button type="button" class="quick-chip @(isLast7DaysFilter ? "active" : "")" @onclick="SetLast7DaysFilter">
+                    <i class="bi bi-calendar-week me-1"></i> Last 7 Days
+                </button>
+                <button type="button" class="quick-chip @(isThisMonthFilter ? "active" : "")" @onclick="SetThisMonthFilter">
+                    <i class="bi bi-calendar-month me-1"></i> This Month
+                </button>
+            </div>
+            <div class="chips-right">
+                <span class="active-count-badge">
+                    <i class="bi bi-card-checklist me-1"></i> Showing <strong>@filteredItems.Count</strong> entries
+                </span>
+            </div>
+        </div>
+    </div>
+
+    <!-- Main Content Table Card -->
+    <div class="data-table-card">
+        <!-- Table Header Bar -->
+        <div class="table-bar-header">
+            <div class="d-flex align-items-center gap-2">
+                <i class="bi bi-list-columns-reverse text-primary" style="font-size: 1.05rem;"></i>
+                <span class="table-bar-title">Unbilled & Unpaid Patient Register</span>
+            </div>
+
+            <div class="d-flex align-items-center gap-2">
+                <!-- Pagination Toggle Button -->
+                <button type="button" 
+                        class="btn-pagination-toggle @(!enablePagination ? "show-all-active" : "")" 
+                        @onclick="TogglePagination"
+                        title="@(enablePagination ? "Click to disable pagination and show all data" : "Click to enable pagination (10 per page)")">
+                    <i class="bi @(!enablePagination ? "bi-list-stars" : "bi-files")"></i>
+                    <span>@(!enablePagination ? "Show All (All Data)" : "Pagination (10/Page)")</span>
+                    <span class="badge @(!enablePagination ? "bg-secondary" : "bg-primary")">@(!enablePagination ? "OFF" : "ON")</span>
+                </button>
+
+                @if (enablePagination && filteredItems.Any())
+                {
+                    <span style="font-size: 0.78rem; color: #64748b; font-weight: 600;">
+                        Page @currentPage of @((int)Math.Ceiling((double)filteredItems.Count / pageSize))
+                    </span>
+                }
+            </div>
+        </div>
+
+        @if (loading)
+        {
+            <div class="table-loading-container">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2 text-muted fw-semibold">Loading unbilled and unpaid patient records...</p>
+            </div>
+        }
+        else if (!filteredItems.Any())
+        {
+            <div class="empty-state-box">
+                <div class="empty-icon-circle">
+                    <i class="bi bi-check2-all text-success"></i>
+                </div>
+                <h4>No Pending Records Found</h4>
+                <p>All patient visits and bills for the selected filter criteria are fully billed and settled.</p>
+                <button type="button" class="btn btn-sm btn-outline-primary mt-2" @onclick="ResetFilters">
+                    <i class="bi bi-arrow-counterclockwise me-1"></i> Reset Filters
+                </button>
+            </div>
+        }
+        else
+        {
+            var displayList = enablePagination 
+                ? filteredItems.Skip((currentPage - 1) * pageSize).Take(pageSize).ToList() 
+                : filteredItems;
+
+            <div class="table-responsive" style="overflow-x: hidden !important;">
+                <table class="medico-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 75px;">Token</th>
+                            <th>Patient Details</th>
+                            <th>OP Number</th>
+                            <th>Visit Date</th>
+                            <th>Doctor</th>
+                            <th>Reg Type</th>
+                            <th>Unbilled Items</th>
+                            <th>Bill & Paid Status</th>
+                            <th style="text-align: right;">Outstanding (₹)</th>
+                            <th style="text-align: center; width: 140px;">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var item in displayList)
+                        {
+                            <tr @ondblclick="() => OpenBilling(item)" style="cursor: pointer;" title="Double-click to open Billing page for @item.PatientName">
+                                <!-- Token No -->
+                                <td>
+                                    @if (!string.IsNullOrWhiteSpace(item.TokenNo) && item.TokenNo != "0")
+                                    {
+                                        <span class="badge-op">@item.TokenNo</span>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted" style="margin-left: 10px; font-weight: 700;">-</span>
+                                    }
+                                </td>
+
+                                <!-- Patient Details -->
+                                <td>
+                                    <div class="patient-name-block">
+                                        <span class="pat-name">@item.PatientName</span>
+                                        @if (item.IsVip)
+                                        {
+                                            <span class="vip-badge">VIP</span>
+                                        }
+                                        @if (item.IsIpReferred)
+                                        {
+                                            <span class="ip-referred-badge">IP Referred</span>
+                                        }
+                                    </div>
+                                    <div class="patient-sub-block">
+                                        <span class="text-muted font-monospace">#@item.CustId</span>
+                                        @if (!string.IsNullOrWhiteSpace(item.Mobile))
+                                        {
+                                            <span class="text-muted ms-2"><i class="bi bi-telephone me-1"></i>@item.Mobile</span>
+                                        }
+                                    </div>
+                                </td>
+
+                                <!-- OP No -->
+                                <td>
+                                    <span class="fw-bold text-primary">@(string.IsNullOrWhiteSpace(item.OpNo) ? "-" : item.OpNo)</span>
+                                </td>
+
+                                <!-- Visit Date -->
+                                <td>
+                                    <span class="fw-semibold">@item.VisitDate.ToString("dd-MMM-yyyy")</span>
+                                </td>
+
+                                <!-- Doctor -->
+                                <td>
+                                    <span class="fw-bold" style="color: #026aa7;">
+                                        @(string.IsNullOrWhiteSpace(item.DoctorName) ? $"Doctor #{item.Dcode}" : item.DoctorName)
+                                    </span>
+                                </td>
+
+                                <!-- Reg Type -->
+                                <td>
+                                    <span class="badge-type @item.RegType.ToLower()">@item.RegType</span>
+                                </td>
+
+                                <!-- Unbilled Items Breakdown -->
+                                <td>
+                                    @if (item.UnbilledCharges.Any())
+                                    {
+                                        <button type="button" class="btn-unbilled-chip" @onclick="() => OpenChargesModal(item)" title="Click to view @item.UnbilledCharges.Count unbilled charges breakdown">
+                                            <i class="bi bi-file-earmark-medical me-1"></i>
+                                            <span>@item.UnbilledCharges.Count item(s)</span>
+                                            <strong class="ms-1">₹@string.Format("{0:N0}", item.TotalUnbilledAmount)</strong>
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted" style="font-size: 0.75rem;">No unbilled items</span>
+                                    }
+                                </td>
+
+                                <!-- Bill & Paid Status -->
+                                <td>
+                                    <div class="d-flex align-items-center gap-1 flex-wrap">
+                                        @if (item.IsUnbilled)
+                                        {
+                                            <span class="status-badge-pill unbilled" title="Bill has not been generated">
+                                                <i class="bi bi-file-earmark-text-fill"></i> Unbilled
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="status-badge-pill billed" title="Bill generated: @item.BillNo">
+                                                <i class="bi bi-file-earmark-check-fill"></i> Billed
+                                            </span>
+                                        }
+
+                                        @if (item.IsUnpaid)
+                                        {
+                                            <span class="btn-bill-status unpaid" title="Payment pending">
+                                                <i class="bi bi-exclamation-circle-fill"></i> Unpaid
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="btn-bill-status paid" title="Paid in full">
+                                                <i class="bi bi-check-circle-fill"></i> Paid
+                                            </span>
+                                        }
+                                    </div>
+                                </td>
+
+                                <!-- Outstanding Amount -->
+                                <td style="text-align: right;">
+                                    <span class="outstanding-val @(item.OutstandingAmount > 0 ? "due" : "zero")">
+                                        ₹@string.Format("{0:N2}", item.OutstandingAmount)
+                                    </span>
+                                </td>
+
+                                <!-- Actions -->
+                                <td style="text-align: center;">
+                                    <div class="d-flex align-items-center justify-content-center gap-1">
+                                        @if (item.IsUnbilled)
+                                        {
+                                            <button type="button" class="btn-action-primary" @onclick="() => OpenBilling(item)" title="Generate Bill for this patient">
+                                                <i class="bi bi-credit-card me-1"></i> Bill
+                                            </button>
+                                        }
+                                        else
+                                        {
+                                            <button type="button" class="btn-action-pay" @onclick="() => OpenPayment(item)" title="Collect Cash / Counter Payment">
+                                                <i class="bi bi-wallet2 me-1"></i> Pay
+                                            </button>
+                                        }
+
+                                        @if (item.UnbilledCharges.Any())
+                                        {
+                                            <button type="button" class="btn-action-secondary" @onclick="() => OpenChargesModal(item)" title="View Charges Breakdown">
+                                                <i class="bi bi-eye"></i>
+                                            </button>
+                                        }
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+
+            @if (enablePagination && filteredItems.Any())
+            {
+                var totalItems = filteredItems.Count;
+                var totalPages = (int)Math.Ceiling((double)totalItems / pageSize);
+                if (totalPages > 1)
+                {
+                    <div class="pagination-footer">
+                        <div class="pagination-info">
+                            Showing <span class="pagination-info-highlight">@(((currentPage - 1) * pageSize) + 1)</span> to <span class="pagination-info-highlight">@(Math.Min(currentPage * pageSize, totalItems))</span> of <span class="pagination-info-highlight">@totalItems</span> entries
+                        </div>
+                        <div class="pagination-btns">
+                            <button class="page-btn" disabled="@(currentPage == 1)" @onclick="() => currentPage = 1" title="First Page">&laquo;</button>
+                            <button class="page-btn" disabled="@(currentPage == 1)" @onclick="() => currentPage--" title="Previous Page">&lsaquo;</button>
+
+                            @for (int p = Math.Max(1, currentPage - 2); p <= Math.Min(totalPages, currentPage + 2); p++)
+                            {
+                                var pageNum = p;
+                                <button class="page-btn @(currentPage == pageNum ? "active" : "")" @onclick="() => currentPage = pageNum">@pageNum</button>
+                            }
+
+                            <button class="page-btn" disabled="@(currentPage == totalPages)" @onclick="() => currentPage++" title="Next Page">&rsaquo;</button>
+                            <button class="page-btn" disabled="@(currentPage == totalPages)" @onclick="() => currentPage = totalPages" title="Last Page">&raquo;</button>
+                        </div>
+                    </div>
+                }
+            }
+        }
+    </div>
+</div>
+
+<!-- Unbilled Charges Modal Dialog -->
+@if (showChargesModal && selectedModalPatient != null)
+{
+    <div class="modal-backdrop" @onclick="CloseChargesModal"></div>
+    <div class="glass-modal charges-details-modal">
+        <div class="modal-header">
+            <div class="d-flex align-items-center gap-3">
+                <div class="modal-token-pill">
+                    <span class="label">TOKEN</span>
+                    <span class="val">#@(string.IsNullOrWhiteSpace(selectedModalPatient.TokenNo) ? "-" : selectedModalPatient.TokenNo)</span>
+                </div>
+                <div>
+                    <h3 class="modal-patient-title">@selectedModalPatient.PatientName</h3>
+                    <div class="d-flex align-items-center gap-2 mt-1">
+                        <span class="text-muted" style="font-size: 0.78rem;">Patient ID: <strong>#@selectedModalPatient.CustId</strong></span>
+                        <span class="text-muted" style="font-size: 0.78rem;">OP No: <strong class="text-primary">@(string.IsNullOrWhiteSpace(selectedModalPatient.OpNo) ? "-" : selectedModalPatient.OpNo)</strong></span>
+                        <span class="text-muted" style="font-size: 0.78rem;">Doctor: <strong>@selectedModalPatient.DoctorName</strong></span>
+                    </div>
+                </div>
+            </div>
+            <button class="close-btn" @onclick="CloseChargesModal">&times;</button>
+        </div>
+
+        <div class="modal-body" style="padding: 1.25rem;">
+            <div class="charges-summary-bar">
+                <span><i class="bi bi-info-circle me-1"></i> These service charges are pending and will be automatically imported into the billing invoice.</span>
+                <span class="fw-bold text-primary">Total: ₹@string.Format("{0:N2}", selectedModalPatient.TotalUnbilledAmount)</span>
+            </div>
+
+            <div class="table-responsive mt-3" style="border: 1px solid #e2e8f0; border-radius: 8px; max-height: 350px;">
+                <table class="table table-sm table-hover mb-0" style="font-size: 0.8rem;">
+                    <thead style="background: #026aa7; color: #ffffff;">
+                        <tr>
+                            <th style="padding: 6px 10px;">Item / Service Name</th>
+                            <th style="padding: 6px 10px;">Entry Type</th>
+                            <th style="padding: 6px 10px; text-align: center;">Qty</th>
+                            <th style="padding: 6px 10px; text-align: right;">Rate (₹)</th>
+                            <th style="padding: 6px 10px; text-align: right;">Discount (₹)</th>
+                            <th style="padding: 6px 10px; text-align: right;">Amount (₹)</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var charge in selectedModalPatient.UnbilledCharges)
+                        {
+                            var displayName = !string.IsNullOrWhiteSpace(charge.particulars) 
+                                ? charge.particulars 
+                                : (!string.IsNullOrWhiteSpace(charge.item_name) ? charge.item_name : (charge.entrytype ?? "Consultation Fee"));
+
+                            <tr>
+                                <td style="padding: 6px 10px; font-weight: 700; color: #1e293b;">@displayName</td>
+                                <td style="padding: 6px 10px;">
+                                    <span class="badge bg-light text-dark border">@(charge.entrytype ?? "GENERAL")</span>
+                                </td>
+                                <td style="padding: 6px 10px; text-align: center;">@(charge.quantity ?? 1)</td>
+                                <td style="padding: 6px 10px; text-align: right;">₹@string.Format("{0:N2}", charge.rate ?? 0)</td>
+                                <td style="padding: 6px 10px; text-align: right; color: #dc2626;">₹@string.Format("{0:N2}", charge.discount ?? 0)</td>
+                                <td style="padding: 6px 10px; text-align: right; font-weight: 700; color: #026aa7;">₹@string.Format("{0:N2}", charge.amount ?? 0)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <div class="modal-footer" style="display: flex; justify-content: space-between; align-items: center;">
+            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="CloseChargesModal">
+                Close
+            </button>
+            @if (selectedModalPatient.IsUnbilled)
+            {
+                <button type="button" class="btn btn-sm btn-primary fw-bold" @onclick="() => OpenBilling(selectedModalPatient)">
+                    <i class="bi bi-credit-card me-1"></i> Proceed to Billing
+                </button>
+            }
+            else
+            {
+                <button type="button" class="btn btn-sm btn-success fw-bold" @onclick="() => OpenPayment(selectedModalPatient)">
+                    <i class="bi bi-wallet2 me-1"></i> Proceed to Payment
+                </button>
+            }
+        </div>
+    </div>
+}
+
+<!-- Cash Counter Payment Modal -->
+@if (showPaymentModal && selectedBillForPayment != null)
+{
+    var dueAmt = selectedBillForPayment.balance_amount ?? 0;
+    var netAmt = selectedBillForPayment.net_amount ?? 0;
+    var paidAmt = selectedBillForPayment.paid_amount ?? 0;
+
+    <div class="modal-backdrop" @onclick="ClosePaymentModal"></div>
+    <div class="payment-modal animated-modal">
+        <div class="modal-header-gradient">
+            <div class="modal-header-left">
+                <div class="modal-header-icon">
+                    <i class="bi bi-wallet2"></i>
+                </div>
+                <div>
+                    <h3 class="modal-title-text">Cash Counter Payment</h3>
+                    <p class="modal-subtitle-text">Process bill settlement and paymode allocations</p>
+                </div>
+            </div>
+            <button class="modal-close-icon-btn" @onclick="ClosePaymentModal" title="Close Modal">
+                <i class="bi bi-x-lg"></i>
+            </button>
+        </div>
+
+        <div class="modal-body-custom">
+            <!-- Hero Summary Header Card -->
+            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.25rem 1.75rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; width: 100%;">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase;">BILL NO:</span>
+                    <span style="font-size: 0.85rem; font-weight: 700; color: #4f46e5; background: #e0e7ff; padding: 0.25rem 0.75rem; border-radius: 8px; font-family: monospace; border: 1px solid #c7d2fe;">@selectedBillForPayment.bill_no</span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <span style="font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase;">PATIENT NAME:</span>
+                    <span style="font-size: 1.05rem; font-weight: 800; color: #0f172a;">@selectedBillForPayment.patient_name</span>
+                </div>
+            </div>
+
+            <EditForm Model="@paymentRequest" OnValidSubmit="SubmitPaymentAsync" class="payment-form">
+                <!-- Form Fields 2-Column Grid -->
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1.5rem; margin-bottom: 1.5rem;">
+                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                            <i class="bi bi-pc-display text-slate-500"></i> COUNTER CODE<span style="color: #ef4444;">*</span>
+                        </label>
+                        <select class="form-select" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; text-align-last: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.cntcode" required>
+                            <option value="">Select Counter</option>
+                            @foreach (var c in counters)
+                            {
+                                <option value="@((int)c.cntcode)">@c.name</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                            <i class="bi bi-building text-slate-500"></i> COUNTER BRANCH<span style="color: #ef4444;">*</span>
+                        </label>
+                        <select class="form-select" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; text-align-last: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.enteredbhcode" required>
+                            <option value="">Select Branch</option>
+                            @foreach (var b in branches)
+                            {
+                                <option value="@b.bh_code">@b.name</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                            <i class="bi bi-hash text-slate-500"></i> REFERENCE NO / TXN ID
+                        </label>
+                        <input type="text" class="form-control" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.reference_no" placeholder="e.g. APRV-88421" />
+                    </div>
+
+                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
+                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                            <i class="bi bi-bank text-slate-500"></i> BANK NAME
+                        </label>
+                        <input type="text" class="form-control" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.bank_name" placeholder="e.g. HDFC Bank" />
+                    </div>
+                </div>
+
+                <!-- Net Payable Row -->
+                <div style="padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; margin-top: 0.5rem;">
+                    <span style="font-weight: 700; color: #1e293b; font-size: 0.95rem; text-transform: uppercase;">NET PAYABLE</span>
+                    <span style="font-weight: 800; color: #6366f1; font-size: 1.25rem;">₹ @dueAmt.ToString("F2")</span>
+                </div>
+
+                @if (patientAdvanceAvailable > 0)
+                {
+                    var remainingAdvance = Math.Max(0, patientAdvanceAvailable - (paymentRequest.amount));
+                    <div style="margin: 0.75rem 0 0.5rem; background: #ecfdf5; border: 1.5px dashed #34d399; border-radius: 10px; padding: 0.6rem 0.85rem; display: flex; flex-direction: column; gap: 0.3rem;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 0.72rem; font-weight: 700; color: #047857; text-transform: uppercase;">
+                                <i class="bi bi-wallet2 me-1"></i> Patient Advance Available
+                            </span>
+                            <span style="font-weight: 800; color: #047857; font-size: 0.88rem;">₹ @patientAdvanceAvailable.ToString("N2")</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px dashed #a7f3d0; padding-top: 0.25rem;">
+                            <span style="font-size: 0.72rem; font-weight: 800; color: #065f46; text-transform: uppercase;">
+                                Remaining Advance Balance
+                            </span>
+                            <span style="font-weight: 800; color: #065f46; font-size: 0.95rem;">₹ @remainingAdvance.ToString("N2")</span>
+                        </div>
+                    </div>
+                }
+
+                <!-- Payment Box (Dynamic Paymodes Dropdowns) -->
+                <div style="margin: 1rem 0; background: #f8faff; border-radius: 12px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                    <!-- Paymode Option 1 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+                        <select class="form-select" style="flex: 1; height: 34px; font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc1" @bind:after="RecalculatePaymentTotals">
+                            <option value="">Select Paymode 1</option>
+                            @foreach (var pm in paymodes)
+                            {
+                                <option value="@pm.pmcode">@pm.name</option>
+                            }
+                        </select>
+                        <input type="number" style="width: 100px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.5rem; height: 34px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="paymentRequest.pmc1_amount" @bind:event="oninput" @bind:after="RecalculatePaymentTotals" placeholder="0" />
+                        <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode1" title="Clear Paymode 1">
+                            <i class="bi bi-x"></i>
+                        </button>
+                    </div>
+                    <!-- Paymode Option 2 -->
+                    @if (showPaymode2)
+                    {
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+                            <select class="form-select" style="flex: 1; height: 34px; font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc2" @bind:after="RecalculatePaymentTotals">
+                                <option value="">Select Paymode 2</option>
+                                @foreach (var pm in paymodes)
+                                {
+                                    <option value="@pm.pmcode">@pm.name</option>
+                                }
+                            </select>
+                            <input type="number" style="width: 100px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.5rem; height: 34px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="paymentRequest.pmc2_amount" @bind:event="oninput" @bind:after="RecalculatePaymentTotals" placeholder="0" />
+                            <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode2" title="Clear Paymode 2">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                    }
+
+                    <!-- Paymode Option 3 -->
+                    @if (showPaymode3)
+                    {
+                        <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
+                            <select class="form-select" style="flex: 1; height: 34px; font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc3" @bind:after="RecalculatePaymentTotals">
+                                <option value="">Select Paymode 3</option>
+                                @foreach (var pm in paymodes)
+                                {
+                                    <option value="@pm.pmcode">@pm.name</option>
+                                }
+                            </select>
+                            <input type="number" style="width: 100px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.5rem; height: 34px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="paymentRequest.pmc3_amount" @bind:event="oninput" @bind:after="RecalculatePaymentTotals" placeholder="0" />
+                            <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode3" title="Clear Paymode 3">
+                                <i class="bi bi-x"></i>
+                            </button>
+                        </div>
+                    }
+
+                    @if (!showPaymode2 || !showPaymode3)
+                    {
+                        <div style="display: flex; justify-content: center; width: 100%;">
+                            <button type="button" style="background: #e0e7ff; color: #4f46e5; border: none; border-radius: 8px; padding: 0.35rem 0.75rem; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; gap: 0.25rem; cursor: pointer; margin-top: 0.25rem;" @onclick="AddPaymode">
+                                <i class="bi bi-plus-lg"></i> Add Paymode
+                            </button>
+                        </div>
+                    }
+                </div>
+
+                <!-- Balance Due Row -->
+                <div style="padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0;">
+                    @if (paymentRequest.amount > dueAmt)
+                    {
+                        <span style="font-weight: 700; color: #ef4444; font-size: 0.85rem; text-transform: uppercase;">RETURN BALANCE</span>
+                        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.15rem;">
+                            <span style="font-weight: 800; color: #ef4444; font-size: 1.15rem;">₹ @((paymentRequest.amount - dueAmt).ToString("F2"))</span>
+                            <span style="font-size: 0.6rem; font-weight: 700; color: #ef4444; background: #fee2e2; padding: 0.1rem 0.3rem; border-radius: 4px; text-transform: uppercase;">Change Owed</span>
+                        </div>
+                    }
+                    else
+                    {
+                        <span style="font-weight: 700; color: #475569; font-size: 0.85rem; text-transform: uppercase;">BALANCE DUE</span>
+                        @if (dueAmt - paymentRequest.amount <= 0)
+                        {
+                            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.15rem;">
+                                <span style="font-weight: 800; color: #10b981; font-size: 1.15rem;">₹ 0.00</span>
+                                <span style="font-size: 0.6rem; font-weight: 700; color: #10b981; background: #e6f4ea; padding: 0.1rem 0.3rem; border-radius: 4px; text-transform: uppercase;">Fully Settled</span>
+                            </div>
+                        }
+                        else
+                        {
+                            <span style="font-weight: 800; color: #f97316; font-size: 1.15rem;">₹ @((dueAmt - paymentRequest.amount).ToString("F2"))</span>
+                        }
+                    }
+                </div>
+
+                <!-- Total Amount Paid Box -->
+                <div style="background: #4f46e5; padding: 0.75rem 1rem; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <span style="font-weight: 700; color: #ffffff; font-size: 0.9rem; text-transform: uppercase;">TOTAL AMOUNT PAID</span>
+                    <span style="font-weight: 800; color: #ffffff; font-size: 1.25rem;">₹ @paymentRequest.amount.ToString("F2")</span>
+                </div>
+
+                <!-- Actions -->
+                <div class="modal-footer-actions">
+                    <button type="button" class="btn-modal-cancel" @onclick="ClosePaymentModal" disabled="@paymentSaving">
+                        <i class="bi bi-x-circle me-1"></i> Cancel
+                    </button>
+                    <button type="submit" class="btn-modal-submit" disabled="@(paymentSaving || paymentRequest.amount <= 0)">
+                        @if (paymentSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                            <span> Processing...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check-circle-fill me-1"></i>
+                            <span>Confirm & Add Payment</span>
+                        }
+                    </button>
+                </div>
+            </EditForm>
+        </div>
+    </div>
+}
+
+@code {
+    private bool loading = true;
+    private bool enablePagination = false;
+    private int currentPage = 1;
+    private int pageSize = 10;
+
+    // Filters
+    private DateTime fromDate = DateTime.UtcNow.ToIndianTime().Date;
+    private DateTime toDate = DateTime.UtcNow.ToIndianTime().Date;
+    private int selectedDoctorCode = 0;
+    private string selectedCategory = "ALL"; // ALL, UNBILLED, UNPAID
+    private string searchQuery = string.Empty;
+
+    private List<DoctorMasterModel> doctors = new();
+    private List<UnpaidUnbilledPatientItem> allItems = new();
+    private List<UnpaidUnbilledPatientItem> filteredItems = new();
+
+    // Modal state
+    private bool showChargesModal = false;
+    private UnpaidUnbilledPatientItem? selectedModalPatient = null;
+
+    // Cash Counter Payment Modal state
+    private bool showPaymentModal = false;
+    private HmsBillSummary? selectedBillForPayment = null;
+    private HmsPaymentRequest paymentRequest = new();
+    private bool paymentSaving = false;
+    private bool showPaymode2 = false;
+    private bool showPaymode3 = false;
+    private double patientAdvanceAvailable = 0;
+    private HmsPatientAdvanceSummary? patientAdvanceSummary;
+    private List<Booking.Models.BranchModel> branches = new();
+    private List<CounterMasterModel> counters = new();
+    private List<PaymodeMasterModel> paymodes = new();
+
+    private decimal TotalOutstandingAmount => filteredItems.Sum(x => x.OutstandingAmount);
+
+    private bool isTodayFilter => fromDate == DateTime.UtcNow.ToIndianTime().Date && toDate == DateTime.UtcNow.ToIndianTime().Date;
+    private bool isYesterdayFilter => fromDate == DateTime.UtcNow.ToIndianTime().Date.AddDays(-1) && toDate == DateTime.UtcNow.ToIndianTime().Date.AddDays(-1);
+    private bool isLast7DaysFilter => fromDate == DateTime.UtcNow.ToIndianTime().Date.AddDays(-6) && toDate == DateTime.UtcNow.ToIndianTime().Date;
+    private bool isThisMonthFilter => fromDate == new DateTime(DateTime.UtcNow.ToIndianTime().Year, DateTime.UtcNow.ToIndianTime().Month, 1) && toDate == DateTime.UtcNow.ToIndianTime().Date;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.WhenAll(
+            LoadDoctorsAsync(),
+            LoadBranchesAsync(),
+            LoadCountersAsync(),
+            LoadPaymodesAsync()
+        );
+        await LoadDataAsync();
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branches = branches.Where(b => !b.deleted).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            counters = await CounterMasterService.GetCountersAsync() ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading counters: {ex.Message}");
+        }
+    }
+
+    private async Task LoadPaymodesAsync()
+    {
+        try
+        {
+            paymodes = await PaymodeMasterService.GetPaymodeMastersAsync() ?? new();
+            if (!paymodes.Any())
+            {
+                paymodes = new List<PaymodeMasterModel>
+                {
+                    new() { pmcode = 1, shortname = "CASH", name = "Cash" },
+                    new() { pmcode = 2, shortname = "CARD", name = "Card" },
+                    new() { pmcode = 3, shortname = "UPI", name = "UPI / GPay" }
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading paymodes: {ex.Message}");
+        }
+    }
+
+    private async Task CheckPatientAdvanceAsync(decimal custId)
+    {
+        if (custId <= 0)
+        {
+            patientAdvanceAvailable = 0;
+            patientAdvanceSummary = null;
+            return;
+        }
+
+        try
+        {
+            patientAdvanceSummary = await DueCollectionService.GetPatientAdvanceSummaryAsync(custId);
+            if (patientAdvanceSummary != null)
+            {
+                double calculatedBal = patientAdvanceSummary.total_advance_deposited - patientAdvanceSummary.total_advance_used - patientAdvanceSummary.total_advance_refunded;
+                patientAdvanceAvailable = patientAdvanceSummary.available_balance > 0 
+                    ? patientAdvanceSummary.available_balance 
+                    : Math.Max(0, calculatedBal);
+            }
+            else
+            {
+                patientAdvanceAvailable = 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error checking patient advance: {ex.Message}");
+            patientAdvanceAvailable = 0;
+            patientAdvanceSummary = null;
+        }
+    }
+
+    private void RecalculatePaymentTotals()
+    {
+        double a1 = paymentRequest.pmc1_amount ?? 0;
+        double a2 = paymentRequest.pmc2_amount ?? 0;
+        double a3 = paymentRequest.pmc3_amount ?? 0;
+
+        int activeCount = 0;
+        string singleMode = "CASH";
+
+        if (a1 > 0 && paymentRequest.pmc1.HasValue)
+        {
+            activeCount++;
+            var pm1 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc1.Value);
+            if (pm1 != null && !string.IsNullOrEmpty(pm1.shortname)) singleMode = pm1.shortname;
+        }
+        if (a2 > 0 && paymentRequest.pmc2.HasValue)
+        {
+            activeCount++;
+            var pm2 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc2.Value);
+            if (pm2 != null && !string.IsNullOrEmpty(pm2.shortname)) singleMode = pm2.shortname;
+        }
+        if (a3 > 0 && paymentRequest.pmc3.HasValue)
+        {
+            activeCount++;
+            var pm3 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc3.Value);
+            if (pm3 != null && !string.IsNullOrEmpty(pm3.shortname)) singleMode = pm3.shortname;
+        }
+
+        if (activeCount > 1)
+        {
+            paymentRequest.collection_type = "MIXED";
+            paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
+        }
+        else if (activeCount == 1)
+        {
+            paymentRequest.collection_type = singleMode;
+            paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
+        }
+        else
+        {
+            paymentRequest.collection_type = "CASH";
+        }
+    }
+
+    private void ClearPaymode1()
+    {
+        paymentRequest.pmc1 = null;
+        paymentRequest.pmc1_amount = 0;
+        RecalculatePaymentTotals();
+    }
+
+    private void AddPaymode()
+    {
+        if (!showPaymode2)
+        {
+            showPaymode2 = true;
+        }
+        else if (!showPaymode3)
+        {
+            showPaymode3 = true;
+        }
+    }
+
+    private void ClearPaymode2()
+    {
+        paymentRequest.pmc2 = null;
+        paymentRequest.pmc2_amount = 0;
+        showPaymode2 = false;
+        RecalculatePaymentTotals();
+    }
+
+    private void ClearPaymode3()
+    {
+        paymentRequest.pmc3 = null;
+        paymentRequest.pmc3_amount = 0;
+        showPaymode3 = false;
+        RecalculatePaymentTotals();
+    }
+
+    private void ClosePaymentModal()
+    {
+        showPaymentModal = false;
+        selectedBillForPayment = null;
+        patientAdvanceAvailable = 0;
+        patientAdvanceSummary = null;
+    }
+
+    private async Task SubmitPaymentAsync()
+    {
+        if (selectedBillForPayment == null) return;
+        if (paymentRequest.pmc1 == null && paymentRequest.pmc2 == null && paymentRequest.pmc3 == null)
+        {
+            ToastService.ShowError("Please select a payment mode.");
+            return;
+        }
+
+        paymentSaving = true;
+        StateHasChanged();
+
+        double? origPmc1 = paymentRequest.pmc1_amount;
+        double? origPmc2 = paymentRequest.pmc2_amount;
+        double? origPmc3 = paymentRequest.pmc3_amount;
+        double origAmount = paymentRequest.amount;
+
+        var dueAmt = selectedBillForPayment.balance_amount ?? 0;
+
+        if (paymentRequest.amount > dueAmt)
+        {
+            double targetPaid = dueAmt;
+            double remaining = targetPaid;
+
+            if (paymentRequest.pmc1_amount.HasValue && paymentRequest.pmc1_amount.Value > 0)
+            {
+                double val = Math.Min(paymentRequest.pmc1_amount.Value, remaining);
+                paymentRequest.pmc1_amount = val;
+                remaining -= val;
+            }
+            if (paymentRequest.pmc2_amount.HasValue && paymentRequest.pmc2_amount.Value > 0)
+            {
+                double val = Math.Min(paymentRequest.pmc2_amount.Value, remaining);
+                paymentRequest.pmc2_amount = val;
+                remaining -= val;
+            }
+            if (paymentRequest.pmc3_amount.HasValue && paymentRequest.pmc3_amount.Value > 0)
+            {
+                double val = Math.Min(paymentRequest.pmc3_amount.Value, remaining);
+                paymentRequest.pmc3_amount = val;
+                remaining -= val;
+            }
+
+            paymentRequest.amount = dueAmt;
+        }
+
+        try
+        {
+            // Detect if Advance paymode was used
+            double advanceUsed = 0;
+            var advancePaymodeCodes = paymodes
+                .Where(p => string.Equals(p.name, "ADVANCE", StringComparison.OrdinalIgnoreCase) || 
+                            string.Equals(p.shortname, "ADVANCE", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(p.shortname, "ADV", StringComparison.OrdinalIgnoreCase))
+                .Select(p => p.pmcode)
+                .ToList();
+            
+            if (!advancePaymodeCodes.Contains(99)) advancePaymodeCodes.Add(99);
+
+            if (paymentRequest.pmc1.HasValue && advancePaymodeCodes.Contains(paymentRequest.pmc1.Value) && (paymentRequest.pmc1_amount ?? 0) > 0)
+                advanceUsed += paymentRequest.pmc1_amount.Value;
+            if (paymentRequest.pmc2.HasValue && advancePaymodeCodes.Contains(paymentRequest.pmc2.Value) && (paymentRequest.pmc2_amount ?? 0) > 0)
+                advanceUsed += paymentRequest.pmc2_amount.Value;
+            if (paymentRequest.pmc3.HasValue && advancePaymodeCodes.Contains(paymentRequest.pmc3.Value) && (paymentRequest.pmc3_amount ?? 0) > 0)
+                advanceUsed += paymentRequest.pmc3_amount.Value;
+
+            if (advanceUsed == 0 && string.Equals(paymentRequest.collection_type, "ADVANCE", StringComparison.OrdinalIgnoreCase) && paymentRequest.amount > 0)
+            {
+                advanceUsed = paymentRequest.amount;
+            }
+
+            if (advanceUsed > 0 && selectedBillForPayment != null && !string.IsNullOrEmpty(selectedBillForPayment.requestguid))
+            {
+                try
+                {
+                    var bulkItem = new HmsBulkDueCollectionItem
+                    {
+                        requestguid     = selectedBillForPayment.requestguid,
+                        cash_collected  = 0,
+                        advance_to_use  = advanceUsed,
+                        collection_type = "ADVANCE",
+                        isbill          = true,
+                        ispatient       = true
+                    };
+                    var bulkReq = new HmsBulkDueCollectionRequest
+                    {
+                        items           = new List<HmsBulkDueCollectionItem> { bulkItem },
+                        collection_type = "ADVANCE",
+                        cntcode         = paymentRequest.cntcode > 0 ? paymentRequest.cntcode : 1,
+                        usercode        = paymentRequest.usercode > 0 ? paymentRequest.usercode : 10,
+                        enteredbhcode   = paymentRequest.enteredbhcode > 0 ? paymentRequest.enteredbhcode : 1,
+                        isbill          = true,
+                        ispatient       = true
+                    };
+                    await DueCollectionService.CollectBulkDueAsync(bulkReq);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[UnpaidUnbilled] Error deducting patient advance: {ex.Message}");
+                }
+            }
+
+            double nonAdvanceAmount = paymentRequest.amount - advanceUsed;
+            bool nonAdvanceSuccess = true;
+
+            if (nonAdvanceAmount > 0)
+            {
+                var nonAdvanceReq = new HmsPaymentRequest
+                {
+                    requestguid     = paymentRequest.requestguid,
+                    cntcode         = paymentRequest.cntcode,
+                    enteredbhcode   = paymentRequest.enteredbhcode,
+                    usercode        = paymentRequest.usercode,
+                    computercode    = paymentRequest.computercode,
+                    reference_no    = paymentRequest.reference_no,
+                    bank_name       = paymentRequest.bank_name,
+                    amount          = nonAdvanceAmount
+                };
+
+                var nonAdvModes = new List<(decimal mode, double amt)>();
+                if (paymentRequest.pmc1.HasValue && !advancePaymodeCodes.Contains(paymentRequest.pmc1.Value) && (paymentRequest.pmc1_amount ?? 0) > 0)
+                    nonAdvModes.Add((paymentRequest.pmc1.Value, paymentRequest.pmc1_amount.Value));
+                if (paymentRequest.pmc2.HasValue && !advancePaymodeCodes.Contains(paymentRequest.pmc2.Value) && (paymentRequest.pmc2_amount ?? 0) > 0)
+                    nonAdvModes.Add((paymentRequest.pmc2.Value, paymentRequest.pmc2_amount.Value));
+                if (paymentRequest.pmc3.HasValue && !advancePaymodeCodes.Contains(paymentRequest.pmc3.Value) && (paymentRequest.pmc3_amount ?? 0) > 0)
+                    nonAdvModes.Add((paymentRequest.pmc3.Value, paymentRequest.pmc3_amount.Value));
+
+                if (nonAdvModes.Count > 0)
+                {
+                    nonAdvanceReq.pmc1 = nonAdvModes[0].mode;
+                    nonAdvanceReq.pmc1_amount = nonAdvModes[0].amt;
+                }
+                if (nonAdvModes.Count > 1)
+                {
+                    nonAdvanceReq.pmc2 = nonAdvModes[1].mode;
+                    nonAdvanceReq.pmc2_amount = nonAdvModes[1].amt;
+                }
+                if (nonAdvModes.Count > 2)
+                {
+                    nonAdvanceReq.pmc3 = nonAdvModes[2].mode;
+                    nonAdvanceReq.pmc3_amount = nonAdvModes[2].amt;
+                }
+
+                if (nonAdvModes.Count > 1)
+                {
+                    nonAdvanceReq.collection_type = "MIXED";
+                }
+                else if (nonAdvModes.Count == 1)
+                {
+                    var pm = paymodes.FirstOrDefault(p => p.pmcode == nonAdvModes[0].mode);
+                    nonAdvanceReq.collection_type = (pm != null && !string.IsNullOrEmpty(pm.shortname)) ? pm.shortname : "CASH";
+                }
+                else
+                {
+                    nonAdvanceReq.collection_type = "CASH";
+                }
+
+                nonAdvanceSuccess = await HmsBillingService.AddPaymentAsync(nonAdvanceReq);
+            }
+
+            if (nonAdvanceSuccess)
+            {
+                ToastService.ShowSuccess($"Payment of ₹{paymentRequest.amount:N2} processed successfully!");
+                ClosePaymentModal();
+                await LoadDataAsync();
+            }
+            else
+            {
+                ToastService.ShowError("Payment transaction failed. Please check payment settings and try again.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error processing payment: {ex.Message}");
+        }
+        finally
+        {
+            paymentRequest.pmc1_amount = origPmc1;
+            paymentRequest.pmc2_amount = origPmc2;
+            paymentRequest.pmc3_amount = origPmc3;
+            paymentRequest.amount = origAmount;
+
+            paymentSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            doctors = await DoctorService.GetDoctorsAsync() ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading doctors: {ex.Message}");
+        }
+    }
+
+    private async Task LoadDataAsync()
+    {
+        loading = true;
+        StateHasChanged();
+
+        try
+        {
+            // 1. Fetch OP Registrations
+            var regsTask = BookingService.GetAllOpRegistrationsAsync();
+
+            // 2. Fetch All Unbilled Charges
+            var unbilledTask = HmsBillingService.GetAllUnbilledChargesAsync();
+
+            // 3. Fetch HMS Bills list
+            var billsTask = HmsBillingService.ListBillsAsync(new HmsBillFilterRequest
+            {
+                fromdate = fromDate.Date,
+                todate = toDate.Date.AddDays(1).AddSeconds(-1),
+                pagesize = 1000
+            });
+
+            await Task.WhenAll(regsTask, unbilledTask, billsTask);
+
+            var opRegistrations = (await regsTask) ?? new();
+            var allUnbilledCharges = (await unbilledTask) ?? new();
+            var billsResponse = await billsTask;
+            var bills = billsResponse?.data ?? new();
+
+            // Group unbilled charges by opvisitid / op_id
+            var unbilledByOp = new Dictionary<string, List<UnbilledChargeSummary>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var charge in allUnbilledCharges)
+            {
+                if (!string.IsNullOrEmpty(charge.opvisitid))
+                {
+                    if (!unbilledByOp.ContainsKey(charge.opvisitid))
+                    {
+                        unbilledByOp[charge.opvisitid] = new List<UnbilledChargeSummary>();
+                    }
+                    unbilledByOp[charge.opvisitid].Add(charge);
+                }
+            }
+
+            // Map bills by op_id / opvisitid
+            var billsByOp = new Dictionary<string, HmsBillSummary>(StringComparer.OrdinalIgnoreCase);
+            foreach (var b in bills)
+            {
+                if (!string.IsNullOrEmpty(b.opvisitid))
+                {
+                    billsByOp[b.opvisitid] = b;
+                }
+            }
+
+            var aggregated = new List<UnpaidUnbilledPatientItem>();
+
+            foreach (var op in opRegistrations)
+            {
+                var opIdStr = op.op_id.ToString();
+                var hasUnbilledCharges = unbilledByOp.TryGetValue(opIdStr, out var chargesList) && chargesList.Count > 0;
+                var hasUnbilledStatus = op.unbilled_status != true;
+                var isUnpaidStatus = op.paid_status == false;
+
+                // Check bill info if available
+                billsByOp.TryGetValue(opIdStr, out var bill);
+
+                bool isUnbilled = hasUnbilledStatus || (hasUnbilledCharges && chargesList!.Any(c => c.billedstatus != true));
+                bool isUnpaid = isUnpaidStatus || (bill != null && (bill.balance_amount ?? 0) > 0);
+
+                // Only include if either unbilled OR unpaid
+                if (isUnbilled || isUnpaid)
+                {
+                    var item = new UnpaidUnbilledPatientItem
+                    {
+                        OpId = op.op_id,
+                        BookingId = op.op_id,
+                        TokenNo = op.token_no ?? "",
+                        OpNo = op.op_no ?? "",
+                        CustId = op.custid,
+                        PatientName = !string.IsNullOrWhiteSpace(op.patient_name) ? op.patient_name : $"CUST-{op.custid}",
+                        Mobile = op.mobile ?? "",
+                        Dcode = op.dcode,
+                        DoctorName = !string.IsNullOrWhiteSpace(op.doctor_name) ? op.doctor_name : GetDoctorName(op.dcode),
+                        VisitDate = op.visit_date,
+                        RegType = op.reg_type ?? "OP",
+                        VisitStatus = op.visit_status ?? "",
+                        IsVip = op.isvip == true || op.is_vip == true,
+                        IsIpReferred = op.refer_to_ip == true,
+                        IsDressing = op.is_dressing,
+                        IsUnbilled = isUnbilled,
+                        IsUnpaid = isUnpaid,
+                        UnbilledCharges = chargesList?.Where(c => c.billedstatus != true).ToList() ?? new(),
+                        HasBill = bill != null,
+                        BillNo = bill?.bill_no,
+                        BillNetAmount = (decimal)(bill?.net_amount ?? 0),
+                        BillPaidAmount = (decimal)(bill?.paid_amount ?? 0),
+                        BillBalanceAmount = (decimal)(bill?.balance_amount ?? 0),
+                        RequestGuid = bill?.requestguid,
+                        CntCode = bill?.cntcode,
+                        EnteredBhCode = bill?.enteredbhcode,
+                        BillSummary = bill
+                    };
+
+                    aggregated.Add(item);
+                }
+            }
+
+            allItems = aggregated;
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error in LoadDataAsync: {ex.Message}");
+            ToastService.ShowError($"Failed to load unpaid and unbilled data: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private string GetDoctorName(int dcode)
+    {
+        var doc = doctors.FirstOrDefault(d => d.dcode == dcode);
+        return doc != null ? $"Dr. {doc.name}" : $"Doctor #{dcode}";
+    }
+
+    private void ApplyFilters()
+    {
+        var query = allItems.AsQueryable();
+
+        // 1. Date Range Filter
+        var fromDateOnly = DateOnly.FromDateTime(fromDate);
+        var toDateOnly = DateOnly.FromDateTime(toDate);
+        query = query.Where(x => x.VisitDate >= fromDateOnly && x.VisitDate <= toDateOnly);
+
+        // 2. Doctor Filter
+        if (selectedDoctorCode > 0)
+        {
+            query = query.Where(x => x.Dcode == selectedDoctorCode);
+        }
+
+        // 3. Category Filter
+        if (selectedCategory == "UNBILLED")
+        {
+            query = query.Where(x => x.IsUnbilled);
+        }
+        else if (selectedCategory == "UNPAID")
+        {
+            query = query.Where(x => x.IsUnpaid);
+        }
+
+        // 4. Search Filter
+        if (!string.IsNullOrWhiteSpace(searchQuery))
+        {
+            var s = searchQuery.Trim().ToLower();
+            query = query.Where(x =>
+                x.PatientName.ToLower().Contains(s) ||
+                x.OpNo.ToLower().Contains(s) ||
+                x.CustId.ToString().Contains(s) ||
+                ("cust-" + x.CustId).ToLower().Contains(s) ||
+                x.Mobile.ToLower().Contains(s) ||
+                (x.BillNo != null && x.BillNo.ToLower().Contains(s)) ||
+                x.DoctorName.ToLower().Contains(s) ||
+                x.TokenNo.Contains(s)
+            );
+        }
+
+        var list = query.ToList();
+        filteredItems = list
+            .OrderByDescending(x => x.VisitDate)
+            .ThenByDescending(x => int.TryParse(x.TokenNo, out int t) ? t : 0)
+            .ToList();
+
+        currentPage = 1;
+    }
+
+    private void OnFromDateChanged(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var dt))
+        {
+            fromDate = dt;
+            ApplyFilters();
+        }
+    }
+
+    private void OnToDateChanged(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var dt))
+        {
+            toDate = dt;
+            ApplyFilters();
+        }
+    }
+
+    private void OnDoctorChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var dcode))
+        {
+            selectedDoctorCode = dcode;
+            ApplyFilters();
+        }
+    }
+
+    private void OnCategoryChanged(ChangeEventArgs e)
+    {
+        selectedCategory = e.Value?.ToString() ?? "ALL";
+        ApplyFilters();
+    }
+
+    private void SetCategoryQuick(string cat)
+    {
+        selectedCategory = cat;
+        ApplyFilters();
+    }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        searchQuery = e.Value?.ToString() ?? "";
+        ApplyFilters();
+    }
+
+    private void ClearSearch()
+    {
+        searchQuery = string.Empty;
+        ApplyFilters();
+    }
+
+    private void SetTodayFilter()
+    {
+        fromDate = DateTime.UtcNow.ToIndianTime().Date;
+        toDate = DateTime.UtcNow.ToIndianTime().Date;
+        ApplyFilters();
+    }
+
+    private void SetYesterdayFilter()
+    {
+        fromDate = DateTime.UtcNow.ToIndianTime().Date.AddDays(-1);
+        toDate = DateTime.UtcNow.ToIndianTime().Date.AddDays(-1);
+        ApplyFilters();
+    }
+
+    private void SetLast7DaysFilter()
+    {
+        fromDate = DateTime.UtcNow.ToIndianTime().Date.AddDays(-6);
+        toDate = DateTime.UtcNow.ToIndianTime().Date;
+        ApplyFilters();
+    }
+
+    private void SetThisMonthFilter()
+    {
+        fromDate = new DateTime(DateTime.UtcNow.ToIndianTime().Year, DateTime.UtcNow.ToIndianTime().Month, 1);
+        toDate = DateTime.UtcNow.ToIndianTime().Date;
+        ApplyFilters();
+    }
+
+    private void ResetFilters()
+    {
+        fromDate = DateTime.UtcNow.ToIndianTime().Date;
+        toDate = DateTime.UtcNow.ToIndianTime().Date;
+        selectedDoctorCode = 0;
+        selectedCategory = "ALL";
+        searchQuery = string.Empty;
+        ApplyFilters();
+    }
+
+    private void TogglePagination()
+    {
+        enablePagination = !enablePagination;
+        currentPage = 1;
+    }
+
+    private void OpenBilling(UnpaidUnbilledPatientItem item)
+    {
+        NavigationManager.NavigateTo($"/billing/{item.OpId}");
+    }
+
+    private async Task OpenPayment(UnpaidUnbilledPatientItem item)
+    {
+        HmsBillSummary? bill = item.BillSummary;
+        if (bill == null && !string.IsNullOrEmpty(item.BillNo))
+        {
+            try
+            {
+                var billsResp = await HmsBillingService.ListBillsAsync(new HmsBillFilterRequest { search = item.BillNo, pagesize = 5 });
+                bill = billsResp?.data?.FirstOrDefault(b => b.bill_no == item.BillNo || b.opvisitid == item.OpId.ToString());
+            }
+            catch { }
+        }
+
+        if (bill == null)
+        {
+            bill = new HmsBillSummary
+            {
+                bill_no = item.BillNo,
+                patient_name = item.PatientName,
+                custid = item.CustId,
+                doctor_name = item.DoctorName,
+                net_amount = (double)item.BillNetAmount,
+                paid_amount = (double)item.BillPaidAmount,
+                balance_amount = (double)item.OutstandingAmount,
+                opvisitid = item.OpId.ToString(),
+                requestguid = item.RequestGuid ?? item.OpId.ToString(),
+                cntcode = item.CntCode ?? 1,
+                enteredbhcode = item.EnteredBhCode ?? (TenantState.BranchCode > 0 ? TenantState.BranchCode.Value : 1)
+            };
+        }
+
+        selectedBillForPayment = bill;
+        var dueAmt = bill.balance_amount ?? (double)item.OutstandingAmount;
+
+        decimal? defaultPmc1 = null;
+        decimal? defaultPmc2 = null;
+        decimal? defaultPmc3 = null;
+
+        if (paymodes != null && paymodes.Count > 0)
+        {
+            var cashPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CASH", StringComparison.OrdinalIgnoreCase));
+            defaultPmc1 = cashPm != null ? cashPm.pmcode : paymodes[0].pmcode;
+
+            var cardPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
+            if (cardPm != null) defaultPmc2 = cardPm.pmcode;
+
+            var upiPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
+            if (upiPm != null) defaultPmc3 = upiPm.pmcode;
+        }
+
+        paymentRequest = new HmsPaymentRequest
+        {
+            requestguid = bill.requestguid,
+            amount = Math.Round(dueAmt, 2),
+            collection_type = "CASH",
+            cntcode = bill.cntcode ?? (counters.FirstOrDefault()?.cntcode != null ? (int)counters.First().cntcode : 1),
+            enteredbhcode = bill.enteredbhcode ?? (TenantState.BranchCode > 0 ? TenantState.BranchCode.Value : 1),
+            usercode = TenantState.UserCode > 0 ? TenantState.UserCode : 101,
+            computercode = 1,
+            reference_no = "",
+            bank_name = "",
+            pmc1 = defaultPmc1,
+            pmc1_amount = Math.Round(dueAmt, 2),
+            pmc2 = defaultPmc2,
+            pmc2_amount = 0,
+            pmc3 = defaultPmc3,
+            pmc3_amount = 0
+        };
+
+        showPaymode2 = false;
+        showPaymode3 = false;
+        showPaymentModal = true;
+
+        if (item.CustId > 0)
+        {
+            await CheckPatientAdvanceAsync(item.CustId);
+        }
+    }
+
+    private void OpenChargesModal(UnpaidUnbilledPatientItem item)
+    {
+        selectedModalPatient = item;
+        showChargesModal = true;
+    }
+
+    private void CloseChargesModal()
+    {
+        showChargesModal = false;
+        selectedModalPatient = null;
+    }
+
+    public class UnpaidUnbilledPatientItem
+    {
+        public Guid OpId { get; set; }
+        public Guid BookingId { get; set; }
+        public string TokenNo { get; set; } = "";
+        public string OpNo { get; set; } = "";
+        public decimal CustId { get; set; }
+        public string PatientName { get; set; } = "";
+        public string Mobile { get; set; } = "";
+        public int Dcode { get; set; }
+        public string DoctorName { get; set; } = "";
+        public DateOnly VisitDate { get; set; }
+        public string RegType { get; set; } = "OP";
+        public string VisitStatus { get; set; } = "";
+        public bool IsVip { get; set; }
+        public bool IsIpReferred { get; set; }
+        public bool IsDressing { get; set; }
+
+        public bool IsUnbilled { get; set; }
+        public List<UnbilledChargeSummary> UnbilledCharges { get; set; } = new();
+        public decimal TotalUnbilledAmount => (decimal)UnbilledCharges.Sum(c => c.amount ?? 0);
+
+        public bool HasBill { get; set; }
+        public string? BillNo { get; set; }
+        public decimal BillNetAmount { get; set; }
+        public decimal BillPaidAmount { get; set; }
+        public decimal BillBalanceAmount { get; set; }
+        public bool IsUnpaid { get; set; }
+
+        public string? RequestGuid { get; set; }
+        public int? CntCode { get; set; }
+        public int? EnteredBhCode { get; set; }
+        public HmsBillSummary? BillSummary { get; set; }
+
+        public decimal OutstandingAmount
+        {
+            get
+            {
+                if (HasBill && BillBalanceAmount > 0) return BillBalanceAmount;
+                if (IsUnbilled && TotalUnbilledAmount > 0) return TotalUnbilledAmount;
+                return 0;
+            }
+        }
+    }
+}

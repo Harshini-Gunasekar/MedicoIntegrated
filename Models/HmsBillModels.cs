@@ -82,6 +82,7 @@ namespace Booking.Models
         public double? rate { get; set; }
         public double? amount { get; set; }
         public string? item_name { get; set; }
+        public string? particulars { get; set; }
         public decimal? custid { get; set; }
         public string? opvisitid { get; set; }
         public Guid? ip_id { get; set; }
