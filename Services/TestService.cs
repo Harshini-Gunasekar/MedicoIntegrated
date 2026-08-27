@@ -211,6 +211,14 @@ namespace LabCare.Services
                 form.Add(fileContent, "testImageFile", imgName);
             }
 
+            if (dto.DeletedResultIds != null && dto.DeletedResultIds.Any())
+            {
+                for (int k = 0; k < dto.DeletedResultIds.Count; k++)
+                {
+                    AddField(form, $"DeletedResultIds[{k}]", dto.DeletedResultIds[k]);
+                }
+            }
+
             return form;
         }
 
@@ -505,14 +513,22 @@ namespace LabCare.Services
                 }
 
                 var rawJson = await response.Content.ReadAsStringAsync();
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"\n[TestService] GET TEST RESULT ({tcode}) RAW JSON:\n{rawJson}\n");
+                Console.ResetColor();
+
                 var fetchDto = JsonConvert.DeserializeObject<TestFetchDto>(rawJson, JsonSettings);
 
                 if (fetchDto != null && fetchDto.Results != null && fetchDto.Results.Count > 0)
                 {
+                    var activeResults = fetchDto.Results
+                        .Where(r => r.ResultMaster != null && r.ResultMaster.deleted != true)
+                        .ToList();
+
                     var resultDto = new TestInsertDto
                     {
                         TestMaster = fetchDto.TestMaster ?? new test_master { tcode = fetchDto.TCode },
-                        ResultRows = fetchDto.Results
+                        ResultRows = activeResults
                     };
 
                     NormaliseResultRows(resultDto);
@@ -531,11 +547,15 @@ namespace LabCare.Services
                 if (resultsArray == null || !resultsArray.Any()) return null;
 
                 var rows = resultsArray.ToObject<List<TestResultRowDto>>(JsonSerializer.Create(JsonSettings));
+                var activeRows = rows?
+                    .Where(r => r.ResultMaster != null && r.ResultMaster.deleted != true)
+                    .ToList() ?? new();
+
                 var master = outer["testMaster"]?.ToObject<test_master>(JsonSerializer.Create(JsonSettings))
                           ?? outer["TestMaster"]?.ToObject<test_master>(JsonSerializer.Create(JsonSettings))
                           ?? new test_master { tcode = tcode, tenant_code = _session.TenantCode };
 
-                var dto = new TestInsertDto { TestMaster = master, ResultRows = rows ?? new() };
+                var dto = new TestInsertDto { TestMaster = master, ResultRows = activeRows };
                 NormaliseResultRows(dto);
                 return dto;
             }

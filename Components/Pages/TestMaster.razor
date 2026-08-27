@@ -2577,7 +2577,7 @@
         StateHasChanged();
 
         try {
-            deletedRows.Clear();
+            deletedResultIds.Clear();
             var fullData = await TestSvc.GetTestResultAsync(test.tcode);
             if (_isDisposed) return;
 
@@ -2617,17 +2617,23 @@
                     testData.TestMaster = test;
                 }
                 
-                testData.ResultRows = fullData.ResultRows ?? new();
-                foreach (var row in testData.ResultRows)
+                testData.ResultRows = fullData.ResultRows?
+                    .Where(r => r.ResultMaster == null || r.ResultMaster.deleted != true)
+                    .ToList() ?? new();
+
+                for (int i = 0; i < testData.ResultRows.Count; i++)
                 {
-                    if (string.IsNullOrEmpty(row.ResultMaster.cellcontent) || row.ResultMaster.cellcontent == "Lipid Profile")
+                    var row = testData.ResultRows[i];
+                    if (row.ResultMaster != null) row.ResultMaster.slno = i + 1;
+
+                    if (string.IsNullOrEmpty(row.ResultMaster?.cellcontent) || row.ResultMaster?.cellcontent == "Lipid Profile")
                     {
-                        row.ResultMaster.cellcontent = row.ResultMaster.col2;
+                        if (row.ResultMaster != null) row.ResultMaster.cellcontent = row.ResultMaster.col2;
                     }
 
                     if (row.ResultProperties == null) row.ResultProperties = new test_result_properties { 
                         trpid = Guid.NewGuid(),
-                        testresultid = row.ResultMaster.testresultid,
+                        testresultid = row.ResultMaster?.testresultid ?? Guid.NewGuid(),
                         resultvaluetype = "Numeric"
                     };
                     else
@@ -2727,16 +2733,15 @@
         quillInitialized = false;
     }
 
-    private List<TestResultRowDto> deletedRows = new();
+    private List<Guid> deletedResultIds = new();
 
     private void RemoveTestRow(TestResultRowDto row)
     {
-        if (row.ResultMaster != null)
+        if (row.ResultMaster != null && row.ResultMaster.testresultid != Guid.Empty)
         {
-            row.ResultMaster.deleted = true;
-            if (row.ResultMaster.trcode > 0 || row.ResultMaster.testresultid != Guid.Empty)
+            if (!deletedResultIds.Contains(row.ResultMaster.testresultid))
             {
-                deletedRows.Add(row);
+                deletedResultIds.Add(row.ResultMaster.testresultid);
             }
         }
 
@@ -2745,13 +2750,13 @@
         int currentSno = 1;
         if (testData.ResultRows != null)
         {
-            foreach (var r in testData.ResultRows.Where(r => r.ResultMaster?.deleted != true))
+            foreach (var r in testData.ResultRows)
             {
                 if (r.ResultMaster != null) r.ResultMaster.slno = currentSno++;
             }
         }
 
-        if (selectedRow == row) selectedRow = testData.ResultRows?.FirstOrDefault(r => r.ResultMaster?.deleted != true);
+        if (selectedRow == row) selectedRow = testData.ResultRows?.FirstOrDefault();
         quillInitialized = false;
     }
 
@@ -2892,14 +2897,7 @@
                 }
             }
 
-            if (testData.ResultRows != null && deletedRows.Any())
-            {
-                foreach (var dRow in deletedRows)
-                {
-                    if (dRow.ResultMaster != null) dRow.ResultMaster.deleted = true;
-                    if (!testData.ResultRows.Contains(dRow)) testData.ResultRows.Add(dRow);
-                }
-            }
+            testData.DeletedResultIds = deletedResultIds.Any() ? new List<Guid>(deletedResultIds) : new();
 
             bool ok;
 
@@ -2909,7 +2907,8 @@
                 var insertDto = new TestInsertDto
                 {
                     TestMaster = testData.TestMaster,
-                    ResultRows = testData.ResultRows ?? new()
+                    ResultRows = testData.ResultRows ?? new(),
+                    DeletedResultIds = testData.DeletedResultIds
                 };
                 ok = await TestSvc.InsertTestAsync(insertDto);
                 if (!ok) throw new Exception("Insert failed");
@@ -2925,7 +2924,7 @@
 
             if (ok)
             {
-                deletedRows.Clear();
+                deletedResultIds.Clear();
                 Toast.Success("Test Saved");
 
                 await LoadTests();
@@ -2948,6 +2947,10 @@
         }
         catch (Exception ex)
         {
+            Console.ForegroundColor = ConsoleColor.Red;
+            Console.WriteLine($"\n[TestMaster.razor] UpdateTest EXCEPTION: {ex.Message}");
+            Console.WriteLine($"[Stack Trace]: {ex.StackTrace}\n");
+            Console.ResetColor();
             Toast.Error(ex.Message);
         }
         finally { IsLoading = false; StateHasChanged(); }
@@ -2991,7 +2994,7 @@
         }
     }
 
-    private void ResetForm() { testData = new(); AddTestRow(); selectedRow = testData.ResultRows[0]; quillInitialized = false; reportingSearchText = ""; reportingDays = null; reportingHours = null; reportingMins = null; }
+    private void ResetForm() { testData = new(); AddTestRow(); selectedRow = testData.ResultRows[0]; quillInitialized = false; reportingSearchText = ""; reportingDays = null; reportingHours = null; reportingMins = null; deletedResultIds.Clear(); }
     private async Task HideTestDropdown() {  }
     private void HandleInvalidSubmit() => Toast.Warning("Check required fields");
 }

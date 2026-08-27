@@ -420,6 +420,9 @@ namespace LabCare.Models
 
         [JsonProperty("resultRows")]
         public List<TestResultRowDto>? ResultRows { get; set; }
+
+        [JsonProperty("deletedResultIds")]
+        public List<Guid>? DeletedResultIds { get; set; }
     }
 
     public class TestFetchDto
