@@ -13,6 +13,8 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @using Booking.Models
 @using Newtonsoft.Json
+@using System.Text.Json
+@using System.Text.Json.Serialization
 @using Booking.Helpers
 @using Medico_Backend.Model
 @using medico_backend.Model
@@ -28,6 +30,19 @@
                 <h1 class="header-title">Cash Counter Portal</h1>
                 <p class="header-subtitle">Manage counter-wise collections, list bills, and process payments</p>
             </div>
+        </div>
+
+        <div class="counter-mode-pills">
+            <button type="button" class="mode-pill @(billingSource == "HOSPITAL" ? "active" : "")" @onclick='() => SetBillingSourceAsync("HOSPITAL")'>
+                <i class="bi bi-hospital"></i>
+                <span>Hospital Bills</span>
+                <span class="badge-count">@(billsList?.total ?? 0)</span>
+            </button>
+            <button type="button" class="mode-pill @(billingSource == "PHARMACY" ? "active" : "")" @onclick='() => SetBillingSourceAsync("PHARMACY")'>
+                <i class="bi bi-capsule"></i>
+                <span>Pharmacy Bills</span>
+                <span class="badge-count">@FilteredPharmacySales.Count</span>
+            </button>
         </div>
     </div>
 
@@ -77,8 +92,8 @@
             <div class="filter-item search-item">
                 <label>PATIENT SEARCH</label>
                 <div class="search-input-wrapper">
-                    <input type="text" class="form-control" @bind="filter.search" placeholder="Name, ID or Mobile..." @onkeyup="HandleSearchKeyUp" />
                     <i class="bi bi-search search-icon"></i>
+                    <input type="text" class="form-control" @bind="filter.search" placeholder="Name, ID or Mobile..." @onkeyup="HandleSearchKeyUp" />
                 </div>
             </div>
             <div class="filter-item action-item">
@@ -107,9 +122,9 @@
     <!-- Bills Table Card -->
     <div class="table-card">
         <div class="table-header">
-            <h2 class="table-title">Bills List</h2>
+            <h2 class="table-title">@(billingSource == "PHARMACY" ? "Pharmacy Bills List" : "Bills List")</h2>
             <div class="table-actions">
-                <span class="record-count">Total: @(billsList?.total ?? 0) bills</span>
+                <span class="record-count">Total: @TotalActiveCount bills</span>
             </div>
         </div>
 
@@ -121,7 +136,7 @@
                         <th>BILL NO</th>
                         <th>DATE</th>
                         <th>PATIENT NAME</th>
-                        <th>MOBILE</th>
+                        <th>@(billingSource == "PHARMACY" ? "LOCATION" : "MOBILE")</th>
                         <th>REF. DOCTOR</th>
                         <th class="text-end">GROSS</th>
                         <th class="text-end">DISC</th>
@@ -144,57 +159,117 @@
                             </td>
                         </tr>
                     }
-                    else if (billsList == null || !billsList.data.Any())
+                    else if (billingSource == "PHARMACY")
                     {
-                        <tr>
-                            <td colspan="13" class="text-center py-5 text-muted">
-                                <i class="bi bi-receipt-cutoff" style="font-size: 2.5rem; color: #94a3b8; display: block; margin-bottom: 0.5rem;"></i>
-                                No bills found matching the selected criteria.
-                            </td>
-                        </tr>
+                        @if (!PagedPharmacySales.Any())
+                        {
+                            <tr>
+                                <td colspan="13" class="text-center py-5 text-muted">
+                                    <i class="bi bi-capsule" style="font-size: 2.5rem; color: #94a3b8; display: block; margin-bottom: 0.5rem;"></i>
+                                    No pharmacy bills found matching the selected criteria.
+                                </td>
+                            </tr>
+                        }
+                        else
+                        {
+                            int sno = (pharmacyPage - 1) * filter.pagesize + 1;
+                            @foreach (var s in PagedPharmacySales)
+                            {
+                                var isSettled = string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) || string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase);
+                                var balance = isSettled ? 0 : s.netamount;
+                                var paid = isSettled ? s.netamount : 0;
+                                <tr>
+                                    <td>@(sno++)</td>
+                                    <td class="bill-no">@(string.IsNullOrWhiteSpace(s.billno) ? $"#SALES-{s.salescode}" : s.billno)</td>
+                                    <td>@s.billdate.ToString("dd-MMM-yyyy hh:mm tt")</td>
+                                    <td class="patient-name">@(string.IsNullOrWhiteSpace(s.patientname) ? (!string.IsNullOrWhiteSpace(s.patientid) ? s.patientid : "Counter Patient") : s.patientname)</td>
+                                    <td class="patient-phone">@(string.IsNullOrWhiteSpace(s.address) ? "-" : s.address)</td>
+                                    <td>Dr. @(string.IsNullOrWhiteSpace(s.consultant) ? "Self" : s.consultant)</td>
+                                    <td class="text-end font-numeric">@s.grossamount.ToString("0.00")</td>
+                                    <td class="text-end font-numeric">@s.discountamount.ToString("0.00")</td>
+                                    <td class="text-end font-numeric font-bold">@s.netamount.ToString("0.00")</td>
+                                    <td class="text-end font-numeric text-success">@paid.ToString("0.00")</td>
+                                    <td class="text-end font-numeric text-danger font-bold">@balance.ToString("0.00")</td>
+                                    <td class="text-center">
+                                        <span class="status-badge @(isSettled ? "settled" : "pending")">
+                                            @(isSettled ? "Settled" : "Pending")
+                                        </span>
+                                    </td>
+                                    <td class="text-center">
+                                        @if (!isSettled && hasEditRight)
+                                        {
+                                            <button type="button" class="cash-pay-btn" @onclick="() => OpenPharmacyPaymentModal(s)" title="Receive Payment">
+                                                <i class="bi bi-wallet2"></i>
+                                                <span>Receive</span>
+                                            </button>
+                                        }
+                                        else if (!isSettled)
+                                        {
+                                            <span class="text-slate-400" style="font-size: 0.75rem;"><i class="bi bi-lock-fill"></i> No Access</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-success-bold" style="font-size: 0.75rem;"><i class="bi bi-check-circle-fill"></i> Paid</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        }
                     }
                     else
                     {
-                        int sno = (filter.page - 1) * filter.pagesize + 1;
-                        @foreach (var bill in billsList.data)
+                        @if (billsList == null || !billsList.data.Any())
                         {
-                            var balance = bill.balance_amount ?? 0;
-                            var isSettled = bill.is_settled || balance <= 0;
                             <tr>
-                                <td>@(sno++)</td>
-                                <td class="bill-no">@bill.bill_no</td>
-                                <td>@(DateTimeHelper.ConvertUtcToIst(bill.bill_date)?.ToString("dd-MMM-yyyy hh:mm tt") ?? "-")</td>
-                                <td class="patient-name">@bill.patient_name</td>
-                                <td class="patient-phone">@bill.mobileno</td>
-                                <td>Dr. @(string.IsNullOrWhiteSpace(bill.doctor_name) ? "Self" : bill.doctor_name)</td>
-                                <td class="text-end font-numeric">@(bill.gross_amount?.ToString("0.00") ?? "0.00")</td>
-                                <td class="text-end font-numeric">@(bill.discount_amount?.ToString("0.00") ?? "0.00")</td>
-                                <td class="text-end font-numeric font-bold">@(bill.net_amount?.ToString("0.00") ?? "0.00")</td>
-                                <td class="text-end font-numeric text-success">@(bill.paid_amount?.ToString("0.00") ?? "0.00")</td>
-                                <td class="text-end font-numeric text-danger font-bold">@(balance.ToString("0.00"))</td>
-                                <td class="text-center">
-                                    <span class="status-badge @(isSettled ? "settled" : "pending")">
-                                        @(isSettled ? "Settled" : "Pending")
-                                    </span>
+                                <td colspan="13" class="text-center py-5 text-muted">
+                                    <i class="bi bi-receipt-cutoff" style="font-size: 2.5rem; color: #94a3b8; display: block; margin-bottom: 0.5rem;"></i>
+                                    No bills found matching the selected criteria.
                                 </td>
-                                 <td class="text-center">
-                                    @if (!isSettled && hasEditRight)
-                                    {
-                                        <button type="button" class="cash-pay-btn" @onclick="() => OpenPaymentModal(bill)" title="Receive Payment">
-                                            <i class="bi bi-wallet2"></i>
-                                            <span>Receive</span>
-                                        </button>
-                                    }
-                                    else if (!isSettled)
-                                    {
-                                        <span class="text-slate-400" style="font-size: 0.75rem;"><i class="bi bi-lock-fill"></i> No Access</span>
-                                    }
-                                    else
-                                    {
-                                        <span class="text-success-bold" style="font-size: 0.75rem;"><i class="bi bi-check-circle-fill"></i> Paid</span>
-                                    }
-                                 </td>
                             </tr>
+                        }
+                        else
+                        {
+                            int sno = (filter.page - 1) * filter.pagesize + 1;
+                            @foreach (var bill in billsList.data)
+                            {
+                                var balance = bill.balance_amount ?? 0;
+                                var isSettled = bill.is_settled || balance <= 0;
+                                <tr>
+                                    <td>@(sno++)</td>
+                                    <td class="bill-no">@bill.bill_no</td>
+                                    <td>@(DateTimeHelper.ConvertUtcToIst(bill.bill_date)?.ToString("dd-MMM-yyyy hh:mm tt") ?? "-")</td>
+                                    <td class="patient-name">@bill.patient_name</td>
+                                    <td class="patient-phone">@bill.mobileno</td>
+                                    <td>Dr. @(string.IsNullOrWhiteSpace(bill.doctor_name) ? "Self" : bill.doctor_name)</td>
+                                    <td class="text-end font-numeric">@(bill.gross_amount?.ToString("0.00") ?? "0.00")</td>
+                                    <td class="text-end font-numeric">@(bill.discount_amount?.ToString("0.00") ?? "0.00")</td>
+                                    <td class="text-end font-numeric font-bold">@(bill.net_amount?.ToString("0.00") ?? "0.00")</td>
+                                    <td class="text-end font-numeric text-success">@(bill.paid_amount?.ToString("0.00") ?? "0.00")</td>
+                                    <td class="text-end font-numeric text-danger font-bold">@(balance.ToString("0.00"))</td>
+                                    <td class="text-center">
+                                        <span class="status-badge @(isSettled ? "settled" : "pending")">
+                                            @(isSettled ? "Settled" : "Pending")
+                                        </span>
+                                    </td>
+                                     <td class="text-center">
+                                        @if (!isSettled && hasEditRight)
+                                        {
+                                            <button type="button" class="cash-pay-btn" @onclick="() => OpenPaymentModal(bill)" title="Receive Payment">
+                                                <i class="bi bi-wallet2"></i>
+                                                <span>Receive</span>
+                                            </button>
+                                        }
+                                        else if (!isSettled)
+                                        {
+                                            <span class="text-slate-400" style="font-size: 0.75rem;"><i class="bi bi-lock-fill"></i> No Access</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-success-bold" style="font-size: 0.75rem;"><i class="bi bi-check-circle-fill"></i> Paid</span>
+                                        }
+                                     </td>
+                                </tr>
+                            }
                         }
                     }
                 </tbody>
@@ -204,11 +279,11 @@
         <!-- Executive Pagination Bar -->
         <div class="executive-pagination-bar">
             <div class="pagination-text">
-                @if (billsList != null && billsList.total > 0)
+                @if (TotalActiveCount > 0)
                 {
-                    int startRecord = ((filter.page - 1) * filter.pagesize) + 1;
-                    int endRecord = Math.Min(filter.page * filter.pagesize, billsList.total);
-                    <span>Showing <strong>@startRecord</strong> to <strong>@endRecord</strong> of <strong>@billsList.total</strong> bills</span>
+                    int startRecord = ((CurrentActivePage - 1) * filter.pagesize) + 1;
+                    int endRecord = Math.Min(CurrentActivePage * filter.pagesize, TotalActiveCount);
+                    <span>Showing <strong>@startRecord</strong> to <strong>@endRecord</strong> of <strong>@TotalActiveCount</strong> bills</span>
                 }
                 else
                 {
@@ -227,28 +302,28 @@
                     </select>
                 </div>
 
-                @if (TotalPages > 1)
+                @if (TotalActivePages > 1)
                 {
                     <div class="pagination-buttons">
-                        <button type="button" class="page-num-btn" @onclick="() => GoToPageAsync(1)" disabled="@(filter.page <= 1)" title="First Page">
+                        <button type="button" class="page-num-btn" @onclick="() => GoToPageAsync(1)" disabled="@(CurrentActivePage <= 1)" title="First Page">
                             <i class="bi bi-chevron-double-left"></i>
                         </button>
-                        <button type="button" class="page-num-btn" @onclick="PrevPageAsync" disabled="@(filter.page <= 1)" title="Previous Page">
+                        <button type="button" class="page-num-btn" @onclick="PrevPageAsync" disabled="@(CurrentActivePage <= 1)" title="Previous Page">
                             <i class="bi bi-chevron-left"></i>
                         </button>
 
-                        @for (int i = Math.Max(1, filter.page - 2); i <= Math.Min(TotalPages, filter.page + 2); i++)
+                        @for (int i = Math.Max(1, CurrentActivePage - 2); i <= Math.Min(TotalActivePages, CurrentActivePage + 2); i++)
                         {
                             int p = i;
-                            <button type="button" class="page-num-btn @(p == filter.page ? "active" : "")" @onclick="() => GoToPageAsync(p)">
+                            <button type="button" class="page-num-btn @(p == CurrentActivePage ? "active" : "")" @onclick="() => GoToPageAsync(p)">
                                 @p
                             </button>
                         }
 
-                        <button type="button" class="page-num-btn" @onclick="NextPageAsync" disabled="@(filter.page >= TotalPages)" title="Next Page">
+                        <button type="button" class="page-num-btn" @onclick="NextPageAsync" disabled="@(CurrentActivePage >= TotalActivePages)" title="Next Page">
                             <i class="bi bi-chevron-right"></i>
                         </button>
-                        <button type="button" class="page-num-btn" @onclick="() => GoToPageAsync(TotalPages)" disabled="@(filter.page >= TotalPages)" title="Last Page">
+                        <button type="button" class="page-num-btn" @onclick="() => GoToPageAsync(TotalActivePages)" disabled="@(CurrentActivePage >= TotalActivePages)" title="Last Page">
                             <i class="bi bi-chevron-double-right"></i>
                         </button>
                     </div>
@@ -284,25 +359,25 @@
 
         <div class="modal-body-custom">
             <!-- Hero Summary Header Card -->
-            <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; padding: 1.25rem 1.75rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem; width: 100%;">
-                <div style="display: flex; align-items: center; gap: 0.75rem;">
-                    <span style="font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase;">BILL NO:</span>
-                    <span style="font-size: 0.85rem; font-weight: 700; color: #4f46e5; background: #e0e7ff; padding: 0.25rem 0.75rem; border-radius: 8px; font-family: monospace; border: 1px solid #c7d2fe;">@selectedBill.bill_no</span>
+            <div style="background: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 100%); border: 1px solid #cbd5e1; border-radius: 14px; padding: 1rem 1.25rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; width: 100%; box-shadow: 0 1px 3px rgba(0,0,0,0.03);">
+                <div style="display: flex; align-items: center; gap: 0.6rem;">
+                    <span style="font-size: 0.72rem; font-weight: 800; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase;">BILL NO:</span>
+                    <span style="font-size: 0.82rem; font-weight: 800; color: #3b82f6; background: #eff6ff; padding: 0.2rem 0.65rem; border-radius: 6px; font-family: monospace; border: 1px solid #bfdbfe;">@selectedBill.bill_no</span>
                 </div>
-                <div style="display: flex; align-items: center; gap: 0.75rem;">
-                    <span style="font-size: 0.8rem; font-weight: 700; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase;">PATIENT NAME:</span>
-                    <span style="font-size: 1.05rem; font-weight: 800; color: #0f172a;">@selectedBill.patient_name</span>
+                <div style="display: flex; align-items: center; gap: 0.6rem;">
+                    <span style="font-size: 0.72rem; font-weight: 800; color: #64748b; letter-spacing: 0.05em; text-transform: uppercase;">PATIENT:</span>
+                    <span style="font-size: 0.95rem; font-weight: 800; color: #0f172a;">@selectedBill.patient_name</span>
                 </div>
             </div>
 
             <EditForm Model="@paymentRequest" OnValidSubmit="SubmitPaymentAsync" class="payment-form">
                 <!-- Form Fields 2-Column Grid -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem 1.5rem; margin-bottom: 1.5rem;">
-                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
-                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
-                            <i class="bi bi-pc-display text-slate-500"></i> COUNTER CODE<span style="color: #ef4444;">*</span>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem 1rem; margin-bottom: 1rem;">
+                    <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                            <i class="bi bi-pc-display text-primary"></i> COUNTER CODE <span style="color: #ef4444;">*</span>
                         </label>
-                        <select class="form-select" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; text-align-last: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.cntcode" required>
+                        <select class="form-select" style="height: 38px; border-radius: 10px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; font-size: 0.82rem; padding: 0.25rem 0.65rem;" @bind="paymentRequest.cntcode" required>
                             <option value="">Select Counter</option>
                             @foreach (var c in counters)
                             {
@@ -311,11 +386,11 @@
                         </select>
                     </div>
 
-                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
-                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
-                            <i class="bi bi-building text-slate-500"></i> COUNTER BRANCH<span style="color: #ef4444;">*</span>
+                    <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                            <i class="bi bi-building text-primary"></i> COUNTER BRANCH <span style="color: #ef4444;">*</span>
                         </label>
-                        <select class="form-select" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; text-align-last: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.enteredbhcode" required>
+                        <select class="form-select" style="height: 38px; border-radius: 10px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; font-size: 0.82rem; padding: 0.25rem 0.65rem;" @bind="paymentRequest.enteredbhcode" required>
                             <option value="">Select Branch</option>
                             @foreach (var b in branches)
                             {
@@ -324,31 +399,41 @@
                         </select>
                     </div>
 
-                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
-                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                    <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
                             <i class="bi bi-hash text-slate-500"></i> REFERENCE NO / TXN ID
                         </label>
-                        <input type="text" class="form-control" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.reference_no" placeholder="e.g. APRV-88421" />
+                        <input type="text" class="form-control" style="height: 38px; border-radius: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #0f172a; font-size: 0.82rem; padding: 0.25rem 0.65rem;" @bind="paymentRequest.reference_no" placeholder="e.g. APRV-88421" />
                     </div>
 
-                    <div style="display: flex; flex-direction: column; gap: 0.35rem;">
-                        <label style="font-size: 0.75rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
+                    <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                        <label style="font-size: 0.72rem; font-weight: 700; color: #475569; letter-spacing: 0.03em; display: flex; align-items: center; gap: 0.25rem;">
                             <i class="bi bi-bank text-slate-500"></i> BANK NAME
                         </label>
-                        <input type="text" class="form-control" style="height: 42px; border-radius: 12px; border: 1px solid #cbd5e1; font-weight: 700; color: #0f172a; text-align: center; padding: 0.375rem 0.75rem;" @bind="paymentRequest.bank_name" placeholder="e.g. HDFC Bank" />
+                        <input type="text" class="form-control" style="height: 38px; border-radius: 10px; border: 1px solid #cbd5e1; font-weight: 600; color: #0f172a; font-size: 0.82rem; padding: 0.25rem 0.65rem;" @bind="paymentRequest.bank_name" placeholder="e.g. HDFC Bank" />
                     </div>
                 </div>
 
-                <!-- Net Payable Row -->
-                <div style="padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #e2e8f0; margin-top: 0.5rem;">
-                    <span style="font-weight: 700; color: #1e293b; font-size: 0.95rem; text-transform: uppercase;">NET PAYABLE</span>
-                    <span style="font-weight: 800; color: #6366f1; font-size: 1.25rem;">₹ @dueAmt.ToString("F2")</span>
+                <!-- Net Payable Row with Quick-Fill Action Buttons -->
+                <div style="padding: 0.65rem 0.85rem; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px; margin-bottom: 0.75rem;">
+                    <div>
+                        <div style="font-weight: 800; color: #475569; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em;">NET PAYABLE</div>
+                        <div style="font-weight: 800; color: #2563eb; font-size: 1.25rem; line-height: 1.2;">₹ @dueAmt.ToString("N2")</div>
+                    </div>
+                    <div style="display: flex; gap: 6px; align-items: center;">
+                        <button type="button" class="btn btn-sm" style="background: #e0e7ff; color: #4338ca; font-size: 0.72rem; font-weight: 700; border-radius: 6px; padding: 3px 8px; border: 1px solid #c7d2fe;" @onclick="() => SetQuickAmount(dueAmt)">
+                            <i class="bi bi-lightning-charge-fill me-1"></i> Pay Full
+                        </button>
+                        <button type="button" class="btn btn-sm" style="background: #f1f5f9; color: #64748b; font-size: 0.72rem; font-weight: 700; border-radius: 6px; padding: 3px 8px; border: 1px solid #cbd5e1;" @onclick="() => SetQuickAmount(0)">
+                            Clear
+                        </button>
+                    </div>
                 </div>
 
                 @if (patientAdvanceAvailable > 0)
                 {
                     var remainingAdvance = Math.Max(0, patientAdvanceAvailable - (paymentRequest.amount));
-                    <div style="margin: 0.75rem 0 0.5rem; background: #ecfdf5; border: 1.5px dashed #34d399; border-radius: 10px; padding: 0.6rem 0.85rem; display: flex; flex-direction: column; gap: 0.3rem;">
+                    <div style="margin: 0.5rem 0 0.75rem; background: #ecfdf5; border: 1.5px dashed #34d399; border-radius: 10px; padding: 0.6rem 0.85rem; display: flex; flex-direction: column; gap: 0.3rem;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
                             <span style="font-size: 0.72rem; font-weight: 700; color: #047857; text-transform: uppercase;">
                                 <i class="bi bi-wallet2 me-1"></i> Patient Advance Available
@@ -364,35 +449,44 @@
                     </div>
                 }
 
-                <!-- Payment Box (Dynamic Paymodes Dropdowns) -->
-                <div style="margin: 1rem 0; background: #f8faff; border-radius: 12px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                <!-- Payment Box (Dynamic Paymodes Split) -->
+                <div style="margin: 0.75rem 0; background: #f8fafc; border-radius: 12px; padding: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem; border: 1px solid #e2e8f0;">
+                    <div style="font-size: 0.72rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.04em;">Payment Mode Allocation</div>
+                    
                     <!-- Paymode Option 1 -->
                     <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
-                        <select class="form-select" style="flex: 1; height: 34px; font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc1" @bind:after="RecalculatePaymentTotals">
+                        <select class="form-select" style="flex: 1; height: 36px; font-size: 0.82rem; font-weight: 600; padding: 2px 10px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc1" @bind:after="RecalculatePaymentTotals">
                             <option value="">Select Paymode 1</option>
                             @foreach (var pm in paymodes)
                             {
                                 <option value="@pm.pmcode">@pm.name</option>
                             }
                         </select>
-                        <input type="number" style="width: 100px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.5rem; height: 34px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="paymentRequest.pmc1_amount" @bind:event="oninput" @bind:after="RecalculatePaymentTotals" placeholder="0" />
-                        <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode1" title="Clear Paymode 1">
+                        <input type="text" inputmode="decimal" style="width: 120px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.6rem; height: 36px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05); font-size: 0.85rem;"
+                               value="@pmc1InputText"
+                               @oninput="OnPmc1TextInput"
+                               placeholder="0" />
+                        <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode1" title="Clear Paymode 1">
                             <i class="bi bi-x"></i>
                         </button>
                     </div>
+
                     <!-- Paymode Option 2 -->
                     @if (showPaymode2)
                     {
                         <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
-                            <select class="form-select" style="flex: 1; height: 34px; font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc2" @bind:after="RecalculatePaymentTotals">
+                            <select class="form-select" style="flex: 1; height: 36px; font-size: 0.82rem; font-weight: 600; padding: 2px 10px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc2" @bind:after="RecalculatePaymentTotals">
                                 <option value="">Select Paymode 2</option>
                                 @foreach (var pm in paymodes)
                                 {
                                     <option value="@pm.pmcode">@pm.name</option>
                                 }
                             </select>
-                            <input type="number" style="width: 100px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.5rem; height: 34px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="paymentRequest.pmc2_amount" @bind:event="oninput" @bind:after="RecalculatePaymentTotals" placeholder="0" />
-                            <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode2" title="Clear Paymode 2">
+                            <input type="text" inputmode="decimal" style="width: 120px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.6rem; height: 36px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05); font-size: 0.85rem;"
+                                   value="@pmc2InputText"
+                                   @oninput="OnPmc2TextInput"
+                                   placeholder="0" />
+                            <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode2" title="Clear Paymode 2">
                                 <i class="bi bi-x"></i>
                             </button>
                         </div>
@@ -402,15 +496,18 @@
                     @if (showPaymode3)
                     {
                         <div style="display: flex; justify-content: space-between; align-items: center; gap: 0.5rem;">
-                            <select class="form-select" style="flex: 1; height: 34px; font-size: 0.8rem; font-weight: 600; padding: 2px 8px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc3" @bind:after="RecalculatePaymentTotals">
+                            <select class="form-select" style="flex: 1; height: 36px; font-size: 0.82rem; font-weight: 600; padding: 2px 10px; border: 1px solid #cbd5e1; border-radius: 8px;" @bind="paymentRequest.pmc3" @bind:after="RecalculatePaymentTotals">
                                 <option value="">Select Paymode 3</option>
                                 @foreach (var pm in paymodes)
                                 {
                                     <option value="@pm.pmcode">@pm.name</option>
                                 }
                             </select>
-                            <input type="number" style="width: 100px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.5rem; height: 34px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05);" @bind="paymentRequest.pmc3_amount" @bind:event="oninput" @bind:after="RecalculatePaymentTotals" placeholder="0" />
-                            <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 26px; height: 26px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode3" title="Clear Paymode 3">
+                            <input type="text" inputmode="decimal" style="width: 120px; text-align: right; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0.3rem 0.6rem; height: 36px; font-weight: 700; color: #0f172a; box-shadow: 0 1px 2px rgba(0,0,0,0.05); font-size: 0.85rem;"
+                                   value="@pmc3InputText"
+                                   @oninput="OnPmc3TextInput"
+                                   placeholder="0" />
+                            <button type="button" style="border: none; background: #fef2f2; color: #ef4444; border-radius: 50%; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; font-size: 0.85rem;" @onclick="ClearPaymode3" title="Clear Paymode 3">
                                 <i class="bi bi-x"></i>
                             </button>
                         </div>
@@ -418,48 +515,46 @@
 
                     @if (!showPaymode2 || !showPaymode3)
                     {
-                        <div style="display: flex; justify-content: center; width: 100%;">
-                            <button type="button" style="background: #e0e7ff; color: #4f46e5; border: none; border-radius: 8px; padding: 0.35rem 0.75rem; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; gap: 0.25rem; cursor: pointer; margin-top: 0.25rem;" @onclick="AddPaymode">
-                                <i class="bi bi-plus-lg"></i> Add Paymode
+                        <div style="display: flex; justify-content: center; width: 100%; margin-top: 0.2rem;">
+                            <button type="button" style="background: #e0e7ff; color: #4338ca; border: none; border-radius: 8px; padding: 0.35rem 0.85rem; font-size: 0.75rem; font-weight: 700; display: flex; align-items: center; gap: 0.3rem; cursor: pointer;" @onclick="AddPaymode">
+                                <i class="bi bi-plus-lg"></i> Add Paymode Split
                             </button>
                         </div>
                     }
                 </div>
 
                 <!-- Balance Due Row -->
-                <div style="padding: 0.75rem 1rem; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0;">
+                <div style="padding: 0.65rem 0.85rem; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; margin-bottom: 0.75rem;">
                     @if (paymentRequest.amount > dueAmt)
                     {
-                        <span style="font-weight: 700; color: #ef4444; font-size: 0.85rem; text-transform: uppercase;">RETURN BALANCE</span>
-                        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.15rem;">
-                            <span style="font-weight: 800; color: #ef4444; font-size: 1.15rem;">₹ @((paymentRequest.amount - dueAmt).ToString("F2"))</span>
-                            <span style="font-size: 0.6rem; font-weight: 700; color: #ef4444; background: #fee2e2; padding: 0.1rem 0.3rem; border-radius: 4px; text-transform: uppercase;">Change Owed</span>
+                        <span style="font-weight: 700; color: #ef4444; font-size: 0.82rem; text-transform: uppercase;">RETURN BALANCE</span>
+                        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.1rem;">
+                            <span style="font-weight: 800; color: #ef4444; font-size: 1.15rem;">₹ @((paymentRequest.amount - dueAmt).ToString("N2"))</span>
+                            <span style="font-size: 0.62rem; font-weight: 700; color: #ef4444; background: #fee2e2; padding: 0.1rem 0.4rem; border-radius: 4px; text-transform: uppercase;">Change Owed</span>
                         </div>
                     }
                     else
                     {
-                        <span style="font-weight: 700; color: #475569; font-size: 0.85rem; text-transform: uppercase;">BALANCE DUE</span>
-                        @if (dueAmt - paymentRequest.amount <= 0)
+                        <span style="font-weight: 700; color: #475569; font-size: 0.82rem; text-transform: uppercase;">BALANCE DUE</span>
+                        @if (dueAmt - paymentRequest.amount <= 0 && paymentRequest.amount > 0)
                         {
-                            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.15rem;">
+                            <div style="display:flex; flex-direction:column; align-items:flex-end; gap:0.1rem;">
                                 <span style="font-weight: 800; color: #10b981; font-size: 1.15rem;">₹ 0.00</span>
-                                <span style="font-size: 0.6rem; font-weight: 700; color: #10b981; background: #e6f4ea; padding: 0.1rem 0.3rem; border-radius: 4px; text-transform: uppercase;">Fully Settled</span>
+                                <span style="font-size: 0.62rem; font-weight: 700; color: #10b981; background: #e6f4ea; padding: 0.1rem 0.4rem; border-radius: 4px; text-transform: uppercase;">Fully Settled</span>
                             </div>
                         }
                         else
                         {
-                            <span style="font-weight: 800; color: #f97316; font-size: 1.15rem;">₹ @((dueAmt - paymentRequest.amount).ToString("F2"))</span>
+                            <span style="font-weight: 800; color: #f97316; font-size: 1.15rem;">₹ @((dueAmt - paymentRequest.amount).ToString("N2"))</span>
                         }
                     }
                 </div>
 
                 <!-- Total Amount Paid Box -->
-                <div style="background: #4f46e5; padding: 0.75rem 1rem; border-radius: 8px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-                    <span style="font-weight: 700; color: #ffffff; font-size: 0.9rem; text-transform: uppercase;">TOTAL AMOUNT PAID</span>
-                    <span style="font-weight: 800; color: #ffffff; font-size: 1.25rem;">₹ @paymentRequest.amount.ToString("F2")</span>
+                <div style="background: linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%); padding: 0.75rem 1.15rem; border-radius: 10px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2);">
+                    <span style="font-weight: 800; color: #ffffff; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.04em;">TOTAL AMOUNT PAID</span>
+                    <span style="font-weight: 800; color: #ffffff; font-size: 1.3rem;">₹ @paymentRequest.amount.ToString("N2")</span>
                 </div>
-
-
 
                 <!-- Actions -->
                 <div class="modal-footer-actions">
@@ -485,13 +580,102 @@
 }
 
 @code {
-    private HmsBillFilterRequest filter = new() { page = 1, pagesize = 50 };
+    private HmsBillFilterRequest filter = new() { page = 1, pagesize = 50, fromdate = DateTime.Today, todate = DateTime.Today };
     private HmsBillListResponse? billsList;
     private List<Booking.Models.BranchModel> branches = new();
     private List<CounterMasterModel> counters = new();
     private List<PaymodeMasterModel> paymodes = new();
     private bool isLoading = false;
     private string statusFilter = "ALL"; // Default to all bills
+
+    // Pharmacy Billing Integration State
+    private string billingSource = "HOSPITAL"; // "HOSPITAL" or "PHARMACY"
+    private List<sales_master> PharmacySalesList = new();
+    private int pharmacyPage = 1;
+    private sales_master? selectedPharmacySale;
+    private string DefaultTenant = "";
+    private string AuthToken = "";
+
+    // Text state for amount input boxes (prevents wheel scroll increment/decrement)
+    private string pmc1InputText = "";
+    private string pmc2InputText = "";
+    private string pmc3InputText = "";
+
+    private int CurrentActivePage => billingSource == "PHARMACY" ? pharmacyPage : filter.page;
+    private int TotalActivePages => billingSource == "PHARMACY" ? TotalPharmacyPages : TotalPages;
+    private int TotalActiveCount => billingSource == "PHARMACY" ? FilteredPharmacySales.Count : (billsList?.total ?? 0);
+    private int TotalPharmacyPages => Math.Max(1, (int)Math.Ceiling(FilteredPharmacySales.Count / (double)filter.pagesize));
+
+    private bool MatchesPharmacySearch(sales_master s, string? query)
+    {
+        if (string.IsNullOrWhiteSpace(query)) return true;
+        var q = query.Trim();
+
+        if (s.billno != null && s.billno.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (s.salescode.ToString().Contains(q)) return true;
+        if (s.patientname != null && s.patientname.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (s.patientid != null && s.patientid.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (s.address != null && s.address.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (s.consultant != null && s.consultant.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (s.invoiceno != null && s.invoiceno.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+        if (s.remarks != null && s.remarks.Contains(q, StringComparison.OrdinalIgnoreCase)) return true;
+
+        var cleanQ = new string(q.Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+        if (!string.IsNullOrEmpty(cleanQ))
+        {
+            var cleanBill = new string((s.billno ?? "").Where(char.IsLetterOrDigit).ToArray()).ToLowerInvariant();
+            if (cleanBill.Contains(cleanQ)) return true;
+
+            var digitsQ = new string(q.Where(char.IsDigit).ToArray());
+            if (!string.IsNullOrEmpty(digitsQ) && long.TryParse(digitsQ, out var numQ) && numQ > 0)
+            {
+                if (s.salescode == numQ) return true;
+                var billDigits = new string((s.billno ?? "").Where(char.IsDigit).ToArray());
+                if (billDigits.Contains(digitsQ)) return true;
+            }
+        }
+
+        return false;
+    }
+
+    private List<sales_master> FilteredPharmacySales => PharmacySalesList
+        .Where(s =>
+            (string.IsNullOrEmpty(DefaultTenant) || string.IsNullOrEmpty(s.tenantcode) || string.Equals(s.tenantcode, DefaultTenant, StringComparison.OrdinalIgnoreCase)) &&
+            (!filter.fromdate.HasValue || s.billdate.Date >= filter.fromdate.Value.Date) &&
+            (!filter.todate.HasValue || s.billdate.Date <= filter.todate.Value.Date) &&
+            (statusFilter == "ALL" ||
+             (statusFilter == "PENDING" && !string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) && !string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase)) ||
+             (statusFilter == "SETTLED" && (string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) || string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase)))) &&
+            MatchesPharmacySearch(s, filter.search)
+        )
+        .OrderByDescending(s => s.salescode > 0 ? s.salescode : s.billdate.Ticks)
+        .ToList();
+
+    private List<sales_master> PagedPharmacySales
+    {
+        get
+        {
+            var list = FilteredPharmacySales;
+            int maxP = Math.Max(1, (int)Math.Ceiling(list.Count / (double)filter.pagesize));
+            if (pharmacyPage > maxP) pharmacyPage = 1;
+            return list.Skip((pharmacyPage - 1) * filter.pagesize).Take(filter.pagesize).ToList();
+        }
+    }
+
+    private async Task SetBillingSourceAsync(string source)
+    {
+        billingSource = source;
+        if (billingSource == "PHARMACY")
+        {
+            pharmacyPage = 1;
+            await LoadPharmacySalesAsync();
+        }
+        else
+        {
+            filter.page = 1;
+            await LoadBillsAsync();
+        }
+    }
 
     // Add Payment Modal State
     private bool showPaymentModal = false;
@@ -624,13 +808,14 @@
         }
         catch { }
 
-        filter.fromdate = null;
-        filter.todate = null;
+        filter.fromdate = DateTime.Today;
+        filter.todate = DateTime.Today;
 
         await Task.WhenAll(
             LoadBranchesAsync(),
             LoadCountersAsync(),
-            LoadPaymodesAsync()
+            LoadPaymodesAsync(),
+            LoadPharmacySalesAsync()
         );
 
         if (TenantState.BranchCode > 0) filter.bhcode = TenantState.BranchCode;
@@ -638,6 +823,33 @@
         await SetDefaultCounterAsync();
 
         await LoadBillsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+                if (string.IsNullOrWhiteSpace(DefaultTenant) && !string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+                {
+                    DefaultTenant = TenantState.TenantCode;
+                }
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                if (!tokenResult.Success || string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    tokenResult = await _sessionStorage.GetAsync<string>("auth_token");
+                }
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : (TenantState?.AuthToken ?? "");
+
+                await LoadPharmacySalesAsync();
+                StateHasChanged();
+            }
+            catch { }
+        }
     }
 
     private IEnumerable<CounterMasterModel> GetFilteredCounters()
@@ -729,6 +941,13 @@
 
     private async Task LoadBillsAsync()
     {
+        if (billingSource == "PHARMACY")
+        {
+            pharmacyPage = 1;
+            await LoadPharmacySalesAsync();
+            return;
+        }
+
         isLoading = true;
         StateHasChanged();
 
@@ -773,39 +992,77 @@
         {
             page = 1,
             pagesize = 50,
-            fromdate = null,
-            todate = null
+            fromdate = DateTime.Today,
+            todate = DateTime.Today
         };
         if (TenantState.BranchCode > 0) filter.bhcode = TenantState.BranchCode;
         statusFilter = "ALL";
+        pharmacyPage = 1;
         await SetDefaultCounterAsync();
-        await LoadBillsAsync();
+        if (billingSource == "PHARMACY")
+        {
+            await LoadPharmacySalesAsync();
+        }
+        else
+        {
+            await LoadBillsAsync();
+        }
     }
 
     private void HandleSearchKeyUp(KeyboardEventArgs e)
     {
         if (e.Key == "Enter")
         {
-            filter.page = 1;
-            _ = LoadBillsAsync();
+            if (billingSource == "PHARMACY")
+            {
+                pharmacyPage = 1;
+                StateHasChanged();
+            }
+            else
+            {
+                filter.page = 1;
+                _ = LoadBillsAsync();
+            }
         }
     }
 
     private async Task PrevPageAsync()
     {
-        if (filter.page > 1)
+        if (billingSource == "PHARMACY")
         {
-            filter.page--;
-            await LoadBillsAsync();
+            if (pharmacyPage > 1)
+            {
+                pharmacyPage--;
+                StateHasChanged();
+            }
+        }
+        else
+        {
+            if (filter.page > 1)
+            {
+                filter.page--;
+                await LoadBillsAsync();
+            }
         }
     }
 
     private async Task NextPageAsync()
     {
-        if (filter.page < TotalPages)
+        if (billingSource == "PHARMACY")
         {
-            filter.page++;
-            await LoadBillsAsync();
+            if (pharmacyPage < TotalPharmacyPages)
+            {
+                pharmacyPage++;
+                StateHasChanged();
+            }
+        }
+        else
+        {
+            if (filter.page < TotalPages)
+            {
+                filter.page++;
+                await LoadBillsAsync();
+            }
         }
     }
 
@@ -814,23 +1071,43 @@
         if (int.TryParse(e.Value?.ToString(), out int newSize))
         {
             filter.pagesize = newSize;
-            filter.page = 1;
-            await LoadBillsAsync();
+            if (billingSource == "PHARMACY")
+            {
+                pharmacyPage = 1;
+                StateHasChanged();
+            }
+            else
+            {
+                filter.page = 1;
+                await LoadBillsAsync();
+            }
         }
     }
 
     private async Task GoToPageAsync(int targetPage)
     {
-        if (targetPage >= 1 && targetPage <= TotalPages && targetPage != filter.page)
+        if (billingSource == "PHARMACY")
         {
-            filter.page = targetPage;
-            await LoadBillsAsync();
+            if (targetPage >= 1 && targetPage <= TotalPharmacyPages && targetPage != pharmacyPage)
+            {
+                pharmacyPage = targetPage;
+                StateHasChanged();
+            }
+        }
+        else
+        {
+            if (targetPage >= 1 && targetPage <= TotalPages && targetPage != filter.page)
+            {
+                filter.page = targetPage;
+                await LoadBillsAsync();
+            }
         }
     }
 
-    // Modal Control
+    // Modal Control for HMS Bills
     private async Task OpenPaymentModal(HmsBillSummary bill)
     {
+        selectedPharmacySale = null;
         selectedBill = bill;
         var dueAmt = bill.balance_amount ?? 0;
 
@@ -862,14 +1139,18 @@
             reference_no = "",
             bank_name = "",
             pmc1 = defaultPmc1,
-            pmc1_amount = 0,
+            pmc1_amount = null,
             pmc2 = defaultPmc2,
-            pmc2_amount = 0,
+            pmc2_amount = null,
             pmc3 = defaultPmc3,
-            pmc3_amount = 0
+            pmc3_amount = null
         };
 
         if (TenantState.BranchCode > 0) paymentRequest.enteredbhcode = TenantState.BranchCode.Value;
+
+        pmc1InputText = "";
+        pmc2InputText = "";
+        pmc3InputText = "";
 
         showPaymode2 = false;
         showPaymode3 = false;
@@ -899,23 +1180,110 @@
         }
     }
 
+    // Modal Control for Pharmacy Bills
+    private async Task OpenPharmacyPaymentModal(sales_master sale)
+    {
+        selectedPharmacySale = sale;
+        var dueAmt = (double)sale.netamount;
+
+        decimal? defaultPmc1 = null;
+        decimal? defaultPmc2 = null;
+        decimal? defaultPmc3 = null;
+
+        if (paymodes != null && paymodes.Count > 0)
+        {
+            var cashPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CASH", StringComparison.OrdinalIgnoreCase));
+            defaultPmc1 = cashPm != null ? cashPm.pmcode : paymodes[0].pmcode;
+
+            var cardPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
+            if (cardPm != null) defaultPmc2 = cardPm.pmcode;
+
+            var upiPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
+            if (upiPm != null) defaultPmc3 = upiPm.pmcode;
+        }
+
+        selectedBill = new HmsBillSummary
+        {
+            bill_no = string.IsNullOrWhiteSpace(sale.billno) ? $"#SALES-{sale.salescode}" : sale.billno,
+            patient_name = string.IsNullOrWhiteSpace(sale.patientname) ? (!string.IsNullOrWhiteSpace(sale.patientid) ? sale.patientid : "Counter Patient") : sale.patientname,
+            gross_amount = (double)sale.grossamount,
+            discount_amount = (double)sale.discountamount,
+            net_amount = (double)sale.netamount,
+            paid_amount = 0,
+            balance_amount = (double)sale.netamount,
+            bill_date = sale.billdate,
+            doctor_name = sale.consultant,
+            cntcode = filter.cntcode,
+            enteredbhcode = filter.bhcode,
+            custid = sale.customercode
+        };
+
+        paymentRequest = new HmsPaymentRequest
+        {
+            requestguid = $"PHARM-{sale.salescode}",
+            amount = 0,
+            collection_type = "CASH",
+            cntcode = filter.cntcode ?? 1,
+            enteredbhcode = filter.bhcode ?? (TenantState.BranchCode > 0 ? TenantState.BranchCode.Value : 1),
+            usercode = TenantState.UserCode > 0 ? TenantState.UserCode : 101,
+            computercode = 1,
+            reference_no = "",
+            bank_name = "",
+            pmc1 = defaultPmc1,
+            pmc1_amount = null,
+            pmc2 = defaultPmc2,
+            pmc2_amount = null,
+            pmc3 = defaultPmc3,
+            pmc3_amount = null
+        };
+
+        if (TenantState.BranchCode > 0) paymentRequest.enteredbhcode = TenantState.BranchCode.Value;
+
+        pmc1InputText = "";
+        pmc2InputText = "";
+        pmc3InputText = "";
+
+        showPaymode2 = false;
+        showPaymode3 = false;
+        showPaymentModal = true;
+
+        if (sale.customercode.HasValue && sale.customercode.Value > 0)
+        {
+            await CheckPatientAdvanceAsync(sale.customercode.Value);
+        }
+        else
+        {
+            patientAdvanceAvailable = 0;
+            patientAdvanceSummary = null;
+        }
+    }
+
     private void SetQuickAmount(double amt)
     {
-        paymentRequest.amount = Math.Round(amt, 2);
-        double a2 = paymentRequest.pmc2_amount ?? 0;
-        double a3 = paymentRequest.pmc3_amount ?? 0;
-        if (a2 == 0 && a3 == 0)
+        if (amt > 0)
         {
-            paymentRequest.pmc1_amount = paymentRequest.amount;
+            pmc1InputText = amt.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+            paymentRequest.pmc1_amount = Math.Max(0, Math.Round(amt, 2));
         }
+        else
+        {
+            pmc1InputText = "";
+            paymentRequest.pmc1_amount = null;
+        }
+        pmc2InputText = "";
+        paymentRequest.pmc2_amount = null;
+        pmc3InputText = "";
+        paymentRequest.pmc3_amount = null;
         RecalculatePaymentTotals();
     }
 
     private void RecalculatePaymentTotals()
     {
-        double a1 = paymentRequest.pmc1_amount ?? 0;
-        double a2 = paymentRequest.pmc2_amount ?? 0;
-        double a3 = paymentRequest.pmc3_amount ?? 0;
+        double a1 = paymentRequest.pmc1_amount.HasValue ? Math.Max(0, paymentRequest.pmc1_amount.Value) : 0;
+        double a2 = paymentRequest.pmc2_amount.HasValue ? Math.Max(0, paymentRequest.pmc2_amount.Value) : 0;
+        double a3 = paymentRequest.pmc3_amount.HasValue ? Math.Max(0, paymentRequest.pmc3_amount.Value) : 0;
+
+        paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
 
         int activeCount = 0;
         string singleMode = "CASH";
@@ -942,12 +1310,10 @@
         if (activeCount > 1)
         {
             paymentRequest.collection_type = "MIXED";
-            paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
         }
         else if (activeCount == 1)
         {
             paymentRequest.collection_type = singleMode;
-            paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
         }
         else
         {
@@ -957,15 +1323,24 @@
 
     private void OnTotalAmountInput(ChangeEventArgs e)
     {
-        if (double.TryParse(e.Value?.ToString(), out double val))
+        var raw = e.Value?.ToString()?.Trim();
+        if (!string.IsNullOrEmpty(raw) && double.TryParse(raw, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
         {
-            paymentRequest.amount = val;
+            paymentRequest.amount = Math.Max(0, val);
             double a2 = paymentRequest.pmc2_amount ?? 0;
             double a3 = paymentRequest.pmc3_amount ?? 0;
             if (a2 == 0 && a3 == 0)
             {
-                paymentRequest.pmc1_amount = val;
+                pmc1InputText = val.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture);
+                paymentRequest.pmc1_amount = Math.Max(0, val);
             }
+            RecalculatePaymentTotals();
+        }
+        else
+        {
+            paymentRequest.amount = 0;
+            paymentRequest.pmc1_amount = null;
+            pmc1InputText = "";
             RecalculatePaymentTotals();
         }
     }
@@ -1009,41 +1384,47 @@
         RecalculatePaymentTotals();
     }
 
-    private void OnPmc1AmountInput(ChangeEventArgs e)
+    private void OnPmc1TextInput(ChangeEventArgs e)
     {
-        if (double.TryParse(e.Value?.ToString(), out double val))
+        var raw = e.Value?.ToString() ?? "";
+        pmc1InputText = raw;
+        if (!string.IsNullOrWhiteSpace(raw) && double.TryParse(raw.Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
         {
-            paymentRequest.pmc1_amount = val;
+            paymentRequest.pmc1_amount = Math.Max(0, val);
         }
         else
         {
-            paymentRequest.pmc1_amount = 0;
+            paymentRequest.pmc1_amount = null;
         }
         RecalculatePaymentTotals();
     }
 
-    private void OnPmc2AmountInput(ChangeEventArgs e)
+    private void OnPmc2TextInput(ChangeEventArgs e)
     {
-        if (double.TryParse(e.Value?.ToString(), out double val))
+        var raw = e.Value?.ToString() ?? "";
+        pmc2InputText = raw;
+        if (!string.IsNullOrWhiteSpace(raw) && double.TryParse(raw.Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
         {
-            paymentRequest.pmc2_amount = val;
+            paymentRequest.pmc2_amount = Math.Max(0, val);
         }
         else
         {
-            paymentRequest.pmc2_amount = 0;
+            paymentRequest.pmc2_amount = null;
         }
         RecalculatePaymentTotals();
     }
 
-    private void OnPmc3AmountInput(ChangeEventArgs e)
+    private void OnPmc3TextInput(ChangeEventArgs e)
     {
-        if (double.TryParse(e.Value?.ToString(), out double val))
+        var raw = e.Value?.ToString() ?? "";
+        pmc3InputText = raw;
+        if (!string.IsNullOrWhiteSpace(raw) && double.TryParse(raw.Trim(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out double val))
         {
-            paymentRequest.pmc3_amount = val;
+            paymentRequest.pmc3_amount = Math.Max(0, val);
         }
         else
         {
-            paymentRequest.pmc3_amount = 0;
+            paymentRequest.pmc3_amount = null;
         }
         RecalculatePaymentTotals();
     }
@@ -1051,7 +1432,8 @@
     private void ClearPaymode1()
     {
         paymentRequest.pmc1 = null;
-        paymentRequest.pmc1_amount = 0;
+        paymentRequest.pmc1_amount = null;
+        pmc1InputText = "";
         RecalculatePaymentTotals();
     }
 
@@ -1070,7 +1452,8 @@
     private void ClearPaymode2()
     {
         paymentRequest.pmc2 = null;
-        paymentRequest.pmc2_amount = 0;
+        paymentRequest.pmc2_amount = null;
+        pmc2InputText = "";
         showPaymode2 = false;
         RecalculatePaymentTotals();
     }
@@ -1078,7 +1461,8 @@
     private void ClearPaymode3()
     {
         paymentRequest.pmc3 = null;
-        paymentRequest.pmc3_amount = 0;
+        paymentRequest.pmc3_amount = null;
+        pmc3InputText = "";
         showPaymode3 = false;
         RecalculatePaymentTotals();
     }
@@ -1087,6 +1471,7 @@
     {
         showPaymentModal = false;
         selectedBill = null;
+        selectedPharmacySale = null;
         patientAdvanceAvailable = 0;
         patientAdvanceSummary = null;
     }
@@ -1198,7 +1583,6 @@
                     }
                     else
                     {
-                        // Fallback to UseAdvanceAsync ONLY if CollectBulkDueAsync failed (returned null)
                         var useReq = new HmsAdvanceUseRequest
                         {
                             custid          = selectedBill.custid ?? 0,
@@ -1224,7 +1608,41 @@
                 }
             }
 
-            // STEP 2: Process remaining cash/card/UPI payment if applicable
+            // If this is a PHARMACY bill payment:
+            if (selectedPharmacySale != null)
+            {
+                var saleReq = await FetchPharmacySaleRequestAsync(selectedPharmacySale.salescode);
+                if (saleReq != null && saleReq.master != null)
+                {
+                    saleReq.master.paymentstatus = "Paid";
+                    saleReq.master.paymentmode = paymentRequest.collection_type ?? "CASH";
+                    saleReq.master.modifieddate = DateTime.Now;
+                    if (paymentRequest.usercode > 0) saleReq.master.usercode = paymentRequest.usercode;
+
+                    await SavePharmacySaleUpdateAsync(saleReq);
+                }
+                else
+                {
+                    selectedPharmacySale.paymentstatus = "Paid";
+                    selectedPharmacySale.paymentmode = paymentRequest.collection_type ?? "CASH";
+                    var directReq = new sales_request { master = selectedPharmacySale, details = new List<sales_detail>() };
+                    await SavePharmacySaleUpdateAsync(directReq);
+                }
+
+                // Also record the cash counter collection transaction
+                try
+                {
+                    await HmsBillingService.AddPaymentAsync(paymentRequest);
+                }
+                catch { }
+
+                ToastService.ShowSuccess("Pharmacy bill payment received successfully!");
+                ClosePaymentModal();
+                await LoadPharmacySalesAsync();
+                return;
+            }
+
+            // STEP 2: Process remaining cash/card/UPI payment for HMS Bills
             double nonAdvanceAmount = paymentRequest.amount - advanceUsed;
             bool nonAdvanceSuccess = true;
 
@@ -1309,6 +1727,352 @@
             paymentSaving = false;
             StateHasChanged();
         }
+    }
+
+    // Pharmacy Data Loaders & Endpoints
+    private HttpClient CreateDoctorApiClient()
+    {
+        var client = ClientFactory.CreateClient("DoctorApi");
+        client.DefaultRequestHeaders.Remove("tenantcode");
+        client.DefaultRequestHeaders.Remove("tenant_code");
+        client.DefaultRequestHeaders.Remove("tenant-code");
+
+        string tCode = !string.IsNullOrEmpty(DefaultTenant) 
+            ? DefaultTenant 
+            : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0004");
+
+        client.DefaultRequestHeaders.Add("tenantcode", tCode);
+        client.DefaultRequestHeaders.Add("tenant_code", tCode);
+        client.DefaultRequestHeaders.Add("tenant-code", tCode);
+
+        var effectiveToken = !string.IsNullOrEmpty(AuthToken) 
+            ? AuthToken 
+            : (!string.IsNullOrEmpty(TenantState?.AuthToken) ? TenantState.AuthToken : "");
+
+        if (!string.IsNullOrEmpty(effectiveToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+        }
+        return client;
+    }
+
+    private async Task LoadPharmacySalesAsync()
+    {
+        if (billingSource == "PHARMACY")
+        {
+            isLoading = true;
+            StateHasChanged();
+        }
+
+        try
+        {
+            var client = CreateDoctorApiClient();
+            var response = await client.GetStringAsync("api/ItemMaster/getsales");
+            if (!string.IsNullOrWhiteSpace(response))
+            {
+                PharmacySalesList = ParsePharmacySalesListResponse(response);
+            }
+            else
+            {
+                PharmacySalesList = new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CashCounter] Error loading pharmacy bills: {ex.Message}");
+            if (billingSource == "PHARMACY")
+            {
+                ToastService.ShowError($"Error loading pharmacy bills: {ex.Message}");
+            }
+            PharmacySalesList = new();
+        }
+        finally
+        {
+            if (billingSource == "PHARMACY")
+            {
+                isLoading = false;
+            }
+            StateHasChanged();
+        }
+    }
+
+    private async Task<sales_request?> FetchPharmacySaleRequestAsync(long salesCode)
+    {
+        try
+        {
+            var client = CreateDoctorApiClient();
+            string tCode = !string.IsNullOrEmpty(DefaultTenant) 
+                ? DefaultTenant 
+                : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0004");
+            var url = $"api/ItemMaster/getsalesbycode?salescode={salesCode}&tenantcode={tCode}";
+            var response = await client.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                return ParsePharmacyRequestResponse(json);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CashCounter] Error fetching sale request #{salesCode}: {ex.Message}");
+        }
+
+        if (selectedPharmacySale != null)
+        {
+            return new sales_request
+            {
+                master = selectedPharmacySale,
+                details = new List<sales_detail>()
+            };
+        }
+        return null;
+    }
+
+    private async Task<bool> SavePharmacySaleUpdateAsync(sales_request req)
+    {
+        try
+        {
+            var client = CreateDoctorApiClient();
+            var updateEndpoints = new[]
+            {
+                "api/ItemMaster/updatesales",
+                "api/ItemMaster/insertsales",
+                "api/SalesMaster/updatesales",
+                "api/Sales/updatesales"
+            };
+
+            foreach (var ep in updateEndpoints)
+            {
+                try
+                {
+                    var res = await client.PostAsJsonAsync(ep, req);
+                    if (res.IsSuccessStatusCode)
+                    {
+                        var body = await res.Content.ReadAsStringAsync();
+                        if (!body.Contains("\"success\":false") && !body.Contains("\"status\":\"Failed\""))
+                        {
+                            return true;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CashCounter] Error saving pharmacy sale update: {ex.Message}");
+        }
+        return false;
+    }
+
+    private List<sales_master> ParsePharmacySalesListResponse(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new();
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            JsonElement arrayElement;
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                arrayElement = root;
+            }
+            else if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == JsonValueKind.Array)
+                {
+                    arrayElement = dataProp;
+                }
+                else
+                {
+                    bool found = false;
+                    arrayElement = default;
+                    foreach (var prop in root.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == JsonValueKind.Array)
+                        {
+                            arrayElement = prop.Value;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) return new();
+                }
+            }
+            else return new();
+
+            var result = new List<sales_master>();
+            foreach (var item in arrayElement.EnumerateArray())
+            {
+                var m = ParsePharmacyMaster(item, options);
+                if (m != null) result.Add(m);
+            }
+            return result.OrderByDescending(x => x.salescode > 0 ? x.salescode : x.billdate.Ticks).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[CashCounter] Parse Pharmacy Sales Error: " + ex.Message);
+        }
+
+        return new();
+    }
+
+    private sales_master? ParsePharmacyMaster(JsonElement el, System.Text.Json.JsonSerializerOptions options)
+    {
+        var target = el;
+        if (el.TryGetProperty("master", out var mProp)) target = mProp;
+
+        var m = System.Text.Json.JsonSerializer.Deserialize<sales_master>(target.GetRawText(), options);
+        if (m == null) return null;
+
+        if (m.salescode == 0)
+        {
+            foreach (var key in new[] { "salescode", "sales_code", "code", "id" })
+            {
+                if (TryGetPropertyIgnoreCase(target, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number) { m.salescode = p.GetInt64(); break; }
+                    else if (p.ValueKind == JsonValueKind.String && long.TryParse(p.GetString(), out var val)) { m.salescode = val; break; }
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.billno))
+        {
+            foreach (var key in new[] { "billno", "bill_no", "invoiceno", "invoice_no" })
+            {
+                if (TryGetPropertyIgnoreCase(target, key, out var p))
+                {
+                    m.billno = p.GetString();
+                    if (!string.IsNullOrEmpty(m.billno)) break;
+                }
+            }
+        }
+        if (m.billdate == default)
+        {
+            foreach (var key in new[] { "billdate", "bill_date", "createddate", "created_date" })
+            {
+                if (TryGetPropertyIgnoreCase(target, key, out var p) && p.TryGetDateTime(out var dt))
+                {
+                    m.billdate = dt;
+                    break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.patientname))
+        {
+            foreach (var key in new[] { "patientname", "patient_name", "customername", "name" })
+            {
+                if (TryGetPropertyIgnoreCase(target, key, out var p))
+                {
+                    m.patientname = p.GetString();
+                    if (!string.IsNullOrEmpty(m.patientname)) break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.patientid))
+        {
+            foreach (var key in new[] { "patientid", "patient_id", "customercode", "customer_code" })
+            {
+                if (TryGetPropertyIgnoreCase(target, key, out var p))
+                {
+                    m.patientid = p.GetString();
+                    if (!string.IsNullOrEmpty(m.patientid)) break;
+                }
+            }
+        }
+        if (m.netamount == 0)
+        {
+            foreach (var key in new[] { "netamount", "net_amount", "totalamount", "total" })
+            {
+                if (TryGetPropertyIgnoreCase(target, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number) { m.netamount = p.GetDecimal(); break; }
+                    else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) { m.netamount = val; break; }
+                }
+            }
+        }
+        return m;
+    }
+
+    private sales_request? ParsePharmacyRequestResponse(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return null;
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.ValueKind == JsonValueKind.Object && TryGetPropertyIgnoreCase(root, "data", out var dataProp))
+            {
+                root = dataProp;
+            }
+
+            if (root.ValueKind == JsonValueKind.Array)
+            {
+                if (root.GetArrayLength() > 0) root = root[0];
+                else return null;
+            }
+
+            if (root.ValueKind == JsonValueKind.Object)
+            {
+                if (TryGetPropertyIgnoreCase(root, "master", out var masterProp))
+                {
+                    var req = new sales_request();
+                    req.master = System.Text.Json.JsonSerializer.Deserialize<sales_master>(masterProp.GetRawText(), options)!;
+                    if (TryGetPropertyIgnoreCase(root, "details", out var detailsProp) && detailsProp.ValueKind == JsonValueKind.Array)
+                    {
+                        req.details = System.Text.Json.JsonSerializer.Deserialize<List<sales_detail>>(detailsProp.GetRawText(), options) ?? new();
+                    }
+                    else
+                    {
+                        req.details = new();
+                    }
+                    return req;
+                }
+                else
+                {
+                    var m = ParsePharmacyMaster(root, options);
+                    if (m != null)
+                    {
+                        return new sales_request { master = m, details = new List<sales_detail>() };
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("[CashCounter] Parse Pharmacy Request Error: " + ex.Message);
+        }
+
+        return null;
+    }
+
+    private static bool TryGetPropertyIgnoreCase(JsonElement el, string name, out JsonElement prop)
+    {
+        prop = default;
+        if (el.ValueKind != JsonValueKind.Object) return false;
+        foreach (var p in el.EnumerateObject())
+        {
+            if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+            {
+                prop = p.Value;
+                return true;
+            }
+        }
+        return false;
     }
 
     // Data Load Helpers
