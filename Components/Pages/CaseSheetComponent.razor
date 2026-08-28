@@ -5,6 +5,8 @@
 @using LabCare.Models
 @using medico_backend.Model
 @using Medico_Backend.Model
+@using Newtonsoft.Json
+@using System.Net.Http.Headers
 @inject CaseSheetService CaseSheetService
 @inject AppointmentBookingService AppointmentBookingService
 @inject ToastService ToastService
@@ -36,6 +38,43 @@
         color: #ffffff !important;
         border-color: #0284c7 !important;
         box-shadow: 0 4px 10px rgba(2, 132, 199, 0.2);
+    }
+
+    /* Preview Report Button (Active & Frozen states) */
+    .btn-preview-lab-report {
+        background: linear-gradient(135deg, #059669 0%, #047857 100%);
+        color: #ffffff !important;
+        border: 1px solid #047857;
+        border-radius: 8px;
+        padding: 0.45rem 1.15rem;
+        font-size: 0.82rem;
+        font-weight: 700;
+        display: inline-flex;
+        align-items: center;
+        gap: 0.45rem;
+        cursor: pointer;
+        box-shadow: 0 2px 6px rgba(5, 150, 105, 0.25);
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        white-space: nowrap;
+    }
+
+    .btn-preview-lab-report:hover:not(:disabled) {
+        background: linear-gradient(135deg, #047857 0%, #065f46 100%);
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(5, 150, 105, 0.35);
+        color: #ffffff !important;
+    }
+
+    .btn-preview-lab-report:disabled,
+    .btn-preview-lab-report.btn-preview-frozen {
+        background: #f1f5f9 !important;
+        color: #94a3b8 !important;
+        border: 1px solid #cbd5e1 !important;
+        box-shadow: none !important;
+        cursor: not-allowed !important;
+        opacity: 0.85 !important;
+        pointer-events: auto !important;
+        transform: none !important;
     }
 </style>
 
@@ -974,6 +1013,26 @@
                                             }
                                         </div>
                                     }
+
+                                    <!-- Right-Corner Report Preview Action (Button alone, clickable only when results are entered/authorized and report is available; otherwise frozen) -->
+                                    <div style="display: flex; justify-content: flex-end; align-items: center; margin-bottom: 0.75rem;">
+                                        <button type="button" 
+                                                class="btn-preview-lab-report @(!hasLabResultsEntered || string.IsNullOrEmpty(labReportRequestGuid) ? "btn-preview-frozen" : "")" 
+                                                @onclick="() => PreviewLabReportAsync(labReportRequestGuid)" 
+                                                disabled="@(!hasLabResultsEntered || string.IsNullOrEmpty(labReportRequestGuid) || loadingLabReportPreview)"
+                                                title="@(hasLabResultsEntered && !string.IsNullOrEmpty(labReportRequestGuid) ? "Preview finalized laboratory diagnostic report" : "Report preview is unavailable (results must be entered and authorized first)")">
+                                            @if (loadingLabReportPreview)
+                                            {
+                                                <span class="spinner-border spinner-border-sm" role="status" style="width: 14px; height: 14px;"></span>
+                                                <span>Loading Report...</span>
+                                            }
+                                            else
+                                            {
+                                                <i class="bi bi-file-earmark-pdf-fill"></i>
+                                                <span>Preview Report</span>
+                                            }
+                                        </button>
+                                    </div>
 
                                     <!-- Investigation List and Result Entry -->
                                     <div class="structured-table-card overflow-visible">
@@ -2194,6 +2253,12 @@
     private bool isViewingHistory => selectedPastVisitCaseSheet != null;
     private DateTime? historicalVisitDate => selectedPastVisitCaseSheet?.visit_date;
 
+    // Lab Report Preview & Result Entry Tracking
+    private bool hasLabResultsEntered = false;
+    private string labReportRequestGuid = "";
+    private bool checkingLabResults = false;
+    private bool loadingLabReportPreview = false;
+
     private string currentTenantCode = "";
 
     private async Task<string> GetCurrentTenantCodeAsync()
@@ -2261,6 +2326,7 @@
         else if (tabName == "investigation")
         {
             _ = LoadUnbilledChargesAsync();
+            _ = CheckLabResultsEnteredAsync();
         }
         try
         {
@@ -2484,6 +2550,9 @@
 
             // 5. Load unbilled charges for this visit (Investigations, Observations, Consultation, etc.)
             _ = LoadUnbilledChargesAsync();
+
+            // 6. Check if Laboratory Result Entry has recorded results for this patient / visit
+            _ = CheckLabResultsEnteredAsync();
         }
         catch (Exception ex)
         {
@@ -3129,6 +3198,7 @@
             {
                 LoadFromViewModel(existingSheet);
             }
+            _ = CheckLabResultsEnteredAsync();
             StateHasChanged();
         }
         else
@@ -4075,5 +4145,448 @@
             okClass: "btn-primary-finalize",
             icon: "bi-question-circle-fill text-primary"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // LABORATORY REPORT PREVIEW & RESULT VERIFICATION
+    // ─────────────────────────────────────────────────────────────
+    private async Task CheckLabResultsEnteredAsync()
+    {
+        if (checkingLabResults) return;
+        try
+        {
+            checkingLabResults = true;
+            hasLabResultsEntered = false;
+
+            // 1. Candidate GUIDs to check
+            var candidateGuids = new List<string>();
+
+            // Check investigation master ID
+            if (currentRequest.investigation != null && !string.IsNullOrWhiteSpace(currentRequest.investigation.inv_id))
+            {
+                var invIdStr = currentRequest.investigation.inv_id.Trim();
+                if (!candidateGuids.Contains(invIdStr)) candidateGuids.Add(invIdStr);
+            }
+            if (rawLoadedSheet?.investigation != null && !string.IsNullOrWhiteSpace(rawLoadedSheet.investigation.inv_id))
+            {
+                var rawInvIdStr = rawLoadedSheet.investigation.inv_id.Trim();
+                if (!candidateGuids.Contains(rawInvIdStr)) candidateGuids.Add(rawInvIdStr);
+            }
+
+            // Check tests in currentRequest
+            if (currentRequest.investigation?.tests != null)
+            {
+                foreach (var t in currentRequest.investigation.tests)
+                {
+                    if (!string.IsNullOrWhiteSpace(t.diag_id) && !candidateGuids.Contains(t.diag_id))
+                        candidateGuids.Add(t.diag_id);
+                    if (t.inv_det_id != Guid.Empty)
+                    {
+                        var detStr = t.inv_det_id.ToString();
+                        if (!candidateGuids.Contains(detStr)) candidateGuids.Add(detStr);
+                    }
+                }
+            }
+
+            // Check rawLoadedSheet tests
+            if (rawLoadedSheet?.investigation?.tests != null)
+            {
+                foreach (var t in rawLoadedSheet.investigation.tests)
+                {
+                    if (t.diag_id.HasValue && t.diag_id.Value != Guid.Empty)
+                    {
+                        var gStr = t.diag_id.Value.ToString();
+                        if (!candidateGuids.Contains(gStr)) candidateGuids.Add(gStr);
+                    }
+                    if (t.inv_det_id != Guid.Empty)
+                    {
+                        var dStr = t.inv_det_id.ToString();
+                        if (!candidateGuids.Contains(dStr)) candidateGuids.Add(dStr);
+                    }
+                }
+            }
+
+            // Check OpId
+            if (OpId != Guid.Empty)
+            {
+                var opStr = OpId.ToString();
+                if (!candidateGuids.Contains(opStr)) candidateGuids.Add(opStr);
+            }
+
+            // Check OpNo
+            if (!string.IsNullOrWhiteSpace(OpNo))
+            {
+                if (!candidateGuids.Contains(OpNo.Trim())) candidateGuids.Add(OpNo.Trim());
+            }
+
+            // Check unbilled charges entryid / unbilledid / opvisitid
+            if (unbilledChargesList != null)
+            {
+                foreach (var uc in unbilledChargesList)
+                {
+                    if (!string.IsNullOrWhiteSpace(uc.entryid) && !candidateGuids.Contains(uc.entryid.Trim()))
+                        candidateGuids.Add(uc.entryid.Trim());
+                    if (!string.IsNullOrWhiteSpace(uc.unbilledid) && !candidateGuids.Contains(uc.unbilledid.Trim()))
+                        candidateGuids.Add(uc.unbilledid.Trim());
+                    if (!string.IsNullOrWhiteSpace(uc.opvisitid) && !candidateGuids.Contains(uc.opvisitid.Trim()))
+                        candidateGuids.Add(uc.opvisitid.Trim());
+                }
+            }
+
+            // 2. Also check if any test in case sheet is marked COMPLETED or has result value
+            if (currentRequest.investigation?.tests != null && currentRequest.investigation.tests.Any(t => 
+                string.Equals(t.result_status, "COMPLETED", StringComparison.OrdinalIgnoreCase) || 
+                !string.IsNullOrWhiteSpace(t.result_value)))
+            {
+                hasLabResultsEntered = true;
+                if (candidateGuids.Count > 0) labReportRequestGuid = candidateGuids[0];
+            }
+
+            // 3. Query api/labresult/viewresultsearch for recent records of this patient
+            var custStr = CustId > 0 ? CustId.ToString() : "";
+            var fromDate = (VisitDate ?? DateTime.Today).AddDays(-60).ToString("MM-dd-yyyy");
+            var toDate = (VisitDate ?? DateTime.Today).AddDays(30).ToString("MM-dd-yyyy");
+
+            string effectiveTenant = !string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010";
+            string userAuthToken = !string.IsNullOrEmpty(TenantState?.AuthToken) ? TenantState.AuthToken : "";
+
+            var medicoClient = ClientFactory.CreateClient("Medico");
+
+            void AttachHeaders(HttpRequestMessage req)
+            {
+                if (!string.IsNullOrEmpty(userAuthToken))
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", userAuthToken);
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                    req.Headers.Add("tenant_code", effectiveTenant);
+            }
+
+            try
+            {
+                var vrsUrl = $"api/labresult/viewresultsearch?fromdate={fromDate}&todate={toDate}";
+                var vrsReq = new HttpRequestMessage(HttpMethod.Get, vrsUrl);
+                AttachHeaders(vrsReq);
+
+                var vrsRes = await medicoClient.SendAsync(vrsReq);
+                if (vrsRes.IsSuccessStatusCode)
+                {
+                    var vrsJson = await vrsRes.Content.ReadAsStringAsync();
+                    var vrsList = JsonConvert.DeserializeObject<List<medico_backend.Model.ViewResultSearch>>(vrsJson);
+                    if (vrsList != null && vrsList.Any())
+                    {
+                        var matchedRecords = vrsList.Where(item => {
+                            if (!string.IsNullOrEmpty(custStr) && (
+                                string.Equals(item.custcode, custStr, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(item.custcode, $"CUST-{custStr}", StringComparison.OrdinalIgnoreCase) ||
+                                (item.custcode != null && item.custcode.Contains(custStr))))
+                                return true;
+
+                            if (!string.IsNullOrEmpty(OpNo) && (
+                                string.Equals(item.hospitalpatientid, OpNo, StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(item.hospitalid, OpNo, StringComparison.OrdinalIgnoreCase)))
+                                return true;
+
+                            if (item.requestguid != null && candidateGuids.Any(g => string.Equals(g, item.requestguid.ToString(), StringComparison.OrdinalIgnoreCase)))
+                                return true;
+
+                            if (!string.IsNullOrWhiteSpace(PatientName) && item.name != null && item.name.IndexOf(PatientName.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
+                                return true;
+
+                            return false;
+                        }).ToList();
+
+                        foreach (var item in matchedRecords)
+                        {
+                            if (item.requestguid != null && !candidateGuids.Contains(item.requestguid.ToString()!))
+                            {
+                                candidateGuids.Insert(0, item.requestguid.ToString()!);
+                            }
+
+                            bool isFinished = item.resultstatus == true || 
+                                             item.requestresultstatus == true || 
+                                             item.isauthorized1 == true || 
+                                             item.isauthorized2 == true || 
+                                             item.isinvestigationauthorized1 == true || 
+                                             item.isinvestigationauthorized2 == true ||
+                                             item.isprinted == true ||
+                                             item.isinvestigationprinted1 == true;
+
+                            if (isFinished)
+                            {
+                                hasLabResultsEntered = true;
+                                if (item.requestguid != null && !string.IsNullOrEmpty(item.requestguid.ToString()))
+                                {
+                                    labReportRequestGuid = item.requestguid.ToString();
+                                }
+                                break;
+                            }
+                            else if (string.IsNullOrEmpty(labReportRequestGuid) && item.requestguid != null)
+                            {
+                                labReportRequestGuid = item.requestguid.ToString();
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CheckLabResultsEntered] ViewResultSearch notice: {ex.Message}");
+            }
+
+            // 4. Check candidateGuids via loadtestresultentry / LoadResultEntry
+            if (!hasLabResultsEntered && candidateGuids.Count > 0)
+            {
+                foreach (var guid in candidateGuids)
+                {
+                    try
+                    {
+                        var testUrls = new List<string>
+                        {
+                            $"api/labresult/loadtestresultentry?requestguid={guid}&custcode={custStr}",
+                            $"api/LabResult/LoadResultEntry?requestguid={guid}&custcode={custStr}",
+                            $"api/labresult/loadtestresultentry?requestguid={guid}",
+                            $"api/LabResult/LoadResultEntry?requestguid={guid}"
+                        };
+
+                        foreach (var loadUrl in testUrls)
+                        {
+                            var loadReq = new HttpRequestMessage(HttpMethod.Get, loadUrl);
+                            AttachHeaders(loadReq);
+
+                            var loadRes = await medicoClient.SendAsync(loadReq);
+                            if (loadRes.IsSuccessStatusCode)
+                            {
+                                var loadJson = await loadRes.Content.ReadAsStringAsync();
+                                var freshModel = JsonConvert.DeserializeObject<medico_backend.Model.ResultEntryModel>(loadJson);
+                                if (freshModel?.results != null && freshModel.results.Any(r => 
+                                    r.status == true || 
+                                    !string.IsNullOrWhiteSpace(r.enteredresult) || 
+                                    r.isauthorized1 || 
+                                    r.isauthorized2 || 
+                                    r.resultauthorizedby > 0 || 
+                                    r.resultauthorizedby2 > 0 || 
+                                    r.resultenteredby > 0))
+                                {
+                                    hasLabResultsEntered = true;
+                                    labReportRequestGuid = guid;
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (hasLabResultsEntered) break;
+                    }
+                    catch { }
+                }
+            }
+
+            // 5. DIRECT PROBE: If report is saved in DB, probe api/report/labreport for candidate GUIDs
+            if (!hasLabResultsEntered && candidateGuids.Count > 0)
+            {
+                foreach (var guid in candidateGuids.Take(5))
+                {
+                    try
+                    {
+                        var probeUrl = $"api/report/labreport?requestguid={guid}&isletterhead=true";
+                        var probeReq = new HttpRequestMessage(HttpMethod.Get, probeUrl);
+                        AttachHeaders(probeReq);
+                        var probeRes = await medicoClient.SendAsync(probeReq);
+                        if (probeRes.IsSuccessStatusCode && probeRes.StatusCode != System.Net.HttpStatusCode.NoContent)
+                        {
+                            var raw = await probeRes.Content.ReadAsStringAsync();
+                            string cleaned = CleanBase64String(raw);
+                            if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
+                            {
+                                hasLabResultsEntered = true;
+                                labReportRequestGuid = guid;
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (string.IsNullOrEmpty(labReportRequestGuid) && candidateGuids.Count > 0)
+            {
+                labReportRequestGuid = candidateGuids[0];
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[CheckLabResultsEntered] Error: {ex.Message}");
+        }
+        finally
+        {
+            checkingLabResults = false;
+            StateHasChanged();
+        }
+    }
+
+    private string CleanBase64String(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw)) return "";
+        var s = raw.Trim();
+        if (s.StartsWith("\"") && s.EndsWith("\""))
+        {
+            try { s = JsonConvert.DeserializeObject<string>(s) ?? s.Trim('"'); }
+            catch { s = s.Trim('"'); }
+        }
+        if (s.StartsWith("{") && s.EndsWith("}"))
+        {
+            try
+            {
+                var jObj = Newtonsoft.Json.Linq.JObject.Parse(s);
+                var token = jObj["data"] ?? jObj["result"] ?? jObj["pdf"] ?? jObj["report"] ?? jObj["file"];
+                if (token != null) s = token.ToString();
+            }
+            catch { }
+        }
+        if (s.StartsWith("data:application/pdf;base64,"))
+        {
+            s = s.Substring("data:application/pdf;base64,".Length);
+        }
+        return s.Trim();
+    }
+
+    private async Task PreviewLabReportAsync(string? requestGuid = null)
+    {
+        var activeGuid = !string.IsNullOrWhiteSpace(requestGuid) ? requestGuid : labReportRequestGuid;
+        if (string.IsNullOrWhiteSpace(activeGuid))
+        {
+            if (currentRequest.investigation != null && !string.IsNullOrEmpty(currentRequest.investigation.inv_id))
+                activeGuid = currentRequest.investigation.inv_id;
+            else if (OpId != Guid.Empty)
+                activeGuid = OpId.ToString();
+            else
+            {
+                ToastService.ShowError("No Request GUID found for laboratory report preview.");
+                return;
+            }
+        }
+
+        try
+        {
+            loadingLabReportPreview = true;
+            StateHasChanged();
+
+            string effectiveTenant = !string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010";
+            string userAuthToken = !string.IsNullOrEmpty(TenantState?.AuthToken) ? TenantState.AuthToken : "";
+
+            void AttachHeaders(HttpRequestMessage req)
+            {
+                if (!string.IsNullOrEmpty(userAuthToken))
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", userAuthToken);
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                    req.Headers.Add("tenant_code", effectiveTenant);
+            }
+
+            var guidsToTry = new List<string> { activeGuid };
+            if (currentRequest.investigation != null && !string.IsNullOrWhiteSpace(currentRequest.investigation.inv_id) && !guidsToTry.Contains(currentRequest.investigation.inv_id))
+                guidsToTry.Add(currentRequest.investigation.inv_id);
+            if (OpId != Guid.Empty && !guidsToTry.Contains(OpId.ToString()))
+                guidsToTry.Add(OpId.ToString());
+            if (!string.IsNullOrWhiteSpace(OpNo) && !guidsToTry.Contains(OpNo))
+                guidsToTry.Add(OpNo);
+
+            string base64Result = "";
+            var client = ClientFactory.CreateClient("Medico");
+
+            foreach (var g in guidsToTry)
+            {
+                var candidateUrls = new List<string>
+                {
+                    $"http://medicoapi.iscansoft.com/api/report/labreport?requestguid={g}&isletterhead=true",
+                    $"api/report/labreport?requestguid={g}&isletterhead=true",
+                    $"api/Report/LabReport?requestguid={g}&isletterhead=true",
+                    $"https://medicoapi.iscansoft.com/api/report/labreport?requestguid={g}&isletterhead=true",
+                    $"api/report/labreport?op_id={g}&isletterhead=true",
+                    $"api/report/culture-report?requestguid={g}&isletterhead=true"
+                };
+
+                foreach (var url in candidateUrls)
+                {
+                    try
+                    {
+                        var req = new HttpRequestMessage(HttpMethod.Get, url);
+                        AttachHeaders(req);
+                        var resp = await client.SendAsync(req);
+                        if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent)
+                        {
+                            var raw = await resp.Content.ReadAsStringAsync();
+                            string cleaned = CleanBase64String(raw);
+                            if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
+                            {
+                                base64Result = cleaned;
+                                break;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[PreviewLabReport] Candidate URL '{url}' failed: {ex.Message}");
+                    }
+                }
+
+                if (!string.IsNullOrEmpty(base64Result)) break;
+
+                // Fallback: RDLC POST payload
+                try
+                {
+                    var reportPayload = new
+                    {
+                        ClientID = effectiveTenant,
+                        DataSource = "DataSet3",
+                        ReportName = "LabReport.rdlc",
+                        RequestGUID = g,
+                        TCode = "",
+                        IsAuthorized2Finished = false,
+                        QueryString = $"SampleID={g}",
+                        Parameters = new List<object>
+                        {
+                            new { Name = "RequestGUID", Values = new List<string> { g } },
+                            new { Name = "tcode", Values = new List<string> { "" } },
+                            new { Name = "IsLetterHead", Values = new List<string> { "true" } }
+                        }
+                    };
+                    var postReq = new HttpRequestMessage(HttpMethod.Post, "api/report/labreport")
+                    {
+                        Content = new StringContent(JsonConvert.SerializeObject(reportPayload), System.Text.Encoding.UTF8, "application/json")
+                    };
+                    AttachHeaders(postReq);
+                    var postRes = await client.SendAsync(postReq);
+                    if (postRes.IsSuccessStatusCode && postRes.StatusCode != System.Net.HttpStatusCode.NoContent)
+                    {
+                        var raw = await postRes.Content.ReadAsStringAsync();
+                        string cleaned = CleanBase64String(raw);
+                        if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
+                        {
+                            base64Result = cleaned;
+                            break;
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (!string.IsNullOrEmpty(base64Result))
+            {
+                string docTitle = $"Lab Report - {(string.IsNullOrWhiteSpace(PatientName) ? "Patient" : PatientName)}";
+                await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64Result, docTitle);
+                ToastService.ShowSuccess("Laboratory report loaded successfully.");
+            }
+            else
+            {
+                ToastService.ShowError("Laboratory report is not yet generated or returned empty data.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error previewing lab report: {ex.Message}");
+        }
+        finally
+        {
+            loadingLabReportPreview = false;
+            StateHasChanged();
+        }
     }
 }

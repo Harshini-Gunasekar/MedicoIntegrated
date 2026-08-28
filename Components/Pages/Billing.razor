@@ -295,7 +295,7 @@
         <div style="display: flex; flex-direction: column; gap: 0.5rem;">
             
             <!-- Unbilled Charges Modal -->
-            @if (showUnbilledModal && (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null))
+            @if (showUnbilledModal && (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null || billModel.custid > 0))
             {
                 <div class="modal-backdrop" style="z-index: 1100;" @onclick="() => showUnbilledModal = false"></div>
                 <div class="doctor-modal" style="z-index: 1101; width: 600px; height: auto; max-height: 80vh; top: 50%; left: 50%; transform: translate(-50%, -50%); border-radius: 12px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.15); background: #ffffff;">
@@ -427,7 +427,7 @@
                             </div>
                         }
                         </div>
-                        @if (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null)
+                        @if (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null || billModel.custid > 0)
                         {
                             <button type="button" class="btn-save" style="font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 0.5rem; padding: 0 1rem; color: white; background: linear-gradient(135deg, #4f46e5, #4338ca); border: none; border-radius: 6px; height: 38px; box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);" @onclick="OpenUnbilledModal">
                                 <i class="bi bi-clock-history"></i> Unbilled Charges (@unbilledCharges.Count)
@@ -2042,7 +2042,7 @@
     private async Task LoadUnbilledChargesAsync()
     {
         unbilledCharges.Clear();
-        if (string.IsNullOrEmpty(billModel.op_id) && billModel.ip_id == null)
+        if (string.IsNullOrEmpty(billModel.op_id) && billModel.ip_id == null && billModel.custid <= 0)
         {
             return;
         }
@@ -2053,39 +2053,113 @@
             // 1. Hit api/UnbilledCharges/ip-room-rent-summary BEFORE by-visit to generate/calculate room rent entries
             if (billModel.ip_id != null && billModel.ip_id != Guid.Empty)
             {
-                await HmsBillingService.GetIpRoomRentSummaryAsync(billModel.ip_id.Value);
+                try { await HmsBillingService.GetIpRoomRentSummaryAsync(billModel.ip_id.Value); } catch { }
             }
 
-            // 2. NOW hit api/UnbilledCharges/by-visit to retrieve all visit unbilled charges including room rent
-            List<UnbilledChargeSummary> visitCharges = await HmsBillingService.GetUnbilledChargesByVisitAsync(billModel.op_id, billModel.ip_id);
+            // 2. Fetch visit-specific unbilled charges
+            List<UnbilledChargeSummary> visitCharges = new();
+            if (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null)
+            {
+                try
+                {
+                    visitCharges = await HmsBillingService.GetUnbilledChargesByVisitAsync(billModel.op_id, billModel.ip_id) ?? new();
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error fetching visit charges: {ex.Message}");
+                }
+            }
 
-            // Write debug info to a file to trace matching issues
+            // 3. Fetch ALL unbilled charges across system to bring all unbilled charges for this patient
+            List<UnbilledChargeSummary> allUnbilledList = new();
+            try
+            {
+                allUnbilledList = await HmsBillingService.GetAllUnbilledChargesAsync() ?? new();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching all unbilled charges: {ex.Message}");
+            }
+
+            // 4. Gather all OP / Visit IDs associated with this patient
+            var patientOpIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!string.IsNullOrEmpty(billModel.op_id)) patientOpIds.Add(billModel.op_id.Trim());
+            if (!string.IsNullOrEmpty(selectedOpNo) && selectedOpNo != "-") patientOpIds.Add(selectedOpNo.Trim());
+            
+            if (billModel.custid > 0 && allRegistrations != null)
+            {
+                foreach (var reg in allRegistrations.Where(r => r.custid == billModel.custid))
+                {
+                    if (reg.op_id != Guid.Empty) patientOpIds.Add(reg.op_id.ToString());
+                    if (!string.IsNullOrEmpty(reg.op_no)) patientOpIds.Add(reg.op_no.Trim());
+                    if (reg.booking_id != Guid.Empty) patientOpIds.Add(reg.booking_id.ToString());
+                }
+            }
+
+            // Filter allUnbilledList for charges belonging to this patient
+            var matchedPatientCharges = allUnbilledList.Where(uc => {
+                if (uc.billedstatus == true) return false;
+                
+                // Match by patient CustId
+                if (billModel.custid > 0 && uc.custid.HasValue && uc.custid.Value == billModel.custid)
+                    return true;
+
+                // Match by IP ID
+                if (billModel.ip_id.HasValue && billModel.ip_id.Value != Guid.Empty && uc.ip_id == billModel.ip_id)
+                    return true;
+
+                // Match by OP Visit ID / OP Number
+                if (!string.IsNullOrEmpty(uc.opvisitid) && patientOpIds.Contains(uc.opvisitid.Trim()))
+                    return true;
+
+                return false;
+            }).ToList();
+
+            // Merge visitCharges and matchedPatientCharges deduplicating by unbilledid (and entryid)
+            var mergedMap = new Dictionary<string, UnbilledChargeSummary>(StringComparer.OrdinalIgnoreCase);
+            
+            foreach (var uc in visitCharges)
+            {
+                if (uc.billedstatus == true) continue;
+                var key = !string.IsNullOrWhiteSpace(uc.unbilledid) ? uc.unbilledid.Trim() : (!string.IsNullOrWhiteSpace(uc.entryid) ? uc.entryid.Trim() : Guid.NewGuid().ToString());
+                mergedMap[key] = uc;
+            }
+
+            foreach (var uc in matchedPatientCharges)
+            {
+                var key = !string.IsNullOrWhiteSpace(uc.unbilledid) ? uc.unbilledid.Trim() : (!string.IsNullOrWhiteSpace(uc.entryid) ? uc.entryid.Trim() : Guid.NewGuid().ToString());
+                if (!mergedMap.ContainsKey(key))
+                {
+                    mergedMap[key] = uc;
+                }
+            }
+
+            var mergedCharges = mergedMap.Values.ToList();
+
+            // Write debug info to trace matching
             try
             {
                 var logLines = new List<string>
                 {
-                    $"=== LoadUnbilledChargesAsync at {DateTime.Now} ===",
+                    $"=== LoadUnbilledChargesAsync at {DateTime.Now} for CustId={billModel.custid}, OpId={billModel.op_id} ===",
                     $"Grid items count: {billModel.items.Count}"
                 };
                 foreach (var item in billModel.items)
                 {
                     logLines.Add($"  Grid Item: Name={item.item_name}, requestdetailsid='{item.requestdetailsid}', ref_id='{item.item_ref_id}'");
                 }
-                logLines.Add($"Unbilled charges count: {visitCharges.Count}");
-                foreach (var uc in visitCharges)
+                logLines.Add($"Merged unbilled charges count: {mergedCharges.Count}");
+                foreach (var uc in mergedCharges)
                 {
-                    logLines.Add($"  Unbilled Charge: Name={GetUnbilledChargeName(uc)}, unbilledid='{uc.unbilledid}', entryid='{uc.entryid}'");
+                    logLines.Add($"  Unbilled Charge: Name={GetUnbilledChargeName(uc)}, Type={uc.entrytype}, unbilledid='{uc.unbilledid}', entryid='{uc.entryid}', custid='{uc.custid}', opvisitid='{uc.opvisitid}', rate={uc.rate}, amount={uc.amount}");
                 }
                 logLines.Add("===============================================\n");
                 System.IO.File.AppendAllLines(@"d:\Iscan\Medico\unbilled_debug.txt", logLines);
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error writing unbilled debug log: {ex.Message}");
-            }
+            catch { }
 
             // Filter out charges that are already added to the billing grid (casing-independent matching by unbilledid OR stable entryid/item_ref_id)
-            unbilledCharges = visitCharges.Where(uc => 
+            unbilledCharges = mergedCharges.Where(uc => 
                 !billModel.items.Any(i => 
                     (!string.IsNullOrEmpty(i.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(i.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
                     (!string.IsNullOrEmpty(i.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(i.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
@@ -2107,7 +2181,7 @@
         string displayItemName = !string.IsNullOrWhiteSpace(uc.particulars) ? uc.particulars : uc.item_name;
         if (string.IsNullOrWhiteSpace(displayItemName))
         {
-            if (string.Equals(uc.entrytype, "INVESTIGATION", StringComparison.OrdinalIgnoreCase) && uc.tcode.HasValue)
+            if (uc.tcode.HasValue && allTestMasters.Any())
             {
                 var tmMatch = allTestMasters.FirstOrDefault(t => t.tcode == uc.tcode.Value);
                 if (tmMatch != null && !string.IsNullOrWhiteSpace(tmMatch.name))
@@ -2123,8 +2197,11 @@
                 string.Equals(uc.entrytype, "ROOM RENT", StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(uc.entrytype, "ROOM_RENT", StringComparison.OrdinalIgnoreCase))
                 return "Room Rent Charge";
+
+            if (string.Equals(uc.entrytype, "OBSERVATION", StringComparison.OrdinalIgnoreCase))
+                return "Observation Charge";
             
-            return "Unbilled Charge";
+            return !string.IsNullOrWhiteSpace(uc.entrytype) ? $"{uc.entrytype} Charge" : "Unbilled Charge";
         }
         return displayItemName;
     }
@@ -2928,7 +3005,15 @@
             List<UnbilledChargeSummary> latestUnbilled = new();
             try
             {
-                latestUnbilled = await HmsBillingService.GetUnbilledChargesByVisitAsync(originalOpId, billModel.ip_id);
+                latestUnbilled = await HmsBillingService.GetUnbilledChargesByVisitAsync(originalOpId, billModel.ip_id) ?? new();
+                var allLatest = await HmsBillingService.GetAllUnbilledChargesAsync() ?? new();
+                foreach (var uc in allLatest)
+                {
+                    if (!latestUnbilled.Any(l => !string.IsNullOrEmpty(l.unbilledid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(l.unbilledid, uc.unbilledid, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        latestUnbilled.Add(uc);
+                    }
+                }
             }
             catch (Exception ex)
             {
