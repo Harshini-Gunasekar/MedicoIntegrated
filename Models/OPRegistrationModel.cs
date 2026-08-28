@@ -181,6 +181,7 @@ namespace Booking.Models
         {
             public Guid booking_id { get; set; }
             public string? booking_no { get; set; }
+            public string? op_no { get; set; }
             public decimal custid { get; set; }
 
             public string? patient_name { get; set; }
