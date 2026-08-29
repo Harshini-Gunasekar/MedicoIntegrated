@@ -4150,6 +4150,8 @@
     // ─────────────────────────────────────────────────────────────
     // LABORATORY REPORT PREVIEW & RESULT VERIFICATION
     // ─────────────────────────────────────────────────────────────
+    private string cachedLabReportBase64 = "";
+
     private async Task CheckLabResultsEnteredAsync()
     {
         if (checkingLabResults) return;
@@ -4157,95 +4159,13 @@
         {
             checkingLabResults = true;
             hasLabResultsEntered = false;
+            labReportRequestGuid = "";
+            cachedLabReportBase64 = "";
 
-            // 1. Candidate GUIDs to check
-            var candidateGuids = new List<string>();
-
-            // Check investigation master ID
-            if (currentRequest.investigation != null && !string.IsNullOrWhiteSpace(currentRequest.investigation.inv_id))
-            {
-                var invIdStr = currentRequest.investigation.inv_id.Trim();
-                if (!candidateGuids.Contains(invIdStr)) candidateGuids.Add(invIdStr);
-            }
-            if (rawLoadedSheet?.investigation != null && !string.IsNullOrWhiteSpace(rawLoadedSheet.investigation.inv_id))
-            {
-                var rawInvIdStr = rawLoadedSheet.investigation.inv_id.Trim();
-                if (!candidateGuids.Contains(rawInvIdStr)) candidateGuids.Add(rawInvIdStr);
-            }
-
-            // Check tests in currentRequest
-            if (currentRequest.investigation?.tests != null)
-            {
-                foreach (var t in currentRequest.investigation.tests)
-                {
-                    if (!string.IsNullOrWhiteSpace(t.diag_id) && !candidateGuids.Contains(t.diag_id))
-                        candidateGuids.Add(t.diag_id);
-                    if (t.inv_det_id != Guid.Empty)
-                    {
-                        var detStr = t.inv_det_id.ToString();
-                        if (!candidateGuids.Contains(detStr)) candidateGuids.Add(detStr);
-                    }
-                }
-            }
-
-            // Check rawLoadedSheet tests
-            if (rawLoadedSheet?.investigation?.tests != null)
-            {
-                foreach (var t in rawLoadedSheet.investigation.tests)
-                {
-                    if (t.diag_id.HasValue && t.diag_id.Value != Guid.Empty)
-                    {
-                        var gStr = t.diag_id.Value.ToString();
-                        if (!candidateGuids.Contains(gStr)) candidateGuids.Add(gStr);
-                    }
-                    if (t.inv_det_id != Guid.Empty)
-                    {
-                        var dStr = t.inv_det_id.ToString();
-                        if (!candidateGuids.Contains(dStr)) candidateGuids.Add(dStr);
-                    }
-                }
-            }
-
-            // Check OpId
-            if (OpId != Guid.Empty)
-            {
-                var opStr = OpId.ToString();
-                if (!candidateGuids.Contains(opStr)) candidateGuids.Add(opStr);
-            }
-
-            // Check OpNo
-            if (!string.IsNullOrWhiteSpace(OpNo))
-            {
-                if (!candidateGuids.Contains(OpNo.Trim())) candidateGuids.Add(OpNo.Trim());
-            }
-
-            // Check unbilled charges entryid / unbilledid / opvisitid
-            if (unbilledChargesList != null)
-            {
-                foreach (var uc in unbilledChargesList)
-                {
-                    if (!string.IsNullOrWhiteSpace(uc.entryid) && !candidateGuids.Contains(uc.entryid.Trim()))
-                        candidateGuids.Add(uc.entryid.Trim());
-                    if (!string.IsNullOrWhiteSpace(uc.unbilledid) && !candidateGuids.Contains(uc.unbilledid.Trim()))
-                        candidateGuids.Add(uc.unbilledid.Trim());
-                    if (!string.IsNullOrWhiteSpace(uc.opvisitid) && !candidateGuids.Contains(uc.opvisitid.Trim()))
-                        candidateGuids.Add(uc.opvisitid.Trim());
-                }
-            }
-
-            // 2. Also check if any test in case sheet is marked COMPLETED or has result value
-            if (currentRequest.investigation?.tests != null && currentRequest.investigation.tests.Any(t => 
-                string.Equals(t.result_status, "COMPLETED", StringComparison.OrdinalIgnoreCase) || 
-                !string.IsNullOrWhiteSpace(t.result_value)))
-            {
-                hasLabResultsEntered = true;
-                if (candidateGuids.Count > 0) labReportRequestGuid = candidateGuids[0];
-            }
-
-            // 3. Query api/labresult/viewresultsearch for recent records of this patient
             var custStr = CustId > 0 ? CustId.ToString() : "";
-            var fromDate = (VisitDate ?? DateTime.Today).AddDays(-60).ToString("MM-dd-yyyy");
-            var toDate = (VisitDate ?? DateTime.Today).AddDays(30).ToString("MM-dd-yyyy");
+            var patName = (PatientName ?? "").Trim();
+            var fromDate = (VisitDate ?? DateTime.Today).AddYears(-2).ToString("MM-dd-yyyy");
+            var toDate = (VisitDate ?? DateTime.Today).AddMonths(3).ToString("MM-dd-yyyy");
 
             string effectiveTenant = !string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010";
             string userAuthToken = !string.IsNullOrEmpty(TenantState?.AuthToken) ? TenantState.AuthToken : "";
@@ -4260,6 +4180,9 @@
                     req.Headers.Add("tenant_code", effectiveTenant);
             }
 
+            var candidateGuids = new List<string>();
+
+            // 1. Query api/labresult/viewresultsearch (Lab Result Search page) to find the patient's genuine lab requestguid by CustId / Customer Name
             try
             {
                 var vrsUrl = $"api/labresult/viewresultsearch?fromdate={fromDate}&todate={toDate}";
@@ -4273,55 +4196,56 @@
                     var vrsList = JsonConvert.DeserializeObject<List<medico_backend.Model.ViewResultSearch>>(vrsJson);
                     if (vrsList != null && vrsList.Any())
                     {
-                        var matchedRecords = vrsList.Where(item => {
-                            if (!string.IsNullOrEmpty(custStr) && (
-                                string.Equals(item.custcode, custStr, StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(item.custcode, $"CUST-{custStr}", StringComparison.OrdinalIgnoreCase) ||
-                                (item.custcode != null && item.custcode.Contains(custStr))))
-                                return true;
+                        var matchingCustomerRecords = vrsList.Where(item => {
+                            // Match by CustId / CustCode
+                            if (!string.IsNullOrEmpty(custStr))
+                            {
+                                if (!string.IsNullOrWhiteSpace(item.custcode))
+                                {
+                                    var cleanCode = item.custcode.Replace("CUST-", "", StringComparison.OrdinalIgnoreCase).Trim();
+                                    if (string.Equals(cleanCode, custStr, StringComparison.OrdinalIgnoreCase) ||
+                                        string.Equals(item.custcode, custStr, StringComparison.OrdinalIgnoreCase) ||
+                                        item.custcode.Contains(custStr))
+                                        return true;
+                                }
+                            }
 
-                            if (!string.IsNullOrEmpty(OpNo) && (
-                                string.Equals(item.hospitalpatientid, OpNo, StringComparison.OrdinalIgnoreCase) ||
-                                string.Equals(item.hospitalid, OpNo, StringComparison.OrdinalIgnoreCase)))
-                                return true;
+                            // Match by Customer Name
+                            if (!string.IsNullOrWhiteSpace(patName) && !string.IsNullOrWhiteSpace(item.name))
+                            {
+                                var itemPatName = item.name.Trim();
+                                if (string.Equals(itemPatName, patName, StringComparison.OrdinalIgnoreCase) ||
+                                    itemPatName.IndexOf(patName, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                    patName.IndexOf(itemPatName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    return true;
+                            }
 
-                            if (item.requestguid != null && candidateGuids.Any(g => string.Equals(g, item.requestguid.ToString(), StringComparison.OrdinalIgnoreCase)))
-                                return true;
-
-                            if (!string.IsNullOrWhiteSpace(PatientName) && item.name != null && item.name.IndexOf(PatientName.Trim(), StringComparison.OrdinalIgnoreCase) >= 0)
-                                return true;
+                            // Match by OP No / Bill No print
+                            if (!string.IsNullOrWhiteSpace(OpNo))
+                            {
+                                if (string.Equals(item.hospitalpatientid, OpNo, StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(item.hospitalid, OpNo, StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(item.billnoprint, OpNo, StringComparison.OrdinalIgnoreCase))
+                                    return true;
+                            }
 
                             return false;
                         }).ToList();
 
-                        foreach (var item in matchedRecords)
+                        // Order so that completed/saved/authorized records and latest dates are prioritized
+                        var customerLabGuids = matchingCustomerRecords
+                            .Where(x => x.requestguid != null && !string.IsNullOrWhiteSpace(x.requestguid.ToString()) && x.requestguid.ToString() != Guid.Empty.ToString())
+                            .OrderByDescending(x => x.resultstatus == true || x.isauthorized1 == true || x.isauthorized2 == true || x.isprinted == true)
+                            .ThenByDescending(x => x.requestdatetime)
+                            .Select(x => x.requestguid!.ToString()!)
+                            .Distinct(StringComparer.OrdinalIgnoreCase)
+                            .ToList();
+
+                        foreach (var g in customerLabGuids)
                         {
-                            if (item.requestguid != null && !candidateGuids.Contains(item.requestguid.ToString()!))
+                            if (!candidateGuids.Contains(g))
                             {
-                                candidateGuids.Insert(0, item.requestguid.ToString()!);
-                            }
-
-                            bool isFinished = item.resultstatus == true || 
-                                             item.requestresultstatus == true || 
-                                             item.isauthorized1 == true || 
-                                             item.isauthorized2 == true || 
-                                             item.isinvestigationauthorized1 == true || 
-                                             item.isinvestigationauthorized2 == true ||
-                                             item.isprinted == true ||
-                                             item.isinvestigationprinted1 == true;
-
-                            if (isFinished)
-                            {
-                                hasLabResultsEntered = true;
-                                if (item.requestguid != null && !string.IsNullOrEmpty(item.requestguid.ToString()))
-                                {
-                                    labReportRequestGuid = item.requestguid.ToString();
-                                }
-                                break;
-                            }
-                            else if (string.IsNullOrEmpty(labReportRequestGuid) && item.requestguid != null)
-                            {
-                                labReportRequestGuid = item.requestguid.ToString();
+                                candidateGuids.Add(g);
                             }
                         }
                     }
@@ -4332,19 +4256,115 @@
                 Console.WriteLine($"[CheckLabResultsEntered] ViewResultSearch notice: {ex.Message}");
             }
 
-            // 4. Check candidateGuids via loadtestresultentry / LoadResultEntry
+            // 2. Also search via list-bills for this CustId or Customer Name if viewresultsearch did not return GUIDs
+            if (candidateGuids.Count == 0)
+            {
+                try
+                {
+                    var searchPayloads = new List<object>();
+                    if (!string.IsNullOrEmpty(custStr)) searchPayloads.Add(new { page = 1, pagesize = 100, search = custStr });
+                    if (!string.IsNullOrEmpty(patName)) searchPayloads.Add(new { page = 1, pagesize = 100, search = patName });
+                    if (!string.IsNullOrEmpty(OpNo)) searchPayloads.Add(new { page = 1, pagesize = 100, search = OpNo });
+
+                    foreach (var pObj in searchPayloads)
+                    {
+                        try
+                        {
+                            var listReq = new HttpRequestMessage(HttpMethod.Post, "api/HmsBilling/list-bills")
+                            {
+                                Content = new StringContent(JsonConvert.SerializeObject(pObj), System.Text.Encoding.UTF8, "application/json")
+                            };
+                            AttachHeaders(listReq);
+                            var listRes = await medicoClient.SendAsync(listReq);
+                            if (listRes.IsSuccessStatusCode)
+                            {
+                                var listJson = await listRes.Content.ReadAsStringAsync();
+                                var listResp = JsonConvert.DeserializeObject<HmsBillListResponse>(listJson);
+                                if (listResp?.data != null && listResp.data.Any())
+                                {
+                                    var matchedBills = listResp.data.Where(b =>
+                                        (!string.IsNullOrEmpty(b.requestguid)) && (
+                                            (!string.IsNullOrEmpty(custStr) && (b.custid.HasValue && b.custid.Value.ToString() == custStr || string.Equals(b.custcode, custStr, StringComparison.OrdinalIgnoreCase))) ||
+                                            (!string.IsNullOrWhiteSpace(patName) && !string.IsNullOrWhiteSpace(b.patient_name) && b.patient_name.IndexOf(patName, StringComparison.OrdinalIgnoreCase) >= 0) ||
+                                            (!string.IsNullOrEmpty(OpNo) && (string.Equals(b.opvisitid, OpNo, StringComparison.OrdinalIgnoreCase) || string.Equals(b.opvisitid, OpId.ToString(), StringComparison.OrdinalIgnoreCase)))
+                                        )
+                                    ).ToList();
+
+                                    foreach (var mb in matchedBills)
+                                    {
+                                        if (!string.IsNullOrEmpty(mb.requestguid) && !candidateGuids.Contains(mb.requestguid))
+                                        {
+                                            candidateGuids.Add(mb.requestguid);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CheckLabResultsEntered] list-bills notice: {ex.Message}");
+                }
+            }
+
+            // 3. DIRECTLY HIT api/report/labreport?requestguid={guid}&isletterhead=true FOR EACH LAB RESULT ENTRY GUID
+            Console.WriteLine($"[CheckLabResultsEntered] Found {candidateGuids.Count} Lab Result Entry GUID(s) for Customer '{patName}' (CustId: {custStr})");
+            foreach (var labGuid in candidateGuids)
+            {
+                try
+                {
+                    var probeUrls = new List<string>
+                    {
+                        $"api/report/labreport?requestguid={labGuid}&isletterhead=true",
+                        $"api/Report/LabReport?requestguid={labGuid}&isletterhead=true"
+                    };
+
+                    foreach (var probeUrl in probeUrls)
+                    {
+                        var probeReq = new HttpRequestMessage(HttpMethod.Get, probeUrl);
+                        AttachHeaders(probeReq);
+                        Console.WriteLine($"[CheckLabResultsEntered] Hitting: {probeUrl}");
+                        var probeRes = await medicoClient.SendAsync(probeReq);
+                        Console.WriteLine($"[CheckLabResultsEntered] Endpoint {probeUrl} returned status: {probeRes.StatusCode}");
+
+                        if (probeRes.IsSuccessStatusCode && probeRes.StatusCode != System.Net.HttpStatusCode.NoContent)
+                        {
+                            var raw = await probeRes.Content.ReadAsStringAsync();
+                            string cleaned = CleanBase64String(raw);
+                            if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
+                            {
+                                hasLabResultsEntered = true;
+                                labReportRequestGuid = labGuid;
+                                cachedLabReportBase64 = cleaned;
+                                Console.WriteLine($"[CheckLabResultsEntered] SUCCESS: Report PDF loaded for requestguid {labGuid} (Length: {cleaned.Length})");
+                                break;
+                            }
+                        }
+                    }
+
+                    if (hasLabResultsEntered) break;
+                }
+                catch (Exception probeEx)
+                {
+                    Console.WriteLine($"[CheckLabResultsEntered] Probe failed for {labGuid}: {probeEx.Message}");
+                }
+            }
+
+            // 4. If direct probe was empty, check if results are entered in DB via loadtestresultentry
             if (!hasLabResultsEntered && candidateGuids.Count > 0)
             {
-                foreach (var guid in candidateGuids)
+                foreach (var labGuid in candidateGuids)
                 {
                     try
                     {
                         var testUrls = new List<string>
                         {
-                            $"api/labresult/loadtestresultentry?requestguid={guid}&custcode={custStr}",
-                            $"api/LabResult/LoadResultEntry?requestguid={guid}&custcode={custStr}",
-                            $"api/labresult/loadtestresultentry?requestguid={guid}",
-                            $"api/LabResult/LoadResultEntry?requestguid={guid}"
+                            $"api/labresult/loadtestresultentry?requestguid={labGuid}&custcode={custStr}",
+                            $"api/LabResult/LoadResultEntry?requestguid={labGuid}&custcode={custStr}",
+                            $"api/labresult/loadtestresultentry?requestguid={labGuid}",
+                            $"api/LabResult/LoadResultEntry?requestguid={labGuid}"
                         };
 
                         foreach (var loadUrl in testUrls)
@@ -4367,7 +4387,7 @@
                                     r.resultenteredby > 0))
                                 {
                                     hasLabResultsEntered = true;
-                                    labReportRequestGuid = guid;
+                                    labReportRequestGuid = labGuid;
                                     break;
                                 }
                             }
@@ -4377,38 +4397,6 @@
                     }
                     catch { }
                 }
-            }
-
-            // 5. DIRECT PROBE: If report is saved in DB, probe api/report/labreport for candidate GUIDs
-            if (!hasLabResultsEntered && candidateGuids.Count > 0)
-            {
-                foreach (var guid in candidateGuids.Take(5))
-                {
-                    try
-                    {
-                        var probeUrl = $"api/report/labreport?requestguid={guid}&isletterhead=true";
-                        var probeReq = new HttpRequestMessage(HttpMethod.Get, probeUrl);
-                        AttachHeaders(probeReq);
-                        var probeRes = await medicoClient.SendAsync(probeReq);
-                        if (probeRes.IsSuccessStatusCode && probeRes.StatusCode != System.Net.HttpStatusCode.NoContent)
-                        {
-                            var raw = await probeRes.Content.ReadAsStringAsync();
-                            string cleaned = CleanBase64String(raw);
-                            if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
-                            {
-                                hasLabResultsEntered = true;
-                                labReportRequestGuid = guid;
-                                break;
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-
-            if (string.IsNullOrEmpty(labReportRequestGuid) && candidateGuids.Count > 0)
-            {
-                labReportRequestGuid = candidateGuids[0];
             }
         }
         catch (Exception ex)
@@ -4453,21 +4441,23 @@
         var activeGuid = !string.IsNullOrWhiteSpace(requestGuid) ? requestGuid : labReportRequestGuid;
         if (string.IsNullOrWhiteSpace(activeGuid))
         {
-            if (currentRequest.investigation != null && !string.IsNullOrEmpty(currentRequest.investigation.inv_id))
-                activeGuid = currentRequest.investigation.inv_id;
-            else if (OpId != Guid.Empty)
-                activeGuid = OpId.ToString();
-            else
-            {
-                ToastService.ShowError("No Request GUID found for laboratory report preview.");
-                return;
-            }
+            ToastService.ShowError("No saved laboratory report found for this patient.");
+            return;
         }
 
         try
         {
             loadingLabReportPreview = true;
             StateHasChanged();
+
+            // If we already have the base64 cached from CheckLabResultsEnteredAsync, open it immediately
+            if (!string.IsNullOrEmpty(cachedLabReportBase64) && (activeGuid == labReportRequestGuid || string.IsNullOrEmpty(requestGuid)))
+            {
+                string cachedTitle = $"Lab Report - {(string.IsNullOrWhiteSpace(PatientName) ? "Patient" : PatientName)}";
+                await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", cachedLabReportBase64, cachedTitle);
+                ToastService.ShowSuccess("Laboratory report loaded successfully.");
+                return;
+            }
 
             string effectiveTenant = !string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010";
             string userAuthToken = !string.IsNullOrEmpty(TenantState?.AuthToken) ? TenantState.AuthToken : "";
@@ -4480,56 +4470,46 @@
                     req.Headers.Add("tenant_code", effectiveTenant);
             }
 
-            var guidsToTry = new List<string> { activeGuid };
-            if (currentRequest.investigation != null && !string.IsNullOrWhiteSpace(currentRequest.investigation.inv_id) && !guidsToTry.Contains(currentRequest.investigation.inv_id))
-                guidsToTry.Add(currentRequest.investigation.inv_id);
-            if (OpId != Guid.Empty && !guidsToTry.Contains(OpId.ToString()))
-                guidsToTry.Add(OpId.ToString());
-            if (!string.IsNullOrWhiteSpace(OpNo) && !guidsToTry.Contains(OpNo))
-                guidsToTry.Add(OpNo);
-
             string base64Result = "";
             var client = ClientFactory.CreateClient("Medico");
 
-            foreach (var g in guidsToTry)
+            // User requirement: api/report/labreport?requestguid={requestguid}&isletterhead=true
+            var candidateUrls = new List<string>
             {
-                var candidateUrls = new List<string>
-                {
-                    $"http://medicoapi.iscansoft.com/api/report/labreport?requestguid={g}&isletterhead=true",
-                    $"api/report/labreport?requestguid={g}&isletterhead=true",
-                    $"api/Report/LabReport?requestguid={g}&isletterhead=true",
-                    $"https://medicoapi.iscansoft.com/api/report/labreport?requestguid={g}&isletterhead=true",
-                    $"api/report/labreport?op_id={g}&isletterhead=true",
-                    $"api/report/culture-report?requestguid={g}&isletterhead=true"
-                };
+                $"api/report/labreport?requestguid={activeGuid}&isletterhead=true",
+                $"api/Report/LabReport?requestguid={activeGuid}&isletterhead=true",
+                $"http://medicoapi.iscansoft.com/api/report/labreport?requestguid={activeGuid}&isletterhead=true",
+                $"https://medicoapi.iscansoft.com/api/report/labreport?requestguid={activeGuid}&isletterhead=true",
+                $"api/report/culture-report?requestguid={activeGuid}&isletterhead=true"
+            };
 
-                foreach (var url in candidateUrls)
+            foreach (var url in candidateUrls)
+            {
+                try
                 {
-                    try
+                    var req = new HttpRequestMessage(HttpMethod.Get, url);
+                    AttachHeaders(req);
+                    var resp = await client.SendAsync(req);
+                    if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent)
                     {
-                        var req = new HttpRequestMessage(HttpMethod.Get, url);
-                        AttachHeaders(req);
-                        var resp = await client.SendAsync(req);
-                        if (resp.IsSuccessStatusCode && resp.StatusCode != System.Net.HttpStatusCode.NoContent)
+                        var raw = await resp.Content.ReadAsStringAsync();
+                        string cleaned = CleanBase64String(raw);
+                        if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
                         {
-                            var raw = await resp.Content.ReadAsStringAsync();
-                            string cleaned = CleanBase64String(raw);
-                            if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
-                            {
-                                base64Result = cleaned;
-                                break;
-                            }
+                            base64Result = cleaned;
+                            break;
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[PreviewLabReport] Candidate URL '{url}' failed: {ex.Message}");
-                    }
                 }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[PreviewLabReport] Candidate URL '{url}' failed: {ex.Message}");
+                }
+            }
 
-                if (!string.IsNullOrEmpty(base64Result)) break;
-
-                // Fallback: RDLC POST payload
+            // RDLC POST Fallback with the lab result entry requestguid
+            if (string.IsNullOrEmpty(base64Result))
+            {
                 try
                 {
                     var reportPayload = new
@@ -4537,13 +4517,13 @@
                         ClientID = effectiveTenant,
                         DataSource = "DataSet3",
                         ReportName = "LabReport.rdlc",
-                        RequestGUID = g,
+                        RequestGUID = activeGuid,
                         TCode = "",
                         IsAuthorized2Finished = false,
-                        QueryString = $"SampleID={g}",
+                        QueryString = $"SampleID={activeGuid}",
                         Parameters = new List<object>
                         {
-                            new { Name = "RequestGUID", Values = new List<string> { g } },
+                            new { Name = "RequestGUID", Values = new List<string> { activeGuid } },
                             new { Name = "tcode", Values = new List<string> { "" } },
                             new { Name = "IsLetterHead", Values = new List<string> { "true" } }
                         }
@@ -4561,7 +4541,6 @@
                         if (!string.IsNullOrEmpty(cleaned) && cleaned.Length >= 50)
                         {
                             base64Result = cleaned;
-                            break;
                         }
                     }
                 }
@@ -4570,6 +4549,7 @@
 
             if (!string.IsNullOrEmpty(base64Result))
             {
+                cachedLabReportBase64 = base64Result;
                 string docTitle = $"Lab Report - {(string.IsNullOrWhiteSpace(PatientName) ? "Patient" : PatientName)}";
                 await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64Result, docTitle);
                 ToastService.ShowSuccess("Laboratory report loaded successfully.");
