@@ -57,6 +57,28 @@ namespace Booking.Helpers
             return time.Value.ToIndianTime();
         }
 
+        public static DateTimeOffset ToIndianTime(this DateTimeOffset dto)
+        {
+            if (dto == DateTimeOffset.MinValue || dto == DateTimeOffset.MaxValue)
+                return dto;
+
+            if (dto.Offset == TimeSpan.Zero)
+            {
+                return TimeZoneInfo.ConvertTime(dto, IndianTimeZone);
+            }
+
+            // Treat underlying clock time as UTC if API returned UTC without offset
+            var utc = DateTime.SpecifyKind(dto.DateTime, DateTimeKind.Utc);
+            var ist = TimeZoneInfo.ConvertTimeFromUtc(utc, IndianTimeZone);
+            return new DateTimeOffset(ist, IndianTimeZone.GetUtcOffset(ist));
+        }
+
+        public static DateTimeOffset? ToIndianTime(this DateTimeOffset? dto)
+        {
+            if (!dto.HasValue) return null;
+            return dto.Value.ToIndianTime();
+        }
+
         public static DateTime ToUtcFromIndianTime(this DateTime dt)
         {
             if (dt == DateTime.MinValue || dt == DateTime.MaxValue)

@@ -41,6 +41,8 @@ namespace Booking.Models
         public int? cntcode { get; set; }
         public string? opvisitid { get; set; }
         public string? dateofbirth { get; set; }
+        public string? gender { get; set; }
+        public string? ageyears { get; set; }
         public int? dcode { get; set; }
         public int? usercode { get; set; }
         public int? user_code { get; set; }
