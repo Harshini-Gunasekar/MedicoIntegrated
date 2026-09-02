@@ -15,6 +15,7 @@ namespace Booking.Services
         public static bool? IsSlotRequiredCache { get; set; }
         public static bool? OpAgeWiseSplitCache { get; set; }
         public static bool? CriticalValueIndicationCache { get; set; }
+        public static bool? ShowPhysicalBillCache { get; set; }
 
         public LabSettingService(HttpClient http)
         {
@@ -89,6 +90,20 @@ namespace Booking.Services
                     CriticalValueIndicationCache = false;
                 }
 
+                if (ShowPhysicalBillCache.HasValue)
+                {
+                    setting.show_physical_bill = ShowPhysicalBillCache.Value;
+                }
+                else if (setting.show_physical_bill.HasValue)
+                {
+                    ShowPhysicalBillCache = setting.show_physical_bill.Value;
+                }
+                else
+                {
+                    setting.show_physical_bill = true;
+                    ShowPhysicalBillCache = true;
+                }
+
                 return setting;
             }
             catch (Exception ex)
@@ -110,6 +125,10 @@ namespace Booking.Services
                 if (CriticalValueIndicationCache.HasValue)
                 {
                     fallback.critical_value_indication = CriticalValueIndicationCache.Value;
+                }
+                if (ShowPhysicalBillCache.HasValue)
+                {
+                    fallback.show_physical_bill = ShowPhysicalBillCache.Value;
                 }
                 return fallback;
             }
@@ -152,6 +171,10 @@ namespace Booking.Services
                 {
                     CriticalValueIndicationCache = model.critical_value_indication.Value;
                 }
+                if (model.show_physical_bill.HasValue)
+                {
+                    ShowPhysicalBillCache = model.show_physical_bill.Value;
+                }
 
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
@@ -188,6 +211,10 @@ namespace Booking.Services
                 if (model.critical_value_indication.HasValue)
                 {
                     CriticalValueIndicationCache = model.critical_value_indication.Value;
+                }
+                if (model.show_physical_bill.HasValue)
+                {
+                    ShowPhysicalBillCache = model.show_physical_bill.Value;
                 }
 
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };

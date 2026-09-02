@@ -1611,22 +1611,25 @@
             // If this is a PHARMACY bill payment:
             if (selectedPharmacySale != null)
             {
-                var saleReq = await FetchPharmacySaleRequestAsync(selectedPharmacySale.salescode);
-                if (saleReq != null && saleReq.master != null)
+                var saleReq = await FetchPharmacySaleRequestAsync(selectedPharmacySale);
+                if (saleReq != null && saleReq.master != null && (saleReq.details?.Any() == true || (selectedPharmacySale.grossamount == 0 && selectedPharmacySale.netamount == 0)))
                 {
                     saleReq.master.paymentstatus = "Paid";
                     saleReq.master.paymentmode = paymentRequest.collection_type ?? "CASH";
                     saleReq.master.modifieddate = DateTime.Now;
                     if (paymentRequest.usercode > 0) saleReq.master.usercode = paymentRequest.usercode;
 
-                    await SavePharmacySaleUpdateAsync(saleReq);
+                    bool saved = await SavePharmacySaleUpdateAsync(saleReq);
+                    if (!saved)
+                    {
+                        ToastService.ShowError("Failed to update pharmacy bill payment status on server.");
+                        return;
+                    }
                 }
                 else
                 {
-                    selectedPharmacySale.paymentstatus = "Paid";
-                    selectedPharmacySale.paymentmode = paymentRequest.collection_type ?? "CASH";
-                    var directReq = new sales_request { master = selectedPharmacySale, details = new List<sales_detail>() };
-                    await SavePharmacySaleUpdateAsync(directReq);
+                    ToastService.ShowError("Unable to retrieve pharmacy bill details. Payment was not recorded to prevent loss of bill items.");
+                    return;
                 }
 
                 // Also record the cash counter collection transaction
@@ -1796,49 +1799,140 @@
         }
     }
 
-    private async Task<sales_request?> FetchPharmacySaleRequestAsync(long salesCode)
+    private async Task<sales_request?> FetchPharmacySaleRequestAsync(sales_master sale)
     {
-        try
+        if (sale == null) return null;
+
+        var ids = new List<string>();
+        if (sale.salescode > 0) ids.Add(sale.salescode.ToString());
+        if (!string.IsNullOrWhiteSpace(sale.billno)) ids.Add(sale.billno);
+        if (!string.IsNullOrWhiteSpace(sale.invoiceno)) ids.Add(sale.invoiceno);
+        ids = ids.Distinct().ToList();
+
+        var tenantCodes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(sale.tenantcode)) tenantCodes.Add(sale.tenantcode);
+        if (!string.IsNullOrWhiteSpace(DefaultTenant)) tenantCodes.Add(DefaultTenant);
+        if (!string.IsNullOrWhiteSpace(TenantState?.TenantCode)) tenantCodes.Add(TenantState.TenantCode);
+        tenantCodes.Add("0010");
+        tenantCodes.Add("0004");
+        tenantCodes.Add("");
+        tenantCodes = tenantCodes.Distinct().ToList();
+
+        sales_request? bestFallback = null;
+
+        foreach (var id in ids)
         {
-            var client = CreateDoctorApiClient();
-            string tCode = !string.IsNullOrEmpty(DefaultTenant) 
-                ? DefaultTenant 
-                : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0004");
-            var url = $"api/ItemMaster/getsalesbycode?salescode={salesCode}&tenantcode={tCode}";
-            var response = await client.GetAsync(url);
-            if (response.IsSuccessStatusCode)
+            bool isNumeric = long.TryParse(id, out _);
+
+            foreach (var tCode in tenantCodes)
             {
-                var json = await response.Content.ReadAsStringAsync();
-                return ParsePharmacyRequestResponse(json);
+                var variations = new List<string>();
+                string tParam = !string.IsNullOrEmpty(tCode) ? $"tenantcode={tCode}&tenant_code={tCode}" : "";
+
+                if (isNumeric)
+                {
+                    variations.Add($"api/ItemMaster/getsalesbycode?salescode={id}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
+                    variations.Add($"api/ItemMaster/getsalesbycode?salesCode={id}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
+                    variations.Add($"api/ItemMaster/getsalesbycode/{id}" + (!string.IsNullOrEmpty(tParam) ? $"?{tParam}" : ""));
+                    variations.Add($"api/ItemMaster/getsales?salescode={id}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
+                }
+                variations.Add($"api/ItemMaster/getsalesbycode?billno={Uri.EscapeDataString(id)}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
+                variations.Add($"api/ItemMaster/getsales?billno={Uri.EscapeDataString(id)}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
+
+                foreach (var url in variations)
+                {
+                    try
+                    {
+                        var client = CreateDoctorApiClient();
+                        if (!string.IsNullOrEmpty(tCode))
+                        {
+                            client.DefaultRequestHeaders.Remove("tenantcode");
+                            client.DefaultRequestHeaders.Remove("tenant_code");
+                            client.DefaultRequestHeaders.Remove("tenant-code");
+                            client.DefaultRequestHeaders.Add("tenantcode", tCode);
+                            client.DefaultRequestHeaders.Add("tenant_code", tCode);
+                            client.DefaultRequestHeaders.Add("tenant-code", tCode);
+                        }
+
+                        var response = await client.GetAsync(url);
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var json = await response.Content.ReadAsStringAsync();
+                            var loaded = ParsePharmacyRequestResponse(json);
+                            if (loaded != null && loaded.master != null)
+                            {
+                                if (loaded.details != null && loaded.details.Any())
+                                {
+                                    Console.WriteLine($"[CashCounter] Successfully fetched sale #{id} with {loaded.details.Count} items via {url}");
+                                    return loaded;
+                                }
+                                else if (bestFallback == null)
+                                {
+                                    bestFallback = loaded;
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CashCounter] Exception querying '{url}': {ex.Message}");
+                    }
+                }
             }
         }
-        catch (Exception ex)
+
+        if (bestFallback != null && (sale.netamount == 0 && sale.grossamount == 0))
         {
-            Console.WriteLine($"[CashCounter] Error fetching sale request #{salesCode}: {ex.Message}");
+            return bestFallback;
         }
 
-        if (selectedPharmacySale != null)
+        if (bestFallback != null && bestFallback.details != null && bestFallback.details.Any())
         {
-            return new sales_request
-            {
-                master = selectedPharmacySale,
-                details = new List<sales_detail>()
-            };
+            return bestFallback;
         }
+
         return null;
     }
 
     private async Task<bool> SavePharmacySaleUpdateAsync(sales_request req)
     {
+        if (req == null || req.master == null) return false;
+
+        if ((req.details == null || !req.details.Any()) && (req.master.grossamount > 0 || req.master.netamount > 0))
+        {
+            Console.WriteLine("[CashCounter] ABORT SavePharmacySaleUpdate: details list is empty for a bill with amount > 0. Preventing data loss.");
+            return false;
+        }
+
         try
         {
+            string tCode = !string.IsNullOrEmpty(req.master.tenantcode) 
+                ? req.master.tenantcode 
+                : (!string.IsNullOrEmpty(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? "0010"));
+
+            foreach (var detail in req.details ?? Enumerable.Empty<sales_detail>())
+            {
+                if (string.IsNullOrEmpty(detail.tenantcode)) detail.tenantcode = tCode;
+                detail.salescode = req.master.salescode;
+                if (detail.soldqty == 0 && detail.quantity > 0) detail.soldqty = detail.quantity;
+                detail.uomcode ??= 0;
+            }
+
             var client = CreateDoctorApiClient();
+            if (!string.IsNullOrEmpty(tCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenantcode");
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Remove("tenant-code");
+                client.DefaultRequestHeaders.Add("tenantcode", tCode);
+                client.DefaultRequestHeaders.Add("tenant_code", tCode);
+                client.DefaultRequestHeaders.Add("tenant-code", tCode);
+            }
+
             var updateEndpoints = new[]
             {
                 "api/ItemMaster/updatesales",
-                "api/ItemMaster/insertsales",
-                "api/SalesMaster/updatesales",
-                "api/Sales/updatesales"
+                "api/ItemMaster/insertsales"
             };
 
             foreach (var ep in updateEndpoints)
@@ -1846,16 +1940,17 @@
                 try
                 {
                     var res = await client.PostAsJsonAsync(ep, req);
-                    if (res.IsSuccessStatusCode)
+                    var body = await res.Content.ReadAsStringAsync();
+                    Console.WriteLine($"[CashCounter] Save endpoint '{ep}' response: {res.StatusCode} - {body}");
+                    if (res.IsSuccessStatusCode && !body.Contains("\"success\":false") && !body.Contains("\"status\":\"Failed\"") && !body.Contains("\"error\":"))
                     {
-                        var body = await res.Content.ReadAsStringAsync();
-                        if (!body.Contains("\"success\":false") && !body.Contains("\"status\":\"Failed\""))
-                        {
-                            return true;
-                        }
+                        return true;
                     }
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CashCounter] Exception calling '{ep}': {ex.Message}");
+                }
             }
         }
         catch (Exception ex)
@@ -2001,6 +2096,122 @@
         return m;
     }
 
+    private sales_detail ParsePharmacyDetail(JsonElement el, System.Text.Json.JsonSerializerOptions options)
+    {
+        sales_detail? d = null;
+        try
+        {
+            d = System.Text.Json.JsonSerializer.Deserialize<sales_detail>(el.GetRawText(), options);
+        }
+        catch { }
+
+        d ??= new sales_detail();
+
+        if (d.itemcode == 0)
+        {
+            foreach (var key in new[] { "itemcode", "item_code", "itemid", "item_id", "code" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var v)) { d.itemcode = v; break; }
+                    else if (p.ValueKind == JsonValueKind.String && long.TryParse(p.GetString(), out var sv)) { d.itemcode = sv; break; }
+                }
+            }
+        }
+
+        if (d.quantity == 0)
+        {
+            foreach (var key in new[] { "quantity", "qty", "soldqty", "sold_qty", "orderedqty", "ordered_qty" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var v)) { d.quantity = v; break; }
+                    else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var sv)) { d.quantity = sv; break; }
+                }
+            }
+        }
+
+        if (d.soldqty == 0)
+        {
+            d.soldqty = d.quantity;
+        }
+
+        if (d.rate == 0)
+        {
+            foreach (var key in new[] { "rate", "price", "unitprice", "unit_price", "mrp" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var v)) { d.rate = v; break; }
+                    else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var sv)) { d.rate = sv; break; }
+                }
+            }
+        }
+
+        if (d.amount == 0)
+        {
+            foreach (var key in new[] { "amount", "grossamount", "gross_amount" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var v)) { d.amount = v; break; }
+                    else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var sv)) { d.amount = sv; break; }
+                }
+            }
+        }
+
+        if (d.totalamount == 0)
+        {
+            foreach (var key in new[] { "totalamount", "total_amount", "netamount", "net_amount", "amount" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var v)) { d.totalamount = v; break; }
+                    else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var sv)) { d.totalamount = sv; break; }
+                }
+            }
+        }
+
+        if (string.IsNullOrEmpty(d.batchno))
+        {
+            foreach (var key in new[] { "batchno", "batch_no", "batch" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    d.batchno = p.GetString();
+                    if (!string.IsNullOrEmpty(d.batchno)) break;
+                }
+            }
+        }
+
+        if (!d.expirydate.HasValue)
+        {
+            foreach (var key in new[] { "expirydate", "expiry_date", "expdate", "exp_date" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p) && p.TryGetDateTime(out var dt))
+                {
+                    d.expirydate = dt;
+                    break;
+                }
+            }
+        }
+
+        if (d.warehousecode == null || d.warehousecode == 0)
+        {
+            foreach (var key in new[] { "warehousecode", "warehouse_code", "storecode", "store_code" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var v)) { d.warehousecode = v; break; }
+                    else if (p.ValueKind == JsonValueKind.String && long.TryParse(p.GetString(), out var sv)) { d.warehousecode = sv; break; }
+                }
+            }
+        }
+
+        d.uomcode ??= 0;
+        return d;
+    }
+
     private sales_request? ParsePharmacyRequestResponse(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
@@ -2028,27 +2239,48 @@
 
             if (root.ValueKind == JsonValueKind.Object)
             {
+                var req = new sales_request();
+
+                // 1. Parse Master
                 if (TryGetPropertyIgnoreCase(root, "master", out var masterProp))
                 {
-                    var req = new sales_request();
-                    req.master = System.Text.Json.JsonSerializer.Deserialize<sales_master>(masterProp.GetRawText(), options)!;
-                    if (TryGetPropertyIgnoreCase(root, "details", out var detailsProp) && detailsProp.ValueKind == JsonValueKind.Array)
-                    {
-                        req.details = System.Text.Json.JsonSerializer.Deserialize<List<sales_detail>>(detailsProp.GetRawText(), options) ?? new();
-                    }
-                    else
-                    {
-                        req.details = new();
-                    }
-                    return req;
+                    req.master = ParsePharmacyMaster(masterProp, options) ?? new sales_master();
                 }
                 else
                 {
                     var m = ParsePharmacyMaster(root, options);
-                    if (m != null)
+                    if (m != null && m.salescode > 0) req.master = m;
+                }
+
+                // 2. Parse Details
+                JsonElement detailsProp = default;
+                bool hasDetails = false;
+                foreach (var detailKey in new[] { "details", "detail", "salesdetail", "salesdetails", "sales_detail", "sales_details", "items", "itemlist" })
+                {
+                    if (TryGetPropertyIgnoreCase(root, detailKey, out detailsProp) && detailsProp.ValueKind == JsonValueKind.Array)
                     {
-                        return new sales_request { master = m, details = new List<sales_detail>() };
+                        hasDetails = true;
+                        break;
                     }
+                }
+
+                if (hasDetails && detailsProp.ValueKind == JsonValueKind.Array)
+                {
+                    req.details = new List<sales_detail>();
+                    foreach (var itemEl in detailsProp.EnumerateArray())
+                    {
+                        var d = ParsePharmacyDetail(itemEl, options);
+                        if (d != null) req.details.Add(d);
+                    }
+                }
+                else
+                {
+                    req.details = new List<sales_detail>();
+                }
+
+                if (req.master != null)
+                {
+                    return req;
                 }
             }
         }
@@ -2056,6 +2288,13 @@
         {
             Console.WriteLine("[CashCounter] Parse Pharmacy Request Error: " + ex.Message);
         }
+
+        try
+        {
+            var direct = System.Text.Json.JsonSerializer.Deserialize<sales_request>(json, options);
+            if (direct != null && direct.master != null) return direct;
+        }
+        catch { }
 
         return null;
     }

@@ -119,6 +119,7 @@ builder.Services.AddScoped<Booking.Services.AreaMasterService>();
 builder.Services.AddScoped<Booking.Services.CountryMasterService>();
 builder.Services.AddScoped<Booking.Services.StateMasterService>();
 builder.Services.AddScoped<Booking.Services.CityMasterService>();
+builder.Services.AddScoped<Booking.Services.PrefixMasterService>();
 builder.Services.AddScoped<Booking.Services.MasterTenantServices>();
 builder.Services.AddScoped<SharedComponents.Rcl.Services.NotificationService>();
 builder.Services.AddScoped<SharedComponents.Rcl.Services.TenantSessionState>();

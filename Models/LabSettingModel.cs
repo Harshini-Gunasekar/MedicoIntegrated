@@ -152,5 +152,6 @@ namespace Booking.Models
         public bool? op_age_wise_split { get; set; } // true = doctor's OP charge is split by age slab
         public bool? show_all_customers { get; set; } // true = show all customers across tenants, false = show current tenant customers only
         public bool? critical_value_indication { get; set; } = false;
+        public bool? show_physical_bill { get; set; } = true;
     }
 }

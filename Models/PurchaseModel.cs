@@ -26,6 +26,10 @@ namespace Booking.Models
     public decimal taxamount { get; set; }
 
     public decimal netamount { get; set; }
+    public decimal overalldiscount { get; set; }     // overall discount % applied on grossamount
+   
+    public decimal totalamount { get; set; }
+
 
     // New Fields
     public decimal transportationcharges { get; set; }
