@@ -742,6 +742,54 @@
         }
     };
 
+    window.setIframePdfBase64 = function (iframeId, base64String) {
+        try {
+            const iframe = document.getElementById(iframeId);
+            if (!iframe) return false;
+            if (!base64String) {
+                iframe.src = 'about:blank';
+                return true;
+            }
+            if (base64String.startsWith('data:application/pdf;base64,')) {
+                base64String = base64String.substring('data:application/pdf;base64,'.length);
+            }
+            const cleanBase64 = base64String.trim().replace(/\s/g, '');
+            const byteCharacters = atob(cleanBase64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: 'application/pdf' });
+            if (iframe._lastBlobUrl) {
+                URL.revokeObjectURL(iframe._lastBlobUrl);
+            }
+            const blobUrl = URL.createObjectURL(blob);
+            iframe._lastBlobUrl = blobUrl;
+            iframe.src = blobUrl;
+            return true;
+        } catch (err) {
+            console.error('setIframePdfBase64 failed:', err);
+            return false;
+        }
+    };
+
+    window.printIframePdf = function (iframeId, base64String) {
+        try {
+            if (base64String) {
+                window.openBase64Pdf(base64String);
+                return;
+            }
+            const iframe = document.getElementById(iframeId);
+            if (iframe && iframe.contentWindow) {
+                iframe.contentWindow.focus();
+                iframe.contentWindow.print();
+            }
+        } catch (err) {
+            console.error('printIframePdf failed:', err);
+        }
+    };
+
     window.previewBillPdf = async function (billDataJson) {
         try {
             const billData = typeof billDataJson === 'string' ? JSON.parse(billDataJson) : billDataJson;

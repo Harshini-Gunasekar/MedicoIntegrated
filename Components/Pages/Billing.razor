@@ -699,12 +699,17 @@
                     <i class="bi bi-arrow-counterclockwise"></i> Clear
                 </button>
                 
-                <button type="button" class="btn-billing-footer save" @onclick="SaveBillAsync" disabled="@savingInProgress">
+                <button type="button" class="btn-billing-footer save" @onclick="SaveBillAsync" disabled="@savingInProgress" style="@(savingInProgress ? "opacity: 0.65; cursor: not-allowed; pointer-events: none;" : "")">
                     @if (savingInProgress)
                     {
                         <span class="spinner-border spinner-border-sm" role="status" style="margin-right:6px;"></span>
+                        <span>Saving...</span>
                     }
-                    <i class="bi bi-save"></i> Save Bill
+                    else
+                    {
+                        <i class="bi bi-save"></i>
+                        <span>Save Bill</span>
+                    }
                 </button>
             }
         </div>
@@ -940,9 +945,17 @@
         showUnpaidUnbilledModal = false;
         if (item != null)
         {
-            if (item.OpId != Guid.Empty)
+            if (item.IpId.HasValue && item.IpId.Value != Guid.Empty)
+            {
+                await LoadExistingBillOrRegistrationAsync(item.IpId.Value.ToString(), clearFormFirst: true);
+            }
+            else if (item.OpId != Guid.Empty)
             {
                 await LoadExistingBillOrRegistrationAsync(item.OpId.ToString(), clearFormFirst: true);
+            }
+            else if (!string.IsNullOrEmpty(item.OpNo) && item.OpNo != "-")
+            {
+                await LoadExistingBillOrRegistrationAsync(item.OpNo, clearFormFirst: true);
             }
             else if (item.CustId > 0)
             {
@@ -1507,6 +1520,10 @@
         {
             await LoadExistingBillOrRegistrationAsync(pat.op_id, clearFormFirst: false);
         }
+        else if (billModel.ip_id.HasValue && billModel.ip_id.Value != Guid.Empty)
+        {
+            await LoadExistingBillOrRegistrationAsync(billModel.ip_id.Value.ToString(), clearFormFirst: false);
+        }
         else if (pat.custid > 0)
         {
             await LoadExistingBillOrRegistrationAsync(pat.custid.ToString(), clearFormFirst: false);
@@ -1768,9 +1785,15 @@
                     string.Equals(billResp.op_id, opIdStr, StringComparison.OrdinalIgnoreCase) ||
                     (reg != null && string.Equals(billResp.op_id, reg.op_id.ToString(), StringComparison.OrdinalIgnoreCase))
                 );
-                bool isCustIdMatch = reg != null && billResp.custid.HasValue && billResp.custid.Value == reg.custid;
+                bool isIpIdMatch = billResp.ip_id.HasValue && (
+                    (opId != Guid.Empty && billResp.ip_id.Value == opId) ||
+                    string.Equals(billResp.ip_id.Value.ToString(), opIdStr, StringComparison.OrdinalIgnoreCase)
+                );
+                bool isOpVisitIdMatch = !string.IsNullOrEmpty(billResp.opvisitid) && string.Equals(billResp.opvisitid.Trim(), opIdStr.Trim(), StringComparison.OrdinalIgnoreCase);
+                bool isCustIdMatch = (reg != null && billResp.custid.HasValue && billResp.custid.Value == reg.custid) ||
+                                     (billResp.custid.HasValue && billResp.custid.Value.ToString() == opIdStr.Trim());
 
-                if (isDirectMatch || isOpIdMatch || isCustIdMatch)
+                if (isDirectMatch || isOpIdMatch || isIpIdMatch || isOpVisitIdMatch || isCustIdMatch)
                 {
                     int resolvedDcode = billResp.dcode ?? 0;
                     if (resolvedDcode == 0 && !string.IsNullOrWhiteSpace(billResp.doctor_name))
@@ -2088,11 +2111,29 @@
                     }
                     catch { }
                 }
+                if (ipMatch == null)
+                {
+                    try
+                    {
+                        var allIps = await IpRegistrationService.GetIpRegistrationsAsync("");
+                        if (allIps != null)
+                        {
+                            ipMatch = allIps.FirstOrDefault(a =>
+                                (opId != Guid.Empty && a.ip_id == opId) ||
+                                (!string.IsNullOrEmpty(a.ip_no) && string.Equals(a.ip_no.Trim(), opIdStr.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                                (a.custid.ToString() == opIdStr.Trim())
+                            );
+                        }
+                    }
+                    catch { }
+                }
 
                 if (ipMatch != null)
                 {
                     billModel.ip_id = ipMatch.ip_id;
-                    selectedIpNo = ipMatch.ip_no ?? "-";
+                    billModel.op_id = null;
+                    selectedIpNo = !string.IsNullOrWhiteSpace(ipMatch.ip_no) ? ipMatch.ip_no : "-";
+                    selectedOpNo = "-";
                     billModel.custid = (long)ipMatch.custid;
                     billModel.dcode = ipMatch.dcode;
                     billModel.consultantdcode = ipMatch.dcode;
@@ -3042,18 +3083,25 @@
     // --- Actions ---
     private async Task SaveBillAsync()
     {
+        if (savingInProgress) return;
+        savingInProgress = true;
+        StateHasChanged();
+
         if (string.IsNullOrWhiteSpace(billModel.patient_name))
         {
+            savingInProgress = false;
             ToastService.ShowError("Please enter Patient Name.");
             return;
         }
         if (billModel.items.Count == 0)
         {
+            savingInProgress = false;
             ToastService.ShowError("Please add at least one test to the billing grid.");
             return;
         }
         if (billModel.pmc1 == null && billModel.pmc2 == null && billModel.pmc3 == null)
         {
+            savingInProgress = false;
             ToastService.ShowError("Please select a payment mode.");
             return;
         }
@@ -3062,14 +3110,13 @@
         bool isShiftOpen = await CheckCounterShiftOpenAsync(showPrompt: true);
         if (!isShiftOpen)
         {
+            savingInProgress = false;
             pendingSaveAfterOpenShift = true;
             return;
         }
 
         int resolvedUserCode = activeUserCode > 0 ? activeUserCode : (TenantState.UserCode > 0 ? TenantState.UserCode : 1);
         billModel.usercode = resolvedUserCode;
-
-        savingInProgress = true;
 
         // Cap paymode amounts before saving/updating
         double? origPmc1 = billModel.pmc1_amount;
@@ -3158,6 +3205,7 @@
                 {
                     bool matchOp = (!string.IsNullOrEmpty(originalOpId) && string.Equals(uc.opvisitid, originalOpId, StringComparison.OrdinalIgnoreCase)) ||
                                    (!string.IsNullOrEmpty(selectedOpNo) && string.Equals(uc.opvisitid, selectedOpNo, StringComparison.OrdinalIgnoreCase)) ||
+                                   (billModel.ip_id.HasValue && billModel.ip_id.Value != Guid.Empty && uc.ip_id == billModel.ip_id) ||
                                    (billModel.custid > 0 && uc.custid == billModel.custid);
 
                     if (matchOp && (string.Equals(uc.entrytype, "CONSULTATION", StringComparison.OrdinalIgnoreCase) || (uc.amount ?? 0) <= 0))
@@ -3251,9 +3299,6 @@
 
             if (isSuccess)
             {
-                BillingStateSvc?.Clear();
-                ToastService.ShowSuccess(!string.IsNullOrEmpty(displayMessage) ? displayMessage : "Bill Saved and Posted Successfully!");
-                
                 // Extract saved request GUID to display preview
                 string? savedGuid = null;
                 if (!string.IsNullOrEmpty(billModel.requestguid))
@@ -3273,10 +3318,11 @@
                     catch { }
                 }
 
-                if (!string.IsNullOrEmpty(savedGuid))
-                {
-                    savedRequestGuid = savedGuid;
-                }
+                savedRequestGuid = !string.IsNullOrEmpty(savedGuid) ? savedGuid : "SAVED";
+                billModel.requestguid = savedRequestGuid;
+
+                SaveStateToService();
+                ToastService.ShowSuccess(!string.IsNullOrEmpty(displayMessage) ? displayMessage : "Bill Saved and Posted Successfully!");
                 StateHasChanged();
             }
             else
@@ -3368,6 +3414,9 @@
         
         showPaymode2 = false;
         showPaymode3 = false;
+        
+        savedRequestGuid = null;
+        printWithLetterhead = true;
         
         BillingStateSvc?.Clear();
         RecalculateTotals();
@@ -3473,6 +3522,7 @@
     {
         savedRequestGuid = null;
         printWithLetterhead = true;
+        BillingStateSvc?.Clear();
         await ClearFormAsync();
         StateHasChanged();
     }
@@ -3500,7 +3550,9 @@
                 consultationQty,
                 isHuman,
                 isVipPatient,
-                showMoreInfo
+                showMoreInfo,
+                savedRequestGuid,
+                printWithLetterhead
             );
         }
     }
@@ -3510,6 +3562,8 @@
         if (BillingStateSvc != null && BillingStateSvc.HasState && BillingStateSvc.BillModel != null)
         {
             billModel = BillingStateSvc.BillModel;
+            savedRequestGuid = BillingStateSvc.SavedRequestGuid;
+            printWithLetterhead = BillingStateSvc.PrintWithLetterhead;
             patientPrefix = BillingStateSvc.PatientPrefix;
             careOfPrefix = BillingStateSvc.CareOfPrefix;
             careOfName = BillingStateSvc.CareOfName;

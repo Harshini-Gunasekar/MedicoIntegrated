@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Text.Json.Serialization;
-using Booking.Models;
 using Dapper.Contrib.Extensions;
 
 
@@ -34,15 +30,14 @@ namespace medico_backend.Model
 
 
         // Status
-        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
-        [JsonConverter(typeof(FlexibleBoolConverter))]
+        public bool referred_to_visiting_doctor { get; set; } = false;   // NEW
+        public string? visiting_doctor_name { get; set; }
         public bool is_consulted { get; set; } = false;
         public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
 
 
         public string? tenant_code { get; set; }
-        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool isdeleted { get; set; } = false;
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
@@ -253,7 +248,7 @@ namespace medico_backend.Model
     {
         // Visit identifiers
         public string? op_id { get; set; } = string.Empty;
-        public Guid? ip_id { get; set; }
+        public string? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
 
@@ -276,8 +271,9 @@ namespace medico_backend.Model
 
 
         // Sheet status
-        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
+        public bool referred_to_visiting_doctor { get; set; } = false;   // NEW
+        public string? visiting_doctor_name { get; set; }
         public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
 
 
@@ -367,7 +363,6 @@ namespace medico_backend.Model
     public class CaseSheetInvestigationItem
     {
         public int sno { get; set; }
-        public Guid inv_det_id { get; set; }
         public string? diag_id { get; set; }         // link to specific diagnosis
         public string test_name { get; set; } = string.Empty;
         public int? test_code { get; set; }
@@ -375,9 +370,6 @@ namespace medico_backend.Model
         public decimal quantity { get; set; } = 1;
         public decimal? rate { get; set; }
         public decimal? amount { get; set; }
-        public string? result_value { get; set; }
-        public string? result_notes { get; set; }
-        public string? result_status { get; set; }
     }
 
 
@@ -412,7 +404,7 @@ namespace medico_backend.Model
     {
         public string? sheet_id { get; set; }
         public string? op_id { get; set; }
-        public Guid? ip_id { get; set; }
+        public string? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
         public DateTime? visit_date { get; set; }
@@ -432,11 +424,11 @@ namespace medico_backend.Model
 
 
         // Status
-        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool is_consulted { get; set; }
         public string? sheet_status { get; set; }
-        [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
+        public bool referred_to_visiting_doctor { get; set; } = false;   // NEW
+        public string? visiting_doctor_name { get; set; }
 
 
         // Structured lists

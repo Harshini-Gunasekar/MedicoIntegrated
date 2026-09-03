@@ -56,6 +56,7 @@ namespace Booking.Models
     {
         public string? requestguid { get; set; }
         public string? op_id { get; set; }
+        public string? opvisitid { get; set; }
         public Guid? ip_id { get; set; }
         public string? bill_no { get; set; }
         public string? barcode { get; set; }

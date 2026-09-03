@@ -19,6 +19,8 @@
 
      public string? patientid { get; set; }      // Patient ID
 
+     public string? mobileno { get; set; } 
+
      public string? patientname { get; set; }    // Patient Name
 
      public string? address { get; set; }        // Patient Address

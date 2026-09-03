@@ -55,10 +55,8 @@ namespace Booking.Models
 
         public string? fax { get; set; }
 
-        [Required(ErrorMessage = "Mobile Number is required")]
         public string? mobile { get; set; }
 
-        [Required(ErrorMessage = "Email Address is required")]
         public string? email { get; set; }
 
         public string? website { get; set; }

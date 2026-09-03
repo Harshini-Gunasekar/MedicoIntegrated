@@ -12,6 +12,9 @@ namespace Booking.Services
         public HmsBillModel? BillModel { get; set; }
         public bool HasState { get; set; } = false;
 
+        public string? SavedRequestGuid { get; set; } = null;
+        public bool PrintWithLetterhead { get; set; } = true;
+
         public string PatientPrefix { get; set; } = "Mr.";
         public string CareOfPrefix { get; set; } = "S/O";
         public string CareOfName { get; set; } = string.Empty;
@@ -66,7 +69,9 @@ namespace Booking.Services
             double consultationQty,
             bool isHuman,
             bool isVipPatient,
-            bool showMoreInfo)
+            bool showMoreInfo,
+            string? savedRequestGuid = null,
+            bool printWithLetterhead = true)
         {
             BillModel = billModel;
             PatientPrefix = patientPrefix;
@@ -87,6 +92,8 @@ namespace Booking.Services
             IsHuman = isHuman;
             IsVipPatient = isVipPatient;
             ShowMoreInfo = showMoreInfo;
+            SavedRequestGuid = savedRequestGuid;
+            PrintWithLetterhead = printWithLetterhead;
             HasState = true;
             NotifyStateChanged();
         }
@@ -94,6 +101,8 @@ namespace Booking.Services
         public void Clear()
         {
             BillModel = null;
+            SavedRequestGuid = null;
+            PrintWithLetterhead = true;
             PatientPrefix = "Mr.";
             CareOfPrefix = "S/O";
             CareOfName = string.Empty;
