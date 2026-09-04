@@ -192,6 +192,9 @@ namespace Booking.Models
         [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool is_dressing { get; set; } = false;
 
+        public int? service_id { get; set; }
+        public string? service_name { get; set; }
+
         public string? display_token_no { get; set; }
     }
 }

@@ -113,15 +113,24 @@
                         <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 8px; flex-shrink: 0;">
                             @if (hasEditRight)
                             {
-                                <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => OpenEditTemplateModal(t)" title="Edit">
+                                <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => OpenEditTemplateModal(t)" disabled="@(deletingTemplateId.HasValue || isSaving)" title="Edit">
                                     <span class="material-symbols-outlined font-18 text-indigo-600">edit</span>
                                 </button>
                             }
                             @if (hasDeleteRight)
                             {
-                                <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => DeleteTemplateGroup(t)" title="Delete">
-                                    <span class="material-symbols-outlined font-18 text-red-500">delete</span>
-                                </button>
+                                @if (deletingTemplateId == t.TemplateId)
+                                {
+                                    <button type="button" class="lc-btn lc-circle-btn-32" disabled title="Deleting...">
+                                        <span class="spinner-border spinner-border-sm text-danger" style="width: 14px; height: 14px; border-width: 2px;" role="status"></span>
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => DeleteTemplateGroup(t)" disabled="@(deletingTemplateId.HasValue || isSaving)" title="Delete">
+                                        <span class="material-symbols-outlined font-18 text-red-500">delete</span>
+                                    </button>
+                                }
                             }
                         </div>
                     </div>
@@ -140,7 +149,7 @@
             @* Modal Header Bar *@
             <div class="modal-header-bar">
                 <h3>@(editingTemplateId.HasValue ? "Edit Discharge Summary Template" : "Create Discharge Summary Template")</h3>
-                <button type="button" class="modal-close-btn" @onclick="CloseModal" title="Close Dialog">
+                <button type="button" class="modal-close-btn" @onclick="CloseModal" disabled="@isSaving" title="Close Dialog">
                     <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
                         <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z" />
                     </svg>
@@ -149,6 +158,7 @@
 
             @* Body *@
             <div class="modal-body">
+                <fieldset disabled="@isSaving" style="border: none; padding: 0; margin: 0; display: contents;">
                 <div style="display: flex; flex-direction: column; gap: 1.1rem;">
                     
                     @* Template Compact Header Info Bar *@
@@ -261,12 +271,24 @@
                     </div>
 
                 </div>
+                </fieldset>
             </div>
 
             @* Modal Footer *@
             <div class="modal-footer-bar">
-                <button type="button" class="btn-secondary-outline" @onclick="CloseModal">Cancel</button>
-                <button type="button" class="btn-save" @onclick="SaveCompleteTemplate">Save Template & Columns</button>
+                <button type="button" class="btn-secondary-outline" @onclick="CloseModal" disabled="@isSaving">Cancel</button>
+                <button type="button" class="btn-save" @onclick="SaveCompleteTemplate" disabled="@isSaving">
+                    @if (isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" style="width: 0.95rem; height: 0.95rem; border-width: 2px;"></span>
+                        <span>Saving Template...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-check2-circle"></i>
+                        <span>Save Template & Columns</span>
+                    }
+                </button>
             </div>
         </div>
     </div>
@@ -281,6 +303,7 @@
         public Guid TemplateId { get; set; } = Guid.NewGuid();
         public string TemplateName { get; set; } = string.Empty;
         public string Description { get; set; } = string.Empty;
+        public List<Guid> PresetIds { get; set; } = new();
         public List<SummaryTemplateColumnModel> Columns { get; set; } = new();
     }
 
@@ -295,6 +318,9 @@
     private List<SummaryTemplateViewModel> templateGroups = new();
 
     private bool showModal = false;
+    private bool isSaving = false;
+    private Guid? deletingTemplateId = null;
+    private string originalTemplateName = "";
     private Guid? editingTemplateId;
     private SummaryTemplateViewModel editingModel = new();
     private bool hasCreateRight = true;
@@ -303,7 +329,6 @@
 
     protected override async Task OnInitializedAsync()
     {
-        await CleanDefaultDummyCategories();
         await LoadTemplatesData();
     }
 
@@ -423,8 +448,10 @@
             templateGroups.Clear();
 
             var presetGroups = presets.Where(p => !string.IsNullOrWhiteSpace(p.template_name))
-                                      .GroupBy(p => p.template_name.Trim())
+                                      .GroupBy(p => p.template_name.Trim(), StringComparer.OrdinalIgnoreCase)
                                       .ToList();
+
+            var duplicatePresetIdsToDelete = new List<Guid>();
 
             foreach (var g in presetGroups)
             {
@@ -432,24 +459,54 @@
                 {
                     TemplateId = g.First().template_id,
                     TemplateName = g.Key,
-                    Description = $"Template with {g.Count()} column header(s)"
+                    Description = "",
+                    PresetIds = g.Select(x => x.template_id).ToList()
                 };
+
+                var seenCategoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var item in g)
                 {
+                    var cName = item.category_name?.Trim() ?? "";
+                    if (string.IsNullOrWhiteSpace(cName))
+                    {
+                        duplicatePresetIdsToDelete.Add(item.template_id);
+                        continue;
+                    }
+
+                    if (seenCategoryNames.Contains(cName))
+                    {
+                        // Duplicate preset entry in DB -> mark for background cleanup
+                        duplicatePresetIdsToDelete.Add(item.template_id);
+                        continue;
+                    }
+
+                    seenCategoryNames.Add(cName);
+
                     var cat = categories.FirstOrDefault(c => c.category_id == item.category_id)
-                           ?? categories.FirstOrDefault(c => c.category_name != null && c.category_name.Trim().Equals(item.category_name.Trim(), StringComparison.OrdinalIgnoreCase));
+                           ?? categories.FirstOrDefault(c => c.category_name != null && c.category_name.Trim().Equals(cName, StringComparison.OrdinalIgnoreCase));
 
                     vm.Columns.Add(new SummaryTemplateColumnModel
                     {
                         CategoryId = cat?.category_id ?? item.category_id,
-                        ColumnHeaderName = item.category_name,
+                        ColumnHeaderName = cName,
                         InputType = cat?.category_type ?? "TEXT",
                         DefaultAnswer = item.template_text ?? ""
                     });
                 }
 
+                vm.Description = $"Template with {vm.Columns.Count} column header(s)";
                 templateGroups.Add(vm);
+            }
+
+            // Asynchronously delete any duplicate template rows found in the database
+            if (duplicatePresetIdsToDelete.Any())
+            {
+                _ = Task.Run(async () =>
+                {
+                    var deleteTasks = duplicatePresetIdsToDelete.Select(dupId => DsService.DeleteTemplateAsync(dupId));
+                    try { await Task.WhenAll(deleteTasks); } catch { }
+                });
             }
         }
         catch (Exception ex)
@@ -479,6 +536,7 @@
             return;
         }
         editingTemplateId = null;
+        originalTemplateName = "";
         editingModel = new SummaryTemplateViewModel
         {
             TemplateName = "",
@@ -497,18 +555,22 @@
             return;
         }
         editingTemplateId = vm.TemplateId;
+        originalTemplateName = vm.TemplateName.Trim();
         editingModel = new SummaryTemplateViewModel
         {
             TemplateId = vm.TemplateId,
             TemplateName = vm.TemplateName,
             Description = vm.Description,
-            Columns = vm.Columns.Select(s => new SummaryTemplateColumnModel
-            {
-                CategoryId = s.CategoryId,
-                ColumnHeaderName = s.ColumnHeaderName,
-                InputType = s.InputType,
-                DefaultAnswer = s.DefaultAnswer
-            }).ToList()
+            Columns = vm.Columns
+                .GroupBy(s => s.ColumnHeaderName.Trim(), StringComparer.OrdinalIgnoreCase)
+                .Select(g => g.First())
+                .Select(s => new SummaryTemplateColumnModel
+                {
+                    CategoryId = s.CategoryId,
+                    ColumnHeaderName = s.ColumnHeaderName,
+                    InputType = s.InputType,
+                    DefaultAnswer = s.DefaultAnswer
+                }).ToList()
         };
         showModal = true;
     }
@@ -530,6 +592,8 @@
 
     private async Task SaveCompleteTemplate()
     {
+        if (isSaving) return;
+
         if (editingTemplateId.HasValue && !hasEditRight)
         {
             ToastService.ShowError("You do not have permission to edit templates.");
@@ -546,44 +610,104 @@
             return;
         }
 
-        if (!editingModel.Columns.Any(s => !string.IsNullOrWhiteSpace(s.ColumnHeaderName)))
+        var validColumns = editingModel.Columns
+            .Where(s => !string.IsNullOrWhiteSpace(s.ColumnHeaderName))
+            .GroupBy(s => s.ColumnHeaderName.Trim(), StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .ToList();
+
+        if (!validColumns.Any())
         {
             ToastService.ShowWarning("Please add at least one column header.");
             return;
         }
 
+        isSaving = true;
+        StateHasChanged();
+
         try
         {
-            int sortOrder = 1;
-            foreach (var col in editingModel.Columns.Where(s => !string.IsNullOrWhiteSpace(s.ColumnHeaderName)))
-            {
-                var catId = await DsService.SaveCategoryAsync(new DischargeSummaryService.DsCategoryDto
-                {
-                    category_id = col.CategoryId != Guid.Empty ? col.CategoryId : Guid.Empty,
-                    category_name = col.ColumnHeaderName.Trim(),
-                    category_type = col.InputType,
-                    sort_order = sortOrder++
-                });
+            var targetTemplateName = editingModel.TemplateName.Trim();
 
-                if (catId.HasValue)
-                {
-                    await DsService.SaveTemplateAsync(new DischargeSummaryService.DsTemplateDto
-                    {
-                        category_id = catId.Value,
-                        category_name = col.ColumnHeaderName.Trim(),
-                        template_name = editingModel.TemplateName.Trim(),
-                        template_text = col.DefaultAnswer?.Trim() ?? ""
-                    });
-                }
+            // 1. Fetch all existing presets and delete old template entries for this template to prevent duplicate rows
+            var allPresets = await DsService.GetTemplatesAsync(null);
+            var oldPresetsToDelete = allPresets
+                .Where(p => p.template_name != null &&
+                    (p.template_name.Trim().Equals(targetTemplateName, StringComparison.OrdinalIgnoreCase) ||
+                     (!string.IsNullOrWhiteSpace(originalTemplateName) && p.template_name.Trim().Equals(originalTemplateName.Trim(), StringComparison.OrdinalIgnoreCase))))
+                .ToList();
+
+            if (oldPresetsToDelete.Any())
+            {
+                var deleteTasks = oldPresetsToDelete.Select(p => DsService.DeleteTemplateAsync(p.template_id));
+                await Task.WhenAll(deleteTasks);
             }
 
-            ToastService.ShowSuccess($"Saved Template '{editingModel.TemplateName}' with {editingModel.Columns.Count} column headers!");
+            // 2. Fetch existing categories and resolve/save categories
+            var existingCategories = await DsService.GetCategoriesAsync();
+            int sortOrder = 1;
+            var saveTemplateTasks = new List<Task>();
+
+            foreach (var col in validColumns)
+            {
+                var colName = col.ColumnHeaderName.Trim();
+                var matchCat = existingCategories.FirstOrDefault(c => c.category_id == col.CategoryId && col.CategoryId != Guid.Empty)
+                            ?? existingCategories.FirstOrDefault(c => c.category_name != null && c.category_name.Trim().Equals(colName, StringComparison.OrdinalIgnoreCase));
+
+                Guid categoryId;
+                if (matchCat != null)
+                {
+                    categoryId = matchCat.category_id;
+                    if (matchCat.category_type != col.InputType || matchCat.sort_order != sortOrder)
+                    {
+                        await DsService.SaveCategoryAsync(new DischargeSummaryService.DsCategoryDto
+                        {
+                            category_id = categoryId,
+                            category_name = colName,
+                            category_type = col.InputType,
+                            sort_order = sortOrder
+                        });
+                    }
+                }
+                else
+                {
+                    var savedCatId = await DsService.SaveCategoryAsync(new DischargeSummaryService.DsCategoryDto
+                    {
+                        category_id = col.CategoryId != Guid.Empty ? col.CategoryId : Guid.Empty,
+                        category_name = colName,
+                        category_type = col.InputType,
+                        sort_order = sortOrder
+                    });
+                    categoryId = savedCatId ?? (col.CategoryId != Guid.Empty ? col.CategoryId : Guid.NewGuid());
+                }
+
+                sortOrder++;
+
+                // Queue template row insert
+                saveTemplateTasks.Add(DsService.SaveTemplateAsync(new DischargeSummaryService.DsTemplateDto
+                {
+                    category_id = categoryId,
+                    category_name = colName,
+                    template_name = targetTemplateName,
+                    template_text = col.DefaultAnswer?.Trim() ?? ""
+                }));
+            }
+
+            // 3. Save all template rows in parallel for ultra fast execution
+            await Task.WhenAll(saveTemplateTasks);
+
+            ToastService.ShowSuccess($"Saved Template '{targetTemplateName}' with {validColumns.Count} column header(s)!");
             showModal = false;
             await LoadTemplatesData();
         }
         catch (Exception ex)
         {
             ToastService.ShowError($"Save error: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+            StateHasChanged();
         }
     }
 
@@ -594,31 +718,50 @@
             ToastService.ShowError("You do not have permission to delete templates.");
             return;
         }
+        if (deletingTemplateId.HasValue) return;
+
+        deletingTemplateId = vm.TemplateId;
+        StateHasChanged();
+
         try
         {
-            foreach (var col in vm.Columns)
-            {
-                await DsService.DeleteCategoryAsync(col.CategoryId);
-            }
+            var idsToDelete = new List<Guid>(vm.PresetIds);
 
+            // Fetch any remaining matching template preset IDs for this template name
             var presets = await DsService.GetTemplatesAsync(null);
             var matching = presets.Where(p => p.template_name != null && p.template_name.Trim().Equals(vm.TemplateName.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
             foreach (var m in matching)
             {
-                await DsService.DeleteTemplateAsync(m.template_id);
+                if (!idsToDelete.Contains(m.template_id))
+                {
+                    idsToDelete.Add(m.template_id);
+                }
             }
 
+            if (idsToDelete.Any())
+            {
+                var deleteTasks = idsToDelete.Select(id => DsService.DeleteTemplateAsync(id)).ToList();
+                await Task.WhenAll(deleteTasks);
+            }
+
+            templateGroups.Remove(vm);
             ToastService.ShowSuccess($"Deleted Template '{vm.TemplateName}'");
-            await LoadTemplatesData();
         }
         catch (Exception ex)
         {
             ToastService.ShowError($"Delete error: {ex.Message}");
+            await LoadTemplatesData();
+        }
+        finally
+        {
+            deletingTemplateId = null;
+            StateHasChanged();
         }
     }
 
     private void CloseModal()
     {
+        if (isSaving) return;
         showModal = false;
     }
 }

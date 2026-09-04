@@ -129,6 +129,7 @@ builder.Services.AddScoped<Booking.Services.BedMasterService>();
 builder.Services.AddScoped<Booking.Services.BedTransferService>();
 builder.Services.AddScoped<Booking.Services.BedStatusService>();
 builder.Services.AddScoped<Booking.Services.NurseMasterService>();
+builder.Services.AddScoped<Booking.Services.NurseNotesMasterService>();
 builder.Services.AddScoped<Booking.Services.BlockMasterService>();
 builder.Services.AddScoped<Booking.Services.IpRegistrationService>();
 builder.Services.AddScoped<Booking.Services.DischargeSummaryService>();

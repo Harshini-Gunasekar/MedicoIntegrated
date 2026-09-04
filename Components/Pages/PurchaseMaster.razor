@@ -570,8 +570,8 @@
                             <div style="display: flex; flex-direction: column; gap: 4px; align-items: flex-start;">
                                 <span style="font-size: 0.75rem; font-weight: 800; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px;">Round Off</span>
                                 <div style="display: flex; align-items: center; gap: 4px; background: #ffffff; padding: 4px; border-radius: 8px; border: 1px solid #e2e8f0; box-shadow: 0 1px 2px rgba(0,0,0,0.02);">
-                                    <input type="number" step="any" class="form-control text-end px-2" @bind:get="CurrentRequest.master.roundoff" @bind:set="SetRoundOff" @bind:event="oninput" @onkeyup="CalculateTotals" placeholder="0.00" style="width: 85px; height: 32px; font-size: 0.9rem; font-weight: 700; color: #0f678f; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.03); background: #f8fafc; appearance: textfield;" />
-                                    <button class="btn btn-sm" type="button" @onclick="RoundOffUp" title="Round Up (+)" style="display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; border: none; background: rgba(22, 163, 74, 0.1); color: #16a34a; font-weight: 800; font-size: 1.1rem; padding: 0; cursor: pointer;">+</button>
+                                    <input type="number" step="any" class="form-control text-end px-2" @bind:get="GetRoundOff()" @bind:set="SetRoundOff" @bind:event="oninput" placeholder="0.00" style="width: 85px; height: 32px; font-size: 0.9rem; font-weight: 700; color: #0f678f; border: 1px solid #cbd5e1; border-radius: 6px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.03); background: #f8fafc; appearance: textfield;" />
+                                    <button class="btn btn-sm" type="button" @onclick="RoundOffUp" title="Round Up (+)" style="display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; border: none; background: rgba(220, 38, 38, 0.1); color: #16a34a; font-weight: 800; font-size: 1.1rem; padding: 0; cursor: pointer; background: rgba(22, 163, 74, 0.1);">+</button>
                                     <button class="btn btn-sm" type="button" @onclick="RoundOffDown" title="Round Down (-)" style="display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; border: none; background: rgba(220, 38, 38, 0.1); color: #dc2626; font-weight: 800; font-size: 1.2rem; padding: 0; cursor: pointer;">-</button>
                                 </div>
                             </div>
@@ -1230,6 +1230,21 @@
             }
         }
 
+        // Fuzzy map Overall Discount (overalldiscount)
+        if (m.overalldiscount == 0) {
+            foreach(var key in new[] { "overalldiscount", "prmoveralldiscount", "overall_discount", "discountpercent", "discount_percentage" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == System.Text.Json.JsonValueKind.Number) {
+                        m.overalldiscount = p.GetDecimal();
+                        break;
+                    } else if (p.ValueKind == System.Text.Json.JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) {
+                        m.overalldiscount = val;
+                        break;
+                    }
+                }
+            }
+        }
+
         // 6. Fuzzy map Gross Amount (grossamount)
         if (m.grossamount == 0) {
             foreach(var key in new[] { "grossamount", "prmgrossamount", "gross_amount" }) {
@@ -1594,6 +1609,7 @@
                     discountamount = master.discountamount,
                     taxamount = master.taxamount,
                     netamount = master.netamount,
+                    overalldiscount = master.overalldiscount,
                     roundoff = master.roundoff,
                     grncode = master.grncode,
                     transportationcharges = master.transportationcharges,
@@ -1968,30 +1984,40 @@
         {
             CurrentRequest.master.discountamount = itemsDisc;
             CurrentRequest.master.taxamount = CurrentRequest.details.Sum(d => d.taxamount);
-            CurrentRequest.master.netamount = baseTotal + CurrentRequest.master.roundoff;
+            CurrentRequest.master.netamount = Math.Max(0, baseTotal + CurrentRequest.master.roundoff);
             CurrentRequest.master.totalamount = CurrentRequest.master.netamount;
         }
     }
 
-    private void SetRoundOff(decimal val)
+    private decimal? GetRoundOff() => CurrentRequest.master.roundoff == 0 ? null : CurrentRequest.master.roundoff;
+
+    private void SetRoundOff(decimal? val)
     {
-        CurrentRequest.master.roundoff = val;
+        CurrentRequest.master.roundoff = val ?? 0;
         CalculateTotals();
     }
 
     private void RoundOffUp()
     {
-        var total = CurrentRequest.details.Sum(d => d.totalamount);
-        var ceiling = Math.Ceiling(total);
-        CurrentRequest.master.roundoff = ceiling - total;
+        var baseTotal = CurrentRequest.details.Sum(d => d.totalamount);
+        var overallDisc = (!ShowPhysicalBill && CurrentRequest.master.overalldiscount > 0)
+            ? Math.Round((baseTotal * CurrentRequest.master.overalldiscount) / 100m, 2)
+            : 0m;
+        var netBeforeRound = baseTotal - overallDisc;
+        var ceiling = Math.Ceiling(netBeforeRound);
+        CurrentRequest.master.roundoff = Math.Round(ceiling - netBeforeRound, 2);
         CalculateTotals();
     }
 
     private void RoundOffDown()
     {
-        var total = CurrentRequest.details.Sum(d => d.totalamount);
-        var floor = Math.Floor(total);
-        CurrentRequest.master.roundoff = floor - total;
+        var baseTotal = CurrentRequest.details.Sum(d => d.totalamount);
+        var overallDisc = (!ShowPhysicalBill && CurrentRequest.master.overalldiscount > 0)
+            ? Math.Round((baseTotal * CurrentRequest.master.overalldiscount) / 100m, 2)
+            : 0m;
+        var netBeforeRound = baseTotal - overallDisc;
+        var floor = Math.Floor(netBeforeRound);
+        CurrentRequest.master.roundoff = Math.Round(floor - netBeforeRound, 2);
         CalculateTotals();
     }
 

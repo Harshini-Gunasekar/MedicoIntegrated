@@ -1794,7 +1794,7 @@
         ShowRejectModal = true;
     }
 
-    private async Task<bool> SendActionRequest(string endpoint, stock_transfer_action_request payload)
+    private async Task<bool> SendActionRequest(string endpoint, object payload)
     {
         var json = JsonSerializer.Serialize(payload);
         Console.WriteLine($"[ReceiveStock] Calling {endpoint} with payload: {json}");
@@ -1950,125 +1950,53 @@
             else
             {
                 // Partial Acceptance:
-                // Only accepted items must pass to the receiving store, and rejected items must go back to the issuing store.
+                // Call api/ItemMaster/partialrejectstocktransfer with stock_transfer_partial_reject_request
                 var rejections = ReceiveItemStates.Values
                     .Where(v => v.rejectedqty > 0)
                     .Select(v => $"{GetItemName(v.itemcode)}: {v.rejectedqty:N0} rejected ({v.rejectreason})");
                 string rejectionSummary = string.Join(", ", rejections);
                 string partialRemarks = $"Partial Inward ({acceptedQty:N0} Accepted, {rejectedQty:N0} Rejected). Details: {rejectionSummary}";
 
-                // Step 1: Reject the original transfer to release 100% of dispatched stock back to the issuing store
-                var rejectOriginalPayload = new stock_transfer_action_request
+                var partialRejectPayload = new stock_transfer_partial_reject_request
                 {
                     transfercode = SelectedTransfer.transfercode,
                     usercode = 101,
-                    remarks = partialRemarks
+                    remarks = partialRemarks,
+                    details = new List<stock_transfer_partial_reject_detail>()
                 };
 
-                bool rejectSuccess = await SendActionRequest("api/ItemMaster/rejectstocktransfer", rejectOriginalPayload);
-                if (!rejectSuccess)
-                {
-                    ToastService.ShowError($"Failed to process partial rejection for transfer #{SelectedTransfer.transferno}.");
-                    ShowConfirmReceiveModal = false;
-                    return;
-                }
-
-                // Step 2: Create a new stock transfer containing ONLY the accepted items
-                var acceptedDetails = new List<stock_transfer_detail>();
                 if (TransferDetailsMap.TryGetValue(SelectedTransfer.transfercode, out var originalDetails) && originalDetails != null)
                 {
                     foreach (var d in originalDetails)
                     {
                         var state = GetItemReceiveState(d);
-                        if (state.receivedqty > 0)
+                        partialRejectPayload.details.Add(new stock_transfer_partial_reject_detail
                         {
-                            var accDetail = new stock_transfer_detail
-                            {
-                                transferdetailcode = 0,
-                                transfercode = 0,
-                                itemcode = d.itemcode,
-                                batchno = d.batchno,
-                                manufacturingdate = d.manufacturingdate,
-                                expirydate = d.expirydate,
-                                uomcode = d.uomcode,
-                                availableqty = d.availableqty,
-                                requestedqty = state.receivedqty,
-                                approvedqty = state.receivedqty,
-                                transferqty = state.receivedqty,
-                                unitcost = d.unitcost,
-                                stockvalue = state.receivedqty * d.unitcost,
-                                remarks = state.rejectedqty > 0 ? $"{state.receivedqty:N0} Accepted (from TRF #{SelectedTransfer.transferno}, {state.rejectedqty:N0} Rejected: {state.rejectreason})" : "Accepted Inward",
-                                tenantcode = d.tenantcode ?? DefaultTenant
-                            };
-                            acceptedDetails.Add(accDetail);
-                        }
+                            transferdetailcode = d.transferdetailcode,
+                            acceptedqty = state.receivedqty,
+                            rejectedqty = state.rejectedqty,
+                            remarks = state.rejectedqty > 0 
+                                ? $"{state.rejectreason}: {state.itemremarks}".Trim(' ', ':') 
+                                : (string.IsNullOrWhiteSpace(state.itemremarks) ? "Accepted" : state.itemremarks)
+                        });
                     }
                 }
 
-                var acceptedMaster = new stock_transfer_master
+                bool partialSuccess = await SendActionRequest("api/ItemMaster/partialrejectstocktransfer", partialRejectPayload);
+                if (partialSuccess)
                 {
-                    transfercode = 0,
-                    transferno = "",
-                    transferdate = DateTime.Now,
-                    transfertype = SelectedTransfer.transfertype ?? "Standard",
-                    indentcode = SelectedTransfer.indentcode,
-                    fromwarehousecode = SelectedTransfer.fromwarehousecode,
-                    towarehousecode = SelectedTransfer.towarehousecode,
-                    branchcode = SelectedTransfer.branchcode,
-                    reason = "Partial Inward Acceptance",
-                    remarks = $"Accepted Inward Receipt ({acceptedQty:N0} items) for Voucher #{SelectedTransfer.transferno}. Rejections: {rejectionSummary}",
-                    status = "PENDING",
-                    createdby = 101,
-                    tenantcode = SelectedTransfer.tenantcode ?? DefaultTenant
-                };
-
-                var insertReq = new stock_transfer_request
-                {
-                    master = acceptedMaster,
-                    details = acceptedDetails
-                };
-
-                var insertResult = await SendInsertTransferRequest(insertReq);
-                if (!insertResult.success || insertResult.transfercode <= 0)
-                {
-                    ToastService.ShowError($"Failed to create accepted inward stock transfer. {insertResult.message}");
+                    SelectedTransfer.status = "COMPLETED";
+                    SelectedTransfer.remarks = partialRemarks;
+                    ToastService.ShowSuccess($"Transfer #{SelectedTransfer.transferno}: {acceptedQty:N0} items accepted into stock. {rejectedQty:N0} rejected items returned to {GetStoreName(SelectedTransfer.fromwarehousecode)}.");
                     ShowConfirmReceiveModal = false;
+                    ShowDetailsModal = false;
                     await LoadTransfers();
-                    return;
-                }
-
-                long acceptedTransferCode = insertResult.transfercode;
-
-                // Step 3: Dispatch the accepted transfer to deduct accepted items from issuing store
-                var dispatchAccPayload = new stock_transfer_action_request
-                {
-                    transfercode = acceptedTransferCode,
-                    usercode = 101,
-                    remarks = $"Dispatched accepted stock for TRF #{SelectedTransfer.transferno}"
-                };
-                await SendActionRequest("api/ItemMaster/dispatchstocktransfer", dispatchAccPayload);
-
-                // Step 4: Receive the accepted transfer to credit accepted items into receiving store
-                var receiveAccPayload = new stock_transfer_action_request
-                {
-                    transfercode = acceptedTransferCode,
-                    usercode = 101,
-                    remarks = $"Store Inward Accepted ({acceptedQty:N0} items credited to stock)"
-                };
-                bool accRecSuccess = await SendActionRequest("api/ItemMaster/receivestocktransfer", receiveAccPayload);
-
-                if (accRecSuccess)
-                {
-                    ToastService.ShowSuccess($"Transfer #{SelectedTransfer.transferno}: {acceptedQty:N0} items credited to receiving store. {rejectedQty:N0} rejected items returned to {GetStoreName(SelectedTransfer.fromwarehousecode)}.");
                 }
                 else
                 {
-                    ToastService.ShowWarning($"Accepted transfer #{acceptedTransferCode} created and dispatched, but final inward receipt status needs verification.");
+                    ToastService.ShowError($"Failed to process partial acceptance for transfer #{SelectedTransfer.transferno}. Please check backend service.");
+                    ShowConfirmReceiveModal = false;
                 }
-
-                ShowConfirmReceiveModal = false;
-                ShowDetailsModal = false;
-                await LoadTransfers();
             }
 
             StateHasChanged();

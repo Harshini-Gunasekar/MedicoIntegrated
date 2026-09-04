@@ -2,6 +2,11 @@ using System;
 
 namespace Booking.Models
 {
+    public class stock_adjustment_stock_ref
+    {
+        public long stockcode { get; set; }
+    }
+
     public class stock_adjustment_log
     {
         public long adjustmentlogcode { get; set; }
@@ -60,6 +65,13 @@ namespace Booking.Models
     public class stock_adjustment_request
     {
         public stock_master stock { get; set; } = new();
+
+        public stock_adjustment_log adjustmentlog { get; set; } = new();
+    }
+
+    public class stock_adjustment_upsert_payload
+    {
+        public stock_adjustment_stock_ref stock { get; set; } = new();
 
         public stock_adjustment_log adjustmentlog { get; set; } = new();
     }

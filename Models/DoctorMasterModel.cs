@@ -16,7 +16,6 @@ namespace Booking.Models
         [Required(ErrorMessage = "First Name is required")]
         public string? name { get; set; }
 
-        [Required(ErrorMessage = "Qualification is required")]
         public string? qualification { get; set; }
 
         public string? shortname { get; set; }

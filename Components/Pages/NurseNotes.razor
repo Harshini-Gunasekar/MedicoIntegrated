@@ -10,9 +10,11 @@
 @using System.Globalization
 
 @inject NurseNotesService NurseNotesService
+@inject NurseNotesMasterService NotesMasterService
 @inject NurseMasterService NurseMasterService
 @inject IpRegistrationService IpService
 @inject DoctorService DoctorService
+@inject DoctorSpecialtyMasterService SpecialtyService
 @inject WardMasterService WardMasterService
 @inject BedMasterService BedMasterService
 @inject AppointmentBookingService AppointmentBookingService
@@ -23,6 +25,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject NavigationManager NavigationManager
+@implements IDisposable
 
 <PageTitle>IP Nurse Notes — Bedside Chart</PageTitle>
 
@@ -45,6 +48,13 @@
         </div>
 
         <div class="header-right-wrap">
+            <!-- IP Patients Button (LEFT OF SEARCH BAR) -->
+            <button type="button" class="btn-ip-patients-nav" @onclick="OpenIpPatientsModal" title="View all admitted IP patients list">
+                <i class="bi bi-people-fill me-1.5"></i>
+                <span>IP Patients</span>
+                <span class="ip-count-badge">@admittedPatients.Count</span>
+            </button>
+
             <!-- Patient Search Autocomplete Pill Box -->
             <div class="patient-search-relative" @onclick:stopPropagation>
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#94a3b8" viewBox="0 0 16 16" class="search-icon-svg">
@@ -55,7 +65,8 @@
                        class="lc-rounded-pill-input"
                        @bind="patientSearchText"
                        @bind:event="oninput"
-                       @onfocus="() => isPatientDropdownOpen = true" />
+                       @onfocus="() => { isPatientDropdownOpen = true; highlightedPatientIndex = 0; }"
+                       @onkeydown="HandlePatientSearchKeyDown" />
                 @if (!string.IsNullOrEmpty(patientSearchText))
                 {
                     <button type="button" class="btn-search-clear" @onclick="ClearPatientSearch" title="Clear">
@@ -86,10 +97,15 @@
                             }
                             else
                             {
-                                @foreach (var pat in GetFilteredPatients())
+                                var pList = GetFilteredPatients().ToList();
+                                @for (int pIdx = 0; pIdx < pList.Count; pIdx++)
                                 {
+                                    var pat = pList[pIdx];
                                     var isCurrent = selectedPatient?.ip_id == pat.ip_id;
-                                    <div class="popover-patient-item @(isCurrent ? "active-pat" : "")" @onclick="() => SelectPatientFromDropdown(pat)">
+                                    var isHigh = pIdx == highlightedPatientIndex;
+                                    <div class="popover-patient-item @(isCurrent ? "active-pat" : "") @(isHigh ? "highlighted-pat" : "")" 
+                                         @onclick="() => SelectPatientFromDropdown(pat)"
+                                         @onmouseenter="() => highlightedPatientIndex = pIdx">
                                         <div class="popover-avatar">@GetInitials(pat.patient_name)</div>
                                         <div class="popover-details">
                                             <div class="d-flex justify-content-between align-items-center">
@@ -164,6 +180,20 @@
             </div>
 
             <div class="banner-right-wrap">
+                @if (isReferredToVisitingDoctor)
+                {
+                    <div class="referred-visiting-card" title="Patient is referred to visiting doctor">
+                        <div class="referred-badge-tag">
+                            <i class="bi bi-person-check-fill me-1"></i>
+                            <span>Referred to Visiting Doctor</span>
+                        </div>
+                        <div class="referred-doc-name">
+                            <i class="bi bi-person-badge-fill me-1 text-emerald-600"></i>
+                            <span>@(string.IsNullOrWhiteSpace(visitingDoctorDisplayName) ? "Visiting Doctor" : visitingDoctorDisplayName)</span>
+                        </div>
+                    </div>
+                }
+
                 <button type="button" class="btn-op-casesheet" @onclick="OpenCaseSheetModal" title="Open doctor's clinical case sheet for this IP patient">
                     <i class="bi bi-file-earmark-medical-fill me-1"></i>
                     <span>View OP Case Sheet</span>
@@ -633,20 +663,60 @@
                                     </select>
                                 </div>
 
-                                <div class="form-field-unit flex-grow-1" style="flex: 1.2 1 0; min-width: 0;">
+                                <div class="form-field-unit flex-grow-1 position-relative" style="flex: 1.2 1 0; min-width: 0;">
                                     <label class="nt-form-label">Particulars <span class="text-danger">*</span></label>
-                                    <input type="text" class="nt-input-control" style="width: 100%;" list="ioParticularsList" placeholder="e.g. IV Fluid, Urine, Water..." @bind="ioParticulars" @bind:event="oninput" />
-                                    <datalist id="ioParticularsList">
-                                        <option value="IV Fluid (NS / RL / DNS)" />
-                                        <option value="Oral Fluid / Water" />
-                                        <option value="Ryle's Tube Feed" />
-                                        <option value="Blood / Plasma Transfusion" />
-                                        <option value="Urine" />
-                                        <option value="Vomit" />
-                                        <option value="Surgical Drain" />
-                                        <option value="Stool" />
-                                        <option value="Gastric Aspiration" />
-                                    </datalist>
+                                    <div class="custom-dropdown-wrap">
+                                        <input type="text"
+                                               class="nt-input-control w-100"
+                                               style="padding-right: 32px;"
+                                               placeholder="e.g. IV Fluid, Urine, Water..."
+                                               value="@ioParticulars"
+                                               @oninput="OnParticularsInput"
+                                               @onfocus="OnParticularsFocus"
+                                               @onkeydown="OnParticularsKeyDown"
+                                               autocomplete="off" />
+
+                                        <button type="button" 
+                                                class="btn-input-edge-add" 
+                                                @onclick="OpenAddParticularModal" 
+                                                @onclick:stopPropagation
+                                                title="Add New IO Particular">
+                                            <i class="bi bi-plus-lg"></i>
+                                        </button>
+
+                                        @if (isParticularsDropdownOpen)
+                                        {
+                                            <div class="custom-particulars-dropdown shadow-lg" @onclick:stopPropagation>
+                                                @{
+                                                    var items = GetFilteredParticulars().ToList();
+                                                }
+                                                @if (!items.Any())
+                                                {
+                                                    <div class="particular-no-results" @onclick="OpenAddParticularModal">
+                                                        <i class="bi bi-plus-circle me-1 text-indigo-600"></i>
+                                                        <span>No match found. Click to add <strong>"@ioParticulars"</strong></span>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    @for (int idx = 0; idx < items.Count; idx++)
+                                                    {
+                                                        var item = items[idx];
+                                                        var isHighlighted = idx == highlightedParticularIndex;
+                                                        <div class="particular-dropdown-item @(isHighlighted ? "highlighted" : "")"
+                                                             @onclick="() => SelectParticular(item.particular_name)"
+                                                             @onmouseenter="() => highlightedParticularIndex = idx">
+                                                            <span class="particular-item-name">@item.particular_name</span>
+                                                            @if (!string.IsNullOrWhiteSpace(item.io_type))
+                                                            {
+                                                                <span class="particular-type-tag type-@item.io_type.ToLower()">@item.io_type</span>
+                                                            }
+                                                        </div>
+                                                    }
+                                                }
+                                            </div>
+                                        }
+                                    </div>
                                 </div>
 
                                 <div class="form-field-unit" style="flex: 0 0 80px; min-width: 75px;">
@@ -798,22 +868,57 @@
                                     </select>
                                 </div>
 
-                                <div class="form-field-unit flex-grow-1" style="flex: 1.2 1 0; min-width: 0;">
+                                <div class="form-field-unit flex-grow-1 position-relative" style="flex: 1.2 1 0; min-width: 0;">
                                     <label class="nt-form-label">Service Name <span class="text-danger">*</span></label>
-                                    <input type="text" class="nt-input-control" style="width: 100%;" list="servicesSuggestions" placeholder="Wound Dressing, Catheter Care, Nebulization..." @bind="serviceName" @bind:event="oninput" />
-                                    <datalist id="servicesSuggestions">
-                                        <option value="Wound Dressing" />
-                                        <option value="Catheter Care / Insertion" />
-                                        <option value="Nebulization Therapy" />
-                                        <option value="Bed Bath &amp; Hygiene" />
-                                        <option value="Back Care &amp; Repositioning" />
-                                        <option value="Physiotherapy Assistance" />
-                                        <option value="Tracheostomy Care" />
-                                        <option value="Suctioning" />
-                                        <option value="IV Cannula Insertion / Flushing" />
-                                        <option value="Nasogastric Tube Care" />
-                                        <option value="Eye / Mouth Care" />
-                                    </datalist>
+                                    <div class="custom-dropdown-wrap">
+                                        <input type="text"
+                                               class="nt-input-control w-100"
+                                               style="padding-right: 32px;"
+                                               placeholder="Wound Dressing, Catheter Care, Nebulization..."
+                                               value="@serviceName"
+                                               @oninput="OnServiceNameInput"
+                                               @onfocus="OnServiceNameFocus"
+                                               @onkeydown="OnServiceNameKeyDown"
+                                               autocomplete="off" />
+
+                                        <button type="button" 
+                                                class="btn-input-edge-add" 
+                                                @onclick="OpenAddServiceModal" 
+                                                @onclick:stopPropagation
+                                                title="Add New Service Name">
+                                            <i class="bi bi-plus-lg"></i>
+                                        </button>
+
+                                        @if (isServiceDropdownOpen)
+                                        {
+                                            <div class="custom-particulars-dropdown shadow-lg" @onclick:stopPropagation>
+                                                @{
+                                                    var sItems = GetFilteredServices().ToList();
+                                                }
+                                                @if (!sItems.Any())
+                                                {
+                                                    <div class="particular-no-results" @onclick="OpenAddServiceModal">
+                                                        <i class="bi bi-plus-circle me-1 text-indigo-600"></i>
+                                                        <span>No match found. Click to add <strong>"@serviceName"</strong></span>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    @for (int idx = 0; idx < sItems.Count; idx++)
+                                                    {
+                                                        var item = sItems[idx];
+                                                        var isHighlighted = idx == highlightedServiceIndex;
+                                                        <div class="particular-dropdown-item @(isHighlighted ? "highlighted" : "")"
+                                                             @onclick="() => SelectServiceName(item.service_name)"
+                                                             @onmouseenter="() => highlightedServiceIndex = idx">
+                                                            <span class="particular-item-name">@item.service_name</span>
+                                                            <span class="particular-type-tag type-input">SERVICE</span>
+                                                        </div>
+                                                    }
+                                                }
+                                            </div>
+                                        }
+                                    </div>
                                 </div>
 
                                 <div class="form-field-unit flex-grow-1" style="flex: 1.2 1 0; min-width: 0;">
@@ -933,9 +1038,55 @@
                                     </select>
                                 </div>
 
-                                <div class="form-field-unit flex-grow-1" style="flex: 1.5 1 0; min-width: 0;">
+                                <div class="form-field-unit flex-grow-1 position-relative" style="flex: 1.5 1 0; min-width: 0;">
                                     <label class="nt-form-label">Medicine Name <span class="text-danger">*</span></label>
-                                    <input type="text" class="nt-input-control" style="width: 100%;" placeholder="e.g. Paracetamol 650mg, Inj..." @bind="medName" @bind:event="oninput" />
+                                    <div class="custom-dropdown-wrap">
+                                        <input type="text"
+                                               class="nt-input-control w-100"
+                                               placeholder="e.g. Paracetamol 650mg, Inj Pantop..."
+                                               value="@medName"
+                                               @oninput="OnMedicineInput"
+                                               @onfocus="OnMedicineFocus"
+                                               @onkeydown="OnMedicineKeyDown"
+                                               autocomplete="off" />
+
+                                        @if (isMedicineDropdownOpen)
+                                        {
+                                            <div class="custom-particulars-dropdown shadow-lg" @onclick:stopPropagation>
+                                                @{
+                                                    var mItems = GetFilteredMedicines().ToList();
+                                                }
+                                                @if (!mItems.Any())
+                                                {
+                                                    <div class="particular-no-results">
+                                                        <i class="bi bi-capsule me-1 text-indigo-600"></i>
+                                                        <span>No medicine items matching "@medName"</span>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    @for (int idx = 0; idx < mItems.Count; idx++)
+                                                    {
+                                                        var item = mItems[idx];
+                                                        var isHighlighted = idx == highlightedMedicineIndex;
+                                                        <div class="particular-dropdown-item @(isHighlighted ? "highlighted" : "")"
+                                                             @onclick="() => SelectMedicineName(item.itemname ?? string.Empty)"
+                                                             @onmouseenter="() => highlightedMedicineIndex = idx">
+                                                            <span class="particular-item-name">@item.itemname</span>
+                                                            @if (!string.IsNullOrWhiteSpace(item.itemtype) || !string.IsNullOrWhiteSpace(item.packaging))
+                                                            {
+                                                                <span class="particular-type-tag type-both">@(string.IsNullOrWhiteSpace(item.itemtype) ? item.packaging : item.itemtype)</span>
+                                                            }
+                                                            else
+                                                            {
+                                                                <span class="particular-type-tag type-both">MEDICINE</span>
+                                                            }
+                                                        </div>
+                                                    }
+                                                }
+                                            </div>
+                                        }
+                                    </div>
                                 </div>
 
                                 <div class="form-field-unit" style="flex: 0 0 75px; min-width: 65px;">
@@ -1221,35 +1372,57 @@
                                         </select>
                                     </div>
 
-                                    <div class="form-field-unit" style="flex: 1.6 1 200px; min-width: 160px;">
+                                    <div class="form-field-unit position-relative" style="flex: 1.6 1 200px; min-width: 160px;">
                                         <label class="nt-form-label">Doctor Name <span class="text-danger">*</span></label>
-                                        <input type="text" list="visitingDocsList" class="nt-input-control" placeholder="e.g. Dr. Karthik Raja" @bind="visitDoctorName" @bind:event="oninput" />
-                                        <datalist id="visitingDocsList">
-                                            @foreach (var d in doctorsList)
+                                        <div class="custom-dropdown-wrap">
+                                            <input type="text"
+                                                   class="nt-input-control w-100"
+                                                   placeholder="e.g. Dr. Karthik Raja"
+                                                   value="@visitDoctorName"
+                                                   @oninput="OnVisitingDoctorInput"
+                                                   @onfocus="OnVisitingDoctorFocus"
+                                                   @onkeydown="OnVisitingDoctorKeyDown"
+                                                   autocomplete="off" />
+
+                                            @if (isVisitingDoctorDropdownOpen)
                                             {
-                                                <option value="@d.name" />
+                                                <div class="custom-particulars-dropdown shadow-lg" @onclick:stopPropagation>
+                                                    @{
+                                                        var docItems = GetFilteredVisitingDoctors().ToList();
+                                                    }
+                                                    @if (!docItems.Any())
+                                                    {
+                                                        <div class="particular-no-results">
+                                                            <i class="bi bi-person-x me-1 text-indigo-600"></i>
+                                                            <span>No doctor matching "@visitDoctorName"</span>
+                                                        </div>
+                                                    }
+                                                    else
+                                                    {
+                                                        @for (int idx = 0; idx < docItems.Count; idx++)
+                                                        {
+                                                            var doc = docItems[idx];
+                                                            var spec = GetDoctorSpecialty(doc);
+                                                            var isHighlighted = idx == highlightedVisitingDocIndex;
+                                                            <div class="particular-dropdown-item @(isHighlighted ? "highlighted" : "")"
+                                                                 @onclick="() => SelectVisitingDoctor(doc)"
+                                                                 @onmouseenter="() => highlightedVisitingDocIndex = idx">
+                                                                <span class="particular-item-name">@doc.name</span>
+                                                                @if (!string.IsNullOrWhiteSpace(spec))
+                                                                {
+                                                                    <span class="particular-type-tag type-input">@spec</span>
+                                                                }
+                                                            </div>
+                                                        }
+                                                    }
+                                                </div>
                                             }
-                                        </datalist>
+                                        </div>
                                     </div>
 
                                     <div class="form-field-unit" style="flex: 1.4 1 180px; min-width: 140px;">
                                         <label class="nt-form-label">Specialization</label>
-                                        <input type="text" list="specializationList" class="nt-input-control" placeholder="e.g. Cardiology" @bind="visitSpecialization" @bind:event="oninput" />
-                                        <datalist id="specializationList">
-                                            <option value="Cardiology" />
-                                            <option value="Neurology" />
-                                            <option value="Orthopedics" />
-                                            <option value="Pulmonology" />
-                                            <option value="General Medicine" />
-                                            <option value="General Surgery" />
-                                            <option value="Nephrology" />
-                                            <option value="Pediatrics" />
-                                            <option value="Gastroenterology" />
-                                            <option value="Dermatology" />
-                                            <option value="ENT" />
-                                            <option value="Ophthalmology" />
-                                            <option value="Oncology" />
-                                        </datalist>
+                                        <input type="text" class="nt-input-control" placeholder="Specialization (auto-filled)" @bind="visitSpecialization" @bind:event="oninput" />
                                     </div>
 
                                     <div class="form-field-unit" style="flex: 0 0 130px; min-width: 120px;">
@@ -1428,9 +1601,57 @@
                                         </select>
                                     </div>
 
-                                    <div class="form-field-unit" style="flex: 1.8 1 200px; min-width: 160px;">
+                                    <div class="form-field-unit flex-grow-1 position-relative" style="flex: 1.8 1 200px; min-width: 160px;">
                                         <label class="nt-form-label">Item / Task Name <span class="text-danger">*</span></label>
-                                        <input type="text" class="nt-input-control" placeholder="e.g. Insulin 10 units / Diabetic lunch" @bind="scheduleName" @bind:event="oninput" />
+                                        <div class="custom-dropdown-wrap">
+                                            <input type="text"
+                                                   class="nt-input-control w-100"
+                                                   style="padding-right: 32px;"
+                                                   placeholder="e.g. Insulin 10 units / Diabetic lunch"
+                                                   value="@scheduleName"
+                                                   @oninput="OnScheduleTaskInput"
+                                                   @onfocus="OnScheduleTaskFocus"
+                                                   @onkeydown="OnScheduleTaskKeyDown"
+                                                   autocomplete="off" />
+
+                                            <button type="button" 
+                                                    class="btn-input-edge-add" 
+                                                    @onclick="OpenAddScheduleTypeModal" 
+                                                    @onclick:stopPropagation
+                                                    title="Add New Schedule Task">
+                                                <i class="bi bi-plus-lg"></i>
+                                            </button>
+
+                                            @if (isScheduleDropdownOpen)
+                                            {
+                                                <div class="custom-particulars-dropdown shadow-lg" @onclick:stopPropagation>
+                                                    @{
+                                                        var schItems = GetFilteredScheduleTasks().ToList();
+                                                    }
+                                                    @if (!schItems.Any())
+                                                    {
+                                                        <div class="particular-no-results" @onclick="OpenAddScheduleTypeModal">
+                                                            <i class="bi bi-plus-circle me-1 text-indigo-600"></i>
+                                                            <span>No match found. Click to add <strong>"@scheduleName"</strong></span>
+                                                        </div>
+                                                    }
+                                                    else
+                                                    {
+                                                        @for (int idx = 0; idx < schItems.Count; idx++)
+                                                        {
+                                                            var item = schItems[idx];
+                                                            var isHighlighted = idx == highlightedScheduleIndex;
+                                                            <div class="particular-dropdown-item @(isHighlighted ? "highlighted" : "")"
+                                                                 @onclick="() => SelectScheduleTask(item.type_name)"
+                                                                 @onmouseenter="() => highlightedScheduleIndex = idx">
+                                                                <span class="particular-item-name">@item.type_name</span>
+                                                                <span class="particular-type-tag type-input">SCHEDULE</span>
+                                                            </div>
+                                                        }
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
                                     </div>
                                 </div>
 
@@ -1595,11 +1816,259 @@
 </div>
 
 <!-- ============================================================================= -->
+<!-- BOTTOM-RIGHT UPCOMING SCHEDULE NOTIFICATION POPUP (PREMIUM GLASSMORPHIC UI)   -->
+<!-- ============================================================================= -->
+@if (activeScheduleAlerts.Any())
+{
+    <div class="schedule-alerts-fixed-container" @onclick:stopPropagation>
+        @foreach (var alert in activeScheduleAlerts)
+        {
+            <div class="schedule-alert-popup-card shadow-2xl lc-fadeInUp" @key="alert.Schedule.schedule_id">
+                <!-- Glowing Top Accent Line -->
+                <div class="schedule-alert-top-bar"></div>
+
+                <!-- Alert Header with Radar Ripple Beacon -->
+                <div class="schedule-alert-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="beacon-wrap">
+                            <span class="beacon-radar"></span>
+                            <span class="beacon-core"></span>
+                        </div>
+                        <div class="schedule-alert-title-wrap">
+                            <span class="schedule-alert-main-title">
+                                <i class="bi bi-bell-fill text-rose-600 me-1"></i>
+                                SCHEDULE ALERT
+                            </span>
+                            <span class="schedule-alert-countdown-badge">
+                                @(alert.MinutesRemaining <= 0 ? "DUE NOW" : $"IN {alert.MinutesRemaining} MINS")
+                            </span>
+                        </div>
+                    </div>
+                    <button type="button" class="schedule-alert-close-btn" @onclick="() => DismissScheduleAlert(alert.Schedule.schedule_id)" title="Dismiss Notification">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                </div>
+
+                <!-- Alert Body -->
+                <div class="schedule-alert-body">
+                    <!-- Patient Info Strip (Clickable to switch patient) -->
+                    <div class="schedule-alert-patient-strip" @onclick="() => NavigateToScheduleFromAlertAsync(alert)" title="Click to view this patient">
+                        <div class="patient-avatar-mini">
+                            @GetInitials(alert.PatientName)
+                        </div>
+                        <div class="schedule-alert-patient-text">
+                            <div class="d-flex align-items-center gap-2">
+                                <span class="schedule-alert-patient-name">@alert.PatientName</span>
+                                <span class="badge-patient-ip">IP: @alert.IpNo</span>
+                            </div>
+                            <div class="schedule-alert-patient-sub">
+                                <i class="bi bi-geo-alt-fill text-rose-500 me-1" style="font-size: 0.68rem;"></i>
+                                <span>@(string.IsNullOrWhiteSpace(alert.WardBed) ? "General Ward" : alert.WardBed)</span>
+                            </div>
+                        </div>
+                        <i class="bi bi-chevron-right text-slate-400 ms-auto fs-8"></i>
+                    </div>
+
+                    <!-- Task & Instructions Card -->
+                    <div class="schedule-alert-task-box">
+                        <div class="d-flex align-items-center justify-content-between mb-1">
+                            <span class="schedule-type-badge type-@alert.Schedule.item_type?.ToLower()">
+                                <i class="bi bi-tag-fill me-1" style="font-size: 0.6rem;"></i>@alert.Schedule.item_type
+                            </span>
+                            <span class="schedule-time-text">
+                                <i class="bi bi-clock-fill me-1 text-rose-500"></i>@FormatAlertScheduleTime(alert.Schedule.scheduled_time, alert.Schedule.shift)
+                                <span class="schedule-shift-tag">@alert.Schedule.shift</span>
+                            </span>
+                        </div>
+                        <div class="schedule-task-name-text">@alert.Schedule.item_name</div>
+                        
+                        <div class="schedule-instructions-box">
+                            <div class="instructions-header">
+                                <i class="bi bi-card-text me-1 text-rose-600"></i>
+                                <span>Special Instructions</span>
+                            </div>
+                            <div class="instructions-content">
+                                @(string.IsNullOrWhiteSpace(alert.Schedule.instructions) ? "Routine patient care procedure / administration" : alert.Schedule.instructions)
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Alert Actions Footer -->
+                <div class="schedule-alert-footer">
+                    <button type="button" class="btn-schedule-alert-view" @onclick="() => NavigateToScheduleFromAlertAsync(alert)" title="Open patient schedule tab">
+                        <i class="bi bi-box-arrow-up-right me-1"></i>
+                        <span>Switch &amp; View</span>
+                    </button>
+                    <button type="button" class="btn-schedule-alert-complete" @onclick="() => CompleteScheduleFromAlertAsync(alert)" title="Mark task completed directly">
+                        <i class="bi bi-check2-circle me-1"></i>
+                        <span>Mark Completed</span>
+                    </button>
+                </div>
+            </div>
+        }
+    </div>
+}
+
+<!-- ============================================================================= -->
+<!-- IP PATIENTS LIST MODAL                                                        -->
+<!-- ============================================================================= -->
+@if (showIpPatientsModal)
+{
+    <div class="ip-modal-backdrop" @onclick="CloseIpPatientsModal">
+        <div class="ip-patients-modal-container" @onclick:stopPropagation>
+            <!-- Modal Header -->
+            <div class="ip-modal-header">
+                <div class="ip-modal-header-left">
+                    <div class="ip-modal-icon">
+                        <i class="bi bi-hospital-fill text-indigo-600 fs-4"></i>
+                    </div>
+                    <div>
+                        <h3 class="ip-modal-title">Admitted IP Patients</h3>
+                        <p class="ip-modal-subtitle">Bed allocations, attending doctors, and visiting doctor referrals</p>
+                    </div>
+                </div>
+                <button type="button" class="ip-modal-close-btn" @onclick="CloseIpPatientsModal" title="Close">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+
+            <!-- Modal Search & Filters Strip (Half Width Search Bar Right-Aligned near Filters) -->
+            <div class="ip-modal-toolbar">
+                <div class="ip-modal-toolbar-right">
+                    <div class="ip-modal-filter-pills">
+                        <button type="button" class="filter-pill-btn @(ipModalReferralFilter == "ALL" ? "active" : "")" @onclick='() => ipModalReferralFilter = "ALL"'>
+                            All (@admittedPatients.Count)
+                        </button>
+                        <button type="button" class="filter-pill-btn @(ipModalReferralFilter == "REFERRED" ? "active" : "")" @onclick='() => ipModalReferralFilter = "REFERRED"'>
+                            <i class="bi bi-check2-circle me-1"></i>Referred to Visiting (@GetReferredCount())
+                        </button>
+                    </div>
+
+                    <div class="ip-modal-search-box">
+                        <i class="bi bi-search ip-modal-search-icon"></i>
+                        <input type="text"
+                               class="ip-modal-search-input"
+                               placeholder="Search patient, IP, bed..."
+                               @bind="ipModalSearchText"
+                               @bind:event="oninput" />
+                        @if (!string.IsNullOrEmpty(ipModalSearchText))
+                        {
+                            <button type="button" class="ip-modal-search-clear" @onclick="() => ipModalSearchText = string.Empty" title="Clear">
+                                <i class="bi bi-x-circle-fill"></i>
+                            </button>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal Table Content -->
+            <div class="ip-modal-body">
+                @if (isLoadingPatients)
+                {
+                    <div class="ip-modal-loading">
+                        <span class="spinner-border text-indigo-600 me-2"></span>
+                        <span>Loading IP patient records...</span>
+                    </div>
+                }
+                else if (!GetFilteredModalPatients().Any())
+                {
+                    <div class="ip-modal-empty">
+                        <i class="bi bi-person-x fs-1 text-slate-300 mb-2"></i>
+                        <h4 class="text-slate-700 font-bold mb-1">No In-Patients Found</h4>
+                        <p class="text-slate-400 fs-7 m-0">No admitted patients match your search criteria.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="ip-modal-table-wrap">
+                        <table class="ip-modal-table">
+                            <thead>
+                                <tr>
+                                    <th style="width: 50px; text-align: center;">S.NO.</th>
+                                    <th style="width: 200px;">PATIENT NAME</th>
+                                    <th style="width: 140px;">IP NO</th>
+                                    <th style="width: 130px;">PHONE NO</th>
+                                    <th style="width: 140px;">ADMISSION DATE</th>
+                                    <th style="width: 180px;">BED NO</th>
+                                    <th style="width: 170px;">ATTENDING DOCTOR</th>
+                                    <th style="width: 230px;">REFERRED TO VISITING DOCTOR</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @{ int modalIdx = 1; }
+                                @foreach (var pat in GetFilteredModalPatients())
+                                {
+                                    var isSel = selectedPatient?.ip_id == pat.ip_id;
+                                    var refInfo = GetPatientVisitingDoctorInfo(pat);
+                                    var phone = GetPatientPhone(pat);
+
+                                    <tr class="ip-modal-tr @(isSel ? "row-selected" : "")" @onclick="() => SelectPatientFromModal(pat)" title="Click to view @pat.patient_name's bedside chart">
+                                        <td style="text-align: center;" class="font-bold text-slate-500">@(modalIdx++)</td>
+                                        <td>
+                                            <div>
+                                                <div class="font-bold text-slate-800 text-truncate">@(pat.patient_name ?? "—")</div>
+                                                <div class="fs-8 text-slate-500">@GetPatientAgeGenderFor(pat)</div>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <span class="badge-ip-no">@pat.ip_no</span>
+                                        </td>
+                                        <td>
+                                            <div class="d-flex align-items-center gap-1 text-slate-700 font-medium fs-7">
+                                                <i class="bi bi-telephone text-indigo-500 fs-8"></i>
+                                                <span>@(string.IsNullOrWhiteSpace(phone) ? "—" : phone)</span>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            <div class="text-slate-800 font-bold fs-7">@(pat.admitdate.ToIndianTime().ToString("dd-MMM-yyyy"))</div>
+                                            <div class="text-slate-500 fs-8">@(pat.admitdate.ToIndianTime().ToString("hh:mm tt"))</div>
+                                        </td>
+                                        <td>
+                                            <div class="font-bold text-indigo-700 fs-7">@GetWardBedText(pat.wrdcode, pat.bedcode)</div>
+                                        </td>
+                                        <td>
+                                            <div class="d-flex align-items-center gap-1 text-slate-800 font-semibold fs-7">
+                                                <i class="bi bi-person-badge text-slate-400"></i>
+                                                <span>@GetDoctorName(pat.dcode)</span>
+                                            </div>
+                                        </td>
+                                        <td>
+                                            @if (refInfo.IsReferred)
+                                            {
+                                                <div class="visiting-ref-box">
+                                                    <span class="visiting-yes-pill">
+                                                        <i class="bi bi-check-circle-fill me-1"></i>Referred
+                                                    </span>
+                                                    <div class="visiting-doc-title">
+                                                        <i class="bi bi-person-fill me-1"></i>@(string.IsNullOrWhiteSpace(refInfo.DoctorName) ? "Visiting Doctor" : refInfo.DoctorName)
+                                                    </div>
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                <span class="visiting-none-pill">—</span>
+                                            }
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ============================================================================= -->
+<!-- ============================================================================= -->
 <!-- OFFICIAL CASESHEET MODAL (EMBEDDED CASESHEET COMPONENT)                        -->
 <!-- ============================================================================= -->
 @if (selectedPatient != null && showCaseSheetModal)
 {
-    <CaseSheetComponent @bind-Visible="showCaseSheetModal"
+    <CaseSheetComponent Visible="showCaseSheetModal"
+                        VisibleChanged="HandleCaseSheetVisibilityChanged"
                         IpId="selectedPatient.ip_id"
                         IpNo="@(selectedPatient.ip_no ?? string.Empty)"
                         CustId="selectedPatient.custid"
@@ -1607,6 +2076,165 @@
                         PatientName="@(selectedPatient.patient_name ?? string.Empty)"
                         VisitDate="selectedPatient.admitdate"
                         OpStatus="ADMITTED" />
+}
+
+<!-- ============================================================================= -->
+<!-- QUICK ADD IO PARTICULAR MODAL                                                  -->
+<!-- ============================================================================= -->
+@if (showAddParticularModal)
+{
+    <div class="ip-modal-backdrop" @onclick="CloseAddParticularModal">
+        <div class="add-particular-modal-card" @onclick:stopPropagation>
+            <div class="add-particular-modal-header">
+                <h3 class="m-0 font-bold fs-5 text-slate-800">Add IO Particular</h3>
+                <button type="button" class="ip-modal-close-btn" @onclick="CloseAddParticularModal" disabled="@isParticularSubmitting" title="Close">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="add-particular-modal-body">
+                <div class="form-group mb-3">
+                    <label class="nt-form-label font-bold mb-1">Particular Name <span class="text-danger">*</span></label>
+                    <input type="text"
+                           class="nt-input-control w-100"
+                           placeholder="e.g. IV Fluids / Urine Output"
+                           @bind="newParticularName"
+                           @bind:event="oninput"
+                           @onkeydown="HandleAddParticularKeyDown"
+                           autofocus />
+                    @if (isParticularSubmitting && string.IsNullOrWhiteSpace(newParticularName))
+                    {
+                        <span class="text-danger fs-8">Particular name is required</span>
+                    }
+                </div>
+
+                <div class="form-group mb-3">
+                    <label class="nt-form-label font-bold mb-1">IO Type <span class="text-danger">*</span></label>
+                    <select class="nt-select-control w-100" @bind="newParticularIoType" @onkeydown="HandleAddParticularKeyDown">
+                        <option value="INPUT">INPUT (Intake: IV Fluids, Oral, etc.)</option>
+                        <option value="OUTPUT">OUTPUT (Output: Urine, Vomit, Drain, etc.)</option>
+                        <option value="BOTH">BOTH (Bi-directional)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="add-particular-modal-footer">
+                <button type="button" class="btn-cancel-modal" @onclick="CloseAddParticularModal" disabled="@isParticularSubmitting">
+                    Cancel
+                </button>
+                <button type="button" class="btn-save-particular" @onclick="SaveNewParticularAsync" disabled="@isParticularSubmitting">
+                    @if (isParticularSubmitting)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-check2-circle me-1"></i>
+                        <span>Save Particular</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ============================================================================= -->
+<!-- QUICK ADD SERVICE NAME MODAL                                                   -->
+<!-- ============================================================================= -->
+@if (showAddServiceModal)
+{
+    <div class="ip-modal-backdrop" @onclick="CloseAddServiceModal">
+        <div class="add-particular-modal-card add-service-modal-card" @onclick:stopPropagation>
+            <div class="add-particular-modal-header">
+                <h3 class="m-0 font-bold fs-5 text-slate-800">Add Service Name</h3>
+                <button type="button" class="ip-modal-close-btn" @onclick="CloseAddServiceModal" disabled="@isServiceSubmitting" title="Close">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="add-particular-modal-body">
+                <div class="form-group mb-3">
+                    <label class="nt-form-label font-bold mb-1">Service Name <span class="text-danger">*</span></label>
+                    <input type="text"
+                           class="nt-input-control w-100"
+                           placeholder="e.g. Wound Dressing / Nebulization / Catheterization"
+                           @bind="newServiceName"
+                           @bind:event="oninput"
+                           @onkeydown="HandleAddServiceKeyDown"
+                           autofocus />
+                    @if (isServiceSubmitting && string.IsNullOrWhiteSpace(newServiceName))
+                    {
+                        <span class="text-danger fs-8">Service name is required</span>
+                    }
+                </div>
+            </div>
+            <div class="add-particular-modal-footer">
+                <button type="button" class="btn-cancel-modal" @onclick="CloseAddServiceModal" disabled="@isServiceSubmitting">
+                    Cancel
+                </button>
+                <button type="button" class="btn-save-particular" @onclick="SaveNewServiceAsync" disabled="@isServiceSubmitting">
+                    @if (isServiceSubmitting)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-check2-circle me-1"></i>
+                        <span>Save Service</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ============================================================================= -->
+<!-- QUICK ADD SCHEDULE TYPE / TASK MODAL                                           -->
+<!-- ============================================================================= -->
+@if (showAddScheduleTypeModal)
+{
+    <div class="ip-modal-backdrop" @onclick="CloseAddScheduleTypeModal">
+        <div class="add-particular-modal-card add-schedule-type-modal-card" @onclick:stopPropagation>
+            <div class="add-particular-modal-header">
+                <h3 class="m-0 font-bold fs-5 text-slate-800">Add Schedule Task</h3>
+                <button type="button" class="ip-modal-close-btn" @onclick="CloseAddScheduleTypeModal" disabled="@isScheduleSubmitting" title="Close">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="add-particular-modal-body">
+                <div class="form-group mb-3">
+                    <label class="nt-form-label font-bold mb-1">Task Name <span class="text-danger">*</span></label>
+                    <input type="text"
+                           class="nt-input-control w-100"
+                           placeholder="e.g. Insulin 10 units / Diabetic lunch / Wound dressing"
+                           @bind="newScheduleTypeName"
+                           @bind:event="oninput"
+                           @onkeydown="HandleAddScheduleTypeKeyDown"
+                           autofocus />
+                    @if (isScheduleSubmitting && string.IsNullOrWhiteSpace(newScheduleTypeName))
+                    {
+                        <span class="text-danger fs-8">Task name is required</span>
+                    }
+                </div>
+            </div>
+            <div class="add-particular-modal-footer">
+                <button type="button" class="btn-cancel-modal" @onclick="CloseAddScheduleTypeModal" disabled="@isScheduleSubmitting">
+                    Cancel
+                </button>
+                <button type="button" class="btn-save-particular" @onclick="SaveNewScheduleTypeAsync" disabled="@isScheduleSubmitting">
+                    @if (isScheduleSubmitting)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-check2-circle me-1"></i>
+                        <span>Save Task</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
 }
 
 <style>
@@ -1824,7 +2452,8 @@
     border-left-color: #818cf8;
 }
 
-.popover-patient-item.active-pat {
+.popover-patient-item.active-pat,
+.popover-patient-item.highlighted-pat {
     background-color: #eef2ff;
     border-left-color: #4f46e5;
 }
@@ -2650,6 +3279,1256 @@
     align-items: center;
     justify-content: center;
 }
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   IP PATIENTS NAV BUTTON & MODAL
+   ───────────────────────────────────────────────────────────────────────────── */
+.btn-ip-patients-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #ffffff;
+    border: 1px solid #c7d2fe;
+    color: #4338ca;
+    font-size: 12.5px;
+    font-weight: 700;
+    padding: 6px 14px;
+    border-radius: 9999px;
+    cursor: pointer;
+    box-shadow: 0 1px 2px rgba(79, 70, 229, 0.06);
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.btn-ip-patients-nav:hover {
+    background: #eef2ff;
+    border-color: #818cf8;
+    color: #3730a3;
+    transform: translateY(-1px);
+    box-shadow: 0 3px 6px rgba(79, 70, 229, 0.12);
+}
+
+.ip-count-badge {
+    background: #4f46e5;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 800;
+    padding: 1px 7px;
+    border-radius: 9999px;
+    line-height: 1.2;
+}
+
+[data-theme="dark"] .btn-ip-patients-nav {
+    background: #1e1b4b;
+    border-color: #4338ca;
+    color: #c7d2fe;
+}
+
+[data-theme="dark"] .btn-ip-patients-nav:hover {
+    background: #312e81;
+    border-color: #6366f1;
+    color: #ffffff;
+}
+
+.banner-right-wrap {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    flex-shrink: 0;
+}
+
+/* Referred Visiting Doctor Header Card (Highlighted to the left of View OP Casesheet) */
+.referred-visiting-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: center;
+    gap: 3px;
+    padding: 6px 14px;
+    background: linear-gradient(135deg, #f0fdf4 0%, #dcfce7 100%);
+    border: 1.5px solid #86efac;
+    border-radius: 8px;
+    box-shadow: 0 2px 4px rgba(22, 163, 74, 0.12);
+}
+
+.referred-badge-tag {
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: #15803d;
+    display: flex;
+    align-items: center;
+}
+
+.referred-doc-name {
+    font-size: 13.5px;
+    font-weight: 800;
+    color: #14532d;
+    display: flex;
+    align-items: center;
+}
+
+[data-theme="dark"] .referred-visiting-card {
+    background: #064e3b;
+    border-color: #059669;
+}
+
+[data-theme="dark"] .referred-badge-tag {
+    color: #a7f3d0;
+}
+
+[data-theme="dark"] .referred-doc-name {
+    color: #ffffff;
+}
+
+/* IP Patients Modal */
+.ip-modal-backdrop {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(15, 23, 42, 0.65);
+    backdrop-filter: blur(4px);
+    z-index: 1200;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+    animation: ipModalFadeIn 0.2s ease-out;
+}
+
+@@keyframes ipModalFadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.ip-patients-modal-container {
+    background: #ffffff;
+    border-radius: 14px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.2), 0 10px 10px -5px rgba(0, 0, 0, 0.08);
+    border: 1px solid #e2e8f0;
+    width: 100%;
+    max-width: 1180px;
+    height: 72vh;
+    min-height: 520px;
+    max-height: 85vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: ipModalSlideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@@keyframes ipModalSlideUp {
+    from { transform: translateY(20px) scale(0.98); opacity: 0; }
+    to { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.ip-modal-header {
+    background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%);
+    border-bottom: 1px solid rgba(79, 70, 229, 0.15);
+    padding: 1rem 1.4rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.ip-modal-header-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.ip-modal-icon {
+    width: 40px;
+    height: 40px;
+    border-radius: 10px;
+    background: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 4px rgba(79, 70, 229, 0.15);
+}
+
+.ip-modal-title {
+    font-size: 1.2rem;
+    font-weight: 800;
+    color: #312e81;
+    margin: 0;
+}
+
+.ip-modal-subtitle {
+    font-size: 11.5px;
+    color: #64748b;
+    margin: 2px 0 0 0;
+}
+
+.ip-modal-close-btn {
+    background: #ffffff;
+    border: 1px solid #c7d2fe;
+    color: #64748b;
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.ip-modal-close-btn:hover {
+    background: #fee2e2;
+    border-color: #fca5a5;
+    color: #ef4444;
+}
+
+.ip-modal-toolbar {
+    padding: 0.65rem 1.4rem;
+    background: #fafbfc;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+}
+
+.ip-modal-toolbar-right {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.ip-modal-search-box {
+    position: relative;
+    width: 210px;
+    max-width: 230px;
+}
+
+.ip-modal-search-icon {
+    position: absolute;
+    left: 10px;
+    top: 50%;
+    transform: translateY(-50%);
+    color: #94a3b8;
+    pointer-events: none;
+    font-size: 11px;
+}
+
+.ip-modal-search-input {
+    width: 100%;
+    padding: 5px 26px 5px 28px;
+    border-radius: 8px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    font-size: 12px;
+    color: #1e293b;
+    outline: none;
+    transition: all 0.2s;
+}
+
+.ip-modal-search-input:focus {
+    border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.12);
+}
+
+.ip-modal-search-clear {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    background: transparent;
+    border: none;
+    color: #94a3b8;
+    cursor: pointer;
+    padding: 0;
+    font-size: 12px;
+}
+
+.ip-modal-filter-pills {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.filter-pill-btn {
+    padding: 5px 12px;
+    border-radius: 9999px;
+    border: 1px solid #cbd5e1;
+    background: #ffffff;
+    color: #64748b;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.filter-pill-btn:hover {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+    color: #334155;
+}
+
+.filter-pill-btn.active {
+    background: #eef2ff;
+    border-color: #818cf8;
+    color: #4338ca;
+    font-weight: 700;
+}
+
+.ip-modal-body {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    background: #ffffff;
+    min-height: 380px;
+}
+
+.ip-modal-table-wrap {
+    width: 100%;
+    overflow-x: auto;
+}
+
+.ip-modal-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+}
+
+.ip-modal-table thead th {
+    background: #f8fafc;
+    color: #475569;
+    font-size: 10.5px;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 10px 14px;
+    border-bottom: 2px solid #e2e8f0;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.ip-modal-tr {
+    border-bottom: 1px solid #f1f5f9;
+    cursor: pointer;
+    transition: background 0.15s ease;
+}
+
+.ip-modal-tr:hover {
+    background-color: #f8fafc;
+}
+
+.ip-modal-tr.row-selected {
+    background-color: #eef2ff !important;
+}
+
+.ip-modal-tr td {
+    padding: 10px 14px;
+    vertical-align: middle;
+}
+
+.ip-modal-pat-avatar {
+    width: 32px;
+    height: 32px;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 800;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.badge-ip-no {
+    display: inline-block;
+    padding: 2px 7px;
+    border-radius: 6px;
+    background: #eef2ff;
+    color: #4338ca;
+    font-weight: 700;
+    font-size: 11px;
+    border: 1px solid #c7d2fe;
+    font-family: monospace;
+}
+
+.visiting-ref-box {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.visiting-yes-pill {
+    display: inline-flex;
+    align-items: center;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+    color: #059669;
+    background: #ecfdf5;
+    border: 1px solid #a7f3d0;
+    padding: 1px 6px;
+    border-radius: 4px;
+    width: fit-content;
+}
+
+.visiting-doc-title {
+    font-size: 11.5px;
+    font-weight: 700;
+    color: #1e293b;
+    display: flex;
+    align-items: center;
+}
+
+.visiting-none-pill {
+    color: #94a3b8;
+    font-weight: 600;
+    font-size: 12px;
+}
+
+.btn-select-patient {
+    background: #ffffff;
+    border: 1px solid #c7d2fe;
+    color: #4338ca;
+    font-weight: 700;
+    font-size: 11px;
+    padding: 4px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-select-patient:hover {
+    background: #4f46e5;
+    color: #ffffff;
+    border-color: #4f46e5;
+}
+
+.btn-select-patient.btn-active-selected {
+    background: #10b981;
+    color: #ffffff;
+    border-color: #10b981;
+}
+
+.ip-modal-footer {
+    padding: 0.85rem 1.4rem;
+    background: #fafbfc;
+    border-top: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.ip-modal-footer-info {
+    font-size: 12px;
+    color: #64748b;
+    display: flex;
+    align-items: center;
+}
+
+.btn-modal-close {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    color: #475569;
+    font-weight: 600;
+    font-size: 12px;
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-modal-close:hover {
+    background: #f1f5f9;
+    color: #1e293b;
+}
+
+.ip-modal-loading, .ip-modal-empty {
+    padding: 4rem 1rem;
+    text-align: center;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: 280px;
+}
+
+/* Dark mode adjustments for IP Patients modal */
+[data-theme="dark"] .ip-patients-modal-container {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+[data-theme="dark"] .ip-modal-header {
+    background: #0f172a;
+    border-bottom-color: #334155;
+}
+
+[data-theme="dark"] .ip-modal-icon {
+    background: #1e293b;
+}
+
+[data-theme="dark"] .ip-modal-title {
+    color: #f1f5f9;
+}
+
+[data-theme="dark"] .ip-modal-subtitle {
+    color: #94a3b8;
+}
+
+[data-theme="dark"] .ip-modal-close-btn {
+    background: #334155;
+    border-color: #475569;
+    color: #cbd5e1;
+}
+
+[data-theme="dark"] .ip-modal-close-btn:hover {
+    background: #7f1d1d;
+    border-color: #b91c1c;
+    color: #fca5a5;
+}
+
+[data-theme="dark"] .ip-modal-toolbar {
+    background: #0f172a;
+    border-bottom-color: #334155;
+}
+
+[data-theme="dark"] .ip-modal-search-input {
+    background: #1e293b;
+    border-color: #475569;
+    color: #f1f5f9;
+}
+
+[data-theme="dark"] .filter-pill-btn {
+    background: #1e293b;
+    border-color: #475569;
+    color: #cbd5e1;
+}
+
+[data-theme="dark"] .filter-pill-btn.active {
+    background: #312e81;
+    border-color: #6366f1;
+    color: #c7d2fe;
+}
+
+[data-theme="dark"] .ip-modal-body {
+    background: #1e293b;
+}
+
+[data-theme="dark"] .ip-modal-table thead th {
+    background: #0f172a;
+    color: #94a3b8;
+    border-bottom-color: #334155;
+}
+
+[data-theme="dark"] .ip-modal-tr {
+    border-bottom-color: #334155;
+}
+
+[data-theme="dark"] .ip-modal-tr:hover {
+    background-color: #334155;
+}
+
+[data-theme="dark"] .ip-modal-tr.row-selected {
+    background-color: #1e1b4b !important;
+}
+
+[data-theme="dark"] .badge-ip-no {
+    background: #312e81;
+    color: #c7d2fe;
+    border-color: #4338ca;
+}
+
+[data-theme="dark"] .visiting-yes-pill {
+    background: #064e3b;
+    color: #a7f3d0;
+    border-color: #059669;
+}
+
+[data-theme="dark"] .visiting-doc-title {
+    color: #f1f5f9;
+}
+
+[data-theme="dark"] .btn-select-patient {
+    background: #334155;
+    border-color: #475569;
+    color: #c7d2fe;
+}
+
+[data-theme="dark"] .btn-select-patient:hover {
+    background: #6366f1;
+    color: #ffffff;
+}
+
+[data-theme="dark"] .ip-modal-footer {
+    background: #0f172a;
+    border-top-color: #334155;
+}
+
+[data-theme="dark"] .btn-modal-close {
+    background: #334155;
+    border-color: #475569;
+    color: #cbd5e1;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   ENHANCED PARTICULARS DROPDOWN & HIGHLIGHTED RIGHT-EDGE + BUTTON
+   ───────────────────────────────────────────────────────────────────────────── */
+.custom-dropdown-wrap {
+    position: relative;
+    width: 100%;
+}
+
+.btn-input-edge-add {
+    position: absolute;
+    right: 5px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 22px;
+    height: 22px;
+    border-radius: 6px;
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    border: none;
+    color: #ffffff;
+    font-size: 11px;
+    font-weight: 800;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(79, 70, 229, 0.35);
+    transition: all 0.15s ease;
+    z-index: 5;
+    padding: 0;
+}
+
+.btn-input-edge-add:hover {
+    background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
+    transform: translateY(-50%) scale(1.1);
+    box-shadow: 0 2px 6px rgba(79, 70, 229, 0.5);
+}
+
+[data-theme="dark"] .btn-input-edge-add {
+    background: linear-gradient(135deg, #6366f1 0%, #4f46e5 100%);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
+}
+
+.custom-particulars-dropdown {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    width: 100%;
+    min-width: 260px;
+    max-height: 240px;
+    overflow-y: auto;
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    border-radius: 8px;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    z-index: 1050;
+    padding: 4px;
+}
+
+.particular-dropdown-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: #1e293b;
+    transition: background 0.15s ease;
+}
+
+.particular-dropdown-item:hover,
+.particular-dropdown-item.highlighted {
+    background: #eef2ff;
+    color: #3730a3;
+}
+
+.particular-item-name {
+    flex: 1;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-right: 8px;
+}
+
+.particular-type-tag {
+    font-size: 9px;
+    font-weight: 800;
+    text-transform: uppercase;
+    padding: 1px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.4px;
+}
+
+.particular-type-tag.type-input {
+    background: #eff6ff;
+    color: #2563eb;
+    border: 1px solid #bfdbfe;
+}
+
+.particular-type-tag.type-output {
+    background: #fff7ed;
+    color: #ea580c;
+    border: 1px solid #fed7aa;
+}
+
+.particular-type-tag.type-both {
+    background: #f5f3ff;
+    color: #7c3aed;
+    border: 1px solid #ddd6fe;
+}
+
+.particular-no-results {
+    padding: 10px;
+    font-size: 12px;
+    color: #475569;
+    text-align: center;
+    cursor: pointer;
+    border-radius: 6px;
+    transition: background 0.15s ease;
+}
+
+.particular-no-results:hover {
+    background: #eef2ff;
+    color: #4f46e5;
+}
+
+/* Quick Add IO Particular Modal */
+.add-particular-modal-card {
+    background: #ffffff;
+    border-radius: 12px;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.25), 0 10px 10px -5px rgba(0, 0, 0, 0.1);
+    border: 1px solid #e2e8f0;
+    width: 100%;
+    max-width: 480px;
+    overflow: hidden;
+    animation: ipModalSlideUp 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.add-particular-modal-header {
+    background: #ffffff;
+    border-bottom: 1px solid #e2e8f0;
+    padding: 1rem 1.25rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.add-particular-modal-body {
+    padding: 1.25rem;
+}
+
+.add-particular-modal-footer {
+    padding: 0.85rem 1.25rem;
+    background: #fafbfc;
+    border-top: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.btn-cancel-modal {
+    background: #ffffff;
+    border: 1px solid #cbd5e1;
+    color: #475569;
+    font-weight: 600;
+    font-size: 12.5px;
+    padding: 6px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.btn-cancel-modal:hover {
+    background: #f1f5f9;
+    color: #1e293b;
+}
+
+.btn-save-particular {
+    background: #4f46e5;
+    border: 1px solid #4f46e5;
+    color: #ffffff;
+    font-weight: 700;
+    font-size: 12.5px;
+    padding: 6px 18px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    box-shadow: 0 1px 3px rgba(79, 70, 229, 0.3);
+    transition: all 0.15s;
+}
+
+.btn-save-particular:hover {
+    background: #4338ca;
+    border-color: #4338ca;
+}
+
+/* Dark mode adjustments */
+[data-theme="dark"] .btn-mini-add-master {
+    background: #312e81;
+    border-color: #4338ca;
+    color: #c7d2fe;
+}
+
+[data-theme="dark"] .btn-mini-add-master:hover {
+    background: #6366f1;
+    color: #ffffff;
+}
+
+[data-theme="dark"] .custom-particulars-dropdown {
+    background: #1e293b;
+    border-color: #334155;
+    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+}
+
+[data-theme="dark"] .particular-dropdown-item {
+    color: #f1f5f9;
+}
+
+[data-theme="dark"] .particular-dropdown-item:hover,
+[data-theme="dark"] .particular-dropdown-item.highlighted {
+    background: #312e81;
+    color: #ffffff;
+}
+
+[data-theme="dark"] .particular-no-results {
+    color: #94a3b8;
+}
+
+[data-theme="dark"] .particular-no-results:hover {
+    background: #312e81;
+    color: #c7d2fe;
+}
+
+[data-theme="dark"] .add-particular-modal-card {
+    background: #1e293b;
+    border-color: #334155;
+}
+
+[data-theme="dark"] .add-particular-modal-header {
+    background: #1e293b;
+    border-bottom-color: #334155;
+}
+
+[data-theme="dark"] .add-particular-modal-footer {
+    background: #0f172a;
+    border-top-color: #334155;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   SCHEDULE ALERT POPUP (COMPACT PREMIUM FLOATING CARD)
+   ───────────────────────────────────────────────────────────────────────────── */
+.schedule-alerts-fixed-container {
+    position: fixed;
+    bottom: 18px;
+    right: 18px;
+    z-index: 10005;
+    display: flex;
+    flex-direction: column-reverse;
+    gap: 8px;
+    max-width: 310px;
+    width: calc(100vw - 36px);
+    pointer-events: auto;
+}
+
+.schedule-alert-popup-card {
+    background: rgba(255, 255, 255, 0.98);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border-radius: 12px;
+    border: 1px solid rgba(244, 63, 94, 0.28);
+    box-shadow: 0 12px 28px -6px rgba(15, 23, 42, 0.16),
+                0 0 0 1px rgba(244, 63, 94, 0.12),
+                0 4px 10px -2px rgba(244, 63, 94, 0.12);
+    overflow: hidden;
+    animation: scheduleAlertPop 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    transition: all 0.2s ease;
+}
+
+.schedule-alert-top-bar {
+    height: 3px;
+    background: linear-gradient(90deg, #f43f5e 0%, #fb7185 50%, #e11d48 100%);
+    width: 100%;
+}
+
+@@keyframes scheduleAlertPop {
+    0% {
+        opacity: 0;
+        transform: translateY(16px) scale(0.95);
+    }
+    100% {
+        opacity: 1;
+        transform: translateY(0) scale(1);
+    }
+}
+
+.schedule-alert-header {
+    background: linear-gradient(135deg, #fff5f5 0%, #ffe4e6 100%);
+    padding: 6px 10px;
+    border-bottom: 1px solid #fed7aa;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.beacon-wrap {
+    position: relative;
+    width: 14px;
+    height: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.beacon-core {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: #e11d48;
+    z-index: 2;
+    box-shadow: 0 0 6px rgba(225, 29, 72, 0.8);
+}
+
+.beacon-radar {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: rgba(225, 29, 72, 0.4);
+    animation: beaconRadarWave 1.4s infinite ease-out;
+}
+
+@@keyframes beaconRadarWave {
+    0% {
+        transform: scale(0.6);
+        opacity: 1;
+    }
+    100% {
+        transform: scale(2.2);
+        opacity: 0;
+    }
+}
+
+.schedule-alert-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.schedule-alert-main-title {
+    font-size: 0.7rem;
+    font-weight: 800;
+    color: #9f1239;
+    letter-spacing: 0.3px;
+    text-transform: uppercase;
+}
+
+.schedule-alert-countdown-badge {
+    background: linear-gradient(135deg, #e11d48 0%, #be123c 100%);
+    color: #ffffff;
+    font-size: 0.58rem;
+    font-weight: 800;
+    padding: 1px 6px;
+    border-radius: 9999px;
+    letter-spacing: 0.3px;
+    box-shadow: 0 2px 6px rgba(225, 29, 72, 0.35);
+    animation: badgePulse 1.2s infinite ease-in-out;
+}
+
+@@keyframes badgePulse {
+    0%, 100% {
+        transform: scale(1);
+    }
+    50% {
+        transform: scale(1.05);
+    }
+}
+
+.schedule-alert-close-btn {
+    background: rgba(225, 29, 72, 0.08);
+    border: none;
+    color: #9f1239;
+    font-size: 0.72rem;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.schedule-alert-close-btn:hover {
+    background: #e11d48;
+    color: #ffffff;
+    transform: rotate(90deg);
+}
+
+.schedule-alert-body {
+    padding: 7px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.schedule-alert-patient-strip {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 4px 7px;
+    background: #f8fafc;
+    border-radius: 8px;
+    border: 1px solid #e2e8f0;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.schedule-alert-patient-strip:hover {
+    background: #f1f5f9;
+    border-color: #cbd5e1;
+}
+
+.patient-avatar-mini {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #4f46e5 0%, #3730a3 100%);
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.62rem;
+    font-weight: 800;
+    flex-shrink: 0;
+}
+
+.schedule-alert-patient-name {
+    font-size: 0.76rem;
+    font-weight: 800;
+    color: #0f172a;
+    line-height: 1.1;
+}
+
+.badge-patient-ip {
+    background: #e0e7ff;
+    color: #3730a3;
+    font-size: 0.58rem;
+    font-weight: 700;
+    padding: 0px 4px;
+    border-radius: 3px;
+}
+
+.schedule-alert-patient-sub {
+    font-size: 0.65rem;
+    color: #64748b;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    margin-top: 1px;
+}
+
+.schedule-alert-task-box {
+    background: #fff5f5;
+    border-radius: 8px;
+    padding: 6px 8px;
+    border: 1px solid #fecdd3;
+}
+
+.schedule-type-badge {
+    font-size: 0.58rem;
+    font-weight: 800;
+    padding: 1px 5px;
+    border-radius: 4px;
+    text-transform: uppercase;
+    background: #e11d48;
+    color: #ffffff;
+    letter-spacing: 0.2px;
+}
+
+.schedule-type-badge.type-medicine { background: #4f46e5; }
+.schedule-type-badge.type-diet { background: #059669; }
+.schedule-type-badge.type-procedure { background: #d97706; }
+
+.schedule-time-text {
+    font-size: 0.68rem;
+    font-weight: 700;
+    color: #9f1239;
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.schedule-shift-tag {
+    background: #ffe4e6;
+    color: #be123c;
+    font-size: 0.55rem;
+    font-weight: 700;
+    padding: 0px 3px;
+    border-radius: 3px;
+    text-transform: uppercase;
+}
+
+.schedule-task-name-text {
+    font-size: 0.82rem;
+    font-weight: 800;
+    color: #881337;
+    margin: 3px 0 4px;
+    line-height: 1.2;
+}
+
+.schedule-instructions-box {
+    background: #ffffff;
+    border-radius: 6px;
+    padding: 4px 6px;
+    border: 1px solid #fed7aa;
+    border-left: 2.5px solid #f43f5e;
+    font-size: 0.68rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.instructions-header {
+    font-weight: 800;
+    color: #9f1239;
+    font-size: 0.6rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    display: flex;
+    align-items: center;
+}
+
+.instructions-content {
+    color: #334155;
+    font-weight: 600;
+    line-height: 1.2;
+}
+
+.schedule-alert-footer {
+    padding: 5px 10px 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: rgba(255, 255, 255, 0.85);
+    border-top: 1px solid #f1f5f9;
+}
+
+.btn-schedule-alert-view {
+    flex: 1;
+    background: #f8fafc;
+    color: #334155;
+    border: 1px solid #cbd5e1;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+
+.btn-schedule-alert-view:hover {
+    background: #f1f5f9;
+    color: #0f172a;
+    border-color: #94a3b8;
+}
+
+.btn-schedule-alert-complete {
+    flex: 1.2;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: #ffffff;
+    border: 1px solid #059669;
+    border-radius: 6px;
+    padding: 4px 8px;
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 2px 6px rgba(16, 185, 129, 0.25);
+    transition: all 0.15s ease;
+}
+
+.btn-schedule-alert-complete:hover {
+    background: linear-gradient(135deg, #059669 0%, #047857 100%);
+    box-shadow: 0 4px 10px rgba(16, 185, 129, 0.35);
+}
+
+/* Dark mode overrides for schedule alert */
+[data-theme="dark"] .schedule-alert-popup-card {
+    background: rgba(30, 27, 75, 0.95);
+    border-color: #831843;
+    box-shadow: 0 24px 48px -10px rgba(0, 0, 0, 0.7), 0 0 0 1px #9f1239;
+}
+
+[data-theme="dark"] .schedule-alert-header {
+    background: #311327;
+    border-bottom-color: #831843;
+}
+
+[data-theme="dark"] .schedule-alert-main-title {
+    color: #fda4af;
+}
+
+[data-theme="dark"] .schedule-alert-patient-strip {
+    background: #0f172a;
+    border-color: #334155;
+}
+
+[data-theme="dark"] .schedule-alert-patient-name {
+    color: #f8fafc;
+}
+
+[data-theme="dark"] .schedule-alert-task-box {
+    background: #37142b;
+    border-color: #701a45;
+}
+
+[data-theme="dark"] .schedule-task-name-text {
+    color: #fbcfe8;
+}
+
+[data-theme="dark"] .schedule-instructions-box {
+    background: #1e1122;
+    border-color: #501334;
+}
+
+[data-theme="dark"] .instructions-content {
+    color: #e2e8f0;
+}
+
+[data-theme="dark"] .schedule-alert-footer {
+    background: #1e1b4b;
+    border-top-color: #334155;
+}
+
+[data-theme="dark"] .btn-schedule-alert-view {
+    background: #334155;
+    color: #cbd5e1;
+    border-color: #475569;
+}
+
+[data-theme="dark"] .btn-cancel-modal {
+    background: #334155;
+    border-color: #475569;
+    color: #cbd5e1;
+}
 </style>
 
 @code {
@@ -2672,14 +4551,80 @@
     private bool isSubmitting = false;
     private bool isPatientDropdownOpen = false;
     private bool showCaseSheetModal = false;
+    private bool showIpPatientsModal = false;
     private string patientSearchText = "";
+    private string ipModalSearchText = "";
+    private string ipModalReferralFilter = "ALL";
 
     // Data models
     private List<IPRegistrationModel.IpRegistrationModel> admittedPatients = new();
     private IPRegistrationModel.IpRegistrationModel? selectedPatient;
     private List<DoctorMasterModel> doctorsList = new();
+    private List<Booking.Models.DoctorSpecialtyMasterModel> doctorSpecialtiesList = new();
+    private Dictionary<int, string> doctorSpecialtiesMap = new();
     private List<WardMasterModel> wardsList = new();
     private List<BedMasterModel> bedsList = new();
+    private List<SharedComponents.Rcl.Models.CustomerModel> customersList = new();
+    private List<IoParticularsMasterModel> ioParticularsMasterList = new();
+    private List<ServiceNameMasterModel> serviceNamesMasterList = new();
+    private List<ScheduleTypeMasterModel> scheduleTypesMasterList = new();
+    private List<item_master> inventoryItemsList = new();
+    private Dictionary<Guid, (bool IsReferred, string DoctorName)> ipVisitingDoctorMap = new();
+    private CaseSheetViewModel? currentPatientCaseSheet;
+
+    private bool isParticularsDropdownOpen = false;
+    private int highlightedParticularIndex = -1;
+    private int highlightedPatientIndex = 0;
+    private bool showAddParticularModal = false;
+    private bool isParticularSubmitting = false;
+    private string newParticularName = "";
+    private string newParticularIoType = "INPUT";
+
+    private bool isServiceDropdownOpen = false;
+    private int highlightedServiceIndex = -1;
+    private bool showAddServiceModal = false;
+    private bool isServiceSubmitting = false;
+    private string newServiceName = "";
+
+    private bool isMedicineDropdownOpen = false;
+    private int highlightedMedicineIndex = -1;
+
+    private bool isVisitingDoctorDropdownOpen = false;
+    private int highlightedVisitingDocIndex = -1;
+
+    private bool isScheduleDropdownOpen = false;
+    private int highlightedScheduleIndex = -1;
+    private bool showAddScheduleTypeModal = false;
+    private bool isScheduleSubmitting = false;
+    private string newScheduleTypeName = "";
+
+    // Upcoming Schedule Alert State
+    public class UpcomingScheduleAlertItem
+    {
+        public NurseScheduleModel Schedule { get; set; } = new();
+        public IPRegistrationModel.IpRegistrationModel? Patient { get; set; }
+        public string PatientName { get; set; } = string.Empty;
+        public string IpNo { get; set; } = string.Empty;
+        public string WardBed { get; set; } = string.Empty;
+        public Guid IpId { get; set; }
+        public DateTime ScheduledDateTime { get; set; }
+        public double MinutesRemaining { get; set; }
+    }
+
+    private List<UpcomingScheduleAlertItem> activeScheduleAlerts = new();
+    private HashSet<Guid> dismissedScheduleAlertIds = new();
+    private Dictionary<Guid, List<NurseScheduleModel>> allPatientsSchedulesMap = new();
+    private DateTime lastAllSchedulesFetchTime = DateTime.MinValue;
+    private System.Threading.Timer? scheduleAlertTimer;
+
+    private bool isReferredToVisitingDoctor =>
+        (currentPatientCaseSheet?.referred_to_visiting_doctor == true) ||
+        (selectedPatient != null && ipVisitingDoctorMap.TryGetValue(selectedPatient.ip_id, out var info) && info.IsReferred);
+
+    private string visitingDoctorDisplayName =>
+        !string.IsNullOrWhiteSpace(currentPatientCaseSheet?.visiting_doctor_name)
+            ? currentPatientCaseSheet.visiting_doctor_name
+            : (selectedPatient != null && ipVisitingDoctorMap.TryGetValue(selectedPatient.ip_id, out var info) ? info.DoctorName : "");
 
     // Bedside chart collections
     private List<NurseTemperatureModel> temperatureList = new();
@@ -2803,7 +4748,10 @@
         {
             await LoadSessionData();
             await LoadReferenceDataAsync();
+            await LoadCustomersAsync();
             await LoadAdmissionsAsync();
+            _ = LoadAllIpVisitingDoctorStatusAsync();
+            StartScheduleAlertMonitoring();
             try
             {
                 await JSRuntime.InvokeVoidAsync("initNurseNotesNavigation");
@@ -2919,7 +4867,12 @@
             var t1 = DoctorService.GetDoctorsAsync();
             var t2 = WardMasterService.GetWardMastersAsync();
             var t3 = BedMasterService.GetBedMastersAsync();
-            await Task.WhenAll(t1, t2, t3);
+            var t4 = LoadIoParticularsMasterAsync();
+            var t5 = LoadServiceNamesMasterAsync();
+            var t6 = LoadInventoryItemsAsync();
+            var t7 = LoadDoctorSpecialtiesAsync();
+            var t8 = LoadScheduleTypesMasterAsync();
+            await Task.WhenAll(t1, t2, t3, t4, t5, t6, t7, t8);
 
             doctorsList = t1.Result ?? new();
             wardsList = t2.Result ?? new();
@@ -2986,7 +4939,9 @@
             UpdateUrlState();
         }
 
-        await LoadBedsideChartDataAsync();
+        var tChart = LoadBedsideChartDataAsync();
+        var tCaseSheet = LoadSelectedPatientCaseSheetAsync();
+        await Task.WhenAll(tChart, tCaseSheet);
     }
 
     private async Task SelectPatientFromDropdown(IPRegistrationModel.IpRegistrationModel pat)
@@ -3016,6 +4971,26 @@
         if (isPatientDropdownOpen)
         {
             isPatientDropdownOpen = false;
+        }
+        if (isParticularsDropdownOpen)
+        {
+            isParticularsDropdownOpen = false;
+        }
+        if (isServiceDropdownOpen)
+        {
+            isServiceDropdownOpen = false;
+        }
+        if (isMedicineDropdownOpen)
+        {
+            isMedicineDropdownOpen = false;
+        }
+        if (isVisitingDoctorDropdownOpen)
+        {
+            isVisitingDoctorDropdownOpen = false;
+        }
+        if (isScheduleDropdownOpen)
+        {
+            isScheduleDropdownOpen = false;
         }
     }
 
@@ -3051,6 +5026,7 @@
                 otherList = summary.other ?? new();
                 visitingDoctorList = summary.visiting_doctor ?? new();
                 scheduleList = summary.schedule ?? new();
+                EvaluateUpcomingSchedules();
             }
             else
             {
@@ -3072,6 +5048,7 @@
                 otherList = t6.Result ?? new();
                 visitingDoctorList = t7.Result ?? new();
                 scheduleList = t8.Result ?? new();
+                EvaluateUpcomingSchedules();
             }
         }
         catch (Exception ex)
@@ -3869,6 +5846,7 @@
                     ToastService.ShowSuccess("Schedule item updated.");
                     CancelEditSchedule();
                     scheduleList = await NurseNotesService.GetSchedulesAsync(selectedPatient.ip_id, DefaultTenant, currentUserCode);
+                    EvaluateUpcomingSchedules();
                 }
                 else ToastService.ShowError(msg);
             }
@@ -3898,6 +5876,7 @@
                     scheduleDate = DateTime.Today;
                     scheduleTime = new TimeOnly(8, 0, 0);
                     scheduleList = await NurseNotesService.GetSchedulesAsync(selectedPatient.ip_id, DefaultTenant, currentUserCode);
+                    EvaluateUpcomingSchedules();
                     try { await JSRuntime.InvokeVoidAsync("focusNurseTabPrimaryField"); } catch { }
                 }
                 else ToastService.ShowError(msg);
@@ -3935,6 +5914,7 @@
             {
                 ToastService.ShowSuccess($"Schedule marked as COMPLETED: {s.item_name}");
                 scheduleList = await NurseNotesService.GetSchedulesAsync(selectedPatient.ip_id, DefaultTenant, currentUserCode);
+                EvaluateUpcomingSchedules();
             }
             else ToastService.ShowError(msg);
         }
@@ -4000,9 +5980,979 @@
         return doc != null && !string.IsNullOrWhiteSpace(doc.name) ? doc.name : "Dr. Physician";
     }
 
+    private int GetReferredCount()
+    {
+        return admittedPatients.Count(p => GetPatientVisitingDoctorInfo(p).IsReferred);
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            using var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(DefaultTenant))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", DefaultTenant);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            string endpoint = "api/customer/getcus";
+            var response = await client.GetAsync(endpoint);
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                customersList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadCustomersAsync error: {ex.Message}");
+        }
+    }
+
+    private async Task LoadSelectedPatientCaseSheetAsync()
+    {
+        if (selectedPatient == null) return;
+        try
+        {
+            var cs = await CaseSheetService.GetCaseSheetByVisitAsync(selectedPatient.op_id, selectedPatient.ip_id);
+            currentPatientCaseSheet = cs;
+            if (cs != null && cs.referred_to_visiting_doctor)
+            {
+                ipVisitingDoctorMap[selectedPatient.ip_id] = (true, cs.visiting_doctor_name ?? "");
+            }
+            else
+            {
+                ipVisitingDoctorMap[selectedPatient.ip_id] = (false, "");
+            }
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadSelectedPatientCaseSheetAsync error: {ex.Message}");
+        }
+    }
+
+    private async Task LoadAllIpVisitingDoctorStatusAsync()
+    {
+        if (!admittedPatients.Any()) return;
+        try
+        {
+            var tasks = admittedPatients.Select(async p =>
+            {
+                try
+                {
+                    var cs = await CaseSheetService.GetCaseSheetByVisitAsync(p.op_id, p.ip_id);
+                    if (cs != null && cs.referred_to_visiting_doctor)
+                    {
+                        ipVisitingDoctorMap[p.ip_id] = (true, cs.visiting_doctor_name ?? "");
+                    }
+                    else
+                    {
+                        ipVisitingDoctorMap[p.ip_id] = (false, "");
+                    }
+                }
+                catch
+                {
+                    if (!ipVisitingDoctorMap.ContainsKey(p.ip_id))
+                    {
+                        ipVisitingDoctorMap[p.ip_id] = (false, "");
+                    }
+                }
+            });
+            await Task.WhenAll(tasks);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadAllIpVisitingDoctorStatusAsync error: {ex.Message}");
+        }
+    }
+
+    private async Task HandleCaseSheetVisibilityChanged(bool isVisible)
+    {
+        showCaseSheetModal = isVisible;
+        if (!isVisible && selectedPatient != null)
+        {
+            await LoadSelectedPatientCaseSheetAsync();
+        }
+    }
+
+    private async Task OpenIpPatientsModal()
+    {
+        showIpPatientsModal = true;
+        ipModalSearchText = "";
+        ipModalReferralFilter = "ALL";
+        await LoadAllIpVisitingDoctorStatusAsync();
+        StateHasChanged();
+    }
+
+    private void CloseIpPatientsModal()
+    {
+        showIpPatientsModal = false;
+    }
+
+    private async Task SelectPatientFromModal(IPRegistrationModel.IpRegistrationModel pat)
+    {
+        showIpPatientsModal = false;
+        await SelectPatient(pat, updateUrl: true);
+    }
+
+    private (bool IsReferred, string DoctorName) GetPatientVisitingDoctorInfo(IPRegistrationModel.IpRegistrationModel pat)
+    {
+        if (pat == null) return (false, "");
+        if (ipVisitingDoctorMap.TryGetValue(pat.ip_id, out var info))
+        {
+            return info;
+        }
+        return (false, "");
+    }
+
+    private string GetPatientPhone(IPRegistrationModel.IpRegistrationModel pat)
+    {
+        if (pat == null) return "—";
+        if (!string.IsNullOrWhiteSpace(pat.mobile)) return pat.mobile;
+        var cust = customersList.FirstOrDefault(c => c.custid == pat.custid);
+        return cust?.mobile ?? "—";
+    }
+
     private string GetPatientAgeGender()
     {
+        if (selectedPatient == null) return "45 Y / Male";
+        return GetPatientAgeGenderFor(selectedPatient);
+    }
+
+    private string GetPatientAgeGenderFor(IPRegistrationModel.IpRegistrationModel pat)
+    {
+        if (pat == null) return "45 Y / Male";
+        var cust = customersList.FirstOrDefault(c => c.custid == pat.custid);
+        if (cust != null)
+        {
+            string ageStr = cust.ageyears > 0 ? $"{cust.ageyears} Y" : "";
+            string genderStr = !string.IsNullOrWhiteSpace(cust.gender) ? cust.gender : "";
+            if (!string.IsNullOrEmpty(ageStr) && !string.IsNullOrEmpty(genderStr))
+                return $"{ageStr} / {genderStr}";
+            if (!string.IsNullOrEmpty(ageStr)) return ageStr;
+            if (!string.IsNullOrEmpty(genderStr)) return genderStr;
+        }
         return "45 Y / Male";
+    }
+
+    private IEnumerable<IPRegistrationModel.IpRegistrationModel> GetFilteredModalPatients()
+    {
+        var list = (IEnumerable<IPRegistrationModel.IpRegistrationModel>)admittedPatients;
+
+        if (ipModalReferralFilter == "REFERRED")
+        {
+            list = list.Where(p => GetPatientVisitingDoctorInfo(p).IsReferred);
+        }
+
+        if (!string.IsNullOrWhiteSpace(ipModalSearchText))
+        {
+            var q = ipModalSearchText.Trim().ToLower();
+            list = list.Where(p =>
+                (!string.IsNullOrWhiteSpace(p.patient_name) && p.patient_name.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(p.ip_no) && p.ip_no.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(p.mobile) && p.mobile.Contains(q)) ||
+                (customersList.FirstOrDefault(c => c.custid == p.custid)?.mobile?.Contains(q) ?? false) ||
+                GetWardBedText(p.wrdcode, p.bedcode).ToLower().Contains(q) ||
+                GetDoctorName(p.dcode).ToLower().Contains(q) ||
+                GetPatientVisitingDoctorInfo(p).DoctorName.ToLower().Contains(q)
+            );
+        }
+
+        return list;
+    }
+
+    private async Task LoadIoParticularsMasterAsync()
+    {
+        try
+        {
+            var items = await NotesMasterService.GetIoParticularsAsync(activeOnly: true);
+            ioParticularsMasterList = items ?? new();
+            if (!ioParticularsMasterList.Any())
+            {
+                // Default fallback seed if master table is fresh
+                ioParticularsMasterList = new List<IoParticularsMasterModel>
+                {
+                    new() { particular_id = 1, particular_name = "IV Fluid (NS / RL / DNS)", io_type = "INPUT", is_active = true },
+                    new() { particular_id = 2, particular_name = "Oral Fluid / Water", io_type = "INPUT", is_active = true },
+                    new() { particular_id = 3, particular_name = "Ryle's Tube Feed", io_type = "INPUT", is_active = true },
+                    new() { particular_id = 4, particular_name = "Blood / Plasma Transfusion", io_type = "INPUT", is_active = true },
+                    new() { particular_id = 5, particular_name = "Urine", io_type = "OUTPUT", is_active = true },
+                    new() { particular_id = 6, particular_name = "Vomit", io_type = "OUTPUT", is_active = true },
+                    new() { particular_id = 7, particular_name = "Surgical Drain", io_type = "OUTPUT", is_active = true },
+                    new() { particular_id = 8, particular_name = "Stool", io_type = "OUTPUT", is_active = true },
+                    new() { particular_id = 9, particular_name = "Gastric Aspiration", io_type = "OUTPUT", is_active = true }
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadIoParticularsMasterAsync error: {ex.Message}");
+        }
+    }
+
+    private void OnParticularsInput(ChangeEventArgs e)
+    {
+        ioParticulars = e.Value?.ToString() ?? "";
+        isParticularsDropdownOpen = true;
+        highlightedParticularIndex = 0;
+    }
+
+    private void OnParticularsFocus()
+    {
+        isParticularsDropdownOpen = true;
+        highlightedParticularIndex = 0;
+    }
+
+    private async Task OnParticularsKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            var count = GetFilteredParticulars().Count();
+            if (count > 0)
+            {
+                highlightedParticularIndex = (highlightedParticularIndex + 1) % count;
+            }
+            isParticularsDropdownOpen = true;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            var count = GetFilteredParticulars().Count();
+            if (count > 0)
+            {
+                highlightedParticularIndex = (highlightedParticularIndex - 1 + count) % count;
+            }
+            isParticularsDropdownOpen = true;
+        }
+        else if (e.Key == "Enter")
+        {
+            if (isParticularsDropdownOpen)
+            {
+                var items = GetFilteredParticulars().ToList();
+                if (items.Any())
+                {
+                    var idx = (highlightedParticularIndex >= 0 && highlightedParticularIndex < items.Count) ? highlightedParticularIndex : 0;
+                    SelectParticular(items[idx].particular_name);
+                    try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromParticulars"); } catch { }
+                }
+                else if (!string.IsNullOrWhiteSpace(ioParticulars))
+                {
+                    OpenAddParticularModal();
+                }
+            }
+            else
+            {
+                try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromParticulars"); } catch { }
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isParticularsDropdownOpen = false;
+        }
+    }
+
+    private async Task HandlePatientSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            var list = GetFilteredPatients().ToList();
+            if (list.Any())
+            {
+                highlightedPatientIndex = (highlightedPatientIndex + 1) % list.Count;
+            }
+            isPatientDropdownOpen = true;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            var list = GetFilteredPatients().ToList();
+            if (list.Any())
+            {
+                highlightedPatientIndex = (highlightedPatientIndex - 1 + list.Count) % list.Count;
+            }
+            isPatientDropdownOpen = true;
+        }
+        else if (e.Key == "Enter")
+        {
+            var list = GetFilteredPatients().ToList();
+            if (list.Any())
+            {
+                var idx = (highlightedPatientIndex >= 0 && highlightedPatientIndex < list.Count) ? highlightedPatientIndex : 0;
+                await SelectPatientFromDropdown(list[idx]);
+                isPatientDropdownOpen = false;
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isPatientDropdownOpen = false;
+        }
+    }
+
+    private void SelectParticular(string name)
+    {
+        ioParticulars = name;
+        isParticularsDropdownOpen = false;
+        StateHasChanged();
+    }
+
+    private IEnumerable<IoParticularsMasterModel> GetFilteredParticulars()
+    {
+        var list = ioParticularsMasterList.Where(p => p.is_active);
+
+        // Filter by matching ioType (INPUT / OUTPUT / BOTH) if applicable
+        if (!string.IsNullOrWhiteSpace(ioType))
+        {
+            var typeMatches = list.Where(p => string.Equals(p.io_type, ioType, StringComparison.OrdinalIgnoreCase) || string.Equals(p.io_type, "BOTH", StringComparison.OrdinalIgnoreCase));
+            if (typeMatches.Any())
+            {
+                list = typeMatches;
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(ioParticulars))
+        {
+            var q = ioParticulars.Trim().ToLower();
+            list = list.Where(p => !string.IsNullOrWhiteSpace(p.particular_name) && p.particular_name.ToLower().Contains(q));
+        }
+
+        return list;
+    }
+
+    private void OpenAddParticularModal()
+    {
+        newParticularName = !string.IsNullOrWhiteSpace(ioParticulars) ? ioParticulars.Trim() : "";
+        newParticularIoType = !string.IsNullOrWhiteSpace(ioType) ? ioType : "INPUT";
+        showAddParticularModal = true;
+        isParticularsDropdownOpen = false;
+    }
+
+    private void CloseAddParticularModal()
+    {
+        showAddParticularModal = false;
+    }
+
+    private async Task SaveNewParticularAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newParticularName))
+        {
+            ToastService.ShowWarning("Please enter a particular name.");
+            return;
+        }
+
+        isParticularSubmitting = true;
+        try
+        {
+            var req = new AddIoParticularRequest
+            {
+                particular_name = newParticularName.Trim(),
+                io_type = newParticularIoType
+            };
+
+            var ok = await NotesMasterService.AddIoParticularAsync(req);
+            if (ok)
+            {
+                ToastService.ShowSuccess($"Particular '{newParticularName.Trim()}' added successfully!");
+                ioParticulars = newParticularName.Trim();
+                await LoadIoParticularsMasterAsync();
+                CloseAddParticularModal();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to add particular. Please try again.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+        finally
+        {
+            isParticularSubmitting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleAddParticularKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SaveNewParticularAsync();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SERVICE NAME MASTER DROPDOWN & QUICK ADD HELPERS
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task LoadServiceNamesMasterAsync()
+    {
+        try
+        {
+            var items = await NotesMasterService.GetServiceNamesAsync(activeOnly: true);
+            serviceNamesMasterList = items ?? new();
+            if (!serviceNamesMasterList.Any())
+            {
+                // Default seed fallback
+                serviceNamesMasterList = new List<ServiceNameMasterModel>
+                {
+                    new() { service_id = 1, service_name = "Wound Dressing", is_active = true },
+                    new() { service_id = 2, service_name = "Catheter Care / Insertion", is_active = true },
+                    new() { service_id = 3, service_name = "Nebulization Therapy", is_active = true },
+                    new() { service_id = 4, service_name = "Bed Bath & Hygiene", is_active = true },
+                    new() { service_id = 5, service_name = "Back Care & Repositioning", is_active = true },
+                    new() { service_id = 6, service_name = "Physiotherapy Assistance", is_active = true },
+                    new() { service_id = 7, service_name = "Tracheostomy Care", is_active = true },
+                    new() { service_id = 8, service_name = "Suctioning", is_active = true },
+                    new() { service_id = 9, service_name = "IV Cannula Insertion / Flushing", is_active = true },
+                    new() { service_id = 10, service_name = "Nasogastric Tube Care", is_active = true },
+                    new() { service_id = 11, service_name = "Eye / Mouth Care", is_active = true }
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadServiceNamesMasterAsync error: {ex.Message}");
+        }
+    }
+
+    private void OnServiceNameInput(ChangeEventArgs e)
+    {
+        serviceName = e.Value?.ToString() ?? "";
+        isServiceDropdownOpen = true;
+        highlightedServiceIndex = 0;
+    }
+
+    private void OnServiceNameFocus()
+    {
+        isServiceDropdownOpen = true;
+        highlightedServiceIndex = 0;
+    }
+
+    private async Task OnServiceNameKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            var count = GetFilteredServices().Count();
+            if (count > 0)
+            {
+                highlightedServiceIndex = (highlightedServiceIndex + 1) % count;
+            }
+            isServiceDropdownOpen = true;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            var count = GetFilteredServices().Count();
+            if (count > 0)
+            {
+                highlightedServiceIndex = (highlightedServiceIndex - 1 + count) % count;
+            }
+            isServiceDropdownOpen = true;
+        }
+        else if (e.Key == "Enter")
+        {
+            if (isServiceDropdownOpen)
+            {
+                var items = GetFilteredServices().ToList();
+                if (items.Any())
+                {
+                    var idx = (highlightedServiceIndex >= 0 && highlightedServiceIndex < items.Count) ? highlightedServiceIndex : 0;
+                    SelectServiceName(items[idx].service_name);
+                    try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromServiceName"); } catch { }
+                }
+                else if (!string.IsNullOrWhiteSpace(serviceName))
+                {
+                    OpenAddServiceModal();
+                }
+            }
+            else
+            {
+                try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromServiceName"); } catch { }
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isServiceDropdownOpen = false;
+        }
+    }
+
+    private void SelectServiceName(string name)
+    {
+        serviceName = name;
+        isServiceDropdownOpen = false;
+        StateHasChanged();
+    }
+
+    private IEnumerable<ServiceNameMasterModel> GetFilteredServices()
+    {
+        var list = serviceNamesMasterList.Where(p => p.is_active);
+
+        if (!string.IsNullOrWhiteSpace(serviceName))
+        {
+            var q = serviceName.Trim().ToLower();
+            list = list.Where(p => !string.IsNullOrWhiteSpace(p.service_name) && p.service_name.ToLower().Contains(q));
+        }
+
+        return list;
+    }
+
+    private void OpenAddServiceModal()
+    {
+        newServiceName = !string.IsNullOrWhiteSpace(serviceName) ? serviceName.Trim() : "";
+        showAddServiceModal = true;
+        isServiceDropdownOpen = false;
+    }
+
+    private void CloseAddServiceModal()
+    {
+        showAddServiceModal = false;
+    }
+
+    private async Task SaveNewServiceAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newServiceName))
+        {
+            ToastService.ShowWarning("Please enter a service name.");
+            return;
+        }
+
+        isServiceSubmitting = true;
+        try
+        {
+            var req = new AddServiceNameRequest
+            {
+                service_name = newServiceName.Trim()
+            };
+
+            var ok = await NotesMasterService.AddServiceNameAsync(req);
+            if (ok)
+            {
+                ToastService.ShowSuccess($"Service '{newServiceName.Trim()}' added successfully!");
+                serviceName = newServiceName.Trim();
+                await LoadServiceNamesMasterAsync();
+                CloseAddServiceModal();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to add service. Please try again.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+        finally
+        {
+            isServiceSubmitting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleAddServiceKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SaveNewServiceAsync();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ITEM MASTER MEDICINE DROPDOWN HELPERS
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task LoadInventoryItemsAsync()
+    {
+        try
+        {
+            var items = await CaseSheetService.GetAllItemsAsync(DefaultTenant);
+            inventoryItemsList = items?.Where(x => !x.deleted && (x.isactive || true) && !string.IsNullOrWhiteSpace(x.itemname)).ToList() ?? new();
+            if (!inventoryItemsList.Any())
+            {
+                inventoryItemsList = new List<item_master>
+                {
+                    new() { itemcode = 1, itemname = "Paracetamol 650mg Tablet", itemtype = "TABLET", isactive = true },
+                    new() { itemcode = 2, itemname = "Inj Pantoprazole 40mg", itemtype = "INJECTION", isactive = true },
+                    new() { itemcode = 3, itemname = "Inj Ondansetron 4mg", itemtype = "INJECTION", isactive = true },
+                    new() { itemcode = 4, itemname = "Amoxicillin 500mg Capsule", itemtype = "CAPSULE", isactive = true },
+                    new() { itemcode = 5, itemname = "Inj Ceftriaxone 1g", itemtype = "INJECTION", isactive = true },
+                    new() { itemcode = 6, itemname = "Tab Pantoprazole 40mg", itemtype = "TABLET", isactive = true },
+                    new() { itemcode = 7, itemname = "Tab Metformin 500mg", itemtype = "TABLET", isactive = true },
+                    new() { itemcode = 8, itemname = "Inj Tramadol 50mg", itemtype = "INJECTION", isactive = true },
+                    new() { itemcode = 9, itemname = "Syrup Paracetamol 120mg/5ml", itemtype = "SYRUP", isactive = true },
+                    new() { itemcode = 10, itemname = "Inj Diclofenac 75mg", itemtype = "INJECTION", isactive = true }
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadInventoryItemsAsync error: {ex.Message}");
+        }
+    }
+
+    private void OnMedicineInput(ChangeEventArgs e)
+    {
+        medName = e.Value?.ToString() ?? "";
+        isMedicineDropdownOpen = true;
+        highlightedMedicineIndex = 0;
+    }
+
+    private void OnMedicineFocus()
+    {
+        isMedicineDropdownOpen = true;
+        highlightedMedicineIndex = 0;
+    }
+
+    private async Task OnMedicineKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            var count = GetFilteredMedicines().Count();
+            if (count > 0)
+            {
+                highlightedMedicineIndex = (highlightedMedicineIndex + 1) % count;
+            }
+            isMedicineDropdownOpen = true;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            var count = GetFilteredMedicines().Count();
+            if (count > 0)
+            {
+                highlightedMedicineIndex = (highlightedMedicineIndex - 1 + count) % count;
+            }
+            isMedicineDropdownOpen = true;
+        }
+        else if (e.Key == "Enter")
+        {
+            if (isMedicineDropdownOpen)
+            {
+                var items = GetFilteredMedicines().ToList();
+                if (items.Any())
+                {
+                    var idx = (highlightedMedicineIndex >= 0 && highlightedMedicineIndex < items.Count) ? highlightedMedicineIndex : 0;
+                    SelectMedicineName(items[idx].itemname ?? string.Empty);
+                    try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromMedicineName"); } catch { }
+                }
+            }
+            else
+            {
+                try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromMedicineName"); } catch { }
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isMedicineDropdownOpen = false;
+        }
+    }
+
+    private void SelectMedicineName(string name)
+    {
+        medName = name;
+        isMedicineDropdownOpen = false;
+        StateHasChanged();
+    }
+
+    private IEnumerable<item_master> GetFilteredMedicines()
+    {
+        var list = (IEnumerable<item_master>)inventoryItemsList;
+
+        if (!string.IsNullOrWhiteSpace(medName))
+        {
+            var q = medName.Trim().ToLower();
+            list = list.Where(p =>
+                (!string.IsNullOrWhiteSpace(p.itemname) && p.itemname.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(p.drugname) && p.drugname.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(p.shortname) && p.shortname.ToLower().Contains(q))
+            );
+        }
+
+        return list.Take(50);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DOCTOR MASTER & SPECIALTY VISITING HELPERS
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task LoadDoctorSpecialtiesAsync()
+    {
+        try
+        {
+            var specs = await SpecialtyService.GetDoctorSpecialtiesAsync();
+            doctorSpecialtiesList = specs ?? new();
+            doctorSpecialtiesMap = doctorSpecialtiesList
+                .Where(s => !string.IsNullOrWhiteSpace(s.name))
+                .ToDictionary(s => s.spcode, s => s.name!.Trim());
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadDoctorSpecialtiesAsync error: {ex.Message}");
+        }
+    }
+
+    private string GetDoctorSpecialty(DoctorMasterModel? doc)
+    {
+        if (doc == null || !doc.spcode.HasValue || doc.spcode.Value <= 0) return "";
+        if (doctorSpecialtiesMap.TryGetValue(doc.spcode.Value, out var specName))
+        {
+            return specName;
+        }
+        var spec = doctorSpecialtiesList.FirstOrDefault(s => s.spcode == doc.spcode.Value);
+        return spec?.name?.Trim() ?? "";
+    }
+
+    private void OnVisitingDoctorInput(ChangeEventArgs e)
+    {
+        visitDoctorName = e.Value?.ToString() ?? "";
+        isVisitingDoctorDropdownOpen = true;
+        highlightedVisitingDocIndex = 0;
+    }
+
+    private void OnVisitingDoctorFocus()
+    {
+        isVisitingDoctorDropdownOpen = true;
+        highlightedVisitingDocIndex = 0;
+    }
+
+    private async Task OnVisitingDoctorKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            var count = GetFilteredVisitingDoctors().Count();
+            if (count > 0)
+            {
+                highlightedVisitingDocIndex = (highlightedVisitingDocIndex + 1) % count;
+            }
+            isVisitingDoctorDropdownOpen = true;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            var count = GetFilteredVisitingDoctors().Count();
+            if (count > 0)
+            {
+                highlightedVisitingDocIndex = (highlightedVisitingDocIndex - 1 + count) % count;
+            }
+            isVisitingDoctorDropdownOpen = true;
+        }
+        else if (e.Key == "Enter")
+        {
+            if (isVisitingDoctorDropdownOpen)
+            {
+                var items = GetFilteredVisitingDoctors().ToList();
+                if (items.Any())
+                {
+                    var idx = (highlightedVisitingDocIndex >= 0 && highlightedVisitingDocIndex < items.Count) ? highlightedVisitingDocIndex : 0;
+                    SelectVisitingDoctor(items[idx]);
+                    try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromVisitingDoctor"); } catch { }
+                }
+            }
+            else
+            {
+                try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromVisitingDoctor"); } catch { }
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isVisitingDoctorDropdownOpen = false;
+        }
+    }
+
+    private void SelectVisitingDoctor(DoctorMasterModel doc)
+    {
+        visitDoctorName = doc.name ?? "";
+        var spec = GetDoctorSpecialty(doc);
+        visitSpecialization = !string.IsNullOrWhiteSpace(spec) ? spec : "";
+        isVisitingDoctorDropdownOpen = false;
+        StateHasChanged();
+    }
+
+    private IEnumerable<DoctorMasterModel> GetFilteredVisitingDoctors()
+    {
+        var list = (IEnumerable<DoctorMasterModel>)doctorsList;
+
+        if (!string.IsNullOrWhiteSpace(visitDoctorName))
+        {
+            var q = visitDoctorName.Trim().ToLower();
+            list = list.Where(d =>
+                (!string.IsNullOrWhiteSpace(d.name) && d.name.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(d.shortname) && d.shortname.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(GetDoctorSpecialty(d)) && GetDoctorSpecialty(d).ToLower().Contains(q))
+            );
+        }
+
+        return list;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SCHEDULE TYPE MASTER DROPDOWN & QUICK ADD HELPERS
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task LoadScheduleTypesMasterAsync()
+    {
+        try
+        {
+            var items = await NotesMasterService.GetScheduleTypesAsync(activeOnly: true);
+            scheduleTypesMasterList = items ?? new();
+            if (!scheduleTypesMasterList.Any())
+            {
+                // Default seed fallback
+                scheduleTypesMasterList = new List<ScheduleTypeMasterModel>
+                {
+                    new() { type_id = 1, type_name = "Insulin 10 units", is_active = true },
+                    new() { type_id = 2, type_name = "Diabetic Lunch / Diet", is_active = true },
+                    new() { type_id = 3, type_name = "Wound Dressing & Cleaning", is_active = true },
+                    new() { type_id = 4, type_name = "IV Antibiotics Administration", is_active = true },
+                    new() { type_id = 5, type_name = "Nebulization Session", is_active = true },
+                    new() { type_id = 6, type_name = "Vitals Check & Monitoring", is_active = true },
+                    new() { type_id = 7, type_name = "Blood Sugar Profiling (GRBS)", is_active = true },
+                    new() { type_id = 8, type_name = "Physiotherapy Session", is_active = true },
+                    new() { type_id = 9, type_name = "Catheter Care & Flushing", is_active = true }
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] LoadScheduleTypesMasterAsync error: {ex.Message}");
+        }
+    }
+
+    private void OnScheduleTaskInput(ChangeEventArgs e)
+    {
+        scheduleName = e.Value?.ToString() ?? "";
+        isScheduleDropdownOpen = true;
+        highlightedScheduleIndex = 0;
+    }
+
+    private void OnScheduleTaskFocus()
+    {
+        isScheduleDropdownOpen = true;
+        highlightedScheduleIndex = 0;
+    }
+
+    private async Task OnScheduleTaskKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            var count = GetFilteredScheduleTasks().Count();
+            if (count > 0)
+            {
+                highlightedScheduleIndex = (highlightedScheduleIndex + 1) % count;
+            }
+            isScheduleDropdownOpen = true;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            var count = GetFilteredScheduleTasks().Count();
+            if (count > 0)
+            {
+                highlightedScheduleIndex = (highlightedScheduleIndex - 1 + count) % count;
+            }
+            isScheduleDropdownOpen = true;
+        }
+        else if (e.Key == "Enter")
+        {
+            if (isScheduleDropdownOpen)
+            {
+                var items = GetFilteredScheduleTasks().ToList();
+                if (items.Any())
+                {
+                    var idx = (highlightedScheduleIndex >= 0 && highlightedScheduleIndex < items.Count) ? highlightedScheduleIndex : 0;
+                    SelectScheduleTask(items[idx].type_name);
+                    try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromScheduleTask"); } catch { }
+                }
+                else if (!string.IsNullOrWhiteSpace(scheduleName))
+                {
+                    OpenAddScheduleTypeModal();
+                }
+            }
+            else
+            {
+                try { await JSRuntime.InvokeVoidAsync("focusNextFieldFromScheduleTask"); } catch { }
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isScheduleDropdownOpen = false;
+        }
+    }
+
+    private void SelectScheduleTask(string name)
+    {
+        scheduleName = name;
+        isScheduleDropdownOpen = false;
+        StateHasChanged();
+    }
+
+    private IEnumerable<ScheduleTypeMasterModel> GetFilteredScheduleTasks()
+    {
+        var list = scheduleTypesMasterList.Where(p => p.is_active);
+
+        if (!string.IsNullOrWhiteSpace(scheduleName))
+        {
+            var q = scheduleName.Trim().ToLower();
+            list = list.Where(p => !string.IsNullOrWhiteSpace(p.type_name) && p.type_name.ToLower().Contains(q));
+        }
+
+        return list;
+    }
+
+    private void OpenAddScheduleTypeModal()
+    {
+        newScheduleTypeName = !string.IsNullOrWhiteSpace(scheduleName) ? scheduleName.Trim() : "";
+        showAddScheduleTypeModal = true;
+        isScheduleDropdownOpen = false;
+    }
+
+    private void CloseAddScheduleTypeModal()
+    {
+        showAddScheduleTypeModal = false;
+    }
+
+    private async Task SaveNewScheduleTypeAsync()
+    {
+        if (string.IsNullOrWhiteSpace(newScheduleTypeName))
+        {
+            ToastService.ShowWarning("Please enter a task name.");
+            return;
+        }
+
+        isScheduleSubmitting = true;
+        try
+        {
+            var req = new AddScheduleTypeRequest
+            {
+                type_name = newScheduleTypeName.Trim()
+            };
+
+            var ok = await NotesMasterService.AddScheduleTypeAsync(req);
+            if (ok)
+            {
+                ToastService.ShowSuccess($"Task '{newScheduleTypeName.Trim()}' added successfully!");
+                scheduleName = newScheduleTypeName.Trim();
+                await LoadScheduleTypesMasterAsync();
+                CloseAddScheduleTypeModal();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to add task. Please try again.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+        finally
+        {
+            isScheduleSubmitting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleAddScheduleTypeKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SaveNewScheduleTypeAsync();
+        }
     }
 
     private string GetPatientWardBed()
@@ -4089,6 +7039,298 @@
             _ => "bg-slate-100 text-slate-700 border border-slate-200"
         };
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SCHEDULE UPCOMING ALERT TIMING & MONITORING (GLOBAL MULTI-PATIENT SUPPORT)
+    // ─────────────────────────────────────────────────────────────────────────
+    private void StartScheduleAlertMonitoring()
+    {
+        scheduleAlertTimer?.Dispose();
+        scheduleAlertTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                if ((DateTime.UtcNow - lastAllSchedulesFetchTime).TotalSeconds > 15 || !allPatientsSchedulesMap.Any())
+                {
+                    await RefreshAllPatientsSchedulesAsync();
+                }
+                EvaluateUpcomingSchedules();
+            });
+        }, null, TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(3));
+    }
+
+    private async Task RefreshAllPatientsSchedulesAsync()
+    {
+        if (admittedPatients == null || !admittedPatients.Any()) return;
+        try
+        {
+            var tasks = admittedPatients.Select(async pat =>
+            {
+                try
+                {
+                    var schList = await NurseNotesService.GetSchedulesAsync(pat.ip_id, DefaultTenant, currentUserCode);
+                    return (pat.ip_id, schList);
+                }
+                catch
+                {
+                    return (pat.ip_id, new List<NurseScheduleModel>());
+                }
+            });
+
+            var results = await Task.WhenAll(tasks);
+            foreach (var (ipId, list) in results)
+            {
+                allPatientsSchedulesMap[ipId] = list;
+            }
+
+            lastAllSchedulesFetchTime = DateTime.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AllPatientsSchedules] Error: {ex.Message}");
+        }
+    }
+
+    private void EvaluateUpcomingSchedules()
+    {
+        try
+        {
+            var nowIst = DateTime.UtcNow.ToIndianTime();
+            var currentAlerts = new List<UpcomingScheduleAlertItem>();
+
+            var schedulesToCheck = new List<(IPRegistrationModel.IpRegistrationModel Patient, NurseScheduleModel Schedule)>();
+
+            if (admittedPatients != null && admittedPatients.Any())
+            {
+                foreach (var pat in admittedPatients)
+                {
+                    if (selectedPatient != null && pat.ip_id == selectedPatient.ip_id && scheduleList != null && scheduleList.Any())
+                    {
+                        foreach (var s in scheduleList)
+                        {
+                            schedulesToCheck.Add((pat, s));
+                        }
+                    }
+                    else if (allPatientsSchedulesMap.TryGetValue(pat.ip_id, out var patSchedules))
+                    {
+                        foreach (var s in patSchedules)
+                        {
+                            schedulesToCheck.Add((pat, s));
+                        }
+                    }
+                }
+            }
+            else if (selectedPatient != null && scheduleList != null)
+            {
+                foreach (var s in scheduleList)
+                {
+                    schedulesToCheck.Add((selectedPatient, s));
+                }
+            }
+
+            foreach (var (pat, s) in schedulesToCheck.Where(x => string.Equals(x.Schedule.status, "PENDING", StringComparison.OrdinalIgnoreCase)))
+            {
+                if (dismissedScheduleAlertIds.Contains(s.schedule_id)) continue;
+
+                if (TryParseScheduleDateTime(s, out var schedDt))
+                {
+                    var diff = schedDt - nowIst;
+                    // Trigger starting 5 minutes before scheduled time up to 15 minutes past the fixed time (if still PENDING)
+                    if (diff.TotalMinutes <= 5.0 && diff.TotalMinutes >= -15.0)
+                    {
+                        var wardBed = GetWardBedText(pat.wrdcode, pat.bedcode);
+                        currentAlerts.Add(new UpcomingScheduleAlertItem
+                        {
+                            Schedule = s,
+                            Patient = pat,
+                            PatientName = pat.patient_name ?? "Patient",
+                            IpNo = pat.ip_no ?? "",
+                            WardBed = wardBed,
+                            IpId = pat.ip_id,
+                            ScheduledDateTime = schedDt,
+                            MinutesRemaining = Math.Max(0, Math.Ceiling(diff.TotalMinutes))
+                        });
+                    }
+                }
+            }
+
+            activeScheduleAlerts = currentAlerts;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ScheduleAlert] Error: {ex.Message}");
+        }
+    }
+
+    private string FormatAlertScheduleTime(string? timeStr, string? shift)
+    {
+        if (string.IsNullOrWhiteSpace(timeStr)) return "08:00 AM";
+        if (TimeOnly.TryParse(timeStr, out var t))
+        {
+            return t.ToString("hh:mm tt");
+        }
+        return timeStr;
+    }
+
+    private bool TryParseScheduleDateTime(NurseScheduleModel s, out DateTime result)
+    {
+        result = DateTime.MinValue;
+        if (s == null || string.IsNullOrWhiteSpace(s.scheduled_date)) return false;
+
+        var dateStr = s.scheduled_date.Trim();
+        var timeStr = string.IsNullOrWhiteSpace(s.scheduled_time) ? "08:00:00" : s.scheduled_time.Trim();
+        var shift = s.shift?.Trim().ToUpperInvariant() ?? "MORNING";
+
+        if (!DateTime.TryParse(dateStr, out var baseDate))
+        {
+            string[] dFormats = { "yyyy-MM-dd", "dd-MM-yyyy", "yyyy/MM/dd", "dd/MM/yyyy" };
+            if (!DateTime.TryParseExact(dateStr, dFormats, CultureInfo.InvariantCulture, DateTimeStyles.None, out baseDate))
+            {
+                return false;
+            }
+        }
+
+        // Parse time component
+        TimeSpan timeSpan;
+        if (!TimeSpan.TryParse(timeStr, out timeSpan))
+        {
+            if (DateTime.TryParse(timeStr, out var dtTime))
+            {
+                timeSpan = dtTime.TimeOfDay;
+            }
+            else
+            {
+                timeSpan = TimeSpan.FromHours(8);
+            }
+        }
+
+        int hours = timeSpan.Hours;
+        int minutes = timeSpan.Minutes;
+        int seconds = timeSpan.Seconds;
+
+        // Shift-aware 12hr -> 24hr smart normalization:
+        if (shift == "NIGHT")
+        {
+            if (hours == 12)
+            {
+                // 12:00 at night is midnight:
+                // Check if current IST is closer to end of baseDate (20:00+)
+                var nowIst = DateTime.UtcNow.ToIndianTime();
+                if (nowIst.Date == baseDate.Date && nowIst.Hour >= 20)
+                {
+                    result = baseDate.Date.AddDays(1).AddMinutes(minutes).AddSeconds(seconds);
+                    return true;
+                }
+                else
+                {
+                    result = baseDate.Date.AddMinutes(minutes).AddSeconds(seconds);
+                    return true;
+                }
+            }
+            else if (hours >= 8 && hours <= 11)
+            {
+                // 08:00 PM to 11:59 PM
+                hours += 12;
+            }
+            // For hours 0 to 7 (e.g. 00:25 or 01:00 AM), baseDate is already the exact date!
+        }
+        else if (shift == "EVENING")
+        {
+            // 04:00 to 11:00 in EVENING shift means 16:00 to 23:00 (PM)
+            if (hours >= 1 && hours <= 11)
+            {
+                hours += 12;
+            }
+        }
+        else if (shift == "AFTERNOON")
+        {
+            // 01:00 to 06:00 in AFTERNOON shift means 13:00 to 18:00 (PM)
+            if (hours >= 1 && hours <= 6)
+            {
+                hours += 12;
+            }
+        }
+
+        result = baseDate.Date.AddHours(hours).AddMinutes(minutes).AddSeconds(seconds);
+        return true;
+    }
+
+    private void DismissScheduleAlert(Guid scheduleId)
+    {
+        dismissedScheduleAlertIds.Add(scheduleId);
+        activeScheduleAlerts.RemoveAll(x => x.Schedule.schedule_id == scheduleId);
+        StateHasChanged();
+    }
+
+    private async Task CompleteScheduleFromAlertAsync(UpcomingScheduleAlertItem item)
+    {
+        dismissedScheduleAlertIds.Add(item.Schedule.schedule_id);
+        activeScheduleAlerts.RemoveAll(x => x.Schedule.schedule_id == item.Schedule.schedule_id);
+
+        try
+        {
+            var req = new UpdateScheduleRequest
+            {
+                schedule_id = item.Schedule.schedule_id,
+                shift = item.Schedule.shift ?? "MORNING",
+                scheduled_date = item.Schedule.scheduled_date,
+                scheduled_time = NurseNotesService.FormatTimeForApi(item.Schedule.scheduled_time, "08:00:00"),
+                item_type = item.Schedule.item_type,
+                item_name = item.Schedule.item_name,
+                instructions = item.Schedule.instructions,
+                status = "COMPLETED",
+                remarks = item.Schedule.remarks
+            };
+            var (ok, msg) = await NurseNotesService.UpdateScheduleAsync(req, DefaultTenant, currentUserCode);
+            if (ok)
+            {
+                ToastService.ShowSuccess($"Task marked COMPLETED for {item.PatientName}: {item.Schedule.item_name}");
+
+                if (allPatientsSchedulesMap.TryGetValue(item.IpId, out var schList))
+                {
+                    var match = schList.FirstOrDefault(x => x.schedule_id == item.Schedule.schedule_id);
+                    if (match != null) match.status = "COMPLETED";
+                }
+                if (selectedPatient != null && selectedPatient.ip_id == item.IpId)
+                {
+                    scheduleList = await NurseNotesService.GetSchedulesAsync(selectedPatient.ip_id, DefaultTenant, currentUserCode);
+                }
+                EvaluateUpcomingSchedules();
+            }
+            else
+            {
+                ToastService.ShowError(msg);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+    }
+
+    private async Task NavigateToScheduleFromAlertAsync(UpcomingScheduleAlertItem item)
+    {
+        dismissedScheduleAlertIds.Add(item.Schedule.schedule_id);
+        activeScheduleAlerts.RemoveAll(x => x.Schedule.schedule_id == item.Schedule.schedule_id);
+
+        if (selectedPatient == null || selectedPatient.ip_id != item.IpId)
+        {
+            var targetPat = admittedPatients.FirstOrDefault(x => x.ip_id == item.IpId) ?? item.Patient;
+            if (targetPat != null)
+            {
+                await SelectPatientFromModal(targetPat);
+            }
+        }
+
+        activeTab = "schedule";
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        scheduleAlertTimer?.Dispose();
+    }
 }
 
 <script>
@@ -4099,8 +7341,18 @@
             const target = e.target;
             if (!target) return;
             
-            // Ignore search inputs, case sheet modal inputs, or buttons
-            if (target.classList.contains('lc-rounded-pill-input') || (target.closest && target.closest('.casesheet-modal')) || target.tagName === 'BUTTON') return;
+            // Ignore search inputs, popovers, custom dropdown inputs, modals, or buttons
+            if (target.classList.contains('lc-rounded-pill-input') || 
+                target.closest('.patient-search-relative') ||
+                target.closest('.custom-dropdown-wrap') ||
+                (target.closest && target.closest('.casesheet-modal')) || 
+                (target.closest && target.closest('.add-particular-modal-card')) || 
+                (target.closest && target.closest('.add-service-modal-card')) || 
+                (target.closest && target.closest('.add-schedule-type-modal-card')) || 
+                (target.closest && target.closest('.ip-patients-modal-container')) || 
+                target.tagName === 'BUTTON') {
+                return;
+            }
 
             const row = target.closest('.form-horizontal-row, .vitals-grid-row');
             if (!row) return;
@@ -4128,6 +7380,66 @@
             }
         };
         document.addEventListener('keydown', window._nurseEnterHandler);
+    };
+
+    window.focusNextFieldFromParticulars = function () {
+        setTimeout(function () {
+            const row = document.querySelector('.nurse-workspace-card .form-horizontal-row');
+            if (!row) return;
+            const qtyField = row.querySelector('input[type=number]');
+            if (qtyField) {
+                qtyField.focus();
+                if (qtyField.select) qtyField.select();
+            }
+        }, 50);
+    };
+
+    window.focusNextFieldFromServiceName = function () {
+        setTimeout(function () {
+            const row = document.querySelector('.nurse-workspace-card .form-horizontal-row');
+            if (!row) return;
+            const allInputs = Array.from(row.querySelectorAll('input:not([disabled]):not([type=hidden]):not([readonly])'));
+            if (allInputs.length >= 2) {
+                const actionInput = allInputs[1];
+                actionInput.focus();
+                if (actionInput.select) actionInput.select();
+            }
+        }, 50);
+    };
+
+    window.focusNextFieldFromMedicineName = function () {
+        setTimeout(function () {
+            const row = document.querySelector('.nurse-workspace-card .form-horizontal-row');
+            if (!row) return;
+            const doseField = row.querySelector('input[type=number]');
+            if (doseField) {
+                doseField.focus();
+                if (doseField.select) doseField.select();
+            }
+        }, 50);
+    };
+
+    window.focusNextFieldFromVisitingDoctor = function () {
+        setTimeout(function () {
+            const row = document.querySelector('.nurse-workspace-card .form-horizontal-row');
+            if (!row) return;
+            const timeField = row.querySelector('input[type=time]');
+            if (timeField) {
+                timeField.focus();
+            }
+        }, 50);
+    };
+
+    window.focusNextFieldFromScheduleTask = function () {
+        setTimeout(function () {
+            const row = document.querySelector('.nurse-workspace-card .form-two-row-grid');
+            if (!row) return;
+            const instField = row.querySelector('.form-horizontal-row:nth-child(2) input');
+            if (instField) {
+                instField.focus();
+                if (instField.select) instField.select();
+            }
+        }, 50);
     };
 
     window.focusNurseTabPrimaryField = function () {

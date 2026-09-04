@@ -15,6 +15,8 @@
 @inject HmsBillingService HmsBillingService
 @inject NurseNotesService NurseNotesService
 @inject IpRegistrationService IpRegistrationService
+@inject DoctorService DoctorService
+@inject DoctorSpecialtyMasterService SpecialtyService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 
 <style>
@@ -78,6 +80,37 @@
         opacity: 0.85 !important;
         pointer-events: auto !important;
         transform: none !important;
+    }
+
+    .table-nurse-custom {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.76rem;
+    }
+
+    .table-nurse-custom thead th {
+        position: sticky;
+        top: 0;
+        background: #f8fafc !important;
+        border-bottom: 1px solid #e2e8f0 !important;
+        padding: 0.5rem 0.75rem !important;
+        font-size: 0.68rem !important;
+        font-weight: 700 !important;
+        color: #64748b !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.4px !important;
+        white-space: nowrap !important;
+        z-index: 2;
+        text-align: left !important;
+    }
+
+    .table-nurse-custom tbody td {
+        padding: 0.5rem 0.75rem !important;
+        border-bottom: 1px solid #f1f5f9 !important;
+        vertical-align: middle !important;
+        color: #334155 !important;
+        white-space: nowrap !important;
+        text-align: left !important;
     }
 </style>
 
@@ -229,10 +262,57 @@
                                             </div>
                                             @if (currentRequest.referred_to_visiting_doctor)
                                             {
-                                                <div class="form-group">
+                                                <div class="form-group position-relative">
                                                     <label class="form-label">Visiting Doctor Name <span class="text-danger">*</span></label>
-                                                    <input type="text" class="form-control-input" placeholder="e.g., Dr. Rajesh Sharma (Cardiologist)" 
-                                                           @bind="currentRequest.visiting_doctor_name" @bind:event="oninput" disabled="@isReadOnly" />
+                                                    <div class="visiting-doc-autocomplete-wrap" @onclick:stopPropagation>
+                                                        <input type="text"
+                                                               class="form-control-input"
+                                                               placeholder="e.g. Dr. Rajesh Sharma" 
+                                                               value="@currentRequest.visiting_doctor_name"
+                                                               @oninput="OnVisitingDoctorInput"
+                                                               @onfocus="OnVisitingDoctorFocus"
+                                                               @onkeydown="OnVisitingDoctorKeyDown"
+                                                               autocomplete="off"
+                                                               disabled="@isReadOnly" />
+
+                                                        @if (isVisitingDoctorDropdownOpen && !isReadOnly && !string.IsNullOrWhiteSpace(currentRequest.visiting_doctor_name))
+                                                        {
+                                                            <div class="visiting-doc-dropdown shadow-lg">
+                                                                @{
+                                                                    var docItems = GetFilteredConsultantDoctors().ToList();
+                                                                }
+                                                                @if (!docItems.Any())
+                                                                {
+                                                                    <div class="visiting-doc-no-results">
+                                                                        <i class="bi bi-person-x me-1 text-primary"></i>
+                                                                        <span>No consultant doctor matching "@currentRequest.visiting_doctor_name"</span>
+                                                                    </div>
+                                                                }
+                                                                else
+                                                                {
+                                                                    @for (int idx = 0; idx < docItems.Count; idx++)
+                                                                    {
+                                                                        var doc = docItems[idx];
+                                                                        var isHighlighted = idx == highlightedVisitingDocIndex;
+                                                                        var docName = string.IsNullOrWhiteSpace(doc.name) ? (doc.doctorfullname ?? "Doctor") : doc.name;
+                                                                        var formattedName = docName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) ? docName : $"Dr. {docName}";
+
+                                                                        <div class="visiting-doc-item @(isHighlighted ? "highlighted" : "")"
+                                                                             @onclick="() => SelectVisitingDoctor(doc)"
+                                                                             @onmouseenter="() => highlightedVisitingDocIndex = idx">
+                                                                            <div class="visiting-doc-info">
+                                                                                <span class="visiting-doc-name">@formattedName</span>
+                                                                                @if (!string.IsNullOrWhiteSpace(doc.qualification))
+                                                                                {
+                                                                                    <span class="visiting-doc-qual">@doc.qualification</span>
+                                                                                }
+                                                                            </div>
+                                                                        </div>
+                                                                    }
+                                                                }
+                                                            </div>
+                                                        }
+                                                    </div>
                                                 </div>
                                             }
                                         </div>
@@ -1719,7 +1799,7 @@
                                                                                 }
                                                                             </td>
                                                                             <td>@(string.IsNullOrWhiteSpace(t.remarks) ? "—" : t.remarks)</td>
-                                                                            <td class="text-muted">Staff</td>
+                                                                            <td class="text-muted">@GetNurseRecordedBy(t.usercode)</td>
                                                                         </tr>
                                                                     }
                                                                 </tbody>
@@ -2941,7 +3021,102 @@
         if (!isChecked)
         {
             currentRequest.visiting_doctor_name = null;
+            isVisitingDoctorDropdownOpen = false;
         }
+    }
+
+    // Consultant Doctors for Visiting Doctor Autocomplete
+    private List<DoctorMasterModel> consultantDoctorsList = new();
+    private List<Booking.Models.DoctorSpecialtyMasterModel> doctorSpecialtiesList = new();
+    private Dictionary<int, string> doctorSpecialtiesMap = new();
+    private bool isVisitingDoctorDropdownOpen = false;
+    private int highlightedVisitingDocIndex = -1;
+
+    private void OnVisitingDoctorInput(ChangeEventArgs e)
+    {
+        currentRequest.visiting_doctor_name = e.Value?.ToString() ?? "";
+        isVisitingDoctorDropdownOpen = !string.IsNullOrWhiteSpace(currentRequest.visiting_doctor_name);
+        highlightedVisitingDocIndex = 0;
+    }
+
+    private void OnVisitingDoctorFocus()
+    {
+        if (!string.IsNullOrWhiteSpace(currentRequest.visiting_doctor_name))
+        {
+            isVisitingDoctorDropdownOpen = true;
+            highlightedVisitingDocIndex = 0;
+        }
+    }
+
+    private void OnVisitingDoctorKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "ArrowDown")
+        {
+            var count = GetFilteredConsultantDoctors().Count();
+            if (count > 0)
+            {
+                highlightedVisitingDocIndex = (highlightedVisitingDocIndex + 1) % count;
+                isVisitingDoctorDropdownOpen = true;
+            }
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            var count = GetFilteredConsultantDoctors().Count();
+            if (count > 0)
+            {
+                highlightedVisitingDocIndex = (highlightedVisitingDocIndex - 1 + count) % count;
+                isVisitingDoctorDropdownOpen = true;
+            }
+        }
+        else if (e.Key == "Enter" && isVisitingDoctorDropdownOpen)
+        {
+            var items = GetFilteredConsultantDoctors().ToList();
+            if (items.Any() && highlightedVisitingDocIndex >= 0 && highlightedVisitingDocIndex < items.Count)
+            {
+                SelectVisitingDoctor(items[highlightedVisitingDocIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isVisitingDoctorDropdownOpen = false;
+        }
+    }
+
+    private void SelectVisitingDoctor(DoctorMasterModel doc)
+    {
+        var docName = string.IsNullOrWhiteSpace(doc.name) ? (doc.doctorfullname ?? "Doctor") : doc.name;
+        var formattedName = docName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) ? docName : $"Dr. {docName}";
+        currentRequest.visiting_doctor_name = formattedName;
+        isVisitingDoctorDropdownOpen = false;
+        StateHasChanged();
+    }
+
+    private IEnumerable<DoctorMasterModel> GetFilteredConsultantDoctors()
+    {
+        var list = consultantDoctorsList.Where(d => d.isconsultant == true && !d.deleted);
+        var query = (currentRequest.visiting_doctor_name ?? "").Trim();
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var q = query.ToLower();
+            list = list.Where(d =>
+                (!string.IsNullOrWhiteSpace(d.name) && d.name.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(d.doctorfullname) && d.doctorfullname.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(d.shortname) && d.shortname.ToLower().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(d.qualification) && d.qualification.ToLower().Contains(q))
+            );
+        }
+        return list;
+    }
+
+    private string GetDoctorSpecialty(DoctorMasterModel? doc)
+    {
+        if (doc == null || !doc.spcode.HasValue || doc.spcode.Value <= 0) return "";
+        if (doctorSpecialtiesMap.TryGetValue(doc.spcode.Value, out var specName))
+        {
+            return specName;
+        }
+        var spec = doctorSpecialtiesList.FirstOrDefault(s => s.spcode == doc.spcode.Value);
+        return spec?.name?.Trim() ?? "";
     }
 
     // Items being added
@@ -3054,6 +3229,27 @@
         if (allTestMasters.Count == 0)
         {
             allTestMasters = await LabCareTestService.GetAllTestsAsync();
+        }
+        if (consultantDoctorsList.Count == 0)
+        {
+            try
+            {
+                var rawDocs = await DoctorService.GetDoctorsAsync();
+                consultantDoctorsList = (rawDocs ?? new List<DoctorMasterModel>())
+                    .Where(d => d.isconsultant == true && !d.deleted)
+                    .ToList();
+
+                var specs = await SpecialtyService.GetDoctorSpecialtiesAsync();
+                doctorSpecialtiesList = specs ?? new();
+                doctorSpecialtiesMap = doctorSpecialtiesList
+                    .Where(s => s.spcode > 0 && !string.IsNullOrWhiteSpace(s.name))
+                    .GroupBy(s => s.spcode)
+                    .ToDictionary(g => g.Key, g => g.First().name.Trim());
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CaseSheetComponent] Error loading consultant doctors: {ex.Message}");
+            }
         }
         if (allItems.Count == 0 || allStocks.Count == 0)
         {
@@ -3184,6 +3380,7 @@
 
         try
         {
+            _ = LoadCurrentUserNameAsync();
             // Reset request object
             activeTab = !string.IsNullOrWhiteSpace(InitialTab) ? InitialTab : "notes";
             currentRequest = new SaveCaseSheetRequest
@@ -4758,6 +4955,7 @@
         StateHasChanged();
         try
         {
+            await LoadCurrentUserNameAsync();
             var tenant = await GetCurrentTenantCodeAsync();
             
             // Resolve effective IP ID
@@ -4820,6 +5018,43 @@
             loadingNurseNotes = false;
             StateHasChanged();
         }
+    }
+
+    private string currentNurseUserName = "";
+
+    private async Task LoadCurrentUserNameAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(currentNurseUserName)) return;
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(TenantState?.UserData?.UserName))
+            {
+                currentNurseUserName = TenantState.UserData.UserName;
+                return;
+            }
+
+            var userDetailsRes = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsRes.Success && userDetailsRes.Value != null && !string.IsNullOrWhiteSpace(userDetailsRes.Value.UserName))
+            {
+                currentNurseUserName = userDetailsRes.Value.UserName;
+                return;
+            }
+
+            var userResult = await _sessionStorage.GetAsync<string>("user_name");
+            if (userResult.Success && !string.IsNullOrWhiteSpace(userResult.Value))
+            {
+                currentNurseUserName = userResult.Value;
+                return;
+            }
+        }
+        catch { }
+    }
+
+    private string GetNurseRecordedBy(int? usercode)
+    {
+        if (!string.IsNullOrWhiteSpace(currentNurseUserName)) return currentNurseUserName;
+        if (!string.IsNullOrWhiteSpace(TenantState?.UserData?.UserName)) return TenantState.UserData.UserName;
+        return usercode.HasValue ? $"Staff #{usercode.Value}" : "Staff";
     }
 
     private string GetSeverityClass(string severity)
