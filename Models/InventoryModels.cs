@@ -173,6 +173,8 @@ namespace Booking.Models
         public DateTime createddate { get; set; }
         public bool purchaseallow { get; set; } = false;
         public bool salesallow { get; set; } = false;
+        public bool isdoctor_room { get; set; } = false;
+        public bool isdoctorroom { get => isdoctor_room; set => isdoctor_room = value; }
     public string? druglicenseno { get; set; }
      public string? pharmacyregistrationno { get; set; }
      public string? gstno { get; set; }

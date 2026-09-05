@@ -76,4 +76,8 @@ public class purchase_return_lookup_request
         public DateTime createddate { get; set; }
         public long? usercode { get; set; }
         public string? tenantcode { get; set; }
+
+        public string? itemname { get; set; }
+        public string? vendorname { get; set; }
+        public string? warehousename { get; set; }
     }

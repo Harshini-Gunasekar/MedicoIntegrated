@@ -99,4 +99,14 @@ public long? customercode { get; set; }
        public long? usercode { get; set; }
 
        public string? tenantcode { get; set; }
+
+       public string? customername { get; set; }
+
+       public string? patientname { get; set; }
+
+       public string? patientid { get; set; }
+
+       public string? itemname { get; set; }
+
+       public string? warehousename { get; set; }
    }

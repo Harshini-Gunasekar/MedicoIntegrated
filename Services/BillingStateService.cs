@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Booking.Models;
+using medico_backend.Model;
 
 namespace Booking.Services
 {
@@ -33,6 +34,8 @@ namespace Booking.Services
         public bool IsHuman { get; set; } = true;
         public bool IsVipPatient { get; set; } = false;
         public bool ShowMoreInfo { get; set; } = false;
+        public double PatientAdvanceAvailable { get; set; } = 0;
+        public HmsPatientAdvanceSummary? PatientAdvanceSummary { get; set; } = null;
 
         public string GetBillingPatientName()
         {
@@ -71,7 +74,9 @@ namespace Booking.Services
             bool isVipPatient,
             bool showMoreInfo,
             string? savedRequestGuid = null,
-            bool printWithLetterhead = true)
+            bool printWithLetterhead = true,
+            double patientAdvanceAvailable = 0,
+            HmsPatientAdvanceSummary? patientAdvanceSummary = null)
         {
             BillModel = billModel;
             PatientPrefix = patientPrefix;
@@ -94,6 +99,8 @@ namespace Booking.Services
             ShowMoreInfo = showMoreInfo;
             SavedRequestGuid = savedRequestGuid;
             PrintWithLetterhead = printWithLetterhead;
+            PatientAdvanceAvailable = patientAdvanceAvailable;
+            PatientAdvanceSummary = patientAdvanceSummary;
             HasState = true;
             NotifyStateChanged();
         }
@@ -121,6 +128,8 @@ namespace Booking.Services
             IsHuman = true;
             IsVipPatient = false;
             ShowMoreInfo = false;
+            PatientAdvanceAvailable = 0;
+            PatientAdvanceSummary = null;
             HasState = false;
             NotifyStateChanged();
         }
