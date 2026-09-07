@@ -71,7 +71,7 @@
                     <div class="header-card-text">
                         <h2 class="header-card-heading">Pharmacy Billing</h2>
                         <div class="header-card-subheading">
-                            <span class="status-dot"></span> Total billing : @(SalesList.Count(s => string.IsNullOrEmpty(DefaultTenant) || string.IsNullOrEmpty(s.tenantcode) || string.Equals(s.tenantcode, DefaultTenant, StringComparison.OrdinalIgnoreCase)))
+                            <span class="status-dot"></span> Total billing : @(SalesList.Count(s => TenantMatches(s.tenantcode, DefaultTenant)))
                         </div>
                     </div>
                 </div>
@@ -163,6 +163,22 @@
             </div>
 
             <div class="card items-main-card">
+                @if (!string.IsNullOrEmpty(LoadErrorMessage))
+                {
+                    <div class="alert alert-danger d-flex align-items-center justify-content-between m-3 p-3 rounded-3 border-danger shadow-sm" role="alert" style="background: #fef2f2; border: 1px solid #f87171;">
+                        <div class="d-flex align-items-start gap-2">
+                            <i class="bi bi-exclamation-triangle-fill fs-5 text-danger mt-1"></i>
+                            <div>
+                                <strong class="d-block text-danger font-monospace" style="font-size: 0.9rem;">API / Loading Error:</strong>
+                                <span class="text-dark" style="font-size: 0.84rem; word-break: break-word;">@LoadErrorMessage</span>
+                            </div>
+                        </div>
+                        <button class="btn btn-sm btn-outline-danger ms-3 px-3 py-1 fw-bold text-nowrap" @onclick="LoadSales">
+                            <i class="bi bi-arrow-clockwise me-1"></i> Retry
+                        </button>
+                    </div>
+                }
+
                 @if (IsLoading)
                 {
                     <div class="text-center py-5">
@@ -176,6 +192,12 @@
                     <div class="text-center py-5 text-muted">
                         <i class="bi bi-receipt fs-1 d-block mb-3"></i>
                         No sales found.
+                        @if (!string.IsNullOrEmpty(LoadErrorMessage))
+                        {
+                            <div class="mt-2 text-danger small">
+                                <i class="bi bi-exclamation-circle me-1"></i> Reason: @LoadErrorMessage
+                            </div>
+                        }
                     </div>
                 }
                 else if (!IsCardView)
@@ -2233,7 +2255,7 @@
 
             if (!string.IsNullOrWhiteSpace(DefaultTenant))
             {
-                query = query.Where(s => string.IsNullOrEmpty(s.tenantcode) || string.Equals(s.tenantcode, DefaultTenant, StringComparison.OrdinalIgnoreCase));
+                query = query.Where(s => TenantMatches(s.tenantcode, DefaultTenant));
             }
 
             if (selectedReportWarehouseCode > 0)
@@ -2590,21 +2612,56 @@
         }
     }
 
+    private string? LoadErrorMessage = null;
+
     private async Task LoadSales()
     {
         IsLoading = true;
+        LoadErrorMessage = null;
+        StateHasChanged();
+
         try {
             var client = CreateClient();
-            var response = await client.GetStringAsync("api/ItemMaster/getsales");
-            
-            if (!string.IsNullOrWhiteSpace(response)) {
-                var masterList = ParseSalesListResponse(response);
-                SalesList = masterList ?? new();
+            HttpResponseMessage response;
+            try {
+                response = await client.GetAsync("api/ItemMaster/getsales");
+            } catch (HttpRequestException httpEx) {
+                Console.WriteLine($"[SalesMaster] HTTP request exception: {httpEx.Message}");
+                LoadErrorMessage = $"Connection Error: Unable to connect to API ({httpEx.Message})";
+                ToastService.ShowError(LoadErrorMessage);
+                SalesList = new();
+                return;
+            }
+
+            if (response.IsSuccessStatusCode) {
+                var responseContent = await response.Content.ReadAsStringAsync();
+                if (!string.IsNullOrWhiteSpace(responseContent)) {
+                    var masterList = ParseSalesListResponse(responseContent, out var parseErr);
+                    SalesList = masterList ?? new();
+                    if (!string.IsNullOrEmpty(parseErr)) {
+                        LoadErrorMessage = parseErr;
+                        Console.WriteLine($"[SalesMaster] Notice: {parseErr}");
+                    }
+                } else {
+                    SalesList = new();
+                }
+            } else {
+                var statusCode = (int)response.StatusCode;
+                var errBody = await response.Content.ReadAsStringAsync();
+                var parsedErr = ExtractErrorMessage(statusCode, response.StatusCode.ToString(), errBody);
+                LoadErrorMessage = $"API Error (HTTP {statusCode}): {parsedErr}";
+                Console.WriteLine($"[SalesMaster] LoadSales failed: {LoadErrorMessage}");
+                ToastService.ShowError(LoadErrorMessage);
+                SalesList = new();
             }
         } catch (Exception ex) {
-            ToastService.ShowError($"Load Error: {ex.Message}");
+            LoadErrorMessage = $"Unexpected Error: {ex.Message}";
+            Console.WriteLine($"[SalesMaster] LoadSales exception: {ex}");
+            ToastService.ShowError(LoadErrorMessage);
+            SalesList = new();
         } finally {
             IsLoading = false;
+            StateHasChanged();
         }
     }
 
@@ -3402,18 +3459,41 @@
         }
     }
 
+    private static string? GetJsonStringSafe(JsonElement p)
+    {
+        if (p.ValueKind == JsonValueKind.String) return p.GetString();
+        if (p.ValueKind == JsonValueKind.Number) return p.GetRawText();
+        if (p.ValueKind == JsonValueKind.True) return "true";
+        if (p.ValueKind == JsonValueKind.False) return "false";
+        if (p.ValueKind == JsonValueKind.Null || p.ValueKind == JsonValueKind.Undefined) return null;
+        return p.GetRawText();
+    }
+
+    private bool TenantMatches(string? itemTenant, string? defaultTenant)
+    {
+        if (string.IsNullOrWhiteSpace(defaultTenant)) return true;
+        if (string.IsNullOrWhiteSpace(itemTenant)) return true;
+        if (string.Equals(itemTenant.Trim(), defaultTenant.Trim(), StringComparison.OrdinalIgnoreCase)) return true;
+        if (int.TryParse(itemTenant.Trim(), out int i1) && int.TryParse(defaultTenant.Trim(), out int i2) && i1 == i2) return true;
+        return false;
+    }
+
     private sales_master? ParseMaster(JsonElement el, JsonSerializerOptions options)
     {
         var target = el;
         if (el.TryGetProperty("master", out var mProp)) target = mProp;
 
-        var m = JsonSerializer.Deserialize<sales_master>(target.GetRawText(), options);
-        if (m == null) return null;
+        sales_master? m = null;
+        try {
+            m = JsonSerializer.Deserialize<sales_master>(target.GetRawText(), options);
+        } catch { }
+
+        m ??= new sales_master();
 
         if (m.salescode == 0) {
             foreach(var key in new[] { "salescode", "sales_code", "code", "id" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    if (p.ValueKind == JsonValueKind.Number) { m.salescode = p.GetInt64(); break; }
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var valNum)) { m.salescode = valNum; break; }
                     else if (p.ValueKind == JsonValueKind.String && long.TryParse(p.GetString(), out var val)) { m.salescode = val; break; }
                 }
             }
@@ -3421,23 +3501,28 @@
         if (string.IsNullOrEmpty(m.billno)) {
             foreach(var key in new[] { "billno", "bill_no", "invoiceno", "invoice_no" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    m.billno = p.GetString();
+                    m.billno = GetJsonStringSafe(p);
                     if (!string.IsNullOrEmpty(m.billno)) break;
                 }
             }
         }
         if (m.billdate == default) {
             foreach(var key in new[] { "billdate", "bill_date", "createddate", "created_date" }) {
-                if (TryGetPropertyIgnoreCase(target, key, out var p) && p.TryGetDateTime(out var dt)) {
-                    m.billdate = dt;
-                    break;
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == JsonValueKind.String && DateTime.TryParse(p.GetString(), out var dt)) {
+                        m.billdate = dt;
+                        break;
+                    } else if (p.TryGetDateTime(out var dtVal)) {
+                        m.billdate = dtVal;
+                        break;
+                    }
                 }
             }
         }
         if (string.IsNullOrEmpty(m.patientname)) {
             foreach(var key in new[] { "patientname", "patient_name", "customername", "name" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    m.patientname = p.GetString();
+                    m.patientname = GetJsonStringSafe(p);
                     if (!string.IsNullOrEmpty(m.patientname)) break;
                 }
             }
@@ -3445,7 +3530,7 @@
         if (string.IsNullOrEmpty(m.mobileno)) {
             foreach(var key in new[] { "mobileno", "mobile_no", "mobile", "phone", "phoneno", "contactno" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    m.mobileno = p.GetString();
+                    m.mobileno = GetJsonStringSafe(p);
                     if (!string.IsNullOrEmpty(m.mobileno)) break;
                 }
             }
@@ -3453,15 +3538,26 @@
         if (string.IsNullOrEmpty(m.patientid)) {
             foreach(var key in new[] { "patientid", "patient_id", "customercode", "customer_code" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    m.patientid = p.GetString();
-                    if (!string.IsNullOrEmpty(m.patientid)) break;
+                    var pid = GetJsonStringSafe(p);
+                    if (!string.IsNullOrEmpty(pid) && pid != "0") {
+                        m.patientid = pid;
+                        break;
+                    }
+                }
+            }
+        }
+        if (!m.customercode.HasValue || m.customercode.Value == 0) {
+            foreach(var key in new[] { "customercode", "customer_code", "custid", "cust_id" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var cVal)) { m.customercode = cVal; break; }
+                    else if (p.ValueKind == JsonValueKind.String && long.TryParse(p.GetString(), out var cStrVal)) { m.customercode = cStrVal; break; }
                 }
             }
         }
         if (string.IsNullOrEmpty(m.salestype)) {
             foreach(var key in new[] { "salestype", "sales_type" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    m.salestype = p.GetString();
+                    m.salestype = GetJsonStringSafe(p);
                     if (!string.IsNullOrEmpty(m.salestype)) break;
                 }
             }
@@ -3469,7 +3565,7 @@
         if (string.IsNullOrEmpty(m.warehousefield)) {
             foreach(var key in new[] { "warehousefield", "warehouse_field", "warehousename", "storename" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    m.warehousefield = p.GetString();
+                    m.warehousefield = GetJsonStringSafe(p);
                     if (!string.IsNullOrEmpty(m.warehousefield)) break;
                 }
             }
@@ -3477,15 +3573,31 @@
         if (m.netamount == 0) {
             foreach(var key in new[] { "netamount", "net_amount", "totalamount", "total" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    if (p.ValueKind == JsonValueKind.Number) { m.netamount = p.GetDecimal(); break; }
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var dVal)) { m.netamount = dVal; break; }
                     else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) { m.netamount = val; break; }
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.paymentmode)) {
+            foreach(var key in new[] { "paymentmode", "payment_mode", "paymode" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.paymentmode = GetJsonStringSafe(p);
+                    if (!string.IsNullOrEmpty(m.paymentmode)) break;
+                }
+            }
+        }
+        if (string.IsNullOrEmpty(m.paymentstatus)) {
+            foreach(var key in new[] { "paymentstatus", "payment_status", "status" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    m.paymentstatus = GetJsonStringSafe(p);
+                    if (!string.IsNullOrEmpty(m.paymentstatus)) break;
                 }
             }
         }
         if (string.IsNullOrEmpty(m.tenantcode)) {
             foreach(var key in new[] { "tenantcode", "tenant_code", "tenantCode", "tenant" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
-                    m.tenantcode = p.GetString();
+                    m.tenantcode = GetJsonStringSafe(p);
                     if (!string.IsNullOrEmpty(m.tenantcode)) break;
                 }
             }
@@ -3493,8 +3605,9 @@
         return m;
     }
 
-    private List<sales_master> ParseSalesListResponse(string json)
+    private List<sales_master> ParseSalesListResponse(string json, out string? parseError)
     {
+        parseError = null;
         if (string.IsNullOrWhiteSpace(json)) return new();
         var options = new JsonSerializerOptions { 
             PropertyNameCaseInsensitive = true,
@@ -3505,34 +3618,51 @@
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
             
-            JsonElement arrayElement;
+            JsonElement arrayElement = default;
+            bool foundArray = false;
+
             if (root.ValueKind == JsonValueKind.Array) {
                 arrayElement = root;
+                foundArray = true;
             } else if (root.ValueKind == JsonValueKind.Object) {
                 if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == JsonValueKind.Array) {
                     arrayElement = dataProp;
+                    foundArray = true;
                 } else {
-                    bool found = false;
-                    arrayElement = default;
                     foreach (var prop in root.EnumerateObject()) {
                         if (prop.Value.ValueKind == JsonValueKind.Array) {
                             arrayElement = prop.Value;
-                            found = true;
+                            foundArray = true;
                             break;
                         }
                     }
-                    if (!found) return new();
                 }
-            } else return new();
+            }
+
+            if (!foundArray) {
+                if (root.ValueKind == JsonValueKind.Object) {
+                    if (root.TryGetProperty("message", out var mProp)) {
+                        parseError = $"Server message: {GetJsonStringSafe(mProp)}";
+                    } else if (root.TryGetProperty("status", out var sProp) && sProp.GetString() != "Success") {
+                        parseError = $"Server status: {GetJsonStringSafe(sProp)}";
+                    }
+                }
+                return new();
+            }
 
             var result = new List<sales_master>();
             foreach (var item in arrayElement.EnumerateArray()) {
-                var m = ParseMaster(item, options);
-                if (m != null) result.Add(m);
+                try {
+                    var m = ParseMaster(item, options);
+                    if (m != null) result.Add(m);
+                } catch (Exception itemEx) {
+                    Console.WriteLine($"[SalesMaster] Item parse error: {itemEx.Message}");
+                }
             }
             return result.OrderByDescending(x => x.salescode > 0 ? x.salescode : x.billdate.Ticks).ToList();
         } catch (Exception ex) {
             Console.WriteLine("Parse Error: " + ex.Message);
+            parseError = $"JSON Parse Error: {ex.Message}";
         }
 
         return new();
@@ -3568,7 +3698,7 @@
             if (root.ValueKind == JsonValueKind.Object) {
                 if (TryGetPropertyIgnoreCase(root, "master", out var masterProp)) {
                     var req = new sales_request();
-                    req.master = JsonSerializer.Deserialize<sales_master>(masterProp.GetRawText(), options);
+                    req.master = ParseMaster(masterProp, options) ?? new sales_master();
                     
                     if (TryGetPropertyIgnoreCase(root, "details", out var detailsProp) && detailsProp.ValueKind == JsonValueKind.Array) {
                         req.details = JsonSerializer.Deserialize<List<sales_detail>>(detailsProp.GetRawText(), options) ?? new();
@@ -3579,7 +3709,7 @@
                 }
                 
                 // Or maybe it's just a direct sales_master (without details)
-                var directMaster = JsonSerializer.Deserialize<sales_master>(root.GetRawText(), options);
+                var directMaster = ParseMaster(root, options);
                 if (directMaster != null && directMaster.salescode > 0) {
                     return new sales_request { master = directMaster, details = new() };
                 }
