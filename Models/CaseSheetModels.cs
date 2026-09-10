@@ -31,10 +31,11 @@ namespace medico_backend.Model
 
         // Status
         public bool refer_to_ip { get; set; } = false;
-        public bool referred_to_visiting_doctor { get; set; } = false;   // NEW
-        public string? visiting_doctor_name { get; set; }
+        public bool referred_to_visiting_doctor { get; set; } = false; // NEW
+        //public string? visiting_doctor_name { get; set; }
+        public List<VisitingDoctorItem> visiting_doctor_list { get; set; } = new();
         public bool is_consulted { get; set; } = false;
-        public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
+        public string sheet_status { get; set; } = "DRAFT"; // DRAFT / FINAL
 
 
         public string? tenant_code { get; set; }
@@ -67,9 +68,9 @@ namespace medico_backend.Model
 
 
         // Classification
-        public string? diagnosis_type { get; set; }   // PRIMARY / SECONDARY / COMORBIDITY
-        public string? condition_type { get; set; }   // ACUTE / CHRONIC / FOLLOWUP
-        public string? severity { get; set; }         // MILD / MODERATE / SEVERE
+        public string? diagnosis_type { get; set; } // PRIMARY / SECONDARY / COMORBIDITY
+        public string? condition_type { get; set; } // ACUTE / CHRONIC / FOLLOWUP
+        public string? severity { get; set; } // MILD / MODERATE / SEVERE
         public string status { get; set; } = "ACTIVE"; // ACTIVE / RESOLVED / ONGOING
 
 
@@ -93,7 +94,7 @@ namespace medico_backend.Model
 
         public string symptom_text { get; set; } = string.Empty;
         public string? duration { get; set; }
-        public string? severity { get; set; }  // MILD / MODERATE / SEVERE
+        public string? severity { get; set; } // MILD / MODERATE / SEVERE
         public string? notes { get; set; }
 
 
@@ -107,7 +108,7 @@ namespace medico_backend.Model
     {
         [ExplicitKey]
         public Guid pr_id { get; set; } = Guid.NewGuid();
-        public string pr_code { get; set; } = string.Empty;   // PR/2026/06/0001
+        public string pr_code { get; set; } = string.Empty; // PR/2026/06/0001
         public Guid? sheet_id { get; set; }
         public Guid? op_id { get; set; }
         public Guid? ip_id { get; set; }
@@ -156,7 +157,7 @@ namespace medico_backend.Model
         public bool after_food { get; set; } = false;
         public int? days { get; set; }
         public decimal? qty { get; set; }
-        public string? route { get; set; }   // ORAL / IV / IM / TOPICAL
+        public string? route { get; set; } // ORAL / IV / IM / TOPICAL
 
 
         // Billing
@@ -177,7 +178,7 @@ namespace medico_backend.Model
     {
         [ExplicitKey]
         public Guid inv_id { get; set; } = Guid.NewGuid();
-        public string inv_code { get; set; } = string.Empty;   // INV/2026/06/0001
+        public string inv_code { get; set; } = string.Empty; // INV/2026/06/0001
         public Guid? sheet_id { get; set; }
         public Guid? op_id { get; set; }
         public Guid? ip_id { get; set; }
@@ -189,7 +190,7 @@ namespace medico_backend.Model
         public DateTime inv_date { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         public string? notes { get; set; }
         public bool is_urgent { get; set; } = false;
-        public string status { get; set; } = "ORDERED";  // ORDERED / PARTIAL / COMPLETED
+        public string status { get; set; } = "ORDERED"; // ORDERED / PARTIAL / COMPLETED
 
 
         public string? tenant_code { get; set; }
@@ -220,7 +221,7 @@ namespace medico_backend.Model
 
 
         // Result tracking
-        public string result_status { get; set; } = "PENDING";  // PENDING / COMPLETED
+        public string result_status { get; set; } = "PENDING"; // PENDING / COMPLETED
         public string? result_value { get; set; }
         public DateTime? result_date { get; set; }
         public string? result_notes { get; set; }
@@ -259,7 +260,7 @@ namespace medico_backend.Model
 
         // Clinical notes (free text)
         public string? chief_complaint { get; set; }
-        public string? symptoms { get; set; }        // free-text paragraph (legacy support)
+        public string? symptoms { get; set; } // free-text paragraph (legacy support)
         public string? examination { get; set; }
         public string? advise { get; set; }
         public string? notes { get; set; }
@@ -272,9 +273,9 @@ namespace medico_backend.Model
 
         // Sheet status
         public bool refer_to_ip { get; set; } = false;
-        public bool referred_to_visiting_doctor { get; set; } = false;   // NEW
-        public string? visiting_doctor_name { get; set; }
-        public string sheet_status { get; set; } = "DRAFT";  // DRAFT / FINAL
+        public bool referred_to_visiting_doctor { get; set; } = false; // NEW
+        public List<VisitingDoctorItem> visiting_doctor_list { get; set; } = new();
+        public string sheet_status { get; set; } = "DRAFT"; // DRAFT / FINAL
 
 
         // Structured symptoms list
@@ -298,8 +299,8 @@ namespace medico_backend.Model
     {
         public int sno { get; set; }
         public string symptom_text { get; set; } = string.Empty;
-        public string? duration { get; set; }        // "3 days", "1 week"
-        public string? severity { get; set; }        // MILD / MODERATE / SEVERE
+        public string? duration { get; set; } // "3 days", "1 week"
+        public string? severity { get; set; } // MILD / MODERATE / SEVERE
         public string? notes { get; set; }
     }
 
@@ -310,9 +311,9 @@ namespace medico_backend.Model
         public string? icd_code { get; set; }
         public string? icd_description { get; set; }
         public string? diagnosis_text { get; set; }
-        public string? diagnosis_type { get; set; }  // PRIMARY / SECONDARY / COMORBIDITY
-        public string? condition_type { get; set; }  // ACUTE / CHRONIC / FOLLOWUP
-        public string? severity { get; set; }        // MILD / MODERATE / SEVERE
+        public string? diagnosis_type { get; set; } // PRIMARY / SECONDARY / COMORBIDITY
+        public string? condition_type { get; set; } // ACUTE / CHRONIC / FOLLOWUP
+        public string? severity { get; set; } // MILD / MODERATE / SEVERE
         public string status { get; set; } = "ACTIVE";
     }
 
@@ -330,7 +331,7 @@ namespace medico_backend.Model
     public class CaseSheetPrescriptionItem
     {
         public int sno { get; set; }
-        public string? diag_id { get; set; }         // link to specific diagnosis
+        public string? diag_id { get; set; } // link to specific diagnosis
         public string drug_name { get; set; } = string.Empty;
         public decimal? drug_code { get; set; }
         public string? generic_name { get; set; }
@@ -363,7 +364,7 @@ namespace medico_backend.Model
     public class CaseSheetInvestigationItem
     {
         public int sno { get; set; }
-        public string? diag_id { get; set; }         // link to specific diagnosis
+        public string? diag_id { get; set; } // link to specific diagnosis
         public string test_name { get; set; } = string.Empty;
         public int? test_code { get; set; }
         public string? test_category { get; set; }
@@ -427,8 +428,8 @@ namespace medico_backend.Model
         public bool is_consulted { get; set; }
         public string? sheet_status { get; set; }
         public bool refer_to_ip { get; set; } = false;
-        public bool referred_to_visiting_doctor { get; set; } = false;   // NEW
-        public string? visiting_doctor_name { get; set; }
+        public bool referred_to_visiting_doctor { get; set; } = false; // NEW
+        public List<OpCaseSheetVisitingDoctorModel> visiting_doctor_list { get; set; } = new();
 
 
         // Structured lists
@@ -494,20 +495,48 @@ namespace medico_backend.Model
         public DateTime? last_visit_date { get; set; }
         public string? tenant_code { get; set; }
     }
+    [Table("op_case_sheet_visiting_doctors")]
+    public class OpCaseSheetVisitingDoctorModel
+    {
+        [ExplicitKey]
+        public Guid visiting_doc_id { get; set; } = Guid.NewGuid();
+        public Guid sheet_id { get; set; }
+        public Guid? op_id { get; set; }
+        public Guid? ip_id { get; set; }
+        public decimal custid { get; set; }
+        public int sno { get; set; }
+
+        public string doctor_name { get; set; } = string.Empty;
+        public int? dcode { get; set; }
+        public string? notes { get; set; }
+
+        public string? tenant_code { get; set; }
+        public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+    }
+
+    public class VisitingDoctorItem
+    {
+        public int sno { get; set; }
+        public string doctor_name { get; set; } = string.Empty;
+        public int? dcode { get; set; }
+        public string? notes { get; set; }
+    }
 
     public class IcdSearchResult
     {
-        public string? icd_code { get; set; }
-        public string? icd_description { get; set; }
+        public string icd_code { get; set; } = string.Empty;
+        public string icd_description { get; set; } = string.Empty;
+        public string? icd_category { get; set; }
+        public string? icd_chapter { get; set; }
     }
 
     public class IcdItem
     {
         public int icd_id { get; set; }
-        public string? icd_code { get; set; }
-        public string? icd_description { get; set; }
+        public string icd_code { get; set; } = string.Empty;
+        public string icd_description { get; set; } = string.Empty;
         public string? icd_category { get; set; }
         public string? icd_chapter { get; set; }
-        public bool is_active { get; set; }
+        public bool is_active { get; set; } = true;
     }
-}
+}

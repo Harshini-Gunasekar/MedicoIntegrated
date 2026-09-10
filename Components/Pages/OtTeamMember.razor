@@ -1,0 +1,1661 @@
+@page "/ot-team"
+@page "/ot-team-member"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using Booking.Models
+@using Booking.Services
+@using Booking.Helpers
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using Newtonsoft.Json
+@inject OtService OtService
+@inject DoctorService DoctorService
+@inject NurseMasterService NurseService
+@inject LabSettingService LabSettingService
+@inject IHttpClientFactory ClientFactory
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject Booking.Services.ToastService ToastService
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+
+<div class="referral-page ot-team-page">
+    <!-- ========================================================================= -->
+    <!-- 1. TOP HEADER (INCREASED HEIGHT & PROMINENT PRESENCE)                     -->
+    <!-- ========================================================================= -->
+    <div class="team-page-header">
+        <div class="header-title-left">
+            <h1 class="page-main-title">OT Team Member Roster</h1>
+        </div>
+
+        <div class="header-controls-right">
+            <!-- Case Filter Single Dropdown (Left of Search Box) -->
+            <div class="header-filter-select-wrap">
+                <select class="header-filter-select" value="@caseFilterTab" @onchange="OnCaseFilterChanged">
+                    <option value="WITH_TEAM">Teams Allocated (@allRequests.Count(r => GetTeamCountForRequest(r.request_id) > 0))</option>
+                    <option value="ALL">All cases (@allRequests.Count)</option>
+                    <option value="PENDING">Pending Allocation (@allRequests.Count(r => GetTeamCountForRequest(r.request_id) == 0))</option>
+                </select>
+                <i class="bi bi-chevron-down header-filter-chevron"></i>
+            </div>
+
+            <!-- Search bar -->
+            <div class="header-search-wrap">
+                <i class="bi bi-search search-icon text-slate-400"></i>
+                <input type="text"
+                       class="header-search-input"
+                       placeholder="Search patient, surgery, doctor or theater..."
+                       value="@searchQuery"
+                       @oninput="OnSearchInput" />
+                @if (!string.IsNullOrWhiteSpace(searchQuery))
+                {
+                    <button type="button" class="btn-clear-search" @onclick="ClearSearch" title="Clear search">
+                        <i class="bi bi-x-lg"></i>
+                    </button>
+                }
+            </div>
+
+            <!-- Action: Assign Member -->
+            <button type="button" class="btn-assign-primary" @onclick="() => OpenAssignModal(null)">
+                <i class="bi bi-person-plus-fill me-1.5"></i>
+                <span>Assign Member</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 2. KPI STATISTICS TILES                                                   -->
+    <!-- ========================================================================= -->
+    <div class="kpi-grid">
+        <!-- 1. Total Surgery Cases -->
+        <div class="kpi-card">
+            <div class="kpi-icon-box kpi-icon-indigo">
+                <i class="bi bi-calendar2-check-fill"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@allRequests.Count</span>
+                <span class="kpi-label">Total Surgery Cases</span>
+            </div>
+        </div>
+
+        <!-- 2. Total Assigned Staff -->
+        <div class="kpi-card">
+            <div class="kpi-icon-box kpi-icon-blue">
+                <i class="bi bi-people-fill"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@allTeamMembers.Count</span>
+                <span class="kpi-label">Total Assigned Staff</span>
+            </div>
+        </div>
+
+        <!-- 3. Surgeons & Clinicians -->
+        <div class="kpi-card">
+            <div class="kpi-icon-box kpi-icon-sky">
+                <i class="bi bi-heart-pulse-fill"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@TotalSurgeonCount</span>
+                <span class="kpi-label">Surgeons &amp; Clinicians</span>
+            </div>
+        </div>
+
+        <!-- 4. Scrub & OT Nurses -->
+        <div class="kpi-card">
+            <div class="kpi-icon-box kpi-icon-emerald">
+                <i class="bi bi-shield-plus"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@TotalNurseCount</span>
+                <span class="kpi-label">Scrub &amp; OT Nurses</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 3. MAIN WORKSPACE: SCROLLABLE SURGERY CASE CARDS GRID                     -->
+    <!-- ========================================================================= -->
+    @if (isLoading)
+    {
+        <div class="loading-state-box p-4 text-center bg-white rounded-3 border flex-1 d-flex flex-column justify-content-center align-items-center">
+            <div class="spinner-border text-indigo-600" style="width: 2rem; height: 2rem;" role="status"></div>
+            <div class="text-slate-600 font-bold mt-2 font-12">Loading surgical cases &amp; team allocations...</div>
+        </div>
+    }
+    else
+    {
+        <div class="case-cards-container">
+            <!-- Scrollable Cards Portion -->
+            <div class="surgery-cards-scroll-area">
+                @if (!FilteredSurgeryCases.Any())
+                {
+                    <div class="empty-state-box p-4 text-center bg-white rounded-3 border my-auto">
+                        <div class="empty-state-icon mb-2">
+                            <i class="bi bi-inbox text-slate-300" style="font-size: 2.5rem;"></i>
+                        </div>
+                        <h4 class="font-bold text-slate-800 fs-6 mb-1">No Surgery Cases Found</h4>
+                        <p class="text-slate-500 font-12 mb-3" style="max-width: 380px; margin: 0 auto 0.75rem auto;">
+                            @(string.IsNullOrWhiteSpace(searchQuery) ? "No surgery cases are currently available." : $"No surgery cases match \"{searchQuery}\".")
+                        </p>
+                        @if (!string.IsNullOrWhiteSpace(searchQuery))
+                        {
+                            <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="ClearSearch">
+                                <i class="bi bi-x-circle me-1"></i> Clear Search
+                            </button>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="surgery-cards-grid">
+                        @foreach (var req in FilteredSurgeryCases)
+                        {
+                            var patName = !string.IsNullOrWhiteSpace(req.patient_name) ? req.patient_name : GetPatientName(req.custid);
+                            var docName = GetDoctorName(req.dcode);
+                            var theater = GetTheaterName(req.request_id);
+                            var schedTime = GetFormattedScheduleForRequest(req);
+                            var teamMembers = GetTeamMembersForRequest(req.request_id);
+                            var docCount = teamMembers.Count(m => IsDoctorMember(m) || IsAnesthetistMember(m));
+                            var nurseCount = teamMembers.Count(m => IsNurseMember(m));
+                            var totalStaff = teamMembers.Count;
+
+                            <div class="surgery-case-card" @onclick="() => OpenTeamMembersModal(req)">
+                                <!-- Card Header: Patient Profile + Priority -->
+                                <div class="case-card-top">
+                                    <div class="case-patient-profile">
+                                        <div class="patient-avatar-box">
+                                            @GetInitials(patName)
+                                        </div>
+                                        <div class="patient-meta-text">
+                                            <h3 class="patient-card-title">@patName</h3>
+                                            <span class="patient-id-badge">Cust #@req.custid.ToString("0")</span>
+                                        </div>
+                                    </div>
+                                    <span class="case-priority-badge @(req.priority?.ToUpper() == "EMERGENCY" ? "priority-emergency" : "priority-elective")">
+                                        @(string.IsNullOrWhiteSpace(req.priority) ? "ELECTIVE" : req.priority.ToUpper())
+                                    </span>
+                                </div>
+
+                                <!-- Procedure Banner -->
+                                <div class="case-card-procedure">
+                                    <i class="bi bi-heart-pulse-fill procedure-mini-icon"></i>
+                                    <span class="procedure-name">@req.procedure_name</span>
+                                    @if (!string.IsNullOrWhiteSpace(req.surgery_type))
+                                    {
+                                        <span class="procedure-type-tag">@req.surgery_type</span>
+                                    }
+                                </div>
+
+                                <!-- Metadata Rows (Compact & Aligned) -->
+                                <div class="case-details-box">
+                                    <div class="case-detail-row">
+                                        <span class="case-detail-label">
+                                            <i class="bi bi-door-open-fill me-1 text-slate-400"></i>OT Theater
+                                        </span>
+                                        <span class="case-detail-val">
+                                            @if (!string.IsNullOrWhiteSpace(theater))
+                                            {
+                                                <span class="theater-badge-pill">@theater</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-slate-400 font-normal">Pending</span>
+                                            }
+                                        </span>
+                                    </div>
+
+                                    <div class="case-detail-row">
+                                        <span class="case-detail-label">
+                                            <i class="bi bi-clock-fill me-1 text-slate-400"></i>Schedule
+                                        </span>
+                                        <span class="case-detail-val text-slate-700 font-medium">
+                                            @schedTime
+                                        </span>
+                                    </div>
+
+                                    <div class="case-detail-row">
+                                        <span class="case-detail-label">
+                                            <i class="bi bi-person-badge-fill me-1 text-slate-400"></i>Doctor
+                                        </span>
+                                        <span class="case-detail-val font-semibold text-indigo-900">
+                                            Dr. @docName
+                                        </span>
+                                    </div>
+                                </div>
+
+                                <!-- Team Breakdown Summary Pill -->
+                                <div class="case-team-summary-bar">
+                                    @if (totalStaff > 0)
+                                    {
+                                        <div class="staff-total-wrap">
+                                            <i class="bi bi-people-fill text-indigo-600 me-1"></i>
+                                            <span class="staff-total-text"><strong>@totalStaff</strong> Assigned Member@(totalStaff == 1 ? "" : "s")</span>
+                                        </div>
+                                        <div class="staff-breakdown-tags">
+                                            @if (docCount > 0)
+                                            {
+                                                <span class="staff-mini-tag tag-doc">@docCount Doctor@(docCount == 1 ? "" : "s")</span>
+                                            }
+                                            @if (nurseCount > 0)
+                                            {
+                                                <span class="staff-mini-tag tag-nurse">@nurseCount Nurse@(nurseCount == 1 ? "" : "s")</span>
+                                            }
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <span class="staff-none-pill">
+                                            <i class="bi bi-exclamation-circle text-amber-500 me-1"></i>No team allocated
+                                        </span>
+                                    }
+                                </div>
+
+                                <!-- Card Action Footer (Small & Center Aligned) -->
+                                <div class="case-card-footer" @onclick:stopPropagation>
+                                    <button type="button" class="btn-card-view-team" @onclick="() => OpenTeamMembersModal(req)" title="View OT Team Members">
+                                        <i class="bi bi-people-fill me-1"></i>
+                                        <span>View Team Members</span>
+                                    </button>
+                                    <button type="button" class="btn-card-assign-icon" @onclick="() => OpenAssignModal(req)" title="Assign Member">
+                                        <i class="bi bi-person-plus-fill"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    <!-- ========================================================================= -->
+    <!-- 4. VIEW TEAM MEMBERS POP-UP MODAL (SHOW ONLY NAME, QUALIFICATION & ROLE)  -->
+    <!-- ========================================================================= -->
+    @if (showTeamMembersModal && activeViewCase != null)
+    {
+        var pat = !string.IsNullOrWhiteSpace(activeViewCase.patient_name) ? activeViewCase.patient_name : GetPatientName(activeViewCase.custid);
+        var theater = GetTheaterName(activeViewCase.request_id);
+        var sched = GetFormattedScheduleForRequest(activeViewCase);
+        var doc = GetDoctorName(activeViewCase.dcode);
+        var caseMembers = GetScopedMembersForActiveCase();
+
+        <div class="modal-overlay" @onclick="CloseTeamMembersModal">
+            <div class="modal-form-card team-view-modal-card" style="max-width: 780px;" @onclick:stopPropagation>
+                <!-- Modal Header -->
+                <div class="modal-header-bar">
+                    <div class="modal-header-left">
+                        <div class="modal-header-icon-box">
+                            <i class="bi bi-people-fill"></i>
+                        </div>
+                        <div class="modal-header-text-block">
+                            <div class="modal-title-row">
+                                <h3 class="modal-title-text">OT Team Members</h3>
+                                <span class="modal-count-pill">@caseMembers.Count() @(caseMembers.Count() == 1 ? "Staff" : "Staffs")</span>
+                            </div>
+                            <div class="modal-case-sub-meta">
+                                <span class="font-bold text-slate-900">@pat</span>
+                                <span class="modal-meta-dot">&bull;</span>
+                                <span class="text-indigo-600 font-bold">@activeViewCase.procedure_name</span>
+                                @if (!string.IsNullOrWhiteSpace(theater))
+                                {
+                                    <span class="modal-meta-dot">&bull;</span>
+                                    <span class="theater-badge-pill">@theater</span>
+                                }
+                                <span class="modal-meta-dot">&bull;</span>
+                                <span>@sched</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="modal-header-right-actions">
+                        <button type="button" class="btn-assign-header-pill" @onclick="() => OpenAssignModal(activeViewCase)" title="Assign More Staff">
+                            <i class="bi bi-person-plus-fill me-1"></i>
+                            <span>Assign More Staff</span>
+                        </button>
+                        <button type="button" class="modal-close-btn" @onclick="CloseTeamMembersModal" title="Close">&times;</button>
+                    </div>
+                </div>
+
+                <!-- Role Filter Strip inside Modal -->
+                <div class="modal-filter-strip">
+                    <button type="button" class="modal-filter-btn @(selectedRoleFilter == null ? "active" : "")" @onclick='() => selectedRoleFilter = null'>
+                        <span>ALL STAFF</span>
+                        <span class="m-pill-count">(@GetActiveCaseStaffCount(null))</span>
+                    </button>
+                    <button type="button" class="modal-filter-btn @(selectedRoleFilter == "SURGEON" ? "active" : "")" @onclick='() => selectedRoleFilter = "SURGEON"'>
+                        <span>SURGEONS</span>
+                        <span class="m-pill-count">(@GetActiveCaseStaffCount("SURGEON"))</span>
+                    </button>
+                    <button type="button" class="modal-filter-btn @(selectedRoleFilter == "ANESTHETIST" ? "active" : "")" @onclick='() => selectedRoleFilter = "ANESTHETIST"'>
+                        <span>ANESTHETISTS</span>
+                        <span class="m-pill-count">(@GetActiveCaseStaffCount("ANESTHETIST"))</span>
+                    </button>
+                    <button type="button" class="modal-filter-btn @(selectedRoleFilter == "NURSE" ? "active" : "")" @onclick='() => selectedRoleFilter = "NURSE"'>
+                        <span>NURSES</span>
+                        <span class="m-pill-count">(@GetActiveCaseStaffCount("NURSE"))</span>
+                    </button>
+                </div>
+
+                <!-- Modal Table Body: Shows ONLY Staff Name, Qualification, and Role Alone -->
+                <div class="modal-table-scroll-wrap">
+                    @if (!caseMembers.Any())
+                    {
+                        <div class="modal-empty-state-box">
+                            <div class="modal-empty-icon-wrap">
+                                <i class="bi bi-people"></i>
+                            </div>
+                            <h4 class="modal-empty-title">No Members Found</h4>
+                            <p class="modal-empty-desc">No team members allocated under this category for this surgery case.</p>
+                            <button type="button" class="btn-assign-primary btn-sm btn-empty-assign" @onclick="() => OpenAssignModal(activeViewCase)">
+                                <i class="bi bi-plus-lg me-1"></i>
+                                <span>Assign Member</span>
+                            </button>
+                        </div>
+                    }
+                    else
+                    {
+                        <table class="table ot-modal-table align-middle mb-0">
+                            <colgroup>
+                                <col style="width: 38%;" />
+                                <col style="width: 34%;" />
+                                <col style="width: 18%;" />
+                                <col style="width: 10%;" />
+                            </colgroup>
+                            <thead>
+                                <tr>
+                                    <th class="col-staff-name">STAFF NAME</th>
+                                    <th class="col-qualification">QUALIFICATION</th>
+                                    <th class="col-role">ROLE</th>
+                                    <th class="col-action">ACTION</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var m in caseMembers)
+                                {
+                                    var cleanName = GetCleanStaffName(m.staff_name);
+                                    var qual = GetStaffQualification(m);
+                                    var roleDisplay = GetCleanRoleDisplay(m);
+
+                                    <tr class="modal-table-row">
+                                        <!-- 1. Staff Name (NO Doctor Code) -->
+                                        <td class="col-staff-name">
+                                            <div class="staff-cell-inline">
+                                                @if (IsNurseMember(m))
+                                                {
+                                                    <div class="staff-avatar-circle avatar-emerald">
+                                                        @GetInitials(cleanName)
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    var docModel = GetDoctorForMember(m);
+                                                    var docImg = GetDoctorImageSrc(docModel);
+                                                    var docInitial = GetDoctorInitial(docModel, cleanName);
+
+                                                    <div class="staff-avatar-circle avatar-indigo @(IsAnesthetistMember(m) ? "avatar-sky-circle" : "")">
+                                                        @if (!string.IsNullOrEmpty(docImg))
+                                                        {
+                                                            <img src="@docImg" alt="@cleanName" class="staff-avatar-img" />
+                                                        }
+                                                        else
+                                                        {
+                                                            <span>@docInitial</span>
+                                                        }
+                                                    </div>
+                                                }
+                                                <span class="staff-name-text">@cleanName</span>
+                                            </div>
+                                        </td>
+
+                                        <!-- 2. Qualification Alone -->
+                                        <td class="col-qualification">
+                                            <span class="qualification-text">@qual</span>
+                                        </td>
+
+                                        <!-- 3. Role Alone -->
+                                        <td class="col-role">
+                                            <span class="role-pill-tag @GetRolePillClass(m)">@roleDisplay</span>
+                                        </td>
+
+                                        <!-- 4. Action -->
+                                        <td class="col-action">
+                                            <button type="button" class="btn-ghost-action btn-ghost-delete" @onclick="() => PromptRemoveMember(m)" title="Remove Member from Case">
+                                                <i class="bi bi-trash3"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    }
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- ========================================================================= -->
+    <!-- 5. ASSIGN SURGICAL TEAM MEMBER MODAL                                      -->
+    <!-- ========================================================================= -->
+    @if (showAssignModal)
+    {
+        <div class="modal-overlay">
+            <div class="modal-form-card team-modal-card" style="max-width: 640px;" @onclick:stopPropagation>
+                <!-- Modal Header -->
+                <div class="modal-header-bar">
+                    <div class="modal-header-left">
+                        <div class="modal-header-icon-box">
+                            <i class="bi bi-person-plus-fill"></i>
+                        </div>
+                        <div class="modal-header-text-block">
+                            <h3 class="modal-title-text">Assign Surgical Team Members</h3>
+                            <p class="modal-subtitle-text">Allocate doctors, surgeons, anesthetists, and nurses to an OT case</p>
+                        </div>
+                    </div>
+                    <button type="button" class="modal-close-btn" @onclick="CloseAssignModal" title="Close">&times;</button>
+                </div>
+
+                <div class="modal-body assign-modal-body">
+                    <!-- Searchable Surgery Case Picker -->
+                    <div class="form-field-unit">
+                        <label class="nt-form-label">Select Surgery Case <span class="text-danger">*</span></label>
+                        <div class="modal-case-search-wrap" @onclick:stopPropagation>
+                            <div class="modal-case-input-box @(isAssignCaseDropdownOpen ? "focused" : "")">
+                                <i class="bi bi-search case-search-icon"></i>
+                                <input type="text"
+                                       class="modal-case-input"
+                                       placeholder="Type patient name, IP#, or surgery procedure..."
+                                       value="@assignCaseSearchQuery"
+                                       @oninput="OnAssignCaseSearchInput"
+                                       @onfocus="() => isAssignCaseDropdownOpen = true" />
+                                @if (assignRequestId != Guid.Empty || !string.IsNullOrWhiteSpace(assignCaseSearchQuery))
+                                {
+                                    <button type="button" class="btn-clear-case-input" @onclick="ClearAssignCaseSelection" title="Clear selection">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                }
+                                <button type="button" class="btn-toggle-dropdown" @onclick="() => isAssignCaseDropdownOpen = !isAssignCaseDropdownOpen" title="Toggle cases list">
+                                    <i class="bi @(isAssignCaseDropdownOpen ? "bi-chevron-up" : "bi-chevron-down")"></i>
+                                </button>
+                            </div>
+
+                            @if (isAssignCaseDropdownOpen)
+                            {
+                                <div class="modal-case-dropdown-popover">
+                                    @if (!FilteredAssignSurgeryCases.Any())
+                                    {
+                                        <div class="p-3 text-center text-muted font-12">
+                                            <i class="bi bi-search text-slate-300 d-block mb-1 fs-5"></i>
+                                            <span>No surgery cases found matching "@assignCaseSearchQuery"</span>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        @foreach (var req in FilteredAssignSurgeryCases)
+                                        {
+                                            var pat = !string.IsNullOrWhiteSpace(req.patient_name) ? req.patient_name : GetPatientName(req.custid);
+                                            var doc = GetDoctorName(req.dcode);
+                                            var theater = GetTheaterName(req.request_id);
+                                            var isSelected = assignRequestId == req.request_id;
+
+                                            <div class="modal-case-dropdown-item @(isSelected ? "selected" : "")" @onclick="() => SelectAssignSurgeryCase(req)">
+                                                <div class="modal-case-avatar">@GetInitials(pat)</div>
+                                                <div class="modal-case-info">
+                                                    <div class="d-flex justify-content-between align-items-center mb-0.5">
+                                                        <span class="modal-case-pat font-bold font-12">@pat</span>
+                                                        <span class="modal-case-ip font-10">Cust #@req.custid.ToString("0")</span>
+                                                    </div>
+                                                    <div class="modal-case-proc font-11 font-semibold text-slate-700">
+                                                        <i class="bi bi-heart-pulse-fill text-indigo-500 me-1"></i>@req.procedure_name
+                                                    </div>
+                                                    <div class="d-flex align-items-center gap-2 mt-0.5 font-10 text-slate-500">
+                                                        @if (!string.IsNullOrWhiteSpace(theater))
+                                                        {
+                                                            <span class="badge bg-slate-100 text-slate-700 font-9">@theater</span>
+                                                        }
+                                                        <span>Dr. @doc</span>
+                                                    </div>
+                                                </div>
+                                                @if (isSelected)
+                                                {
+                                                    <i class="bi bi-check-circle-fill text-indigo-600 font-13"></i>
+                                                }
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Selected Case Preview Chip -->
+                    @{
+                        var activeReq = allRequests.FirstOrDefault(r => r.request_id == assignRequestId);
+                    }
+                    @if (activeReq != null)
+                    {
+                        var activePat = !string.IsNullOrWhiteSpace(activeReq.patient_name) ? activeReq.patient_name : GetPatientName(activeReq.custid);
+                        var activeDoc = GetDoctorName(activeReq.dcode);
+                        var activeTheater = GetTheaterName(activeReq.request_id);
+                        <div class="selected-case-preview-card">
+                            <div class="case-preview-badge">
+                                <i class="bi bi-person-fill-check"></i>
+                            </div>
+                            <div class="case-preview-details">
+                                <div class="case-preview-title">@activeReq.procedure_name</div>
+                                <div class="case-preview-sub">
+                                    <span><i class="bi bi-person-fill text-emerald-700 me-1"></i><strong>@activePat</strong></span>
+                                    <span class="preview-dot">•</span>
+                                    <span><i class="bi bi-person-badge text-emerald-700 me-1"></i>Dr. @activeDoc</span>
+                                    @if (!string.IsNullOrWhiteSpace(activeTheater))
+                                    {
+                                        <span class="preview-dot">•</span>
+                                        <span class="badge bg-emerald-200 text-emerald-900 font-10">@activeTheater</span>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                    }
+
+                    <!-- Role in Surgery -->
+                    <div class="form-field-unit">
+                        <label class="nt-form-label">Role in Surgery <span class="text-danger">*</span></label>
+                        <select class="form-select nt-select-control" value="@assignRole" @onchange="OnRoleSelectChanged">
+                            <option value="DOCTOR">DOCTORS (Surgeon / Clinician / Anesthetist)</option>
+                            <option value="NURSE">NURSES (Scrub / Floor Nurse)</option>
+                            <option value="OTHERS">OTHERS (Technician / Support / Staff)</option>
+                        </select>
+                    </div>
+
+                    <!-- Staff Selection Source Tabs -->
+                    <div class="assign-tabs-container">
+                        <div class="assign-tabs-strip">
+                            <button type="button" class="assign-tab-btn @(assignSourceTab == "DOCTOR" ? "active" : "")" @onclick='() => SetAssignSourceTab("DOCTOR")'>
+                                <i class="bi bi-person-badge"></i>
+                                <span>Doctors &amp; Surgeons</span>
+                                <span class="assign-tab-badge">@doctorsList.Count</span>
+                            </button>
+                            <button type="button" class="assign-tab-btn @(assignSourceTab == "NURSE" ? "active" : "")" @onclick='() => SetAssignSourceTab("NURSE")'>
+                                <i class="bi bi-heart-pulse"></i>
+                                <span>Nursing Staff</span>
+                                <span class="assign-tab-badge">@nursesList.Count</span>
+                            </button>
+                            <button type="button" class="assign-tab-btn @(assignSourceTab == "MANUAL" ? "active" : "")" @onclick='() => SetAssignSourceTab("MANUAL")'>
+                                <i class="bi bi-person-plus"></i>
+                                <span>Others</span>
+                            </button>
+                        </div>
+
+                        <div class="assign-tab-content">
+                            @if (assignSourceTab == "DOCTOR")
+                            {
+                                <div class="picker-search-wrap mb-2">
+                                    <i class="bi bi-search"></i>
+                                    <input type="text" class="picker-search-input" placeholder="Search doctors by name or qualification..." @bind="docSearch" @bind:event="oninput" />
+                                    @if (!string.IsNullOrWhiteSpace(docSearch))
+                                    {
+                                        <button type="button" class="picker-search-clear" @onclick='() => docSearch = ""'>&times;</button>
+                                    }
+                                </div>
+
+                                <div class="picker-list-box">
+                                    @foreach (var doc in FilteredDoctorsForAssign)
+                                    {
+                                        var docFullName = string.IsNullOrWhiteSpace(doc.name) ? (doc.doctorfullname ?? "Doctor") : doc.name;
+                                        var spec = string.IsNullOrWhiteSpace(doc.qualification) ? (doc.description ?? "Doctor") : doc.qualification;
+                                        var isSelected = pendingAllocations.Any(p => p.DCode == doc.dcode || p.StaffName == $"Dr. {docFullName}" || p.StaffName == docFullName);
+
+                                        <div class="picker-item @(isSelected ? "selected" : "")" @onclick="() => ToggleDoctorForAssign(doc.dcode, docFullName)">
+                                            <div class="picker-checkbox">
+                                                <input type="checkbox" checked="@isSelected" @onclick:stopPropagation @onchange="() => ToggleDoctorForAssign(doc.dcode, docFullName)" />
+                                            </div>
+                                            <div class="staff-avatar-circle avatar-indigo">
+                                                @{
+                                                    var docImg = GetDoctorImageSrc(doc);
+                                                }
+                                                @if (!string.IsNullOrEmpty(docImg))
+                                                {
+                                                    <img src="@docImg" alt="@docFullName" class="staff-avatar-img" />
+                                                }
+                                                else
+                                                {
+                                                    <span>@GetDoctorInitial(doc, docFullName)</span>
+                                                }
+                                            </div>
+                                            <div class="picker-item-details">
+                                                <span class="picker-item-name font-bold">Dr. @docFullName</span>
+                                                <span class="picker-item-sub font-11 text-slate-500">@spec</span>
+                                            </div>
+                                            @if (isSelected)
+                                            {
+                                                <span class="badge bg-indigo-100 text-indigo-700 font-10">Selected</span>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else if (assignSourceTab == "NURSE")
+                            {
+                                <div class="picker-search-wrap mb-2">
+                                    <i class="bi bi-search"></i>
+                                    <input type="text" class="picker-search-input" placeholder="Search nurses by name..." @bind="nurseSearch" @bind:event="oninput" />
+                                    @if (!string.IsNullOrWhiteSpace(nurseSearch))
+                                    {
+                                        <button type="button" class="picker-search-clear" @onclick='() => nurseSearch = ""'>&times;</button>
+                                    }
+                                </div>
+
+                                <div class="picker-list-box">
+                                    @foreach (var n in FilteredNursesForAssign)
+                                    {
+                                        var nName = string.IsNullOrWhiteSpace(n.nursename) ? (n.shortname ?? "Nurse") : n.nursename;
+                                        var isSelected = pendingAllocations.Any(p => p.StaffName == nName);
+
+                                        <div class="picker-item @(isSelected ? "selected" : "")" @onclick='() => ToggleNurseForAssign(nName, "")'>
+                                            <div class="picker-checkbox">
+                                                <input type="checkbox" checked="@isSelected" @onclick:stopPropagation @onchange='() => ToggleNurseForAssign(nName, "")' />
+                                            </div>
+                                            <div class="staff-avatar-circle avatar-emerald">
+                                                @GetInitials(nName)
+                                            </div>
+                                            <div class="picker-item-details">
+                                                <span class="picker-item-name font-bold">@nName</span>
+                                                <span class="picker-item-sub font-11 text-slate-500">@(n.shortname ?? "Nursing Staff")</span>
+                                            </div>
+                                            @if (isSelected)
+                                            {
+                                                <span class="badge bg-emerald-100 text-emerald-700 font-10">Selected</span>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <!-- Others Tab: Immediate clickability on input -->
+                                <div class="form-field-unit">
+                                    <label class="nt-form-label">Staff / Clinician Name <span class="text-danger">*</span></label>
+                                    <div class="manual-input-group">
+                                        <i class="bi bi-person-fill manual-input-icon"></i>
+                                        <input type="text"
+                                               class="manual-name-input"
+                                               @bind="assignStaffName"
+                                               @bind:event="oninput"
+                                               placeholder="e.g. Dr. K. D. Kanagaraj / Nurse Priya / Tech Raman"
+                                               @onkeydown="@(e => { if (e.Key == "Enter") AddManualPendingStaff(); })" />
+                                        <button type="button"
+                                                class="btn-add-to-team"
+                                                @onclick="AddManualPendingStaff"
+                                                disabled="@string.IsNullOrWhiteSpace(assignStaffName)">
+                                            <i class="bi bi-plus-circle-fill me-1"></i>
+                                            <span>Add to Team</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Selected Team Members Pending Tray -->
+                    @if (pendingAllocations.Any())
+                    {
+                        <div class="pending-roster-tray">
+                            <div class="pending-tray-header">
+                                <div class="d-flex align-items-center gap-2">
+                                    <span class="pending-tray-icon"><i class="bi bi-people-fill"></i></span>
+                                    <span class="pending-tray-title">Selected Members for Allocation:</span>
+                                    <span class="pending-tray-count-badge">@pendingAllocations.Count</span>
+                                </div>
+                                <button type="button" class="btn-clear-all-link" @onclick="() => pendingAllocations.Clear()" title="Clear all selected members">
+                                    <i class="bi bi-trash3 me-1"></i>Clear All
+                                </button>
+                            </div>
+                            <div class="pending-chips-wrap">
+                                @foreach (var p in pendingAllocations)
+                                {
+                                    <div class="pending-member-chip @(p.Type == "NURSE" ? "pending-chip-nurse" : "")">
+                                        <span class="pending-chip-role">@(p.Type == "NURSE" ? "Nurse" : GetCleanRoleDisplay(p.Role))</span>
+                                        <span class="pending-chip-name">@p.StaffName</span>
+                                        <button type="button" class="btn-chip-remove" @onclick="() => pendingAllocations.Remove(p)" title="Remove member">&times;</button>
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+
+                <!-- Modal Footer (Right-Aligned Buttons) -->
+                <div class="modal-footer-bar">
+                    <button type="button" class="btn-modal-cancel" @onclick="CloseAssignModal">Cancel</button>
+                    <button type="button" class="btn-assign-primary btn-sm" @onclick="SaveAssignMemberAsync" disabled="@(isSaving || assignRequestId == Guid.Empty || (!pendingAllocations.Any() && string.IsNullOrWhiteSpace(assignStaffName)))">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Allocating...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check-circle-fill me-1"></i>
+                            <span>Allocate @(pendingAllocations.Count > 0 ? $"({pendingAllocations.Count}) " : "")to Surgery Case</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private List<OtSurgeryRequestListModel> allRequests = new();
+    private List<OtMasterModel> otTheaters = new();
+    private List<OtScheduleModel> allSchedules = new();
+    private List<TeamAllocationItem> allTeamMembers = new();
+    private List<DoctorMasterModel> doctorsList = new();
+    private List<NurseMasterModel> nursesList = new();
+
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private string searchQuery = "";
+    private string caseFilterTab = "WITH_TEAM";
+    private string? selectedRoleFilter = null;
+
+    // View Team Members Modal state (Popup)
+    private bool showTeamMembersModal = false;
+    private OtSurgeryRequestListModel? activeViewCase = null;
+
+    // Assign Modal state
+    private bool showAssignModal = false;
+    private Guid assignRequestId = Guid.Empty;
+    private string assignRole = "DOCTOR";
+    private string assignSourceTab = "DOCTOR";
+    private string assignStaffName = "";
+    private string assignStaffCode = "";
+    private string docSearch = "";
+    private string nurseSearch = "";
+    private string assignCaseSearchQuery = "";
+    private bool isAssignCaseDropdownOpen = false;
+
+    public class PendingAllocationItem
+    {
+        public string Role { get; set; } = "SURGEON";
+        public string StaffName { get; set; } = string.Empty;
+        public string? StaffCode { get; set; }
+        public int? DCode { get; set; }
+        public string Type { get; set; } = "DOCTOR";
+    }
+
+    private List<PendingAllocationItem> pendingAllocations = new();
+
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    public class TeamAllocationItem
+    {
+        public OtTeamMemberModel Member { get; set; } = new();
+        public OtSurgeryRequestListModel? Request { get; set; }
+    }
+
+    private IEnumerable<OtSurgeryRequestListModel> FilteredSurgeryCases =>
+        allRequests.Where(r =>
+        {
+            // Tab filter
+            if (caseFilterTab == "WITH_TEAM" && GetTeamCountForRequest(r.request_id) == 0)
+                return false;
+            if (caseFilterTab == "PENDING" && GetTeamCountForRequest(r.request_id) > 0)
+                return false;
+
+            // Search query filter
+            if (string.IsNullOrWhiteSpace(searchQuery)) return true;
+
+            var q = searchQuery.Trim();
+            var pat = !string.IsNullOrWhiteSpace(r.patient_name) ? r.patient_name : GetPatientName(r.custid);
+            var proc = r.procedure_name ?? "";
+            var doc = GetDoctorName(r.dcode);
+            var theater = GetTheaterName(r.request_id);
+            var custStr = r.custid.ToString("0");
+
+            return pat.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                   proc.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                   doc.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                   theater.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                   custStr.Contains(q);
+        });
+
+    private IEnumerable<OtSurgeryRequestListModel> FilteredAssignSurgeryCases =>
+        string.IsNullOrWhiteSpace(assignCaseSearchQuery)
+            ? allRequests
+            : allRequests.Where(r =>
+            {
+                var pat = !string.IsNullOrWhiteSpace(r.patient_name) ? r.patient_name : GetPatientName(r.custid);
+                var proc = r.procedure_name ?? "";
+                var doc = GetDoctorName(r.dcode);
+                var theater = GetTheaterName(r.request_id);
+                var q = assignCaseSearchQuery.Trim();
+                return pat.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                       proc.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                       doc.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                       theater.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+                       r.custid.ToString("0").Contains(q);
+            });
+
+    private IEnumerable<DoctorMasterModel> FilteredDoctorsForAssign =>
+        string.IsNullOrWhiteSpace(docSearch)
+            ? doctorsList
+            : doctorsList.Where(d =>
+                (!string.IsNullOrWhiteSpace(d.name) && d.name.Contains(docSearch, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(d.doctorfullname) && d.doctorfullname.Contains(docSearch, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(d.qualification) && d.qualification.Contains(docSearch, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(d.description) && d.description.Contains(docSearch, StringComparison.OrdinalIgnoreCase)));
+
+    private IEnumerable<NurseMasterModel> FilteredNursesForAssign =>
+        string.IsNullOrWhiteSpace(nurseSearch)
+            ? nursesList
+            : nursesList.Where(n =>
+                (!string.IsNullOrWhiteSpace(n.nursename) && n.nursename.Contains(nurseSearch, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(n.shortname) && n.shortname.Contains(nurseSearch, StringComparison.OrdinalIgnoreCase)));
+
+    private int TotalSurgeonCount =>
+        allTeamMembers.Count(m => MatchesMemberCategory(m.Member, "SURGEON") || MatchesMemberCategory(m.Member, "DOCTOR"));
+
+    private int TotalNurseCount =>
+        allTeamMembers.Count(m => MatchesMemberCategory(m.Member, "NURSE"));
+
+    private IEnumerable<OtTeamMemberModel> GetScopedMembersForActiveCase()
+    {
+        if (activeViewCase == null) return Enumerable.Empty<OtTeamMemberModel>();
+        var list = allTeamMembers.Where(m => m.Member.request_id == activeViewCase.request_id).Select(m => m.Member);
+
+        if (selectedRoleFilter != null)
+        {
+            list = list.Where(m => MatchesMemberCategory(m, selectedRoleFilter));
+        }
+
+        return list;
+    }
+
+    private int GetActiveCaseStaffCount(string? roleFilter)
+    {
+        if (activeViewCase == null) return 0;
+        var list = allTeamMembers.Where(m => m.Member.request_id == activeViewCase.request_id).Select(m => m.Member);
+        if (roleFilter != null)
+        {
+            list = list.Where(m => MatchesMemberCategory(m, roleFilter));
+        }
+        return list.Count();
+    }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        searchQuery = e.Value?.ToString() ?? "";
+    }
+
+    private void OnCaseFilterChanged(ChangeEventArgs e)
+    {
+        caseFilterTab = e.Value?.ToString() ?? "ALL";
+    }
+
+    private void ClearSearch()
+    {
+        searchQuery = "";
+    }
+
+    private void OpenTeamMembersModal(OtSurgeryRequestListModel req)
+    {
+        activeViewCase = req;
+        selectedRoleFilter = null;
+        showTeamMembersModal = true;
+    }
+
+    private void CloseTeamMembersModal()
+    {
+        showTeamMembersModal = false;
+        activeViewCase = null;
+        selectedRoleFilter = null;
+    }
+
+    private int GetTeamCountForRequest(Guid requestId) =>
+        allTeamMembers.Count(m => m.Member.request_id == requestId);
+
+    private List<OtTeamMemberModel> GetTeamMembersForRequest(Guid requestId) =>
+        allTeamMembers.Where(m => m.Member.request_id == requestId).Select(m => m.Member).ToList();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success && !string.IsNullOrEmpty(tenantCodeResult.Value)
+                    ? tenantCodeResult.Value
+                    : (TenantState?.TenantCode ?? "0010");
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success && !string.IsNullOrEmpty(tokenResult.Value)
+                    ? tokenResult.Value
+                    : (TenantState?.AuthToken ?? "");
+
+                await LoadAllDataAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading OT Team page: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadAllDataAsync()
+    {
+        isLoading = true;
+        try
+        {
+            var t1 = LoadDoctorsAsync();
+            var t2 = LoadNursesAsync();
+            var t4 = LoadTheatersAsync();
+            var t5 = LoadRequestsAndTeamsAsync();
+            await Task.WhenAll(t1, t2, t4, t5);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading OT Team data: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private Dictionary<int, string> doctorImagesBase64 = new();
+
+    private async Task LoadDoctorsAsync()
+    {
+        try 
+        { 
+            doctorsList = await DoctorService.GetDoctorsAsync() ?? new(); 
+            foreach (var doc in doctorsList.Where(d => !string.IsNullOrWhiteSpace(d.doctorimage)))
+            {
+                _ = LoadDoctorPhotoAsync(doc.dcode, doc.doctorimage, doc.tenant_code);
+            }
+        }
+        catch { doctorsList = new(); }
+    }
+
+    private async Task LoadDoctorPhotoAsync(int dcode, string? fileName, string? doctorTenantCode)
+    {
+        if (string.IsNullOrEmpty(fileName) || dcode <= 0) return;
+        if (doctorImagesBase64.ContainsKey(dcode)) return;
+
+        doctorImagesBase64[dcode] = "";
+
+        try
+        {
+            string key = fileName;
+            if (!fileName.Contains("/"))
+            {
+                string tc = string.IsNullOrEmpty(doctorTenantCode) ? TenantCode : doctorTenantCode;
+                if (string.IsNullOrEmpty(tc)) tc = "0010";
+                key = $"medico/{tc}/doctors/{dcode}/{fileName}";
+            }
+
+            var base64 = await DoctorService.DownloadFileAsBase64Async(key);
+            if (!string.IsNullOrEmpty(base64))
+            {
+                doctorImagesBase64[dcode] = base64;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Error downloading photo for doctor {dcode}: {ex.Message}");
+        }
+    }
+
+    private DoctorMasterModel? GetDoctorForMember(OtTeamMemberModel member)
+    {
+        if (member == null) return null;
+        if (member.dcode.HasValue && member.dcode.Value > 0)
+        {
+            var d = doctorsList.FirstOrDefault(doc => doc.dcode == member.dcode.Value);
+            if (d != null) return d;
+        }
+
+        var cleanName = GetCleanStaffName(member.staff_name);
+        return doctorsList.FirstOrDefault(d =>
+            (!string.IsNullOrWhiteSpace(d.name) && (d.name.Equals(cleanName, StringComparison.OrdinalIgnoreCase) || cleanName.Contains(d.name, StringComparison.OrdinalIgnoreCase))) ||
+            (!string.IsNullOrWhiteSpace(d.doctorfullname) && (d.doctorfullname.Equals(cleanName, StringComparison.OrdinalIgnoreCase) || cleanName.Contains(d.doctorfullname, StringComparison.OrdinalIgnoreCase))));
+    }
+
+    private string? GetDoctorImageSrc(DoctorMasterModel? doc)
+    {
+        if (doc == null) return null;
+
+        if (doctorImagesBase64.TryGetValue(doc.dcode, out var base64Str) && !string.IsNullOrWhiteSpace(base64Str))
+        {
+            if (base64Str.StartsWith("data:image", StringComparison.OrdinalIgnoreCase))
+                return base64Str;
+            return $"data:image/jpeg;base64,{base64Str}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(doc.DoctorImageBase64))
+        {
+            if (doc.DoctorImageBase64.StartsWith("data:image", StringComparison.OrdinalIgnoreCase))
+                return doc.DoctorImageBase64;
+            return $"data:image/jpeg;base64,{doc.DoctorImageBase64}";
+        }
+
+        if (!string.IsNullOrWhiteSpace(doc.doctorimage))
+        {
+            if (doc.doctorimage.StartsWith("data:image", StringComparison.OrdinalIgnoreCase) ||
+                doc.doctorimage.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+                doc.doctorimage.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+                doc.doctorimage.StartsWith("/"))
+            {
+                return doc.doctorimage;
+            }
+
+            if (!doctorImagesBase64.ContainsKey(doc.dcode))
+            {
+                _ = LoadDoctorPhotoAsync(doc.dcode, doc.doctorimage, doc.tenant_code);
+            }
+        }
+
+        return null;
+    }
+
+    private string GetDoctorInitial(DoctorMasterModel? doc, string? fallbackName)
+    {
+        if (doc != null)
+        {
+            string? name = !string.IsNullOrWhiteSpace(doc.name) ? doc.name : doc.doctorfullname;
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                var clean = name.Trim();
+                if (clean.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase))
+                    clean = clean.Substring(3).Trim();
+                else if (clean.StartsWith("Dr ", StringComparison.OrdinalIgnoreCase))
+                    clean = clean.Substring(3).Trim();
+
+                if (!string.IsNullOrEmpty(clean))
+                    return clean[0].ToString().ToUpper();
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(fallbackName))
+        {
+            var clean = fallbackName.Trim();
+            if (clean.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase))
+                clean = clean.Substring(3).Trim();
+            else if (clean.StartsWith("Dr ", StringComparison.OrdinalIgnoreCase))
+                clean = clean.Substring(3).Trim();
+
+            if (!string.IsNullOrEmpty(clean))
+                return clean[0].ToString().ToUpper();
+        }
+
+        return "D";
+    }
+
+    private async Task LoadNursesAsync()
+    {
+        try { nursesList = await NurseService.GetNurseMastersAsync() ?? new(); }
+        catch { nursesList = new(); }
+    }
+
+    private async Task LoadTheatersAsync()
+    {
+        try { otTheaters = await OtService.GetOtMastersAsync(activeOnly: false) ?? new(); }
+        catch { otTheaters = new(); }
+    }
+
+    private async Task LoadRequestsAndTeamsAsync()
+    {
+        allRequests = await OtService.GetSurgeryRequestsAsync() ?? new();
+        allTeamMembers.Clear();
+        allSchedules.Clear();
+
+        foreach (var req in allRequests)
+        {
+            var sched = await OtService.GetScheduleByRequestAsync(req.request_id);
+            if (sched != null) allSchedules.Add(sched);
+
+            var teamList = await OtService.GetTeamByRequestAsync(req.request_id) ?? new();
+            foreach (var m in teamList)
+            {
+                allTeamMembers.Add(new TeamAllocationItem { Member = m, Request = req });
+            }
+        }
+    }
+
+    private string GetStaffQualification(OtTeamMemberModel member)
+    {
+        if (member == null) return "—";
+
+        // 1. If Doctor with dcode
+        if (member.dcode.HasValue && member.dcode.Value > 0)
+        {
+            var doc = doctorsList.FirstOrDefault(d => d.dcode == member.dcode.Value);
+            if (doc != null)
+            {
+                if (!string.IsNullOrWhiteSpace(doc.qualification)) return doc.qualification.Trim();
+                if (!string.IsNullOrWhiteSpace(doc.description)) return doc.description.Trim();
+            }
+        }
+
+        // 2. Try match doctor by name
+        var cleanName = GetCleanStaffName(member.staff_name);
+        var docByName = doctorsList.FirstOrDefault(d =>
+            (!string.IsNullOrWhiteSpace(d.name) && (d.name.Equals(cleanName, StringComparison.OrdinalIgnoreCase) || cleanName.Contains(d.name, StringComparison.OrdinalIgnoreCase))) ||
+            (!string.IsNullOrWhiteSpace(d.doctorfullname) && (d.doctorfullname.Equals(cleanName, StringComparison.OrdinalIgnoreCase) || cleanName.Contains(d.doctorfullname, StringComparison.OrdinalIgnoreCase))));
+
+        if (docByName != null)
+        {
+            if (!string.IsNullOrWhiteSpace(docByName.qualification)) return docByName.qualification.Trim();
+            if (!string.IsNullOrWhiteSpace(docByName.description)) return docByName.description.Trim();
+        }
+
+        // 3. Nurse qualification
+        if (IsNurseMember(member))
+        {
+            var nurse = nursesList.FirstOrDefault(n =>
+                (!string.IsNullOrWhiteSpace(n.nursename) && (n.nursename.Equals(cleanName, StringComparison.OrdinalIgnoreCase) || cleanName.Contains(n.nursename, StringComparison.OrdinalIgnoreCase))) ||
+                (!string.IsNullOrWhiteSpace(n.shortname) && n.shortname.Equals(cleanName, StringComparison.OrdinalIgnoreCase)));
+
+            if (nurse != null && !string.IsNullOrWhiteSpace(nurse.ntype))
+            {
+                var nt = nurse.ntype.Trim();
+                if (!string.IsNullOrWhiteSpace(nt) && nt.Length > 2)
+                    return System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(nt.ToLower());
+            }
+
+            if ((member.role ?? "").Contains("SCRUB", StringComparison.OrdinalIgnoreCase)) return "B.Sc Nursing (OT Certified)";
+            if ((member.role ?? "").Contains("CIRCULAT", StringComparison.OrdinalIgnoreCase)) return "Registered Nurse (RN)";
+            return "Staff Nurse (GNM / B.Sc)";
+        }
+
+        // 4. Anesthetist
+        if (IsAnesthetistMember(member))
+        {
+            return "MBBS, MD / DA (Anesthesiology)";
+        }
+
+        // 5. Doctor / Surgeon fallback
+        if (IsDoctorMember(member))
+        {
+            if ((member.role ?? "").Contains("SURGEON", StringComparison.OrdinalIgnoreCase)) return "MS / M.Ch / DNB (Surgery)";
+            return "MBBS, MD / MS";
+        }
+
+        // 6. Technician / Support
+        if ((member.role ?? "").Contains("TECH", StringComparison.OrdinalIgnoreCase)) return "Diploma in OT Technology";
+        if ((member.role ?? "").Contains("PERFUSION", StringComparison.OrdinalIgnoreCase)) return "B.Sc Perfusion Technology";
+
+        return "Qualified Clinician";
+    }
+
+    private bool IsNurseMember(OtTeamMemberModel? member)
+    {
+        if (member == null) return false;
+        if (member.dcode.HasValue && member.dcode.Value > 0) return false;
+
+        if (!string.IsNullOrWhiteSpace(member.staff_code) && member.staff_code.Contains("NURSE", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(member.role) && member.role.Contains("NURSE", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var rawName = (member.staff_name ?? "").Trim();
+        if (rawName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) || rawName.StartsWith("Dr ", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var cleanName = GetCleanStaffName(rawName);
+        if (nursesList != null && nursesList.Any(n =>
+            (!string.IsNullOrWhiteSpace(n.nursename) && (n.nursename.Equals(cleanName, StringComparison.OrdinalIgnoreCase) || cleanName.Contains(n.nursename, StringComparison.OrdinalIgnoreCase))) ||
+            (!string.IsNullOrWhiteSpace(n.shortname) && n.shortname.Equals(cleanName, StringComparison.OrdinalIgnoreCase))))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool IsAnesthetistMember(OtTeamMemberModel? member)
+    {
+        if (member == null) return false;
+        var role = member.role ?? "";
+        return role.Contains("ANESTHETIST", StringComparison.OrdinalIgnoreCase) || role.Contains("ANESTHESIA", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsDoctorMember(OtTeamMemberModel? member)
+    {
+        if (member == null) return false;
+        if (IsNurseMember(member)) return false;
+        if (IsAnesthetistMember(member)) return false;
+
+        if (member.dcode.HasValue && member.dcode.Value > 0) return true;
+
+        var rawName = (member.staff_name ?? "").Trim();
+        if (rawName.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) || rawName.StartsWith("Dr ", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (!string.IsNullOrWhiteSpace(member.role) && (
+            member.role.Contains("DOCTOR", StringComparison.OrdinalIgnoreCase) ||
+            member.role.Contains("SURGEON", StringComparison.OrdinalIgnoreCase) ||
+            member.role.Contains("CONSULTANT", StringComparison.OrdinalIgnoreCase) ||
+            member.role.Contains("CO_SURGEON", StringComparison.OrdinalIgnoreCase) ||
+            member.role.Contains("PAEDIATRICIAN", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        var cleanName = GetCleanStaffName(rawName);
+        if (doctorsList != null && doctorsList.Any(d =>
+            (!string.IsNullOrWhiteSpace(d.name) && d.name.Equals(cleanName, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrWhiteSpace(d.doctorfullname) && d.doctorfullname.Equals(cleanName, StringComparison.OrdinalIgnoreCase))))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private bool MatchesMemberCategory(OtTeamMemberModel? member, string? filter)
+    {
+        if (member == null) return false;
+        if (string.IsNullOrWhiteSpace(filter) || filter.Equals("ALL", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (filter.Equals("NURSE", StringComparison.OrdinalIgnoreCase))
+            return IsNurseMember(member);
+
+        if (filter.Equals("ANESTHETIST", StringComparison.OrdinalIgnoreCase))
+            return IsAnesthetistMember(member);
+
+        if (filter.Equals("SURGEON", StringComparison.OrdinalIgnoreCase) || filter.Equals("DOCTOR", StringComparison.OrdinalIgnoreCase))
+            return IsDoctorMember(member);
+
+        if (filter.Equals("OTHERS", StringComparison.OrdinalIgnoreCase))
+            return !IsNurseMember(member) && !IsDoctorMember(member) && !IsAnesthetistMember(member);
+
+        return string.Equals(member.role, filter, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private string GetPatientName(decimal custId)
+    {
+        if (custId <= 0) return "Patient";
+        var req = (allRequests ?? new()).FirstOrDefault(r => r.custid == custId);
+        if (req != null && !string.IsNullOrWhiteSpace(req.patient_name))
+        {
+            return req.patient_name.Trim();
+        }
+        return $"Patient #{custId:0}";
+    }
+
+    private string GetCleanStaffName(string? rawName)
+    {
+        if (string.IsNullOrWhiteSpace(rawName)) return "Staff";
+        var name = rawName.Trim();
+
+        string[] roleWords = new[] { "SURGEON", "ASSISTANT SURGEON", "ASSISTANT_SURGEON", "ANESTHETIST", "SCRUB NURSE", "SCRUB_NURSE", "CIRCULATING NURSE", "CIRCULATING_NURSE", "TECHNICIAN", "PERFUSIONIST", "OBSERVER", "DOCTOR", "NURSE", "OTHERS" };
+        foreach (var rw in roleWords)
+        {
+            if (name.EndsWith(" " + rw, StringComparison.OrdinalIgnoreCase))
+            {
+                name = name.Substring(0, name.Length - (rw.Length + 1)).Trim();
+            }
+            else if (name.Equals(rw, StringComparison.OrdinalIgnoreCase))
+            {
+                name = "";
+            }
+        }
+
+        // Clean out any DOC# or NURSE# codes
+        name = System.Text.RegularExpressions.Regex.Replace(name, @"\s*(DOC|NURSE|ID)#\d+", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Trim();
+
+        return string.IsNullOrWhiteSpace(name) ? (rawName ?? "Staff") : name;
+    }
+
+    private string GetCleanRoleDisplay(OtTeamMemberModel member)
+    {
+        if (IsNurseMember(member))
+        {
+            if ((member.role ?? "").Contains("SCRUB", StringComparison.OrdinalIgnoreCase)) return "Scrub Nurse";
+            if ((member.role ?? "").Contains("CIRCULAT", StringComparison.OrdinalIgnoreCase)) return "Circulating Nurse";
+            return "Nurse";
+        }
+
+        if (IsAnesthetistMember(member)) return "Anesthetist";
+
+        if (IsDoctorMember(member))
+        {
+            if ((member.role ?? "").Contains("ASSISTANT", StringComparison.OrdinalIgnoreCase)) return "Assistant Surgeon";
+            if ((member.role ?? "").Contains("SURGEON", StringComparison.OrdinalIgnoreCase)) return "Surgeon";
+            return "Doctor";
+        }
+
+        return GetCleanRoleDisplay(member.role);
+    }
+
+    private string GetCleanRoleDisplay(string role)
+    {
+        return role switch
+        {
+            "DOCTOR" => "Doctor",
+            "SURGEON" => "Surgeon",
+            "ASSISTANT_SURGEON" => "Assistant Surgeon",
+            "ANESTHETIST" => "Anesthetist",
+            "NURSE" => "Nurse",
+            "SCRUB_NURSE" => "Scrub Nurse",
+            "CIRCULATING_NURSE" => "Circulating Nurse",
+            "OTHERS" => "Others",
+            "TECHNICIAN" => "OT Technician",
+            "PERFUSIONIST" => "Perfusionist",
+            "OBSERVER" => "Observer",
+            _ => role.Replace("_", " ")
+        };
+    }
+
+    private string GetFormattedScheduleForRequest(OtSurgeryRequestListModel req)
+    {
+        var sched = (allSchedules ?? new()).FirstOrDefault(s => s.request_id == req.request_id);
+        if (sched != null)
+        {
+            return $"{sched.scheduled_date.ToString("dd MMM yyyy")}, {sched.scheduled_time.ToString("hh\\:mm tt")}";
+        }
+
+        if (req.created_at != default && req.created_at.Year > 2000)
+        {
+            var ist = req.created_at.ToIndianTime();
+            return $"{ist:dd MMM yyyy, hh:mm tt}";
+        }
+
+        return "Pending Schedule";
+    }
+
+    private string GetTheaterName(Guid? requestId)
+    {
+        if (!requestId.HasValue || requestId.Value == Guid.Empty) return "";
+        var sched = (allSchedules ?? new()).FirstOrDefault(s => s.request_id == requestId.Value);
+        if (sched != null)
+        {
+            var theater = (otTheaters ?? new()).FirstOrDefault(t => t.ot_id == sched.ot_id);
+            return theater?.ot_name ?? "OT Suite";
+        }
+        return "";
+    }
+
+    private string GetDoctorName(int dcode)
+    {
+        var doc = (doctorsList ?? new()).FirstOrDefault(d => d.dcode == dcode);
+        if (doc != null)
+        {
+            return string.IsNullOrWhiteSpace(doc.name) ? (doc.doctorfullname ?? "Doctor") : doc.name;
+        }
+        return "Doctor";
+    }
+
+    private string GetInitials(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "OT";
+        var clean = name.Replace("Dr.", "").Replace("Dr ", "").Trim();
+        var parts = clean.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0) return "OT";
+        if (parts.Length == 1)
+            return parts[0].Length >= 2 ? parts[0].Substring(0, 2).ToUpper() : parts[0].ToUpper();
+        return (parts[0][0].ToString() + parts[1][0].ToString()).ToUpper();
+    }
+
+    private string GetRolePillClass(OtTeamMemberModel member)
+    {
+        if (IsNurseMember(member)) return "role-pill-scrub-nurse";
+        if (IsAnesthetistMember(member)) return "role-pill-anesthetist";
+        if (IsDoctorMember(member))
+        {
+            if ((member.role ?? "").Contains("ASSISTANT", StringComparison.OrdinalIgnoreCase)) return "role-pill-asst-surgeon";
+            return "role-pill-surgeon";
+        }
+        return "role-pill-technician";
+    }
+
+    private void SetAssignSourceTab(string tab)
+    {
+        assignSourceTab = tab;
+        if (tab == "DOCTOR")
+        {
+            assignRole = "DOCTOR";
+        }
+        else if (tab == "NURSE")
+        {
+            assignRole = "NURSE";
+        }
+        else if (tab == "MANUAL")
+        {
+            if (assignRole == "DOCTOR" || assignRole == "NURSE")
+            {
+                assignRole = "OTHERS";
+            }
+        }
+    }
+
+    private void OnRoleSelectChanged(ChangeEventArgs e)
+    {
+        assignRole = e.Value?.ToString() ?? "DOCTOR";
+        if (assignRole == "DOCTOR" && assignSourceTab != "DOCTOR")
+        {
+            assignSourceTab = "DOCTOR";
+        }
+        else if (assignRole == "NURSE" && assignSourceTab != "NURSE")
+        {
+            assignSourceTab = "NURSE";
+        }
+        else if (assignRole == "OTHERS" && assignSourceTab != "MANUAL")
+        {
+            assignSourceTab = "MANUAL";
+        }
+    }
+
+    private void OnAssignCaseSearchInput(ChangeEventArgs e)
+    {
+        assignCaseSearchQuery = e.Value?.ToString() ?? "";
+        isAssignCaseDropdownOpen = true;
+    }
+
+    private void SelectAssignSurgeryCase(OtSurgeryRequestListModel req)
+    {
+        assignRequestId = req.request_id;
+        var pat = !string.IsNullOrWhiteSpace(req.patient_name) ? req.patient_name : GetPatientName(req.custid);
+        assignCaseSearchQuery = $"{pat} — {req.procedure_name}";
+        isAssignCaseDropdownOpen = false;
+    }
+
+    private void ClearAssignCaseSelection()
+    {
+        assignRequestId = Guid.Empty;
+        assignCaseSearchQuery = "";
+        isAssignCaseDropdownOpen = true;
+    }
+
+    private void OpenAssignModal(OtSurgeryRequestListModel? preselectedCase = null)
+    {
+        var target = preselectedCase ?? activeViewCase;
+        if (target != null)
+        {
+            assignRequestId = target.request_id;
+            var pat = !string.IsNullOrWhiteSpace(target.patient_name) ? target.patient_name : GetPatientName(target.custid);
+            assignCaseSearchQuery = $"{pat} — {target.procedure_name}";
+        }
+        else if (allRequests.Any())
+        {
+            var firstReq = allRequests.First();
+            assignRequestId = firstReq.request_id;
+            var pat = !string.IsNullOrWhiteSpace(firstReq.patient_name) ? firstReq.patient_name : GetPatientName(firstReq.custid);
+            assignCaseSearchQuery = $"{pat} — {firstReq.procedure_name}";
+        }
+        else
+        {
+            assignRequestId = Guid.Empty;
+            assignCaseSearchQuery = "";
+        }
+
+        assignRole = "DOCTOR";
+        assignSourceTab = "DOCTOR";
+        assignStaffName = "";
+        assignStaffCode = "";
+        docSearch = "";
+        nurseSearch = "";
+        isAssignCaseDropdownOpen = false;
+        pendingAllocations.Clear();
+        showAssignModal = true;
+    }
+
+    private void CloseAssignModal()
+    {
+        showAssignModal = false;
+        pendingAllocations.Clear();
+    }
+
+    private void ToggleDoctorForAssign(int? dcode, string? docName)
+    {
+        var staffName = $"Dr. {docName}";
+        var existing = pendingAllocations.FirstOrDefault(p => (dcode.HasValue && p.DCode == dcode) || p.StaffName == staffName);
+        if (existing != null)
+        {
+            pendingAllocations.Remove(existing);
+        }
+        else
+        {
+            var roleToAssign = (assignRole == "DOCTOR" || assignRole == "SURGEON" || assignRole == "ANESTHETIST") ? assignRole : "DOCTOR";
+            pendingAllocations.Add(new PendingAllocationItem
+            {
+                Role = roleToAssign,
+                StaffName = staffName,
+                StaffCode = "DOCTOR",
+                DCode = dcode,
+                Type = "DOCTOR"
+            });
+        }
+    }
+
+    private void ToggleNurseForAssign(string nurseName, string nurseCode)
+    {
+        var existing = pendingAllocations.FirstOrDefault(p => p.StaffName == nurseName);
+        if (existing != null)
+        {
+            pendingAllocations.Remove(existing);
+        }
+        else
+        {
+            pendingAllocations.Add(new PendingAllocationItem
+            {
+                Role = "NURSE",
+                StaffName = nurseName,
+                StaffCode = !string.IsNullOrWhiteSpace(nurseCode) ? nurseCode : "NURSE",
+                Type = "NURSE"
+            });
+        }
+    }
+
+    private void AddManualPendingStaff()
+    {
+        if (string.IsNullOrWhiteSpace(assignStaffName)) return;
+
+        var roleToAssign = string.IsNullOrWhiteSpace(assignRole) ? "OTHERS" : assignRole;
+        pendingAllocations.Add(new PendingAllocationItem
+        {
+            Role = roleToAssign,
+            StaffName = assignStaffName.Trim(),
+            StaffCode = !string.IsNullOrWhiteSpace(assignStaffCode) ? assignStaffCode.Trim() : roleToAssign,
+            Type = "MANUAL"
+        });
+
+        assignStaffName = "";
+        assignStaffCode = "";
+    }
+
+    private async Task SaveAssignMemberAsync()
+    {
+        if (assignRequestId == Guid.Empty)
+        {
+            ToastService.ShowWarning("Please select a surgery case.");
+            return;
+        }
+
+        if (assignSourceTab == "MANUAL" && !string.IsNullOrWhiteSpace(assignStaffName))
+        {
+            AddManualPendingStaff();
+        }
+
+        if (!pendingAllocations.Any())
+        {
+            ToastService.ShowWarning("Please select at least one doctor or nurse to allocate.");
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            int successCount = 0;
+            foreach (var item in pendingAllocations)
+            {
+                var req = new AddOtTeamMemberRequest
+                {
+                    request_id = assignRequestId,
+                    role = item.Role,
+                    staff_name = item.StaffName,
+                    staff_code = item.StaffCode,
+                    dcode = item.DCode
+                };
+
+                var res = await OtService.AddTeamMemberAsync(req);
+                if (res.IsSuccess)
+                {
+                    successCount++;
+                }
+            }
+
+            if (successCount > 0)
+            {
+                ToastService.ShowSuccess($"Successfully allocated {successCount} team member{(successCount == 1 ? "" : "s")} to the surgery case!");
+                showAssignModal = false;
+                pendingAllocations.Clear();
+                await LoadRequestsAndTeamsAsync();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to allocate team members.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task PromptRemoveMember(OtTeamMemberModel member)
+    {
+        var cleanName = GetCleanStaffName(member.staff_name);
+        var cleanRole = GetCleanRoleDisplay(member.role);
+        bool confirmed = await JSRuntime.InvokeAsync<bool>("confirm", $"Are you sure you want to remove '{cleanName}' ({cleanRole}) from this surgery case?");
+        if (!confirmed) return;
+
+        try
+        {
+            var res = await OtService.RemoveTeamMemberAsync(member.team_id);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess($"Removed {cleanName} from surgery team.");
+                await LoadRequestsAndTeamsAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message ?? "Failed to remove member.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+    }
+}

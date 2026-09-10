@@ -178,16 +178,21 @@ namespace Booking.Services
         {
             try
             {
+                var payloadJson = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine($"\n[NurseNotesService] ===> POST api/IpBedsideChart/service/add (Tenant: {tenantCode ?? "default"})\n{payloadJson}\n");
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/service/add");
                 req.Content = JsonContent.Create(request);
                 AddTenantHeaders(req, tenantCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[NurseNotesService] <=== Response ({(int)response.StatusCode}): {raw}");
                 return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Service record added."));
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[NurseNotesService] AddServiceAsync Exception: {ex.Message}");
                 return (false, $"Error adding service: {ex.Message}");
             }
         }
@@ -196,16 +201,21 @@ namespace Booking.Services
         {
             try
             {
+                var payloadJson = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+                Console.WriteLine($"\n[NurseNotesService] ===> POST api/IpBedsideChart/service/update (Tenant: {tenantCode ?? "default"})\n{payloadJson}\n");
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/service/update");
                 req.Content = JsonContent.Create(request);
                 AddTenantHeaders(req, tenantCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[NurseNotesService] <=== Response ({(int)response.StatusCode}): {raw}");
                 return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Service record updated."));
             }
             catch (Exception ex)
             {
+                Console.WriteLine($"[NurseNotesService] UpdateServiceAsync Exception: {ex.Message}");
                 return (false, $"Error updating service: {ex.Message}");
             }
         }

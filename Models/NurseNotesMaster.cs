@@ -21,6 +21,7 @@ namespace medico_backend.Model
     {
         public string particular_name { get; set; } = string.Empty;
         public string? io_type { get; set; }
+        public string? tenant_code { get; set; }
     }
 
     public class UpdateIoParticularRequest
@@ -29,6 +30,7 @@ namespace medico_backend.Model
         public string particular_name { get; set; } = string.Empty;
         public string? io_type { get; set; }
         public bool is_active { get; set; } = true;
+        public string? tenant_code { get; set; }
     }
 
     // ═══════════════════════════════════════
@@ -48,6 +50,7 @@ namespace medico_backend.Model
     public class AddServiceNameRequest
     {
         public string service_name { get; set; } = string.Empty;
+        public string? tenant_code { get; set; }
     }
 
     public class UpdateServiceNameRequest
@@ -55,6 +58,7 @@ namespace medico_backend.Model
         public int service_id { get; set; }
         public string service_name { get; set; } = string.Empty;
         public bool is_active { get; set; } = true;
+        public string? tenant_code { get; set; }
     }
 
     // ═══════════════════════════════════════
@@ -74,6 +78,7 @@ namespace medico_backend.Model
     public class AddScheduleTypeRequest
     {
         public string type_name { get; set; } = string.Empty;
+        public string? tenant_code { get; set; }
     }
 
     public class UpdateScheduleTypeRequest
@@ -81,5 +86,6 @@ namespace medico_backend.Model
         public int type_id { get; set; }
         public string type_name { get; set; } = string.Empty;
         public bool is_active { get; set; } = true;
+        public string? tenant_code { get; set; }
     }
 }

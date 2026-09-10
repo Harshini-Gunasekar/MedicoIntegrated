@@ -1,0 +1,1068 @@
+@page "/create-surgery-request"
+@page "/ot-surgery-request"
+@page "/ot-surgery-requests"
+@rendermode InteractiveServer
+
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using Booking.Services
+@using Booking.Models
+@using Booking.Helpers
+@using Newtonsoft.Json
+@inject OtService OtService
+@inject DoctorService DoctorService
+@inject LabSettingService LabSettingService
+@inject ToastService ToastService
+@inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+
+<div class="referral-page lc-fadeInUp">
+    @* --- HEADER CONSOLE --- *@
+    <div class="lab-header-card flex-between">
+        <div class="display-flex align-center gap-16">
+            <div class="bg-indigo-50 p-2 rounded-lg shadow-sm flex-center icon-box-container">
+                <span class="material-symbols-outlined text-indigo-600 icon-lg">assignment_add</span>
+            </div>
+            <div>
+                <h2 class="lab-title-text m-0">Surgery Requests Directory</h2>
+                <div class="flex-start gap-8 mt-2px">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Booked Surgical Requests, Clinical Indications &amp; Fee Queue</span>
+                </div>
+            </div>
+        </div>
+        <div class="display-flex align-center gap-12">
+            <div class="relative-positioned">
+                <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#94a3b8" viewBox="0 0 16 16" class="search-icon">
+                    <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+                </svg>
+                <input type="text" placeholder="Search patient, doctor, procedure..." @bind="SearchQuery" @bind:event="oninput" class="lc-rounded-pill-input lc-w-280" />
+            </div>
+            <button class="btn-new-entry" @onclick="OpenAddModal">
+                <i class="bi bi-plus-lg me-1"></i> New Surgery Request
+            </button>
+        </div>
+    </div>
+
+    @* --- STATS MINI BAR --- *@
+    <div class="stats-mini-bar">
+        <div class="stat-mini-card">
+            <div class="stat-mini-icon bg-indigo-50 text-indigo-600">
+                <i class="bi bi-collection-fill"></i>
+            </div>
+            <div>
+                <div class="stat-mini-value">@requestsList.Count</div>
+                <div class="stat-mini-label">Total Surgery Requests</div>
+            </div>
+        </div>
+        <div class="stat-mini-card">
+            <div class="stat-mini-icon bg-warning-subtle text-warning">
+                <i class="bi bi-hourglass-split"></i>
+            </div>
+            <div>
+                <div class="stat-mini-value">@requestsList.Count(r => r.status == "REQUESTED")</div>
+                <div class="stat-mini-label">Requested Cases</div>
+            </div>
+        </div>
+        <div class="stat-mini-card">
+            <div class="stat-mini-icon bg-info-subtle text-info">
+                <i class="bi bi-calendar-check-fill"></i>
+            </div>
+            <div>
+                <div class="stat-mini-value">@requestsList.Count(r => r.status == "SCHEDULED")</div>
+                <div class="stat-mini-label">Scheduled Cases</div>
+            </div>
+        </div>
+        <div class="stat-mini-card">
+            <div class="stat-mini-icon bg-danger-subtle text-danger">
+                <i class="bi bi-exclamation-octagon-fill"></i>
+            </div>
+            <div>
+                <div class="stat-mini-value">@requestsList.Count(r => r.priority == "EMERGENCY" || r.priority == "URGENT")</div>
+                <div class="stat-mini-label">Urgent / Emergency</div>
+            </div>
+        </div>
+    </div>
+
+    @* --- DIRECTORY LIST --- *@
+    <div class="directory-section">
+        <div class="lc-table-container">
+            <table class="lc-table">
+                <thead>
+                    <tr>
+                        <th style="width: 140px;">REQUEST DATE</th>
+                        <th style="width: 220px;">PATIENT</th>
+                        <th style="width: 280px;">SURGEON</th>
+                        <th>PROCEDURE</th>
+                        <th style="width: 110px;" class="text-center">PRIORITY</th>
+                        <th style="width: 130px;">DURATION &amp; GA</th>
+                        <th style="width: 120px;" class="text-end">FEE (₹)</th>
+                        <th style="width: 120px;" class="text-center">STATUS</th>
+                        <th class="text-center" style="width: 100px;">ACTIONS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (isLoading)
+                    {
+                        <tr>
+                            <td colspan="9" class="text-center p-48 text-slate-400">
+                                <div class="spinner-border spinner-border-sm text-indigo-600 mb-2"></div>
+                                <div>Loading surgery requests...</div>
+                            </td>
+                        </tr>
+                    }
+                    else if (FilteredList.Any())
+                    {
+                        @foreach (var item in FilteredList)
+                        {
+                            var doctor = GetDoctor(item.dcode);
+                            var istCreated = item.created_at.ToIndianTime();
+                            <tr class="lc-table-row">
+                                <td class="font-11 text-slate-500 font-mono">
+                                    @istCreated.ToString("dd-MM-yyyy")
+                                    <div class="text-slate-400 font-10">@istCreated.ToString("hh:mm tt")</div>
+                                </td>
+                                <td>
+                                    <div class="patient-cell-inline">
+                                        <div class="patient-avatar-box">
+                                            <i class="bi bi-person-fill"></i>
+                                        </div>
+                                        <span class="patient-name-title">
+                                            @(string.IsNullOrWhiteSpace(item.patient_name) ? "Patient" : item.patient_name)
+                                        </span>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(item.mobile) || item.ageyears.HasValue)
+                                    {
+                                        <div class="font-10 text-slate-400 mt-1">
+                                            @if (item.ageyears.HasValue)
+                                            {
+                                                <span>@item.ageyears yrs</span>
+                                            }
+                                            @if (item.ageyears.HasValue && !string.IsNullOrWhiteSpace(item.mobile))
+                                            {
+                                                <span> • </span>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(item.mobile))
+                                            {
+                                                <span>📞 @item.mobile</span>
+                                            }
+                                        </div>
+                                    }
+                                </td>
+                                <td>
+                                    <div class="doctor-cell-stack">
+                                        <span class="font-bold text-slate-700 font-13">
+                                            @(!string.IsNullOrWhiteSpace(item.doctor_name) ? (item.doctor_name.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) ? item.doctor_name : $"Dr. {item.doctor_name}") : GetDoctorDisplayName(item.dcode))
+                                        </span>
+                                        @if (!string.IsNullOrWhiteSpace(item.doctor_qualification))
+                                        {
+                                            <div class="font-10 text-slate-400">@item.doctor_qualification</div>
+                                        }
+                                        else if (doctor != null && !string.IsNullOrWhiteSpace(doctor.qualification))
+                                        {
+                                            <div class="font-10 text-slate-400">@doctor.qualification</div>
+                                        }
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="font-bold text-slate-800 font-13">@item.procedure_name</div>
+                                    @if (!string.IsNullOrWhiteSpace(item.procedure_code))
+                                    {
+                                        <span class="badge bg-secondary-subtle text-secondary font-mono font-10">@item.procedure_code</span>
+                                    }
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge @GetPriorityBadgeClass(item.priority)">@item.priority</span>
+                                </td>
+                                <td>
+                                    <div class="font-12 text-slate-600">
+                                        <i class="bi bi-clock me-1 text-slate-400"></i>@(item.expected_duration_minutes ?? 60) mins
+                                    </div>
+                                    <div class="font-10 text-slate-400">@(item.anesthesia_type ?? "GENERAL")</div>
+                                </td>
+                                <td class="text-end font-bold font-mono text-indigo-600 font-13">
+                                    @(item.procedure_fee.HasValue && item.procedure_fee > 0 ? $"₹{item.procedure_fee.Value:N2}" : "-")
+                                </td>
+                                <td class="text-center">
+                                    <span class="badge @GetStatusBadgeClass(item.status)">@item.status</span>
+                                </td>
+                                <td class="text-center">
+                                    <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 6px;">
+                                        <button type="button" class="lc-circle-btn-32" @onclick="() => OpenEditModal(item)" title="Edit Request">
+                                            <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
+                                        </button>
+                                        <button type="button" class="lc-circle-btn-32" @onclick="() => PromptCancel(item)" title="Cancel Request">
+                                            <span class="material-symbols-outlined font-18 text-danger">close</span>
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="9" class="text-center p-48 text-slate-400 italic">No surgery requests found.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+@* ═══════════════════════════════════════════════════════════════════
+   CREATE / EDIT SURGERY REQUEST MODAL POPUP (WITH TABS)
+   ═══════════════════════════════════════════════════════════════════ *@
+@if (showFormModal)
+{
+    <div class="modal-overlay">
+        <div class="modal-form-card modal-surgery-request-card" @onclick:stopPropagation>
+            @* --- MODAL HEADER --- *@
+            <div class="modal-header-bar">
+                <div class="modal-header-title-box">
+                    <span class="material-symbols-outlined header-icon">assignment_add</span>
+                    <h3 class="modal-title-text">@(isEditMode ? "Edit Surgery Request" : "New Surgery Request")</h3>
+                </div>
+                <button type="button" class="modal-close-btn" @onclick="CloseFormModal" disabled="@isSaving" aria-label="Close">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
+                        <path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z" />
+                    </svg>
+                </button>
+            </div>
+
+            @* --- MODAL TAB BAR --- *@
+            <div class="modal-tab-bar">
+                <button type="button" class="modal-tab-btn @(activeModalTab == "PATIENT" ? "active" : "")" @onclick='() => SetModalTab("PATIENT")'>
+                    <i class="bi bi-person-lines-fill me-1"></i> 1. Patient &amp; Clinical Details
+                </button>
+                <button type="button" class="modal-tab-btn @(activeModalTab == "BILLING" ? "active" : "")" @onclick='() => SetModalTab("BILLING")'>
+                    <i class="bi bi-receipt-cutoff me-1"></i> 2. Billing &amp; Fee Setup
+                </button>
+            </div>
+
+            @* --- MODAL BODY --- *@
+            <div class="modal-body">
+                <fieldset disabled="@isSaving" style="border: none; padding: 0; margin: 0; display: contents;">
+                    @if (activeModalTab == "PATIENT")
+                    {
+                        @* ── TAB 1: PATIENT & SURGICAL DETAILS ── *@
+                        @if (!isEditMode)
+                        {
+                            <div class="form-grid-2">
+                                @* --- PATIENT SEARCH AUTOCOMPLETE --- *@
+                                <div class="form-group patient-search-container">
+                                    <label>Select Patient *</label>
+                                    @if (selectedPatient != null)
+                                    {
+                                        <div class="selected-patient-badge">
+                                            <div class="patient-cell-inline">
+                                                <div class="patient-avatar-box small">
+                                                    <i class="bi bi-person-fill"></i>
+                                                </div>
+                                                <div>
+                                                    <div class="font-bold text-slate-800 font-13">
+                                                        @(string.IsNullOrEmpty(selectedPatient.namewithinitials) ? selectedPatient.name : selectedPatient.namewithinitials)
+                                                    </div>
+                                                    @if (selectedPatient.ageyears > 0 || !string.IsNullOrWhiteSpace(selectedPatient.mobile))
+                                                    {
+                                                        <div class="font-10 text-slate-500">
+                                                            @if (selectedPatient.ageyears > 0)
+                                                            {
+                                                                <span>@selectedPatient.ageyears yrs</span>
+                                                            }
+                                                            @if (selectedPatient.ageyears > 0 && !string.IsNullOrWhiteSpace(selectedPatient.mobile))
+                                                            {
+                                                                <span> • </span>
+                                                            }
+                                                            @if (!string.IsNullOrWhiteSpace(selectedPatient.mobile))
+                                                            {
+                                                                <span>📞 @selectedPatient.mobile</span>
+                                                            }
+                                                        </div>
+                                                    }
+                                                </div>
+                                            </div>
+                                            <button type="button" class="btn-clear-patient" @onclick="ClearSelectedPatient" title="Change Patient">
+                                                <i class="bi bi-x-circle-fill"></i> Change
+                                            </button>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="patient-search-input-wrapper">
+                                            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="#94a3b8" viewBox="0 0 16 16" class="search-input-icon">
+                                                <path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" />
+                                            </svg>
+                                            <input type="text" class="lab-input with-icon" 
+                                                   placeholder="Search by name or phone..." 
+                                                   value="@patientSearchText" 
+                                                   @oninput="OnPatientSearchInput" 
+                                                   @focus="ShowPatientDropdown" 
+                                                   @onblur="HidePatientDropdownWithDelay" />
+                                            
+                                            @if (showPatientDropdown)
+                                            {
+                                                <div class="patient-dropdown-menu">
+                                                    @if (filteredPatientsForDropdown.Any())
+                                                    {
+                                                        @foreach (var p in filteredPatientsForDropdown)
+                                                        {
+                                                            <div class="patient-dropdown-item" @onmousedown="() => SelectPatient(p)">
+                                                                <div class="font-bold text-slate-800 font-12">
+                                                                    @(string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials)
+                                                                </div>
+                                                                <div class="text-slate-400 font-10">
+                                                                    @if (p.ageyears > 0)
+                                                                    {
+                                                                        <span>@p.ageyears yrs</span>
+                                                                    }
+                                                                    @if (p.ageyears > 0 && !string.IsNullOrWhiteSpace(p.mobile))
+                                                                    {
+                                                                        <span> • </span>
+                                                                    }
+                                                                    @if (!string.IsNullOrWhiteSpace(p.mobile))
+                                                                    {
+                                                                        <span>📞 @p.mobile</span>
+                                                                    }
+                                                                </div>
+                                                            </div>
+                                                        }
+                                                    }
+                                                    else
+                                                    {
+                                                        <div class="p-3 text-center text-slate-400 font-11 italic">No matching patients found.</div>
+                                                    }
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                    @if (isSubmitted && formCustId <= 0)
+                                    {
+                                        <span class="text-danger font-11">Please search and select a patient</span>
+                                    }
+                                </div>
+
+                                @* --- SURGEON / DOCTOR MASTER SELECT --- *@
+                                <div class="form-group">
+                                    <label>Surgeon / Doctor *</label>
+                                    <select class="lab-input" @bind="formDoctorCode" required>
+                                        <option value="0">-- Select Operating Surgeon --</option>
+                                        @foreach (var doc in doctorsList)
+                                        {
+                                            <option value="@doc.dcode">
+                                                Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)
+                                                @(!string.IsNullOrWhiteSpace(doc.qualification) ? $" ({doc.qualification})" : "")
+                                            </option>
+                                        }
+                                    </select>
+                                    @if (isSubmitted && formDoctorCode <= 0)
+                                    {
+                                        <span class="text-danger font-11">Surgeon is required</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+
+                        <div class="form-grid-2">
+                            <div class="form-group">
+                                <label>Procedure Name *</label>
+                                <input type="text" class="lab-input font-bold" @bind="formProcedureName" @bind:event="oninput" placeholder="e.g. Laparoscopic Appendectomy" required />
+                                @if (isSubmitted && string.IsNullOrWhiteSpace(formProcedureName))
+                                {
+                                    <span class="text-danger font-11">Procedure Name is required</span>
+                                }
+                            </div>
+
+                            <div class="form-group">
+                                <label>Procedure Code</label>
+                                <input type="text" class="lab-input font-mono" @bind="formProcedureCode" @bind:event="oninput" placeholder="e.g. SURG-APPEN-01" />
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Clinical Diagnosis / Indication for Surgery</label>
+                            <textarea rows="2" class="lab-input" @bind="formDiagnosis" @bind:event="oninput" placeholder="e.g. Chronic appendicitis with recurrent right iliac fossa pain"></textarea>
+                        </div>
+
+                        <div class="form-grid-2">
+                            <div class="form-group">
+                                <label>Surgery Type</label>
+                                <select class="lab-input" @bind="formSurgeryType">
+                                    <option value="">-- Select Surgery Type --</option>
+                                    <option value="MAJOR">MAJOR</option>
+                                    <option value="MINOR">MINOR</option>
+                                    <option value="DAYCARE">DAY CARE</option>
+                                    <option value="LOCAL">LOCAL</option>
+                                    <option value="EMERGENCY">EMERGENCY</option>
+                                </select>
+                            </div>
+
+                            <div class="form-group">
+                                <label>Surgical Priority</label>
+                                <select class="lab-input" @bind="formPriority">
+                                    <option value="">-- Select Priority --</option>
+                                    <option value="ELECTIVE">ELECTIVE (Planned)</option>
+                                    <option value="URGENT">URGENT (Within 24-48h)</option>
+                                    <option value="EMERGENCY">EMERGENCY (Immediate)</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-grid-2">
+                            <div class="form-group">
+                                <label>Expected Duration (Mins)</label>
+                                <input type="number" min="15" step="15" class="lab-input" @bind="formDuration" @bind:event="oninput" placeholder="e.g. 60" />
+                            </div>
+
+                            <div class="form-group">
+                                <label>Proposed Anesthesia</label>
+                                <select class="lab-input" @bind="formAnesthesia">
+                                    <option value="">-- Select Anesthesia --</option>
+                                    <option value="GENERAL">GENERAL</option>
+                                    <option value="SPINAL">SPINAL</option>
+                                    <option value="EPIDURAL">EPIDURAL</option>
+                                    <option value="REGIONAL BLOCK">REGIONAL BLOCK</option>
+                                    <option value="MAC / SEDATION">MAC / SEDATION</option>
+                                    <option value="LOCAL">LOCAL</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>Pre-Op Notes &amp; Special Instructions</label>
+                            <textarea rows="2" class="lab-input" @bind="formNotes" @bind:event="oninput" placeholder="e.g. Pre-op bloods pending, cardiology clearance obtained"></textarea>
+                        </div>
+                    }
+                    else if (activeModalTab == "BILLING")
+                    {
+                        @* ── TAB 2: BILLING & FEE DETAILS ── *@
+                        <div class="billing-tab-content">
+                            <div class="form-group mb-4">
+                                <label>Procedure Fee (₹)</label>
+                                <div class="fee-input-wrapper">
+                                    <span class="currency-symbol">₹</span>
+                                    <input type="number" step="0.01" min="0" class="lab-input fee-input" @bind="formProcedureFee" @bind:event="oninput" placeholder="0.00" />
+                                </div>
+                                <span class="text-slate-400 font-11">Leave blank or 0 if fee will be computed at billing time.</span>
+                            </div>
+
+                            @* --- CASE SUMMARY PREVIEW CARD --- *@
+                            <div class="case-preview-card">
+                                <div class="case-preview-header">
+                                    <i class="bi bi-receipt text-indigo-600"></i>
+                                    <span>Surgery Request Summary</span>
+                                </div>
+                                <div class="case-preview-body">
+                                    <div class="preview-row">
+                                        <span class="preview-label">Patient:</span>
+                                        <span class="preview-value font-bold">
+                                            @(selectedPatient != null ? (string.IsNullOrEmpty(selectedPatient.namewithinitials) ? selectedPatient.name : selectedPatient.namewithinitials) : (!string.IsNullOrWhiteSpace(patientSearchText) ? patientSearchText : (formCustId > 0 ? $"Patient #{formCustId}" : "Not Selected")))
+                                        </span>
+                                    </div>
+                                    <div class="preview-row">
+                                        <span class="preview-label">Surgeon:</span>
+                                        <span class="preview-value font-bold">
+                                            @{
+                                                var doc = GetDoctor(formDoctorCode);
+                                                <span>@(doc != null ? $"Dr. {(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)}" : (formDoctorCode > 0 ? $"Doctor #{formDoctorCode}" : "Not Selected"))</span>
+                                            }
+                                        </span>
+                                    </div>
+                                    <div class="preview-row">
+                                        <span class="preview-label">Procedure:</span>
+                                        <span class="preview-value font-bold">@(string.IsNullOrWhiteSpace(formProcedureName) ? "Not Specified" : formProcedureName)</span>
+                                    </div>
+                                    <div class="preview-row">
+                                        <span class="preview-label">Priority:</span>
+                                        <span class="preview-value">
+                                            @if (!string.IsNullOrWhiteSpace(formPriority))
+                                            {
+                                                <span class="badge @GetPriorityBadgeClass(formPriority)">@formPriority</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-slate-400 font-12 italic">Not Specified</span>
+                                            }
+                                        </span>
+                                    </div>
+                                    <div class="preview-row">
+                                        <span class="preview-label">Duration &amp; GA:</span>
+                                        <span class="preview-value">
+                                            @(formDuration.HasValue ? $"{formDuration.Value} mins" : "Not Specified") • @(!string.IsNullOrWhiteSpace(formAnesthesia) ? formAnesthesia : "Not Specified")
+                                        </span>
+                                    </div>
+                                    <div class="preview-divider"></div>
+                                    <div class="preview-row font-14">
+                                        <span class="preview-label text-slate-800 font-bold">Total Procedure Fee:</span>
+                                        <span class="preview-value text-indigo-600 font-bold font-mono font-16">
+                                            @(formProcedureFee.HasValue && formProcedureFee.Value > 0 ? $"₹{formProcedureFee.Value:N2}" : "₹0.00")
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    }
+                </fieldset>
+            </div>
+            
+            @* --- MODAL FOOTER --- *@
+            <div class="modal-footer-bar">
+                @if (activeModalTab == "PATIENT")
+                {
+                    <button type="button" class="btn-secondary-outline" @onclick="CloseFormModal" disabled="@isSaving">Cancel</button>
+                    <button type="button" class="btn-primary-outline" @onclick='() => SetModalTab("BILLING")' disabled="@isSaving">
+                        <span>Next: Billing Setup</span> <i class="bi bi-arrow-right ms-1"></i>
+                    </button>
+                }
+                else
+                {
+                    <button type="button" class="btn-secondary-outline" @onclick='() => SetModalTab("PATIENT")' disabled="@isSaving">
+                        <i class="bi bi-arrow-left me-1"></i> <span>Back to Details</span>
+                    </button>
+                }
+
+                <button type="button" class="btn-save" @onclick="SaveSurgeryRequestAsync" disabled="@isSaving">
+                    @if (isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1"></span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-check2-circle"></i>
+                        <span>@(isEditMode ? "Update Surgery Request" : "Save Surgery Request")</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@* ═══════════════════════════════════════════════════════════════════
+   CANCEL CONFIRMATION MODAL
+   ═══════════════════════════════════════════════════════════════════ *@
+@if (showCancelConfirm && cancelTarget != null)
+{
+    <div class="modal-overlay">
+        <div class="modal-form-card" style="max-width: 420px; padding: 24px; text-align: center;">
+            <div style="margin-bottom: 20px;">
+                <i class="bi bi-exclamation-triangle-fill text-danger fs-1 mb-2 d-block"></i>
+                <p style="margin: 0; font-size: 15px; font-weight: 700; color: #1e293b;">Cancel Surgery Request?</p>
+                <p class="text-slate-500 font-13 mt-1">
+                    Are you sure you want to cancel the surgery request for <strong>@cancelTarget.procedure_name</strong>?
+                    This will also remove any pending unbilled charges.
+                </p>
+            </div>
+            <div style="display: flex; justify-content: center; gap: 12px; width: 100%;">
+                <button type="button" class="btn-secondary-outline" @onclick="DismissCancelConfirm" style="flex: 1;">Keep Request</button>
+                <button type="button" class="btn-danger-filled" @onclick="ExecuteCancelAsync" style="flex: 1;">Cancel Request</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<OtSurgeryRequestListModel> requestsList = new();
+    private List<DoctorMasterModel> doctorsList = new();
+    private List<SharedComponents.Rcl.Models.CustomerModel> customersList = new();
+
+    private bool isLoading = true;
+    private string SearchQuery = "";
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    // Modal Form & Tab State
+    private bool showFormModal = false;
+    private string activeModalTab = "PATIENT";
+    private bool isEditMode = false;
+    private bool isSubmitted = false;
+    private bool isSaving = false;
+
+    // Patient Typeahead Autocomplete State
+    private string patientSearchText = "";
+    private bool showPatientDropdown = false;
+    private List<SharedComponents.Rcl.Models.CustomerModel> filteredPatientsForDropdown = new();
+    private SharedComponents.Rcl.Models.CustomerModel? selectedPatient = null;
+
+    // Form Model Fields
+    private Guid formRequestId = Guid.Empty;
+    private decimal formCustId = 0;
+    private int formDoctorCode = 0;
+    private string? formOpId = null;
+    private string formIpIdStr = "";
+    private string formProcedureName = "";
+    private string formProcedureCode = "";
+    private string formDiagnosis = "";
+    private string formSurgeryType = "";
+    private string formPriority = "";
+    private int? formDuration = null;
+    private string formAnesthesia = "";
+    private decimal? formProcedureFee = null;
+    private string formNotes = "";
+
+    // Cancel Confirm State
+    private bool showCancelConfirm = false;
+    private OtSurgeryRequestListModel? cancelTarget = null;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success && !string.IsNullOrWhiteSpace(tenantCodeResult.Value)
+                    ? tenantCodeResult.Value
+                    : (TenantState?.TenantCode ?? "0010");
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success && !string.IsNullOrWhiteSpace(tokenResult.Value)
+                    ? tokenResult.Value
+                    : (TenantState?.AuthToken ?? "");
+
+                await LoadDoctorsAsync();
+                await LoadRequestsAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading initial data: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            doctorsList = await DoctorService.GetDoctorsAsync() ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading doctors: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCustomersAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            var effectiveTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : (TenantState?.TenantCode ?? "0010");
+            var effectiveToken = !string.IsNullOrEmpty(AuthToken) ? AuthToken : (TenantState?.AuthToken ?? "");
+
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+
+            if (!string.IsNullOrEmpty(effectiveToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+            }
+
+            LabSettingModel? setting = null;
+            try { setting = await LabSettingService.GetLabSettingAsync(); } catch { }
+
+            string endpoint = (setting?.show_all_customers ?? true)
+                ? "api/Customer/partition?pagenumber=1&pagesize=1000"
+                : "api/customer/getcus";
+
+            var response = await client.GetAsync(endpoint);
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var list = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json);
+                if (list != null && list.Any())
+                {
+                    customersList = list;
+                }
+            }
+
+            if (!customersList.Any())
+            {
+                try
+                {
+                    var fallbackResp = await client.GetAsync("api/customer/getcus");
+                    if (fallbackResp.IsSuccessStatusCode)
+                    {
+                        var json = await fallbackResp.Content.ReadAsStringAsync();
+                        var list = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json);
+                        if (list != null && list.Any()) customersList = list;
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading customers: {ex.Message}");
+        }
+    }
+
+    private async Task LoadRequestsAsync()
+    {
+        isLoading = true;
+        try
+        {
+            requestsList = await OtService.GetSurgeryRequestsAsync();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading surgery requests: {ex.Message}");
+            requestsList = new();
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private DoctorMasterModel? GetDoctor(int dcode) =>
+        doctorsList.FirstOrDefault(d => d.dcode == dcode);
+
+    private string GetDoctorDisplayName(int dcode)
+    {
+        var doc = GetDoctor(dcode);
+        if (doc == null) return "Dr. Unassigned";
+        var raw = !string.IsNullOrWhiteSpace(doc.name) ? doc.name.Trim() : (!string.IsNullOrWhiteSpace(doc.doctorfullname) ? doc.doctorfullname.Trim() : "");
+        if (string.IsNullOrWhiteSpace(raw)) return "Doctor";
+        if (raw.StartsWith("Dr.", StringComparison.OrdinalIgnoreCase) || raw.StartsWith("Dr ", StringComparison.OrdinalIgnoreCase))
+            return raw;
+        return $"Dr. {raw}";
+    }
+
+    private IEnumerable<OtSurgeryRequestListModel> FilteredList =>
+        requestsList.Where(r => {
+            if (string.IsNullOrWhiteSpace(SearchQuery)) return true;
+            var q = SearchQuery.Trim();
+            var patName = !string.IsNullOrWhiteSpace(r.patient_name) ? r.patient_name : "";
+            var docName = !string.IsNullOrWhiteSpace(r.doctor_name) ? r.doctor_name : GetDoctorDisplayName(r.dcode);
+
+            return (!string.IsNullOrWhiteSpace(patName) && patName.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                   (!string.IsNullOrWhiteSpace(docName) && docName.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                   (r.procedure_name != null && r.procedure_name.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                   (r.procedure_code != null && r.procedure_code.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                   (r.diagnosis != null && r.diagnosis.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                   (r.priority != null && r.priority.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                   (r.status != null && r.status.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+                   (r.mobile != null && r.mobile.Contains(q, StringComparison.OrdinalIgnoreCase));
+        });
+
+    private void SetModalTab(string tab)
+    {
+        activeModalTab = tab;
+    }
+
+    private async Task OpenAddModal()
+    {
+        isEditMode = false;
+        isSubmitted = false;
+        activeModalTab = "PATIENT";
+        formRequestId = Guid.Empty;
+        formCustId = 0;
+        selectedPatient = null;
+        patientSearchText = "";
+        formDoctorCode = 0;
+        formOpId = null;
+        formIpIdStr = "";
+        formProcedureName = "";
+        formProcedureCode = "";
+        formDiagnosis = "";
+        formSurgeryType = "";
+        formPriority = "";
+        formDuration = null;
+        formAnesthesia = "";
+        formProcedureFee = null;
+        formNotes = "";
+        if (!customersList.Any())
+        {
+            await LoadCustomersAsync();
+        }
+        UpdateFilteredPatients();
+        showFormModal = true;
+    }
+
+    private void OpenEditModal(OtSurgeryRequestListModel item)
+    {
+        isEditMode = true;
+        isSubmitted = false;
+        activeModalTab = "PATIENT";
+        formRequestId = item.request_id;
+        formCustId = item.custid;
+        selectedPatient = customersList.FirstOrDefault(c => c.custid == item.custid);
+        patientSearchText = !string.IsNullOrWhiteSpace(item.patient_name)
+            ? item.patient_name
+            : (selectedPatient != null 
+                ? (string.IsNullOrEmpty(selectedPatient.namewithinitials) ? selectedPatient.name : selectedPatient.namewithinitials)
+                : $"Patient {item.custid}");
+        formDoctorCode = item.dcode;
+        formOpId = item.op_id;
+        formIpIdStr = item.ip_id?.ToString() ?? "";
+        formProcedureName = item.procedure_name;
+        formProcedureCode = item.procedure_code ?? "";
+        formDiagnosis = item.diagnosis ?? "";
+        formSurgeryType = item.surgery_type ?? "";
+        formPriority = item.priority ?? "";
+        formDuration = item.expected_duration_minutes;
+        formAnesthesia = item.anesthesia_type ?? "";
+        formProcedureFee = item.procedure_fee;
+        formNotes = item.notes ?? "";
+        showFormModal = true;
+    }
+
+    private void CloseFormModal()
+    {
+        if (isSaving) return;
+        showFormModal = false;
+        showPatientDropdown = false;
+    }
+
+    private void OnPatientSearchInput(ChangeEventArgs e)
+    {
+        patientSearchText = e.Value?.ToString() ?? "";
+        UpdateFilteredPatients();
+        showPatientDropdown = true;
+        if (!string.IsNullOrWhiteSpace(patientSearchText) && patientSearchText.Trim().Length >= 3)
+        {
+            _ = SearchPatientsRemoteAsync(patientSearchText.Trim());
+        }
+    }
+
+    private void UpdateFilteredPatients()
+    {
+        if (string.IsNullOrWhiteSpace(patientSearchText))
+        {
+            filteredPatientsForDropdown = customersList.Take(50).ToList();
+        }
+        else
+        {
+            var s = patientSearchText.Trim();
+            filteredPatientsForDropdown = customersList
+                .Where(c => (c.name != null && c.name.Contains(s, StringComparison.OrdinalIgnoreCase)) ||
+                            (c.namewithinitials != null && c.namewithinitials.Contains(s, StringComparison.OrdinalIgnoreCase)) ||
+                            (c.mobile != null && c.mobile.Contains(s, StringComparison.OrdinalIgnoreCase)) ||
+                            (c.phone != null && c.phone.Contains(s, StringComparison.OrdinalIgnoreCase)))
+                .Take(50)
+                .ToList();
+        }
+    }
+
+    private async Task SearchPatientsRemoteAsync(string search)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(search) || search.Length < 3) return;
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            var effectiveTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : (TenantState?.TenantCode ?? "0010");
+            var effectiveToken = !string.IsNullOrEmpty(AuthToken) ? AuthToken : (TenantState?.AuthToken ?? "");
+
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+
+            if (!string.IsNullOrEmpty(effectiveToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+            }
+            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(search)}");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var results = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json);
+                if (results != null && results.Any())
+                {
+                    bool addedAny = false;
+                    foreach (var item in results)
+                    {
+                        if (!customersList.Any(c => c.custid == item.custid))
+                        {
+                            customersList.Add(item);
+                            addedAny = true;
+                        }
+                    }
+                    if (addedAny)
+                    {
+                        UpdateFilteredPatients();
+                        await InvokeAsync(StateHasChanged);
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
+    private void ShowPatientDropdown()
+    {
+        UpdateFilteredPatients();
+        showPatientDropdown = true;
+    }
+
+    private async Task HidePatientDropdownWithDelay()
+    {
+        await Task.Delay(250);
+        showPatientDropdown = false;
+    }
+
+    private void SelectPatient(SharedComponents.Rcl.Models.CustomerModel p)
+    {
+        selectedPatient = p;
+        formCustId = p.custid;
+        patientSearchText = string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials;
+        showPatientDropdown = false;
+    }
+
+    private void ClearSelectedPatient()
+    {
+        selectedPatient = null;
+        formCustId = 0;
+        patientSearchText = "";
+        UpdateFilteredPatients();
+    }
+
+    private async Task SaveSurgeryRequestAsync()
+    {
+        isSubmitted = true;
+        if (formCustId <= 0)
+        {
+            ToastService.ShowWarning("Please select a valid patient.");
+            activeModalTab = "PATIENT";
+            return;
+        }
+
+        if (formDoctorCode <= 0)
+        {
+            ToastService.ShowWarning("Please select an operating surgeon.");
+            activeModalTab = "PATIENT";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(formProcedureName))
+        {
+            activeModalTab = "PATIENT";
+            ToastService.ShowError("Please select a valid Patient and Surgeon");
+            return;
+        }
+
+        isSaving = true;
+        StateHasChanged();
+
+        try
+        {
+            OtApiResponse res;
+            if (isEditMode)
+            {
+                res = await OtService.UpdateSurgeryRequestAsync(new UpdateSurgeryRequestRequest
+                {
+                    request_id = formRequestId,
+                    procedure_name = formProcedureName.Trim(),
+                    procedure_code = string.IsNullOrWhiteSpace(formProcedureCode) ? null : formProcedureCode.Trim(),
+                    diagnosis = string.IsNullOrWhiteSpace(formDiagnosis) ? null : formDiagnosis.Trim(),
+                    surgery_type = formSurgeryType,
+                    priority = formPriority,
+                    expected_duration_minutes = formDuration,
+                    anesthesia_type = formAnesthesia,
+                    notes = string.IsNullOrWhiteSpace(formNotes) ? null : formNotes.Trim()
+                });
+            }
+            else
+            {
+                Guid? parsedIpId = null;
+                if (!string.IsNullOrWhiteSpace(formIpIdStr) && Guid.TryParse(formIpIdStr.Trim(), out var g))
+                {
+                    parsedIpId = g;
+                }
+
+                res = await OtService.AddSurgeryRequestAsync(new AddSurgeryRequestRequest
+                {
+                    custid = formCustId,
+                    dcode = formDoctorCode,
+                    op_id = string.IsNullOrWhiteSpace(formOpId) ? null : formOpId.Trim(),
+                    ip_id = parsedIpId,
+                    procedure_name = formProcedureName.Trim(),
+                    procedure_code = string.IsNullOrWhiteSpace(formProcedureCode) ? null : formProcedureCode.Trim(),
+                    diagnosis = string.IsNullOrWhiteSpace(formDiagnosis) ? null : formDiagnosis.Trim(),
+                    surgery_type = formSurgeryType,
+                    priority = formPriority,
+                    expected_duration_minutes = formDuration,
+                    anesthesia_type = formAnesthesia,
+                    procedure_fee = formProcedureFee.HasValue && formProcedureFee.Value > 0 ? formProcedureFee.Value : null,
+                    notes = string.IsNullOrWhiteSpace(formNotes) ? null : formNotes.Trim()
+                });
+            }
+
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess(isEditMode ? "Surgery request updated successfully!" : "Surgery request created successfully!");
+                showFormModal = false;
+                await LoadRequestsAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private void PromptCancel(OtSurgeryRequestListModel item)
+    {
+        cancelTarget = item;
+        showCancelConfirm = true;
+    }
+
+    private void DismissCancelConfirm()
+    {
+        showCancelConfirm = false;
+        cancelTarget = null;
+    }
+
+    private async Task ExecuteCancelAsync()
+    {
+        if (cancelTarget == null) return;
+        try
+        {
+            var res = await OtService.CancelSurgeryRequestAsync(cancelTarget.request_id);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess("Surgery request cancelled.");
+                showCancelConfirm = false;
+                cancelTarget = null;
+                await LoadRequestsAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+    }
+
+    private string GetPriorityBadgeClass(string? p) => (p?.ToUpperInvariant()) switch
+    {
+        "EMERGENCY" => "bg-danger text-white",
+        "URGENT" => "bg-warning text-dark",
+        _ => "bg-primary-subtle text-primary"
+    };
+
+    private string GetStatusBadgeClass(string? status) => (status?.ToUpperInvariant()) switch
+    {
+        "REQUESTED" => "bg-warning-subtle text-warning border border-warning",
+        "SCHEDULED" => "bg-info-subtle text-info border border-info",
+        "IN_PROGRESS" => "bg-purple-subtle text-purple border border-purple",
+        "COMPLETED" => "bg-success-subtle text-success border border-success",
+        "CANCELLED" => "bg-danger-subtle text-danger border border-danger",
+        _ => "bg-secondary-subtle text-secondary"
+    };
+}

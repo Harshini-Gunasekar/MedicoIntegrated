@@ -8,6 +8,7 @@
 @inject NurseNotesMasterService NotesMasterService
 @inject ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -199,11 +200,41 @@
     private bool hasCreateRight = true;
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
+    private string DefaultTenant = "";
 
     protected override async Task OnInitializedAsync()
     {
+        if (!string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+        {
+            DefaultTenant = TenantState.TenantCode;
+        }
         await LoadRights();
         await LoadData();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tcRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (tcRes.Success && !string.IsNullOrWhiteSpace(tcRes.Value))
+                {
+                    DefaultTenant = tcRes.Value;
+                }
+            }
+            catch { }
+
+            if (string.IsNullOrWhiteSpace(DefaultTenant) && !string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+            {
+                DefaultTenant = TenantState.TenantCode;
+            }
+
+            await LoadRights();
+            await LoadData();
+            StateHasChanged();
+        }
     }
 
     private async Task LoadRights()
@@ -233,11 +264,15 @@
         isLoading = true;
         try
         {
-            servicesList = await NotesMasterService.GetServiceNamesAsync(activeOnly: true);
+            var items = await NotesMasterService.GetServiceNamesAsync(activeOnly: false, tenantCode: DefaultTenant);
+            servicesList = items?
+                .Where(s => string.IsNullOrEmpty(s.tenant_code) || string.IsNullOrEmpty(DefaultTenant) || s.tenant_code == DefaultTenant)
+                .ToList() ?? new();
         }
         catch (Exception ex)
         {
             ToastService.ShowError($"Error loading service names: {ex.Message}");
+            servicesList = new();
         }
         finally
         {
@@ -287,15 +322,17 @@
                 {
                     service_id = selectedId,
                     service_name = formName.Trim(),
-                    is_active = formIsActive
-                });
+                    is_active = formIsActive,
+                    tenant_code = DefaultTenant
+                }, DefaultTenant);
             }
             else
             {
                 success = await NotesMasterService.AddServiceNameAsync(new AddServiceNameRequest
                 {
-                    service_name = formName.Trim()
-                });
+                    service_name = formName.Trim(),
+                    tenant_code = DefaultTenant
+                }, DefaultTenant);
             }
 
             if (success)
@@ -342,7 +379,7 @@
     {
         try
         {
-            var success = await NotesMasterService.DeleteServiceNameAsync(deleteTargetId);
+            var success = await NotesMasterService.DeleteServiceNameAsync(deleteTargetId, DefaultTenant);
             if (success)
             {
                 ToastService.ShowSuccess("Service deactivated successfully.");

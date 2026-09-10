@@ -8,6 +8,7 @@
 @inject NurseNotesMasterService NotesMasterService
 @inject ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -224,11 +225,41 @@
     private bool hasCreateRight = true;
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
+    private string DefaultTenant = "";
 
     protected override async Task OnInitializedAsync()
     {
+        if (!string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+        {
+            DefaultTenant = TenantState.TenantCode;
+        }
         await LoadRights();
         await LoadData();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tcRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (tcRes.Success && !string.IsNullOrWhiteSpace(tcRes.Value))
+                {
+                    DefaultTenant = tcRes.Value;
+                }
+            }
+            catch { }
+
+            if (string.IsNullOrWhiteSpace(DefaultTenant) && !string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+            {
+                DefaultTenant = TenantState.TenantCode;
+            }
+
+            await LoadRights();
+            await LoadData();
+            StateHasChanged();
+        }
     }
 
     private async Task LoadRights()
@@ -258,11 +289,15 @@
         isLoading = true;
         try
         {
-            particularsList = await NotesMasterService.GetIoParticularsAsync(activeOnly: true);
+            var items = await NotesMasterService.GetIoParticularsAsync(activeOnly: false, tenantCode: DefaultTenant);
+            particularsList = items?
+                .Where(p => string.IsNullOrEmpty(p.tenant_code) || string.IsNullOrEmpty(DefaultTenant) || p.tenant_code == DefaultTenant)
+                .ToList() ?? new();
         }
         catch (Exception ex)
         {
             ToastService.ShowError($"Error loading particulars: {ex.Message}");
+            particularsList = new();
         }
         finally
         {
@@ -316,16 +351,18 @@
                     particular_id = selectedId,
                     particular_name = formName.Trim(),
                     io_type = formIoType,
-                    is_active = formIsActive
-                });
+                    is_active = formIsActive,
+                    tenant_code = DefaultTenant
+                }, DefaultTenant);
             }
             else
             {
                 success = await NotesMasterService.AddIoParticularAsync(new AddIoParticularRequest
                 {
                     particular_name = formName.Trim(),
-                    io_type = formIoType
-                });
+                    io_type = formIoType,
+                    tenant_code = DefaultTenant
+                }, DefaultTenant);
             }
 
             if (success)
@@ -372,7 +409,7 @@
     {
         try
         {
-            var success = await NotesMasterService.DeleteIoParticularAsync(deleteTargetId);
+            var success = await NotesMasterService.DeleteIoParticularAsync(deleteTargetId, DefaultTenant);
             if (success)
             {
                 ToastService.ShowSuccess("Particular deactivated successfully.");

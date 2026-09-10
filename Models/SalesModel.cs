@@ -35,6 +35,8 @@
 
      public decimal netamount { get; set; }
 
+     public decimal roundoff { get; set; }
+
      public string? paymentmode { get; set; }
 
      public string? paymentstatus { get; set; }

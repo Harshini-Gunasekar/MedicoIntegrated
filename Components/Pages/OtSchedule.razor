@@ -1,0 +1,1477 @@
+@page "/ot-schedule"
+@page "/ot-slots"
+@page "/ot-schedule-calendar"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using Booking.Models
+@using Booking.Services
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using Newtonsoft.Json
+@inject OtService OtService
+@inject DoctorService DoctorService
+@inject LabSettingService LabSettingService
+@inject IHttpClientFactory ClientFactory
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject Booking.Services.ToastService ToastService
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+
+<PageTitle>OT Schedule &amp; Theater Timings</PageTitle>
+
+<div class="referral-page ot-schedule-page lc-fadeInUp">
+    <!-- ========================================================================= -->
+    <!-- 1. HEADER CARD                                                            -->
+    <!-- ========================================================================= -->
+    <div class="lab-header-card">
+        <div class="header-left-wrap">
+            <div class="header-icon-box">
+                <i class="bi bi-calendar2-check-fill"></i>
+            </div>
+            <div class="header-title-group">
+                <div class="title-and-badge-row">
+                    <h1 class="lab-title-text">OT Schedule &amp; Theater Timings</h1>
+                    <span class="badge-slot-count">@filteredSchedules.Count(s => s.status != "CANCELLED") Today's Booked Slot@(filteredSchedules.Count(s => s.status != "CANCELLED") == 1 ? "" : "s")</span>
+                </div>
+                <div class="header-status-indicator">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Real-time OT Suite Booking, Calendar Schedule &amp; Overlap Guard</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-right-wrap">
+            <!-- Search Input -->
+            <div class="patient-search-relative">
+                <i class="bi bi-search search-icon-svg text-slate-400"></i>
+                <input type="text"
+                       class="lc-header-search-input"
+                       placeholder="Search procedure, patient, surgeon..."
+                       @bind="searchQuery"
+                       @bind:event="oninput" />
+                @if (!string.IsNullOrWhiteSpace(searchQuery))
+                {
+                    <button type="button" class="btn-search-clear" @onclick='() => searchQuery = ""'>
+                        <i class="bi bi-x-circle-fill"></i>
+                    </button>
+                }
+            </div>
+
+            <!-- OT Theater Filter -->
+            <div class="theater-select-wrapper">
+                <select class="form-select lc-theater-select" @bind="selectedOtFilterString">
+                    <option value="">-- All OT Theaters --</option>
+                    @foreach (var ot in otTheaters)
+                    {
+                        <option value="@ot.ot_id.ToString()">@ot.ot_name @(!string.IsNullOrWhiteSpace(ot.specialty) ? $"({ot.specialty})" : "")</option>
+                    }
+                </select>
+            </div>
+
+            <!-- Action: Book New Slot -->
+            <button type="button" class="btn-indigo-action" @onclick="OpenBookModal">
+                <i class="bi bi-calendar-plus-fill me-1.5"></i>
+                <span>Schedule OT Slot</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 2. KPI STATISTICS SUMMARY TILES (TODAY'S METRICS)                         -->
+    <!-- ========================================================================= -->
+    <div class="kpi-grid">
+        <div class="kpi-card kpi-total @(showUnscheduledOnly ? "clickable-kpi" : "")" @onclick="() => showUnscheduledOnly = false" title="Show Booked Slots">
+            <div class="kpi-icon-box bg-indigo-50 text-indigo-600">
+                <i class="bi bi-calendar2-check-fill"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@allSchedules.Count(s => s.scheduled_date == selectedDate && !s.isdeleted && s.status != "CANCELLED")</span>
+                <span class="kpi-label">Today's Booked Slots</span>
+            </div>
+        </div>
+
+        <div class="kpi-card kpi-today @(showUnscheduledOnly ? "clickable-kpi" : "")" @onclick="() => showUnscheduledOnly = false" title="Show Active Surgeries">
+            <div class="kpi-icon-box bg-emerald-50 text-emerald-600">
+                <i class="bi bi-heart-pulse-fill"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@allSchedules.Count(s => s.scheduled_date == selectedDate && s.status == "IN_PROGRESS" && !s.isdeleted)</span>
+                <span class="kpi-label">In Surgery Now</span>
+            </div>
+        </div>
+
+        <div class="kpi-card kpi-pending @(unscheduledRequests.Any() ? "clickable-kpi" : "")" @onclick="ToggleUnscheduledQueue" title="Toggle Unscheduled Queue Table">
+            <div class="kpi-icon-box bg-amber-50 text-amber-600">
+                <i class="bi bi-hourglass-split"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@unscheduledRequests.Count</span>
+                <span class="kpi-label">Unscheduled Requests</span>
+            </div>
+        </div>
+
+        <div class="kpi-card kpi-theaters">
+            <div class="kpi-icon-box bg-sky-50 text-sky-600">
+                <i class="bi bi-hospital"></i>
+            </div>
+            <div class="kpi-details">
+                <span class="kpi-value">@otTheaters.Count(t => t.is_active)</span>
+                <span class="kpi-label">Operational Theaters</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 3. DATE NAVIGATION TOOLBAR (CLEAN DATE CALENDAR PICKER)                   -->
+    <!-- ========================================================================= -->
+    <div class="schedule-toolbar-card">
+        <div class="date-navigator-wrap">
+            <!-- Inline Date Input -->
+            <div class="date-picker-box">
+                <input type="date"
+                       class="form-control form-control-sm lc-date-control"
+                       value="@selectedDate.ToString("yyyy-MM-dd")"
+                       @onchange="OnDateChanged" />
+            </div>
+            <div class="selected-date-pill">
+                <i class="bi bi-calendar3 me-1.5 text-indigo-600"></i>
+                <span>@selectedDate.ToString("dddd, dd MMMM yyyy")</span>
+            </div>
+        </div>
+
+        <div class="d-flex align-items-center">
+            <div class="schedule-tab-toggle">
+                <button type="button"
+                        class="tab-toggle-btn @(!showUnscheduledOnly ? "active bookings-active" : "")"
+                        @onclick="() => showUnscheduledOnly = false"
+                        title="Show Scheduled Bookings">
+                    <i class="bi bi-calendar-check-fill me-1.5"></i>
+                    <span>Bookings (@filteredSchedules.Count(s => s.status != "CANCELLED"))</span>
+                </button>
+                <button type="button"
+                        class="tab-toggle-btn @(showUnscheduledOnly ? "active queue-active" : "")"
+                        @onclick="() => showUnscheduledOnly = true"
+                        title="Show Unscheduled Queue">
+                    <i class="bi bi-inbox-fill me-1.5"></i>
+                    <span>Unscheduled Queue (@unscheduledRequests.Count)</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 5. MAIN SCHEDULE WORKSPACE: TABLE VIEW (SCHEDULED / UNSCHEDULED)          -->
+    <!-- ========================================================================= -->
+    <div class="schedule-workspace-card">
+        @if (isLoading)
+        {
+            <div class="loading-state-box p-5 text-center">
+                <div class="spinner-border text-indigo-600" style="width: 2.5rem; height: 2.5rem;" role="status"></div>
+                <div class="text-slate-600 font-bold mt-2 font-13">Loading OT Theater schedules &amp; calendar slots...</div>
+            </div>
+        }
+        else if (showUnscheduledOnly)
+        {
+            <!-- UNSCHEDULED SURGERY REQUESTS TABLE VIEW -->
+            <div class="queue-sub-header">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-inbox-fill text-amber-600 fs-5"></i>
+                    <span class="queue-heading">Unscheduled Surgery Queue</span>
+                    <span class="queue-badge-count">@filteredUnscheduledRequests.Count Awaiting Allocation</span>
+                </div>
+                @if (filteredUnscheduledRequests.Any(r => r.priority == "EMERGENCY"))
+                {
+                    <span class="emergency-alert-pill">
+                        <i class="bi bi-exclamation-triangle-fill"></i>
+                        @filteredUnscheduledRequests.Count(r => r.priority == "EMERGENCY") Emergency Case@(filteredUnscheduledRequests.Count(r => r.priority == "EMERGENCY") == 1 ? "" : "s")
+                    </span>
+                }
+            </div>
+            <div class="table-responsive">
+                <table class="table ot-schedule-table align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th class="col-req-date">REQUEST DATE</th>
+                            <th class="col-procedure">PROCEDURE</th>
+                            <th class="col-patient">PATIENT</th>
+                            <th class="col-surgeon">ATTENDING SURGEON</th>
+                            <th class="col-duration">EST. DURATION</th>
+                            <th class="col-priority">PRIORITY</th>
+                            <th class="col-actions text-end pe-3">ACTIONS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!filteredUnscheduledRequests.Any())
+                        {
+                            <tr>
+                                <td colspan="7" class="text-center py-5 text-slate-400">
+                                    <i class="bi bi-inbox fs-2 d-block mb-2 text-slate-300"></i>
+                                    <span class="font-13 font-bold text-slate-600 d-block mb-1">No Unscheduled Surgery Requests</span>
+                                    <span class="font-11 text-slate-400">All requested surgery cases have been scheduled into OT slots.</span>
+                                </td>
+                            </tr>
+                        }
+                        else
+                        {
+                            @foreach (var req in filteredUnscheduledRequests)
+                            {
+                                var patName = GetPatientName(req.custid);
+                                var docName = GetDoctorName(req.dcode);
+                                var isEmergency = req.priority?.ToUpper() == "EMERGENCY";
+
+                                <tr class="schedule-row @(isEmergency ? "row-emergency-highlight" : "")"
+                                    @ondblclick="() => NavigateToConsole(req.request_id)"
+                                    title="Double click to open in OT Console"
+                                    style="cursor: pointer;">
+                                    <td class="col-req-date">
+                                        <div class="date-cell-wrap">
+                                            <span class="date-main-text">@req.created_at.ToString("dd-MMM-yyyy")</span>
+                                            <span class="status-awaiting-badge">
+                                                Awaiting Slot
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td class="col-procedure">
+                                        <div class="procedure-cell-block">
+                                            <div class="procedure-title-row" title="@req.procedure_name">
+                                                <span class="procedure-name-text">@req.procedure_name</span>
+                                            </div>
+                                            @if (!string.IsNullOrWhiteSpace(req.surgery_type))
+                                            {
+                                                <span class="surgery-type-chip">@req.surgery_type</span>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(req.notes))
+                                            {
+                                                <span class="procedure-notes-preview" title="@req.notes">
+                                                    @req.notes
+                                                </span>
+                                            }
+                                        </div>
+                                    </td>
+                                    <td class="col-patient">
+                                        <div class="patient-cell-wrap">
+                                            <div class="patient-name-block">
+                                                <span class="patient-main-name" title="@patName">@patName</span>
+                                                <span class="patient-sub-id">ID: #@req.custid.ToString("0")</span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td class="col-surgeon">
+                                        <div class="surgeon-cell-wrap" title="Dr. @docName">
+                                            <span class="surgeon-name-text">Dr. @docName</span>
+                                        </div>
+                                    </td>
+                                    <td class="col-duration">
+                                        <span class="duration-badge-pill">
+                                            @(req.expected_duration_minutes ?? 60)m
+                                        </span>
+                                    </td>
+                                    <td class="col-priority">
+                                        @if (isEmergency)
+                                        {
+                                            <span class="priority-pill priority-emergency">
+                                                <span class="emergency-dot"></span> EMERGENCY
+                                            </span>
+                                        }
+                                        else
+                                        {
+                                            <span class="priority-pill priority-elective">
+                                                @(req.priority ?? "ELECTIVE")
+                                            </span>
+                                        }
+                                    </td>
+                                    <td class="col-actions text-end pe-3">
+                                        <button type="button" class="btn-book-slot-action" @onclick="() => QuickScheduleRequest(req)" title="Book OT Slot for this request">
+                                            <i class="bi bi-calendar-plus-fill me-1"></i> Book Slot
+                                        </button>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <!-- SCHEDULED BOOKINGS TABLE VIEW -->
+            <div class="queue-sub-header">
+                <div class="d-flex align-items-center gap-2">
+                    <i class="bi bi-calendar-check-fill text-indigo-600 fs-5"></i>
+                    <span class="queue-heading">Scheduled Surgeries for @selectedDate.ToString("dd MMMM yyyy")</span>
+                    <span class="queue-badge-count">@filteredSchedules.Count(s => s.status != "CANCELLED") Booked</span>
+                </div>
+            </div>
+            <div class="table-responsive">
+                <table class="table ot-schedule-table align-middle mb-0">
+                    <thead>
+                        <tr>
+                            <th class="col-booking-time">DATE &amp; TIME</th>
+                            <th class="col-booking-theater">THEATER SUITE</th>
+                            <th class="col-procedure">PROCEDURE</th>
+                            <th class="col-patient">PATIENT</th>
+                            <th class="col-surgeon">ATTENDING SURGEON</th>
+                            <th class="col-status">STATUS</th>
+                            <th class="col-actions text-end pe-3">ACTIONS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (!filteredSchedules.Any())
+                        {
+                            <tr>
+                                <td colspan="7" class="text-center py-5 text-slate-400">
+                                    <i class="bi bi-calendar-x fs-2 d-block mb-2 text-slate-300"></i>
+                                    <span class="font-13 font-bold text-slate-600 d-block mb-1">No Surgeries Scheduled</span>
+                                    <span class="font-11 text-slate-400">No surgery slots found matching the selected date and filters.</span>
+                                    <div class="mt-3">
+                                        <button type="button" class="btn btn-sm btn-outline-primary rounded-pill px-3 font-11 font-bold" @onclick="OpenBookModal">
+                                             <i class="bi bi-calendar-plus me-1"></i> Schedule First Slot
+                                        </button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                        else
+                        {
+                            @foreach (var slot in filteredSchedules)
+                            {
+                                var req = allRequests.FirstOrDefault(r => r.request_id == slot.request_id);
+                                var patName = req != null ? GetPatientName(req.custid) : $"Patient #{slot.custid:0}";
+                                var docName = req != null ? GetDoctorName(req.dcode) : "-";
+                                var theater = otTheaters.FirstOrDefault(t => t.ot_id == slot.ot_id);
+                                var isCancelled = slot.status == "CANCELLED";
+                                var isInProgress = slot.status == "IN_PROGRESS";
+                                var isCompleted = slot.status == "COMPLETED";
+
+                                <tr class="schedule-row @(isCancelled ? "row-cancelled" : "") @(isInProgress ? "row-in-progress" : "")"
+                                    @ondblclick="() => NavigateToConsole(slot.request_id)"
+                                    title="Double click to open in OT Console"
+                                    style="cursor: pointer;">
+                                    <td class="col-booking-time">
+                                        <div class="date-cell-wrap">
+                                            <span class="date-main-text">@slot.scheduled_date.ToString("dd-MMM-yyyy")</span>
+                                            <span class="time-range-pill">
+                                                @slot.scheduled_time.ToString("hh\\:mm tt") – @slot.estimated_end_time.ToString("hh\\:mm tt")
+                                            </span>
+                                        </div>
+                                    </td>
+                                    <td class="col-booking-theater">
+                                        <div class="theater-cell-wrap">
+                                            <div class="theater-cell-info">
+                                                <span class="theater-main-name" title="@(theater?.ot_name ?? "OT Suite")">@(theater?.ot_name ?? "OT Suite")</span>
+                                                <span class="theater-sub-loc">@(theater?.location ?? "-")</span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td class="col-procedure">
+                                        <div class="procedure-cell-block">
+                                            <div class="procedure-title-row" title="@(req?.procedure_name ?? (!string.IsNullOrWhiteSpace(slot.notes) ? slot.notes : "Surgery Procedure"))">
+                                                <span class="procedure-name-text">@(req?.procedure_name ?? (!string.IsNullOrWhiteSpace(slot.notes) ? slot.notes : "Surgery Procedure"))</span>
+                                            </div>
+                                            @if (req?.priority?.ToUpper() == "EMERGENCY")
+                                            {
+                                                <span class="priority-pill priority-emergency font-9">EMERGENCY</span>
+                                            }
+                                            else if (!string.IsNullOrWhiteSpace(req?.priority))
+                                            {
+                                                <span class="surgery-type-chip">@req.priority</span>
+                                            }
+                                        </div>
+                                    </td>
+                                    <td class="col-patient">
+                                        <div class="patient-cell-wrap">
+                                            <div class="patient-name-block">
+                                                <span class="patient-main-name" title="@patName">@patName</span>
+                                                <span class="patient-sub-id">ID: #@slot.custid.ToString("0")</span>
+                                            </div>
+                                        </div>
+                                    </td>
+                                    <td class="col-surgeon">
+                                        <div class="surgeon-cell-wrap" title="Dr. @docName">
+                                            <span class="surgeon-name-text">Dr. @docName</span>
+                                        </div>
+                                    </td>
+                                    <td class="col-status">
+                                        <span class="slot-status-pill badge-status-@(slot.status.ToLower())">
+                                            <span class="status-indicator-dot"></span>
+                                            <span>@(slot.status == "BOOKED" ? "Scheduled" : slot.status.Replace("_", " "))</span>
+                                        </span>
+                                    </td>
+                                    <td class="col-actions text-end pe-3">
+                                        <div class="d-inline-flex align-items-center gap-1.5">
+                                            <button type="button" class="btn-tbl-icon btn-tbl-postpone" @onclick="() => OpenPostponeModal(slot)" title="Postpone Slot">
+                                                <i class="bi bi-clock-history"></i>
+                                            </button>
+                                            <button type="button" class="btn-tbl-icon btn-tbl-edit" @onclick="() => OpenUpdateModal(slot)" title="Reschedule / Edit Slot">
+                                                <i class="bi bi-pencil-square"></i>
+                                            </button>
+                                            @if (!isCancelled)
+                                            {
+                                                <button type="button" class="btn-tbl-icon btn-tbl-cancel" @onclick="() => PromptCancelSlot(slot)" title="Cancel Slot">
+                                                    <i class="bi bi-x-lg"></i>
+                                                </button>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+
+    <!-- ========================================================================= -->
+    <!-- 6. BOOK / SCHEDULE OT SLOT MODAL                                          -->
+    <!-- ========================================================================= -->
+    @if (showBookModal)
+    {
+        <div class="modal-overlay">
+            <div class="modal-form-card" @onclick:stopPropagation>
+                <div class="modal-header-bar">
+                    <div class="modal-header-left">
+                        <div class="modal-header-icon-box">
+                            <i class="bi bi-calendar-plus-fill"></i>
+                        </div>
+                        <div class="modal-header-text">
+                            <h3 class="modal-title-text">Schedule OT Slot</h3>
+                            <span class="modal-subtitle-text">Assign operation theater suite and time window for surgery</span>
+                        </div>
+                    </div>
+                    <button type="button" class="modal-close-btn" @onclick="CloseBookModal" title="Close">&times;</button>
+                </div>
+
+                <div class="modal-body-content">
+                    @if (!string.IsNullOrWhiteSpace(conflictWarningMessage))
+                    {
+                        <div class="conflict-alert-box mb-3">
+                            <i class="bi bi-exclamation-triangle-fill text-danger fs-5"></i>
+                            <span>@conflictWarningMessage</span>
+                        </div>
+                    }
+
+                    <!-- Surgery Request Selection (Search-as-you-type Autocomplete) -->
+                    <div class="modal-form-group mb-3">
+                        <label class="modal-field-label">Select Surgery Request <span class="text-danger">*</span></label>
+                        <div class="modal-search-autocomplete-wrapper">
+                            <div class="modal-search-input-box">
+                                <i class="bi bi-search modal-search-icon"></i>
+                                <input type="text"
+                                       class="form-control modal-input-control with-search-icon @(bookRequestId != Guid.Empty ? "has-selection" : "")"
+                                       placeholder="Search patient name, procedure, surgeon, or code..."
+                                       value="@bookSearchText"
+                                       @oninput="OnBookSearchInput"
+                                       @onfocus="() => isBookDropdownOpen = true" />
+                                @if (!string.IsNullOrWhiteSpace(bookSearchText) || bookRequestId != Guid.Empty)
+                                {
+                                    <button type="button" class="btn-clear-search" @onclick="ClearBookSurgerySelection" title="Clear selection">
+                                        <i class="bi bi-x-lg"></i>
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button type="button" class="btn-dropdown-arrow" @onclick="() => isBookDropdownOpen = !isBookDropdownOpen" title="Toggle list">
+                                        <i class="bi bi-chevron-down"></i>
+                                    </button>
+                                }
+                            </div>
+
+                            @if (isBookDropdownOpen)
+                            {
+                                <div class="modal-typeahead-dropdown shadow-lg">
+                                    @if (filteredBookSurgeryRequests.Any())
+                                    {
+                                        @foreach (var req in filteredBookSurgeryRequests.Take(30))
+                                        {
+                                            var pat = GetPatientName(req.custid);
+                                            var doc = GetDoctorName(req.dcode);
+                                            var isSelected = req.request_id == bookRequestId;
+                                            var isEmergency = req.priority?.ToUpper() == "EMERGENCY";
+
+                                            <div class="typeahead-option-item @(isSelected ? "selected" : "")"
+                                                 @onmousedown="() => SelectBookSurgeryRequest(req)">
+                                                <div class="typeahead-item-layout">
+                                                    <div class="typeahead-item-icon">
+                                                        <i class="bi bi-activity"></i>
+                                                    </div>
+                                                    <div class="typeahead-item-main">
+                                                        <div class="typeahead-proc-line">
+                                                            <span class="typeahead-proc-title">@req.procedure_name</span>
+                                                            @if (isEmergency)
+                                                            {
+                                                                <span class="typeahead-emergency-badge">EMERGENCY</span>
+                                                            }
+                                                            @if (!string.IsNullOrWhiteSpace(req.surgery_type))
+                                                            {
+                                                                <span class="typeahead-chip">@req.surgery_type</span>
+                                                            }
+                                                        </div>
+                                                        <div class="typeahead-meta-line">
+                                                            <span class="typeahead-meta-item"><i class="bi bi-person-fill text-indigo-500 me-1"></i><strong>@pat</strong></span>
+                                                            <span class="typeahead-dot">&bull;</span>
+                                                            <span class="typeahead-meta-item"><i class="bi bi-person-badge text-slate-400 me-1"></i>Dr. @doc</span>
+                                                        </div>
+                                                    </div>
+                                                    <div class="typeahead-item-right">
+                                                        <span class="typeahead-duration-pill">
+                                                            <i class="bi bi-clock-fill me-1"></i>@(req.expected_duration_minutes ?? 60)m
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <div class="typeahead-empty-state">
+                                            <i class="bi bi-inbox text-slate-300 fs-4 d-block mb-1.5"></i>
+                                            <span class="d-block font-bold text-slate-600 mb-0.5">No unscheduled surgery requests</span>
+                                            <span class="font-11 text-slate-400">All pending requests have already been scheduled into OT slots.</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+
+                    <!-- Selected Case Preview Card -->
+                    @{
+                        var activeReq = allRequests.FirstOrDefault(r => r.request_id == bookRequestId);
+                    }
+                    @if (activeReq != null)
+                    {
+                        var patName = GetPatientName(activeReq.custid);
+                        var docName = GetDoctorName(activeReq.dcode);
+                        <div class="selected-case-preview-card mb-3">
+                            <div class="case-preview-badge">
+                                <i class="bi bi-person-fill-check"></i>
+                            </div>
+                            <div class="case-preview-details">
+                                <div class="case-preview-title">@activeReq.procedure_name</div>
+                                <div class="case-preview-sub">
+                                    <span><i class="bi bi-person me-1"></i><strong>@patName</strong></span>
+                                    <span class="preview-dot">•</span>
+                                    <span><i class="bi bi-person-badge me-1"></i>Dr. @docName</span>
+                                    <span class="preview-dot">•</span>
+                                    <span class="badge bg-indigo-50 text-indigo-700 font-10 border border-indigo-100">
+                                        <i class="bi bi-clock me-0.5"></i>@(activeReq.expected_duration_minutes ?? 60) mins
+                                    </span>
+                                </div>
+                            </div>
+                        </div>
+                    }
+
+                    <!-- Row 1: OT Theater Suite & Scheduled Date -->
+                    <div class="modal-form-row mb-4">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Operation Theater (OT Suite) <span class="text-danger">*</span></label>
+                            <select class="form-select modal-select-control" @bind="bookOtId">
+                                <option value="@Guid.Empty">-- Select OT Suite --</option>
+                                @foreach (var ot in otTheaters.Where(t => t.is_active))
+                                {
+                                    <option value="@ot.ot_id">@ot.ot_name @(!string.IsNullOrWhiteSpace(ot.location) ? $"({ot.location})" : "")</option>
+                                }
+                            </select>
+                        </div>
+
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Scheduled Date <span class="text-danger">*</span></label>
+                            <input type="date" class="form-control modal-input-control" value="@bookDate.ToString("yyyy-MM-dd")" @onchange="OnBookDateChanged" />
+                        </div>
+                    </div>
+
+                    <!-- Row 2: Timing Window -->
+                    <div class="modal-form-row mb-4">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Start Time (HH:mm) <span class="text-danger">*</span></label>
+                            <input type="time" class="form-control modal-input-control" value="@(bookStartTime.HasValue ? bookStartTime.Value.ToString("HH\\:mm") : "")" @onchange="OnBookStartTimeChanged" />
+                        </div>
+
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Estimated End Time (HH:mm) <span class="text-danger">*</span></label>
+                            <input type="time" class="form-control modal-input-control" value="@(bookEndTime.HasValue ? bookEndTime.Value.ToString("HH\\:mm") : "")" @onchange="OnBookEndTimeChanged" />
+                        </div>
+                    </div>
+
+                    <!-- Row 3: Notes -->
+                    <div class="modal-form-group mb-2">
+                        <label class="modal-field-label">Scheduling Notes / Special Equipment Prep</label>
+                        <textarea class="form-control modal-textarea-control" rows="3" placeholder="e.g. First case of the day, requires laparoscopy tower and anesthesia prep..." @bind="bookNotes"></textarea>
+                    </div>
+                </div>
+
+                <div class="modal-footer-bar">
+                    <button type="button" class="btn-modal-cancel" @onclick="CloseBookModal">Cancel</button>
+                    <button type="button" class="btn-modal-save" @onclick="SaveBookScheduleAsync" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Booking...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check-circle-fill me-1"></i>
+                            <span>Confirm Slot Booking</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- ========================================================================= -->
+    <!-- 7. EDIT / RESCHEDULE OT SLOT MODAL                                       -->
+    <!-- ========================================================================= -->
+    @if (showUpdateModal && editingSlot != null)
+    {
+        <div class="modal-overlay">
+            <div class="modal-form-card" @onclick:stopPropagation>
+                <div class="modal-header-bar">
+                    <div class="modal-header-left">
+                        <div class="modal-header-icon-box icon-blue">
+                            <i class="bi bi-pencil-square"></i>
+                        </div>
+                        <div class="modal-header-text">
+                            <h3 class="modal-title-text">Reschedule / Edit OT Slot</h3>
+                            <span class="modal-subtitle-text">Adjust suite, timing window, or status for this booking</span>
+                        </div>
+                    </div>
+                    <button type="button" class="modal-close-btn" @onclick="CloseUpdateModal" title="Close">&times;</button>
+                </div>
+
+                <div class="modal-body-content">
+                    @if (!string.IsNullOrWhiteSpace(conflictWarningMessage))
+                    {
+                        <div class="conflict-alert-box mb-3">
+                            <i class="bi bi-exclamation-triangle-fill text-danger fs-5"></i>
+                            <span>@conflictWarningMessage</span>
+                        </div>
+                    }
+
+                    <!-- Case Details Banner -->
+                    @{
+                        var editReq = allRequests.FirstOrDefault(r => r.request_id == editingSlot.request_id);
+                    }
+                    @if (editReq != null)
+                    {
+                        var patName = GetPatientName(editReq.custid);
+                        var docName = GetDoctorName(editReq.dcode);
+                        <div class="selected-case-preview-card mb-3">
+                            <div class="case-preview-badge icon-blue">
+                                <i class="bi bi-hospital"></i>
+                            </div>
+                            <div class="case-preview-details">
+                                <div class="case-preview-title">@editReq.procedure_name</div>
+                                <div class="case-preview-sub">
+                                    <span><i class="bi bi-person me-1"></i><strong>@patName</strong></span>
+                                    <span class="preview-dot">•</span>
+                                    <span><i class="bi bi-person-badge me-1"></i>Dr. @docName</span>
+                                </div>
+                            </div>
+                        </div>
+                    }
+
+                    <!-- Row 1: Theater Suite & Scheduled Date -->
+                    <div class="modal-form-row mb-3">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Operation Theater Suite <span class="text-danger">*</span></label>
+                            <select class="form-select modal-select-control" @bind="updateOtId">
+                                @foreach (var ot in otTheaters)
+                                {
+                                    <option value="@ot.ot_id">@ot.ot_name @(!string.IsNullOrWhiteSpace(ot.location) ? $"({ot.location})" : "")</option>
+                                }
+                            </select>
+                        </div>
+
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Scheduled Date <span class="text-danger">*</span></label>
+                            <input type="date" class="form-control modal-input-control" value="@updateDate.ToString("yyyy-MM-dd")" @onchange="OnUpdateDateChanged" />
+                        </div>
+                    </div>
+
+                    <!-- Row 2: Timing Window -->
+                    <div class="modal-form-row mb-3">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Start Time <span class="text-danger">*</span></label>
+                            <input type="time" class="form-control modal-input-control" value="@updateStartTime.ToString("HH\\:mm")" @onchange="OnUpdateStartTimeChanged" />
+                        </div>
+
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Estimated End Time <span class="text-danger">*</span></label>
+                            <input type="time" class="form-control modal-input-control" value="@updateEndTime.ToString("HH\\:mm")" @onchange="OnUpdateEndTimeChanged" />
+                        </div>
+                    </div>
+
+                    <!-- Row 3: Status -->
+                    <div class="modal-form-group mb-3">
+                        <label class="modal-field-label">Slot Status <span class="text-danger">*</span></label>
+                        <select class="form-select modal-select-control" @bind="updateStatus">
+                            <option value="BOOKED">BOOKED (Scheduled)</option>
+                            <option value="IN_PROGRESS">IN_PROGRESS (Patient in OT)</option>
+                            <option value="COMPLETED">COMPLETED (Surgery Finished)</option>
+                            <option value="CANCELLED">CANCELLED (Sync to Requested)</option>
+                        </select>
+                    </div>
+
+                    <!-- Row 4: Notes -->
+                    <div class="modal-form-group mb-1">
+                        <label class="modal-field-label">Rescheduling Notes / Reason</label>
+                        <textarea class="form-control modal-textarea-control" rows="2" placeholder="e.g. Shifted 30 min due to prior case running over..." @bind="updateNotes"></textarea>
+                    </div>
+                </div>
+
+                <div class="modal-footer-bar">
+                    <button type="button" class="btn-modal-cancel" @onclick="CloseUpdateModal">Cancel</button>
+                    <button type="button" class="btn-modal-save" @onclick="SaveUpdateScheduleAsync" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Updating...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check-circle-fill me-1"></i>
+                            <span>Save Changes</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+
+    <!-- ========================================================================= -->
+    <!-- 8. POSTPONE OT SLOT MODAL                                                -->
+    <!-- ========================================================================= -->
+    @if (showPostponeModal && postponingSlot != null)
+    {
+        <div class="modal-overlay">
+            <div class="modal-form-card" @onclick:stopPropagation>
+                <div class="modal-header-bar">
+                    <div class="modal-header-left">
+                        <div class="modal-header-icon-box" style="background:#fef3c7; color:#d97706;">
+                            <i class="bi bi-clock-history"></i>
+                        </div>
+                        <div class="modal-header-text">
+                            <h3 class="modal-title-text">Postpone Surgery Slot</h3>
+                            <span class="modal-subtitle-text">Record reason and postpone schedule to a new date/time</span>
+                        </div>
+                    </div>
+                    <button type="button" class="modal-close-btn" @onclick="() => showPostponeModal = false" title="Close">&times;</button>
+                </div>
+
+                <div class="modal-body-content">
+                    <!-- Current Case Info -->
+                    @{
+                        var postReq = allRequests.FirstOrDefault(r => r.request_id == postponingSlot.request_id);
+                    }
+                    @if (postReq != null)
+                    {
+                        var patName = GetPatientName(postReq.custid);
+                        var docName = GetDoctorName(postReq.dcode);
+                        <div class="selected-case-preview-card mb-3" style="border-left-color: #d97706;">
+                            <div class="case-preview-badge" style="background: #fef3c7; color: #d97706;">
+                                <i class="bi bi-calendar-event"></i>
+                            </div>
+                            <div class="case-preview-details">
+                                <div class="case-preview-title">@postReq.procedure_name</div>
+                                <div class="case-preview-sub">
+                                    <span><i class="bi bi-person me-1"></i><strong>@patName</strong></span>
+                                    <span class="preview-dot">•</span>
+                                    <span><i class="bi bi-person-badge me-1"></i>Dr. @docName</span>
+                                    <span class="preview-dot">•</span>
+                                    <span class="text-amber-700 font-bold">Currently: @postponingSlot.scheduled_date.ToString("dd-MMM") @postponingSlot.scheduled_time.ToString("hh\\:mm tt")</span>
+                                </div>
+                            </div>
+                        </div>
+                    }
+
+                    <!-- New Date & Time -->
+                    <div class="modal-form-row mb-3">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">New Scheduled Date <span class="text-danger">*</span></label>
+                            <input type="date" class="form-control modal-input-control" value="@postponeNewDate.ToString("yyyy-MM-dd")" @onchange="OnPostponeDateChanged" />
+                        </div>
+                    </div>
+
+                    <div class="modal-form-row mb-3">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">New Start Time <span class="text-danger">*</span></label>
+                            <input type="time" class="form-control modal-input-control" value="@postponeNewStartTime.ToString("HH\\:mm")" @onchange="OnPostponeStartTimeChanged" />
+                        </div>
+
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">New Estimated End Time <span class="text-danger">*</span></label>
+                            <input type="time" class="form-control modal-input-control" value="@postponeNewEndTime.ToString("HH\\:mm")" @onchange="OnPostponeEndTimeChanged" />
+                        </div>
+                    </div>
+
+                    <!-- Postpone Reason -->
+                    <div class="modal-form-group mb-1">
+                        <label class="modal-field-label">Reason for Postponement <span class="text-danger">*</span></label>
+                        <textarea class="form-control modal-textarea-control" rows="3" placeholder="e.g. Patient blood pressure spike, surgeon requested delay, emergency case priority..." @bind="postponeReason"></textarea>
+                    </div>
+                </div>
+
+                <div class="modal-footer-bar">
+                    <button type="button" class="btn-modal-cancel" @onclick="() => showPostponeModal = false">Cancel</button>
+                    <button type="button" class="btn-modal-save" style="background: linear-gradient(135deg, #d97706 0%, #b45309 100%);" @onclick="SavePostponeScheduleAsync" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Postponing...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-clock-history me-1"></i>
+                            <span>Confirm Postpone</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private List<OtMasterModel> otTheaters = new();
+    private List<OtSurgeryRequestListModel> allRequests = new();
+    private List<OtScheduleModel> allSchedules = new();
+    private List<DoctorMasterModel> doctorsList = new();
+
+    private bool isLoading = true;
+    private bool isSaving = false;
+    private string searchQuery = "";
+    private string selectedOtFilterString = "";
+    private DateOnly selectedDate = DateOnly.FromDateTime(DateTime.Today);
+    private string viewMode = "TABLE"; // Defaultly keep only Table view
+    private bool showUnscheduledOnly = false;
+
+    // Booking state
+    private bool showBookModal = false;
+    private Guid bookRequestId = Guid.Empty;
+    private Guid bookOtId = Guid.Empty;
+    private decimal bookCustId = 0;
+    private DateOnly bookDate = DateOnly.FromDateTime(DateTime.Today);
+    private TimeOnly? bookStartTime = null;
+    private TimeOnly? bookEndTime = null;
+    private string bookNotes = "";
+    private string conflictWarningMessage = "";
+    private string bookSearchText = "";
+    private bool isBookDropdownOpen = false;
+
+    // Update state
+    private bool showUpdateModal = false;
+    private OtScheduleModel? editingSlot = null;
+    private Guid updateOtId = Guid.Empty;
+    private DateOnly updateDate = DateOnly.FromDateTime(DateTime.Today);
+    private TimeOnly updateStartTime = new TimeOnly(9, 0, 0);
+    private TimeOnly updateEndTime = new TimeOnly(10, 30, 0);
+    private string updateStatus = "BOOKED";
+    private string updateNotes = "";
+
+    // Postpone state
+    private bool showPostponeModal = false;
+    private OtScheduleModel? postponingSlot = null;
+    private DateOnly postponeNewDate = DateOnly.FromDateTime(DateTime.Today.AddDays(1));
+    private TimeOnly postponeNewStartTime = new TimeOnly(9, 0, 0);
+    private TimeOnly postponeNewEndTime = new TimeOnly(10, 30, 0);
+    private string postponeReason = "";
+
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success && !string.IsNullOrEmpty(tenantCodeResult.Value)
+                    ? tenantCodeResult.Value
+                    : (TenantState?.TenantCode ?? "0010");
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success && !string.IsNullOrEmpty(tokenResult.Value)
+                    ? tokenResult.Value
+                    : (TenantState?.AuthToken ?? "");
+
+                await LoadAllDataAsync();
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading OT Schedule: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task LoadAllDataAsync()
+    {
+        isLoading = true;
+        try
+        {
+            var t1 = LoadTheatersAsync();
+            var t2 = LoadSurgeryRequestsAsync();
+            var t3 = LoadDoctorsAsync();
+            await Task.WhenAll(t1, t2, t3);
+            await LoadSchedulesCalendarAsync();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading OT Schedule data: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task LoadTheatersAsync()
+    {
+        try { otTheaters = await OtService.GetOtMastersAsync(activeOnly: false); }
+        catch { otTheaters = new(); }
+    }
+
+    private async Task LoadSurgeryRequestsAsync()
+    {
+        try { allRequests = await OtService.GetSurgeryRequestsAsync(); }
+        catch { allRequests = new(); }
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try { doctorsList = await DoctorService.GetDoctorsAsync(); }
+        catch { doctorsList = new(); }
+    }
+
+    private async Task LoadSchedulesCalendarAsync()
+    {
+        try
+        {
+            Guid? otFilter = Guid.TryParse(selectedOtFilterString, out var gid) ? gid : null;
+            allSchedules = await OtService.GetScheduleCalendarAsync(otFilter, selectedDate.ToString("yyyy-MM-dd"), selectedDate.ToString("yyyy-MM-dd"));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading calendar schedules: {ex.Message}");
+            allSchedules = new();
+        }
+    }
+
+    private List<OtScheduleModel> filteredSchedules
+    {
+        get
+        {
+            var query = allSchedules.Where(s => s.scheduled_date == selectedDate && !s.isdeleted);
+
+            if (Guid.TryParse(selectedOtFilterString, out var otGid))
+            {
+                query = query.Where(s => s.ot_id == otGid);
+            }
+
+            if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                var q = searchQuery.Trim().ToLower();
+                query = query.Where(s =>
+                {
+                    var req = allRequests.FirstOrDefault(r => r.request_id == s.request_id);
+                    var pName = req != null ? GetPatientName(req.custid).ToLower() : "";
+                    var dName = req != null ? GetDoctorName(req.dcode).ToLower() : "";
+                    var proc = req?.procedure_name?.ToLower() ?? "";
+                    var notes = s.notes?.ToLower() ?? "";
+                    return pName.Contains(q) || dName.Contains(q) || proc.Contains(q) || notes.Contains(q);
+                });
+            }
+
+            return query.OrderBy(s => s.scheduled_time).ToList();
+        }
+    }
+
+    private List<OtSurgeryRequestListModel> unscheduledRequests =>
+        allRequests
+            .Where(r => r.status == "REQUESTED" && !r.isdeleted && !allSchedules.Any(s => s.request_id == r.request_id && !s.isdeleted && s.status != "CANCELLED"))
+            .ToList();
+
+    private List<OtSurgeryRequestListModel> filteredUnscheduledRequests
+    {
+        get
+        {
+            var list = unscheduledRequests;
+            if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                var q = searchQuery.Trim().ToLower();
+                list = list.Where(r =>
+                {
+                    var pName = GetPatientName(r.custid).ToLower();
+                    var dName = GetDoctorName(r.dcode).ToLower();
+                    var proc = r.procedure_name?.ToLower() ?? "";
+                    return pName.Contains(q) || dName.Contains(q) || proc.Contains(q);
+                }).ToList();
+            }
+            return list.OrderByDescending(r => r.priority == "EMERGENCY").ThenBy(r => r.created_at).ToList();
+        }
+    }
+
+    private void ToggleUnscheduledQueue()
+    {
+        showUnscheduledOnly = !showUnscheduledOnly;
+    }
+
+    private string GetPatientName(decimal custid)
+    {
+        var req = allRequests.FirstOrDefault(r => r.custid == custid);
+        if (req != null && !string.IsNullOrWhiteSpace(req.patient_name))
+        {
+            return req.patient_name;
+        }
+        return $"Patient #{custid:0}";
+    }
+
+    private string GetDoctorName(int dcode)
+    {
+        var doc = doctorsList.FirstOrDefault(d => d.dcode == dcode);
+        if (doc != null)
+        {
+            return string.IsNullOrWhiteSpace(doc.name) ? (doc.doctorfullname ?? "Attending Surgeon") : doc.name;
+        }
+        return "Attending Surgeon";
+    }
+
+    private string GetStatusBadgeClass(string status) => status switch
+    {
+        "BOOKED" => "bg-indigo-100 text-indigo-800 border border-indigo-200",
+        "IN_PROGRESS" => "bg-emerald-100 text-emerald-800 border border-emerald-200",
+        "COMPLETED" => "bg-slate-100 text-slate-800 border border-slate-200",
+        "CANCELLED" => "bg-rose-100 text-rose-800 border border-rose-200",
+        _ => "bg-slate-100 text-slate-700"
+    };
+
+    private async Task OnDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var d))
+        {
+            selectedDate = d;
+            await LoadSchedulesCalendarAsync();
+        }
+    }
+
+    private async Task GoToday()
+    {
+        selectedDate = DateOnly.FromDateTime(DateTime.Today);
+        await LoadSchedulesCalendarAsync();
+    }
+
+    private async Task GoPreviousDay()
+    {
+        selectedDate = selectedDate.AddDays(-1);
+        await LoadSchedulesCalendarAsync();
+    }
+
+    private async Task GoNextDay()
+    {
+        selectedDate = selectedDate.AddDays(1);
+        await LoadSchedulesCalendarAsync();
+    }
+
+    private List<OtSurgeryRequestListModel> filteredBookSurgeryRequests
+    {
+        get
+        {
+            var list = unscheduledRequests;
+            if (string.IsNullOrWhiteSpace(bookSearchText))
+            {
+                return list;
+            }
+
+            var q = bookSearchText.Trim().ToLower();
+            return list
+                .Where(r => (
+                    (r.procedure_name != null && r.procedure_name.ToLower().Contains(q)) ||
+                    (r.patient_name != null && r.patient_name.ToLower().Contains(q)) ||
+                    GetPatientName(r.custid).ToLower().Contains(q) ||
+                    GetDoctorName(r.dcode).ToLower().Contains(q) ||
+                    (r.doctor_name != null && r.doctor_name.ToLower().Contains(q)) ||
+                    r.custid.ToString().Contains(q) ||
+                    (r.notes != null && r.notes.ToLower().Contains(q))
+                ))
+                .ToList();
+        }
+    }
+
+    private void OpenBookModal()
+    {
+        bookRequestId = Guid.Empty;
+        bookOtId = Guid.Empty;
+        bookCustId = 0;
+        bookDate = selectedDate;
+        bookStartTime = null;
+        bookEndTime = null;
+        bookNotes = "";
+        conflictWarningMessage = "";
+        bookSearchText = "";
+        isBookDropdownOpen = false;
+        showBookModal = true;
+    }
+
+    private void QuickScheduleRequest(OtSurgeryRequestListModel req)
+    {
+        bookRequestId = req.request_id;
+        bookCustId = req.custid;
+        bookOtId = Guid.Empty;
+        bookDate = selectedDate;
+        bookStartTime = null;
+        bookEndTime = null;
+        bookNotes = req.notes ?? "";
+        conflictWarningMessage = "";
+        var patName = GetPatientName(req.custid);
+        bookSearchText = $"{patName} — {req.procedure_name}";
+        isBookDropdownOpen = false;
+        showBookModal = true;
+    }
+
+    private void SelectBookSurgeryRequest(OtSurgeryRequestListModel req)
+    {
+        bookRequestId = req.request_id;
+        bookCustId = req.custid;
+        var patName = GetPatientName(req.custid);
+        bookSearchText = $"{patName} — {req.procedure_name}";
+        isBookDropdownOpen = false;
+        if (bookStartTime.HasValue)
+        {
+            var dur = req.expected_duration_minutes ?? 60;
+            bookEndTime = bookStartTime.Value.AddMinutes(dur);
+        }
+        if (!string.IsNullOrWhiteSpace(req.notes))
+        {
+            bookNotes = req.notes;
+        }
+    }
+
+    private void ClearBookSurgerySelection()
+    {
+        bookRequestId = Guid.Empty;
+        bookCustId = 0;
+        bookSearchText = "";
+        isBookDropdownOpen = false;
+    }
+
+    private void OnBookSearchInput(ChangeEventArgs e)
+    {
+        bookSearchText = e.Value?.ToString() ?? "";
+        isBookDropdownOpen = true;
+
+        if (bookRequestId != Guid.Empty)
+        {
+            var cur = allRequests.FirstOrDefault(r => r.request_id == bookRequestId);
+            var curLabel = cur != null ? $"{GetPatientName(cur.custid)} — {cur.procedure_name}" : "";
+            if (!string.Equals(bookSearchText, curLabel, StringComparison.OrdinalIgnoreCase))
+            {
+                bookRequestId = Guid.Empty;
+                bookCustId = 0;
+            }
+        }
+    }
+
+    private void OnBookRequestSelected()
+    {
+        var req = allRequests.FirstOrDefault(r => r.request_id == bookRequestId);
+        if (req != null)
+        {
+            bookCustId = req.custid;
+            if (bookStartTime.HasValue)
+            {
+                var dur = req.expected_duration_minutes ?? 60;
+                bookEndTime = bookStartTime.Value.AddMinutes(dur);
+            }
+            if (!string.IsNullOrWhiteSpace(req.notes))
+            {
+                bookNotes = req.notes;
+            }
+        }
+    }
+
+    private void OnBookDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var d)) bookDate = d;
+    }
+
+    private void OnBookStartTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t))
+        {
+            bookStartTime = t;
+            var req = allRequests.FirstOrDefault(r => r.request_id == bookRequestId);
+            var dur = req?.expected_duration_minutes ?? 60;
+            bookEndTime = bookStartTime.Value.AddMinutes(dur);
+        }
+        else
+        {
+            bookStartTime = null;
+        }
+    }
+
+    private void OnBookEndTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t))
+        {
+            bookEndTime = t;
+        }
+        else
+        {
+            bookEndTime = null;
+        }
+    }
+
+    private void CloseBookModal() => showBookModal = false;
+
+    private async Task SaveBookScheduleAsync()
+    {
+        if (bookRequestId == Guid.Empty)
+        {
+            ToastService.ShowError("Please select a surgery request.");
+            return;
+        }
+
+        if (bookOtId == Guid.Empty)
+        {
+            ToastService.ShowError("Please select an operation theater suite.");
+            return;
+        }
+
+        if (!bookStartTime.HasValue)
+        {
+            ToastService.ShowError("Please specify a start time.");
+            return;
+        }
+
+        if (!bookEndTime.HasValue)
+        {
+            ToastService.ShowError("Please specify an estimated end time.");
+            return;
+        }
+
+        if (bookEndTime.Value <= bookStartTime.Value)
+        {
+            ToastService.ShowError("End time must be after start time.");
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            var req = new AddOtScheduleRequest
+            {
+                request_id = bookRequestId,
+                ot_id = bookOtId,
+                custid = bookCustId,
+                scheduled_date = bookDate,
+                scheduled_time = bookStartTime.Value,
+                estimated_end_time = bookEndTime.Value,
+                notes = bookNotes
+            };
+
+            var res = await OtService.AddScheduleAsync(req);
+            if (res != null && res.IsSuccess)
+            {
+                ToastService.ShowSuccess("Surgery slot scheduled successfully!");
+                showBookModal = false;
+                await LoadAllDataAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res?.message ?? "Failed to schedule slot.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error booking schedule: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private void OpenUpdateModal(OtScheduleModel slot)
+    {
+        editingSlot = slot;
+        updateOtId = slot.ot_id;
+        updateDate = slot.scheduled_date;
+        updateStartTime = slot.scheduled_time;
+        updateEndTime = slot.estimated_end_time;
+        updateStatus = slot.status;
+        updateNotes = slot.notes ?? "";
+        conflictWarningMessage = "";
+        showUpdateModal = true;
+    }
+
+    private void OnUpdateDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var d)) updateDate = d;
+    }
+
+    private void OnUpdateStartTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t)) updateStartTime = t;
+    }
+
+    private void OnUpdateEndTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t)) updateEndTime = t;
+    }
+
+    private void CloseUpdateModal() => showUpdateModal = false;
+
+    private async Task SaveUpdateScheduleAsync()
+    {
+        if (editingSlot == null) return;
+
+        if (updateEndTime <= updateStartTime)
+        {
+            ToastService.ShowError("End time must be after start time.");
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            var req = new UpdateOtScheduleRequest
+            {
+                schedule_id = editingSlot.schedule_id,
+                ot_id = updateOtId,
+                scheduled_date = updateDate,
+                scheduled_time = updateStartTime,
+                estimated_end_time = updateEndTime,
+                status = updateStatus,
+                notes = updateNotes
+            };
+
+            var res = await OtService.UpdateScheduleAsync(req);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess("Schedule updated successfully!");
+                showUpdateModal = false;
+                await LoadAllDataAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message ?? "Failed to update schedule.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error updating schedule: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private void OpenPostponeModal(OtScheduleModel slot)
+    {
+        postponingSlot = slot;
+        postponeNewDate = slot.scheduled_date.AddDays(1);
+        postponeNewStartTime = slot.scheduled_time;
+        postponeNewEndTime = slot.estimated_end_time;
+        postponeReason = "";
+        showPostponeModal = true;
+    }
+
+    private void OnPostponeDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var d)) postponeNewDate = d;
+    }
+
+    private void OnPostponeStartTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t)) postponeNewStartTime = t;
+    }
+
+    private void OnPostponeEndTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t)) postponeNewEndTime = t;
+    }
+
+    private async Task SavePostponeScheduleAsync()
+    {
+        if (postponingSlot == null) return;
+
+        if (string.IsNullOrWhiteSpace(postponeReason))
+        {
+            ToastService.ShowError("Please enter a reason for postponement.");
+            return;
+        }
+
+        if (postponeNewEndTime <= postponeNewStartTime)
+        {
+            ToastService.ShowError("New end time must be after new start time.");
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            var req = new PostponeOtScheduleRequest
+            {
+                schedule_id = postponingSlot.schedule_id,
+                new_scheduled_date = postponeNewDate,
+                new_scheduled_time = postponeNewStartTime,
+                new_estimated_end_time = postponeNewEndTime,
+                reason = postponeReason
+            };
+
+            var res = await OtService.PostponeScheduleAsync(req);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess("Surgery schedule postponed successfully!");
+                showPostponeModal = false;
+                await LoadAllDataAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message ?? "Failed to postpone schedule.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error postponing schedule: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private async Task PromptCancelSlot(OtScheduleModel slot)
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm", "Are you sure you want to cancel this scheduled surgery slot? The surgery request will return to REQUESTED status.");
+        if (!confirmed) return;
+
+        try
+        {
+            var res = await OtService.CancelScheduleAsync(slot.schedule_id);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess("Surgery slot cancelled successfully.");
+                await LoadAllDataAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message ?? "Failed to cancel slot.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error cancelling slot: {ex.Message}");
+        }
+    }
+
+    private void NavigateToConsole(Guid requestId)
+    {
+        Navigation.NavigateTo($"/ot-console/{requestId}");
+    }
+}

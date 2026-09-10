@@ -1,0 +1,1116 @@
+@page "/ot-availability"
+@page "/available-theaters"
+@page "/booking/available-theaters"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using Booking.Models
+@using Booking.Services
+@using Booking.Helpers
+@inject OtService OtService
+@inject DoctorService DoctorService
+@inject ToastService ToastService
+@inject NavigationManager Navigation
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+
+<PageTitle>Available Operation Theaters &amp; Daily Schedule</PageTitle>
+
+<div class="referral-page available-theaters-page">
+    <!-- ========================================================================= -->
+    <!-- 1. TOP HEADER (OT THEATER SELECTOR, DATE NAVIGATOR, & SCHEDULE SLOT CTA) -->
+    <!-- ========================================================================= -->
+    <div class="theater-page-header">
+        <div class="header-title-left">
+            <div class="header-icon-box">
+                <i class="bi bi-hospital"></i>
+            </div>
+            <div class="header-text-group">
+                <h1 class="page-main-title">Available Operation Theaters</h1>
+                <p class="page-subtitle">Visual suite vacancy &amp; real-time slot schedule (IST)</p>
+            </div>
+        </div>
+
+        <div class="header-controls-right">
+            <!-- OT Theater Single Dropdown Filter -->
+            <div class="header-filter-select-wrap">
+                <i class="bi bi-door-open header-filter-icon"></i>
+                <select class="header-filter-select" value="@selectedOtFilterString" @onchange="OnHeaderOtFilterChanged">
+                    <option value="">All OT Theaters (@allTheaters.Count)</option>
+                    @foreach (var ot in allTheaters)
+                    {
+                        var schedCount = GetSchedulesForTheater(ot.ot_id).Count;
+                        <option value="@ot.ot_id.ToString()">@ot.ot_name @(schedCount > 0 ? $"({schedCount} ops)" : "")</option>
+                    }
+                </select>
+                <i class="bi bi-chevron-down header-filter-chevron"></i>
+            </div>
+
+            <!-- Date Navigation Controls (Date Only without Today button) -->
+            <div class="header-date-nav">
+                <button type="button" class="btn-nav-date" @onclick="GoPreviousDay" title="Previous Day">
+                    <i class="bi bi-chevron-left"></i>
+                </button>
+                <div class="header-date-picker-box">
+                    <i class="bi bi-calendar3 header-date-icon"></i>
+                    <input type="date"
+                           class="header-date-input"
+                           value="@scheduledDate.ToString("yyyy-MM-dd")"
+                           @onchange="OnDateChanged" />
+                </div>
+                <button type="button" class="btn-nav-date" @onclick="GoNextDay" title="Next Day">
+                    <i class="bi bi-chevron-right"></i>
+                </button>
+            </div>
+
+            <!-- Action: Schedule Slot CTA -->
+            <button type="button" class="btn-schedule-primary" @onclick="() => OpenAddScheduleModal(null)">
+                <i class="bi bi-calendar-plus-fill me-1.5"></i>
+                <span>Schedule OT Slot</span>
+            </button>
+        </div>
+    </div>
+
+    @if (loading)
+    {
+        <div class="loading-state-box p-5 text-center bg-white rounded-3 border flex-1 d-flex flex-column justify-content-center align-items-center">
+            <div class="spinner-border text-indigo-600" style="width: 2.25rem; height: 2.25rem;" role="status"></div>
+            <div class="text-slate-700 font-bold mt-2 font-13">Loading live theater availability &amp; surgery schedule...</div>
+        </div>
+    }
+    else
+    {
+        <div class="theaters-workspace-scroll">
+            <!-- ========================================================================= -->
+            <!-- 2. FULL-WIDTH DAILY SCHEDULE TIMELINE GRID WITH DAY/NIGHT SHIFT TOGGLE    -->
+            <!-- ========================================================================= -->
+            <div class="daily-schedule-main-layout">
+                <div class="timeline-container-card">
+                    <!-- Timeline Card Header Bar (With Enhanced Day/Night Toggle in Right Corner) -->
+                    <div class="timeline-card-header">
+                        <div class="timeline-header-left">
+                            <h3 class="timeline-main-title">
+                                Daily schedule @(selectedOtId.HasValue ? $"({GetTheaterName(selectedOtId.Value)})" : "(all theatres)")
+                            </h3>
+                            <span class="timeline-shift-badge @(isDayShift ? "shift-day" : "shift-night")">
+                                <i class="bi @(isDayShift ? "bi-sun-fill" : "bi-moon-stars-fill") me-1"></i>
+                                @(isDayShift ? "Day Window (07:00 AM – 07:00 PM IST)" : "Night Window (07:00 PM – 07:00 AM IST)")
+                            </span>
+                            <span class="procedures-count-pill">
+                                <strong>@ShiftProceduresCount</strong> @(ShiftProceduresCount == 1 ? "procedure" : "procedures") in this window
+                            </span>
+                        </div>
+
+                        <!-- Enhanced Day / Night Shift Toggle in the Right Corner -->
+                        <div class="timeline-header-right">
+                            <div class="shift-toggle-segmented" title="Switch Shift Timing Window">
+                                <button type="button"
+                                        class="btn-shift-toggle @(isDayShift ? "active-day" : "")"
+                                        @onclick="() => SetShift(true)">
+                                    <i class="bi bi-sun-fill shift-icon"></i>
+                                    <span class="shift-label">Day Shift</span>
+                                    <span class="shift-time-tag">07:00 – 19:00</span>
+                                </button>
+                                <button type="button"
+                                        class="btn-shift-toggle @(!isDayShift ? "active-night" : "")"
+                                        @onclick="() => SetShift(false)">
+                                    <i class="bi bi-moon-stars-fill shift-icon"></i>
+                                    <span class="shift-label">Night Shift</span>
+                                    <span class="shift-time-tag">19:00 – 07:00</span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Timeline Scrollable Grid Viewport -->
+                    <div class="timeline-scroll-viewport">
+                        <div class="timeline-grid-wrapper">
+                            <!-- Timeline Axis Header Row (12 Synchronized Columns) -->
+                            <div class="timeline-axis-header">
+                                <div class="axis-theater-column">Theatre</div>
+                                <div class="axis-time-slots-row">
+                                    @foreach (var h in CurrentShiftHours)
+                                    {
+                                        <div class="axis-hour-cell">
+                                            <span class="hour-24">@($"{h:D2}:00")</span>
+                                            <span class="hour-12-sub">@FormatHour12(h)</span>
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+
+                            <!-- Timeline Rows for Each Theater -->
+                            <div class="timeline-body-rows">
+                                <!-- Real-time Orange Marker Line (if within today & current shift window) -->
+                                @if (IsToday(scheduledDate) && CurrentTimeLeftPercent.HasValue)
+                                {
+                                    <div class="current-time-marker-line" style="left: calc(160px + (100% - 160px) * @(CurrentTimeLeftPercent.Value / 100.0));">
+                                        <div class="current-time-diamond-head"></div>
+                                        <div class="current-time-badge">@CurrentIstTimeString</div>
+                                    </div>
+                                }
+
+                                @if (!DisplayTheatersList.Any())
+                                {
+                                    <div class="p-5 text-center text-slate-400 font-13">
+                                        <i class="bi bi-door-closed fs-3 d-block mb-2 text-slate-300"></i>
+                                        No operation theaters found.
+                                    </div>
+                                }
+                                else
+                                {
+                                    @foreach (var ot in DisplayTheatersList)
+                                    {
+                                        var theaterSchedules = GetSchedulesForTheater(ot.ot_id);
+                                        var visibleSchedules = theaterSchedules.Where(IsScheduleInActiveShift).ToList();
+                                        var isSelected = selectedOtId == ot.ot_id;
+
+                                        <div class="timeline-theater-row @(isSelected ? "selected-row" : "")">
+                                            <!-- Theater Identity Column on Left -->
+                                            <div class="row-theater-identity" @onclick="() => ToggleSelectTheater(ot)" title="Click to filter by @ot.ot_name">
+                                                <div class="row-theater-name">@ot.ot_name</div>
+                                                <div class="row-ops-count">
+                                                    @if (visibleSchedules.Any())
+                                                    {
+                                                        <span class="text-indigo-600 font-bold">@visibleSchedules.Count @(visibleSchedules.Count == 1 ? "op" : "ops")</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span class="text-emerald-600 font-semibold">Vacant</span>
+                                                    }
+                                                </div>
+                                            </div>
+
+                                            <!-- Timeline Track Area (12 Synchronized Columns) -->
+                                            <div class="row-timeline-track">
+                                                <!-- Background 12 Hour Grid Columns -->
+                                                <div class="track-grid-columns">
+                                                    @for (int i = 0; i < 12; i++)
+                                                    {
+                                                        <div class="track-hour-col"></div>
+                                                    }
+                                                </div>
+
+                                                <!-- Placed Surgery Procedure Event Blocks -->
+                                                @if (visibleSchedules.Any())
+                                                {
+                                                    @for (int i = 0; i < visibleSchedules.Count; i++)
+                                                    {
+                                                        var sched = visibleSchedules[i];
+                                                        var req = allRequests.FirstOrDefault(r => r.request_id == sched.request_id);
+                                                        var procName = !string.IsNullOrWhiteSpace(req?.procedure_name) ? req.procedure_name : (!string.IsNullOrWhiteSpace(sched.notes) ? sched.notes : "Surgery Procedure");
+                                                        var patName = !string.IsNullOrWhiteSpace(req?.patient_name) ? req.patient_name : null;
+                                                        var docName = !string.IsNullOrWhiteSpace(req?.doctor_name) ? req.doctor_name : GetDoctorName(req?.dcode ?? 0);
+
+                                                        var (leftPct, widthPct) = GetSchedulePosition(sched);
+                                                        var colorClass = GetProcedureColorClass(i, req?.priority);
+
+                                                        var startIst = sched.scheduled_time.ToString("hh\\:mm tt");
+                                                        var endIst = sched.estimated_end_time.ToString("hh\\:mm tt");
+
+                                                        <div class="procedure-event-block @colorClass compact-slot"
+                                                             style="left: @leftPct.ToString("0.##")%; width: @widthPct.ToString("0.##")%;"
+                                                             @onclick="() => OpenSlotDetailModal(sched, req, ot)"
+                                                             title="@procName @(!string.IsNullOrWhiteSpace(patName) ? $"- {patName}" : "") | Dr. @docName | @startIst to @endIst">
+
+                                                            <!-- Default View: Shows Procedure Name & 'View details' -->
+                                                            <div class="compact-default-label">
+                                                                <span class="compact-proc-title">@procName</span>
+                                                                <span class="btn-view-details-pill"><i class="bi bi-eye me-1"></i>View details</span>
+                                                            </div>
+
+                                                            <!-- On Hover: Displays full details clearly in expanded floating card -->
+                                                            <div class="compact-hover-popup">
+                                                                <!-- Row 1: Surgery name - Patient name -->
+                                                                <div class="event-title-wrap">
+                                                                    <div class="event-proc-and-patient">
+                                                                        <span class="event-proc-name">@procName</span>
+                                                                        @if (!string.IsNullOrWhiteSpace(patName))
+                                                                        {
+                                                                            <span class="event-hyphen">-</span>
+                                                                            <span class="event-patient-name">@patName</span>
+                                                                        }
+                                                                    </div>
+                                                                    @if (req?.priority?.ToUpper() == "EMERGENCY" || req?.priority?.ToUpper() == "URGENT")
+                                                                    {
+                                                                        <span class="event-urgent-dot" title="@req.priority Case">!</span>
+                                                                    }
+                                                                </div>
+
+                                                                <!-- Row 2: Doctor name -->
+                                                                <div class="event-doc-row">
+                                                                    <i class="bi bi-person-fill event-row-icon"></i>
+                                                                    <span class="event-doc-name">Dr. @docName</span>
+                                                                </div>
+
+                                                                <!-- Row 3: Timing -->
+                                                                <div class="event-timing-row">
+                                                                    <i class="bi bi-clock-fill event-row-icon"></i>
+                                                                    <span class="event-time-text">@startIst – @endIst</span>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    }
+                                                }
+                                                else
+                                                {
+                                                    <!-- Vacant Suite Watermark / Click to Book -->
+                                                    <div class="track-vacant-indicator" @onclick="() => OpenAddScheduleModal(ot)">
+                                                        <span class="vacant-text">
+                                                            <i class="bi bi-calendar-plus me-1 text-emerald-500"></i>Available in this window
+                                                        </span>
+                                                    </div>
+                                                }
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+<!-- ========================================================================= -->
+<!-- 3. SCHEDULE OT SLOT MODAL                                                 -->
+<!-- ========================================================================= -->
+@if (showAddScheduleModal)
+{
+    <div class="modal-overlay">
+        <div class="modal-form-card" style="max-width: 600px;" @onclick:stopPropagation>
+            <div class="modal-header-bar">
+                <div class="modal-header-left">
+                    <div class="modal-header-icon-box">
+                        <i class="bi bi-calendar-plus-fill"></i>
+                    </div>
+                    <div class="modal-header-text-block">
+                        <h3 class="modal-title-text">Schedule OT Slot</h3>
+                        <p class="modal-subtitle-text">Assign operation theater suite and timing window for surgery</p>
+                    </div>
+                </div>
+                <button type="button" class="modal-close-btn" @onclick="CloseAddScheduleModal" title="Close">&times;</button>
+            </div>
+
+            <div class="modal-body assign-modal-body">
+                <!-- Surgery Request Selection (Search-as-you-type Autocomplete) -->
+                <div class="modal-form-group mb-3">
+                    <label class="modal-field-label">Select Surgery Request <span class="text-danger">*</span></label>
+                    <div class="modal-search-autocomplete-wrapper">
+                        <div class="modal-search-input-box">
+                            <i class="bi bi-search modal-search-icon"></i>
+                            <input type="text"
+                                   class="form-control modal-input-control with-search-icon @(bookRequestId != Guid.Empty ? "has-selection" : "")"
+                                   placeholder="Search patient name, procedure, surgeon, or code..."
+                                   value="@bookSearchText"
+                                   @oninput="OnBookSearchInput"
+                                   @onfocus="() => isBookDropdownOpen = true" />
+                            @if (!string.IsNullOrWhiteSpace(bookSearchText) || bookRequestId != Guid.Empty)
+                            {
+                                <button type="button" class="btn-clear-search" @onclick="ClearBookSurgerySelection" title="Clear selection">
+                                    <i class="bi bi-x-lg"></i>
+                                </button>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn-dropdown-arrow" @onclick="() => isBookDropdownOpen = !isBookDropdownOpen" title="Toggle list">
+                                    <i class="bi bi-chevron-down"></i>
+                                </button>
+                            }
+                        </div>
+
+                        @if (isBookDropdownOpen)
+                        {
+                            <div class="modal-typeahead-dropdown shadow-lg">
+                                @if (filteredBookSurgeryRequests.Any())
+                                {
+                                    @foreach (var req in filteredBookSurgeryRequests.Take(30))
+                                    {
+                                        var pat = GetPatientName(req.custid);
+                                        var doc = GetDoctorName(req.dcode);
+                                        var isSelected = req.request_id == bookRequestId;
+                                        var isEmergency = req.priority?.ToUpper() == "EMERGENCY";
+
+                                        <div class="typeahead-option-item @(isSelected ? "selected" : "")"
+                                             @onmousedown="() => SelectBookSurgeryRequest(req)">
+                                            <div class="typeahead-item-layout">
+                                                <div class="typeahead-item-icon">
+                                                    <i class="bi bi-activity"></i>
+                                                </div>
+                                                <div class="typeahead-item-main">
+                                                    <div class="typeahead-proc-line">
+                                                        <span class="typeahead-proc-title">@req.procedure_name</span>
+                                                        @if (isEmergency)
+                                                        {
+                                                            <span class="typeahead-emergency-badge">EMERGENCY</span>
+                                                        }
+                                                        @if (!string.IsNullOrWhiteSpace(req.surgery_type))
+                                                        {
+                                                            <span class="typeahead-chip">@req.surgery_type</span>
+                                                        }
+                                                    </div>
+                                                    <div class="typeahead-meta-line">
+                                                        <span class="typeahead-meta-item"><i class="bi bi-person-fill text-indigo-500 me-1"></i><strong>@pat</strong></span>
+                                                        <span class="typeahead-dot">&bull;</span>
+                                                        <span class="typeahead-meta-item"><i class="bi bi-person-badge text-slate-400 me-1"></i>Dr. @doc</span>
+                                                    </div>
+                                                </div>
+                                                <div class="typeahead-item-right">
+                                                    <span class="typeahead-duration-pill">
+                                                        <i class="bi bi-clock-fill me-1"></i>@(req.expected_duration_minutes ?? 60)m
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    }
+                                }
+                                else
+                                {
+                                    <div class="typeahead-empty-state">
+                                        <i class="bi bi-inbox text-slate-300 fs-4 d-block mb-1.5"></i>
+                                        <span class="d-block font-bold text-slate-600 mb-0.5">No unscheduled surgery requests</span>
+                                        <span class="font-11 text-slate-400">All pending requests have already been scheduled into OT slots.</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                </div>
+
+                <!-- Selected Case Preview Card -->
+                @{
+                    var activeReq = allRequests.FirstOrDefault(r => r.request_id == bookRequestId);
+                }
+                @if (activeReq != null)
+                {
+                    var patName = GetPatientName(activeReq.custid);
+                    var docName = GetDoctorName(activeReq.dcode);
+                    <div class="selected-case-preview-card mb-3">
+                        <div class="case-preview-badge">
+                            <i class="bi bi-person-fill-check"></i>
+                        </div>
+                        <div class="case-preview-details">
+                            <div class="case-preview-title">@activeReq.procedure_name</div>
+                            <div class="case-preview-sub">
+                                <span><i class="bi bi-person me-1"></i><strong>@patName</strong></span>
+                                <span class="preview-dot">•</span>
+                                <span><i class="bi bi-person-badge me-1"></i>Dr. @docName</span>
+                                <span class="preview-dot">•</span>
+                                <span class="badge bg-indigo-50 text-indigo-700 font-10 border border-indigo-100">
+                                    <i class="bi bi-clock me-0.5"></i>@(activeReq.expected_duration_minutes ?? 60) mins
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                }
+
+                <!-- Row 1: OT Theater Suite & Scheduled Date -->
+                <div class="modal-form-row mb-4">
+                    <div class="modal-form-col">
+                        <label class="modal-field-label">Operation Theater (OT Suite) <span class="text-danger">*</span></label>
+                        <select class="form-select modal-select-control" @bind="bookOtId">
+                            <option value="@Guid.Empty">-- Select OT Suite --</option>
+                            @foreach (var ot in allTheaters.Where(t => t.is_active))
+                            {
+                                <option value="@ot.ot_id">@ot.ot_name @(!string.IsNullOrWhiteSpace(ot.location) ? $"({ot.location})" : "")</option>
+                            }
+                        </select>
+                    </div>
+
+                    <div class="modal-form-col">
+                        <label class="modal-field-label">Scheduled Date <span class="text-danger">*</span></label>
+                        <input type="date" class="form-control modal-input-control" value="@bookDate.ToString("yyyy-MM-dd")" @onchange="OnBookDateChanged" />
+                    </div>
+                </div>
+
+                <!-- Row 2: Timing Window -->
+                <div class="modal-form-row mb-4">
+                    <div class="modal-form-col">
+                        <label class="modal-field-label">Start Time (HH:mm) <span class="text-danger">*</span></label>
+                        <input type="time" class="form-control modal-input-control" value="@(bookStartTime.HasValue ? bookStartTime.Value.ToString("HH\\:mm") : "")" @onchange="OnBookStartTimeChanged" />
+                    </div>
+
+                    <div class="modal-form-col">
+                        <label class="modal-field-label">Estimated End Time (HH:mm) <span class="text-danger">*</span></label>
+                        <input type="time" class="form-control modal-input-control" value="@(bookEndTime.HasValue ? bookEndTime.Value.ToString("HH\\:mm") : "")" @onchange="OnBookEndTimeChanged" />
+                    </div>
+                </div>
+
+                <!-- Row 3: Notes -->
+                <div class="modal-form-group mb-2">
+                    <label class="modal-field-label">Scheduling Notes / Special Equipment Prep</label>
+                    <textarea class="form-control modal-textarea-control" rows="3" placeholder="e.g. First case of the day, requires laparoscopy tower..." @bind="bookNotes"></textarea>
+                </div>
+            </div>
+
+            <div class="modal-footer-bar">
+                <button type="button" class="btn-modal-cancel" @onclick="CloseAddScheduleModal">Cancel</button>
+                <button type="button" class="btn-modal-save" @onclick="SaveAddScheduleAsync" disabled="@isSaving">
+                    @if (isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                        <span>Booking...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-check-circle-fill me-1"></i>
+                        <span>Confirm Slot Booking</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- ========================================================================= -->
+<!-- 4. SURGERY SLOT DETAILS INSPECT MODAL                                    -->
+<!-- ========================================================================= -->
+@if (showSlotDetailModal && inspectedSchedule != null)
+{
+    var req = inspectedRequest;
+    var ot = inspectedTheater;
+    var procName = !string.IsNullOrWhiteSpace(req?.procedure_name) ? req.procedure_name : (!string.IsNullOrWhiteSpace(inspectedSchedule.notes) ? inspectedSchedule.notes : "Surgery Procedure");
+    var patName = !string.IsNullOrWhiteSpace(req?.patient_name) ? req.patient_name : GetPatientName(inspectedSchedule.custid);
+    var docName = !string.IsNullOrWhiteSpace(req?.doctor_name) ? req.doctor_name : GetDoctorName(req?.dcode ?? 0);
+    var startIst = inspectedSchedule.scheduled_time.ToString("hh\\:mm tt");
+    var endIst = inspectedSchedule.estimated_end_time.ToString("hh\\:mm tt");
+
+    <div class="modal-overlay" @onclick="CloseSlotDetailModal">
+        <div class="modal-form-card team-modal-card" style="max-width: 560px;" @onclick:stopPropagation>
+            <div class="modal-header-bar">
+                <div class="modal-header-left">
+                    <div class="modal-header-icon-box">
+                        <i class="bi bi-clipboard-pulse"></i>
+                    </div>
+                    <div class="modal-header-text-block">
+                        <h3 class="modal-title-text">Surgery Slot Details</h3>
+                        <p class="modal-subtitle-text">@(ot?.ot_name ?? "OT Suite") &bull; @inspectedSchedule.scheduled_date.ToString("dd MMM yyyy")</p>
+                    </div>
+                </div>
+                <button type="button" class="modal-close-btn" @onclick="CloseSlotDetailModal" title="Close">&times;</button>
+            </div>
+
+            <div class="modal-body assign-modal-body">
+                <div class="selected-case-preview-card mb-3">
+                    <div class="case-preview-badge">
+                        <i class="bi bi-hospital"></i>
+                    </div>
+                    <div class="case-preview-details">
+                        <div class="case-preview-title">@procName</div>
+                        <div class="case-preview-sub">
+                            <span><i class="bi bi-person me-1"></i><strong>@patName</strong></span>
+                            <span class="preview-dot">•</span>
+                            <span><i class="bi bi-person-badge me-1"></i>Dr. @docName</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="slot-details-grid">
+                    <div class="slot-detail-item">
+                        <span class="slot-detail-label">OT Suite</span>
+                        <span class="slot-detail-val font-bold">@(ot?.ot_name ?? "Operation Theater") @(!string.IsNullOrWhiteSpace(ot?.location) ? $"({ot.location})" : "")</span>
+                    </div>
+                    <div class="slot-detail-item">
+                        <span class="slot-detail-label">Timing (IST)</span>
+                        <span class="slot-detail-val font-mono font-bold text-indigo-600">@startIst – @endIst</span>
+                    </div>
+                    <div class="slot-detail-item">
+                        <span class="slot-detail-label">Status</span>
+                        <span class="slot-detail-val">
+                            <span class="badge @(inspectedSchedule.status == "BOOKED" ? "bg-indigo-100 text-indigo-800 border border-indigo-200" : "bg-emerald-100 text-emerald-800 border border-emerald-200") font-bold">@inspectedSchedule.status</span>
+                        </span>
+                    </div>
+                    <div class="slot-detail-item">
+                        <span class="slot-detail-label">Priority</span>
+                        <span class="slot-detail-val">
+                            <span class="badge @(req?.priority == "EMERGENCY" ? "bg-danger text-white" : "bg-warning text-dark") font-bold">@(req?.priority ?? "ELECTIVE")</span>
+                        </span>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(inspectedSchedule.notes))
+                    {
+                        <div class="slot-detail-item full-width">
+                            <span class="slot-detail-label">Scheduling Notes / Prep</span>
+                            <span class="slot-detail-val">@inspectedSchedule.notes</span>
+                        </div>
+                    }
+                </div>
+            </div>
+
+            <div class="modal-footer-bar">
+                <button type="button" class="btn-modal-cancel" @onclick="CloseSlotDetailModal">Close</button>
+                <button type="button" class="btn-assign-primary btn-sm" @onclick='() => { CloseSlotDetailModal(); Navigation.NavigateTo($"/ot-schedule?date={inspectedSchedule.scheduled_date:yyyy-MM-dd}"); }'>
+                    <i class="bi bi-pencil-square me-1"></i>
+                    <span>Manage in OT Schedule</span>
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private List<OtMasterModel> allTheaters = new();
+    private List<OtMasterModel> availableTheaters = new();
+    private List<OtScheduleModel> allSchedules = new();
+    private List<OtSurgeryRequestListModel> allRequests = new();
+    private List<DoctorMasterModel> doctorsList = new();
+
+    private bool loading = true;
+    private Guid? selectedOtId = null;
+    private string selectedOtFilterString = "";
+    private DateOnly scheduledDate = DateOnly.FromDateTime(DateTime.Today);
+
+    // Shift Mode: true = Day Shift (07:00 - 19:00), false = Night Shift (19:00 - 07:00)
+    private bool isDayShift = true;
+
+    // Schedule Slot Modal state
+    private bool showAddScheduleModal = false;
+    private Guid bookRequestId = Guid.Empty;
+    private Guid bookOtId = Guid.Empty;
+    private decimal bookCustId = 0;
+    private DateOnly bookDate = DateOnly.FromDateTime(DateTime.Today);
+    private TimeOnly? bookStartTime = null;
+    private TimeOnly? bookEndTime = null;
+    private string bookNotes = "";
+    private string bookSearchText = "";
+    private bool isBookDropdownOpen = false;
+    private bool isSaving = false;
+
+    // Slot Details Modal state
+    private bool showSlotDetailModal = false;
+    private OtScheduleModel? inspectedSchedule = null;
+    private OtSurgeryRequestListModel? inspectedRequest = null;
+    private OtMasterModel? inspectedTheater = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAllDataAsync();
+    }
+
+    private async Task LoadAllDataAsync()
+    {
+        loading = true;
+        try
+        {
+            var t1 = LoadTheatersAsync();
+            var t2 = LoadDoctorsAsync();
+            var t3 = LoadRequestsAsync();
+            var t4 = LoadSchedulesAsync();
+            await Task.WhenAll(t1, t2, t3, t4);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading theater availability: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task LoadTheatersAsync()
+    {
+        allTheaters = await OtService.GetOtMastersAsync(activeOnly: false) ?? new();
+        availableTheaters = await OtService.GetAvailabilityAsync(scheduledDate, new TimeOnly(10, 0), new TimeOnly(12, 0)) ?? new();
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        doctorsList = await DoctorService.GetDoctorsAsync() ?? new();
+    }
+
+    private async Task LoadRequestsAsync()
+    {
+        allRequests = await OtService.GetSurgeryRequestsAsync() ?? new();
+    }
+
+    private async Task LoadSchedulesAsync()
+    {
+        allSchedules = await OtService.GetScheduleCalendarAsync(null, scheduledDate.ToString("yyyy-MM-dd"), scheduledDate.ToString("yyyy-MM-dd")) ?? new();
+    }
+
+    private void SetShift(bool dayShift)
+    {
+        isDayShift = dayShift;
+        StateHasChanged();
+    }
+
+    private int[] CurrentShiftHours =>
+        isDayShift
+            ? new int[] { 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 }
+            : new int[] { 19, 20, 21, 22, 23, 0, 1, 2, 3, 4, 5, 6 };
+
+    private string FormatHour12(int h)
+    {
+        if (h == 0) return "12 AM";
+        if (h < 12) return $"{h} AM";
+        if (h == 12) return "12 PM";
+        return $"{h - 12} PM";
+    }
+
+    private bool IsShortDuration(OtScheduleModel sched)
+    {
+        var start = sched.scheduled_time;
+        var end = sched.estimated_end_time;
+        if (end <= start)
+        {
+            end = start.AddHours(1);
+        }
+
+        var totalMins = (end - start).TotalMinutes;
+        if (totalMins < 0) totalMins += 24 * 60;
+        return totalMins <= 60; // 1 hour or less
+    }
+
+    private IEnumerable<OtMasterModel> DisplayTheatersList
+    {
+        get
+        {
+            if (selectedOtId.HasValue && selectedOtId.Value != Guid.Empty)
+            {
+                var match = allTheaters.Where(t => t.ot_id == selectedOtId.Value);
+                if (match.Any()) return match;
+            }
+            return allTheaters;
+        }
+    }
+
+    private int ShiftProceduresCount
+    {
+        get
+        {
+            var list = allSchedules
+                .Where(s => s.scheduled_date == scheduledDate && !s.isdeleted && s.status != "CANCELLED")
+                .Where(s => !selectedOtId.HasValue || s.ot_id == selectedOtId.Value)
+                .Where(IsScheduleInActiveShift);
+            return list.Count();
+        }
+    }
+
+    private List<OtScheduleModel> GetSchedulesForTheater(Guid otId) =>
+        allSchedules
+            .Where(s => s.ot_id == otId && s.scheduled_date == scheduledDate && !s.isdeleted && s.status != "CANCELLED")
+            .OrderBy(s => s.scheduled_time)
+            .ToList();
+
+    private bool IsScheduleInActiveShift(OtScheduleModel s)
+    {
+        var start = s.scheduled_time;
+        var end = s.estimated_end_time;
+        if (end <= start)
+        {
+            end = start.AddHours(1);
+        }
+
+        if (isDayShift)
+        {
+            // Day window: 07:00 to 19:00
+            var shiftStart = new TimeOnly(7, 0);
+            var shiftEnd = new TimeOnly(19, 0);
+            return start < shiftEnd && end > shiftStart;
+        }
+        else
+        {
+            // Night window: 19:00 to 07:00
+            var nightStart = new TimeOnly(19, 0);
+            var nightEnd = new TimeOnly(7, 0);
+
+            bool startsInNight = (start >= nightStart || start < nightEnd);
+            bool endsInNight = (end > nightStart || end <= nightEnd);
+            return startsInNight || endsInNight;
+        }
+    }
+
+    private double GetHoursFromShiftStart(TimeOnly time, bool forEnd = false)
+    {
+        double h = time.Hour + (time.Minute / 60.0);
+        if (isDayShift)
+        {
+            return h - 7.0;
+        }
+        else
+        {
+            if (h >= 19.0)
+            {
+                return h - 19.0;
+            }
+            else if (h <= 7.0)
+            {
+                return (24.0 - 19.0) + h;
+            }
+            else
+            {
+                return forEnd ? 12.0 : -1.0;
+            }
+        }
+    }
+
+    private (double leftPct, double widthPct) GetSchedulePosition(OtScheduleModel s)
+    {
+        var start = s.scheduled_time;
+        var end = s.estimated_end_time;
+        if (end <= start)
+        {
+            end = start.AddHours(1);
+        }
+
+        double startOffset = GetHoursFromShiftStart(start, false);
+        double endOffset = GetHoursFromShiftStart(end, true);
+
+        if (startOffset < 0) startOffset = 0;
+        if (endOffset > 12.0) endOffset = 12.0;
+
+        if (endOffset <= startOffset)
+        {
+            endOffset = Math.Min(12.0, startOffset + 1.0);
+        }
+
+        double leftPct = (startOffset / 12.0) * 100.0;
+        double widthPct = ((endOffset - startOffset) / 12.0) * 100.0;
+
+        leftPct = Math.Clamp(leftPct, 0.0, 96.0);
+        widthPct = Math.Clamp(widthPct, 4.0, 100.0 - leftPct);
+
+        return (leftPct, widthPct);
+    }
+
+    private double? CurrentTimeLeftPercent
+    {
+        get
+        {
+            var now = DateTime.UtcNow.ToIndianTime();
+            var nowTime = TimeOnly.FromDateTime(now);
+            double offset = GetHoursFromShiftStart(nowTime, false);
+            if (offset >= 0.0 && offset <= 12.0)
+            {
+                return (offset / 12.0) * 100.0;
+            }
+            return null;
+        }
+    }
+
+    private string CurrentIstTimeString => DateTime.UtcNow.ToIndianTime().ToString("hh:mm tt") + " IST";
+
+    private string GetProcedureColorClass(int index, string? priority)
+    {
+        if (priority?.ToUpper() == "EMERGENCY") return "event-color-rose";
+
+        string[] palettes = new[]
+        {
+            "event-color-green",
+            "event-color-peach",
+            "event-color-blue",
+            "event-color-purple",
+            "event-color-amber",
+            "event-color-teal"
+        };
+        return palettes[index % palettes.Length];
+    }
+
+    private void OnHeaderOtFilterChanged(ChangeEventArgs e)
+    {
+        selectedOtFilterString = e.Value?.ToString() ?? "";
+        if (Guid.TryParse(selectedOtFilterString, out var gid))
+        {
+            selectedOtId = gid;
+        }
+        else
+        {
+            selectedOtId = null;
+        }
+    }
+
+    private void ToggleSelectTheater(OtMasterModel ot)
+    {
+        if (selectedOtId == ot.ot_id)
+        {
+            selectedOtId = null;
+            selectedOtFilterString = "";
+        }
+        else
+        {
+            selectedOtId = ot.ot_id;
+            selectedOtFilterString = ot.ot_id.ToString();
+        }
+    }
+
+    private async Task OnDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var d))
+        {
+            scheduledDate = d;
+            await LoadAllDataAsync();
+        }
+    }
+
+    private async Task GoToday()
+    {
+        scheduledDate = DateOnly.FromDateTime(DateTime.Today);
+        await LoadAllDataAsync();
+    }
+
+    private async Task GoPreviousDay()
+    {
+        scheduledDate = scheduledDate.AddDays(-1);
+        await LoadAllDataAsync();
+    }
+
+    private async Task GoNextDay()
+    {
+        scheduledDate = scheduledDate.AddDays(1);
+        await LoadAllDataAsync();
+    }
+
+    // =========================================================================
+    // Schedule OT Slot Modal Methods
+    // =========================================================================
+    private List<OtSurgeryRequestListModel> unscheduledRequests =>
+        allRequests
+            .Where(r => r.status == "REQUESTED" && !r.isdeleted && !allSchedules.Any(s => s.request_id == r.request_id && !s.isdeleted && s.status != "CANCELLED"))
+            .ToList();
+
+    private IEnumerable<OtSurgeryRequestListModel> filteredBookSurgeryRequests
+    {
+        get
+        {
+            var list = unscheduledRequests;
+            if (string.IsNullOrWhiteSpace(bookSearchText))
+                return list;
+
+            var q = bookSearchText.Trim().ToLowerInvariant();
+            return list.Where(r =>
+                (!string.IsNullOrWhiteSpace(r.procedure_name) && r.procedure_name.ToLowerInvariant().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(r.patient_name) && r.patient_name.ToLowerInvariant().Contains(q)) ||
+                GetPatientName(r.custid).ToLowerInvariant().Contains(q) ||
+                GetDoctorName(r.dcode).ToLowerInvariant().Contains(q) ||
+                (!string.IsNullOrWhiteSpace(r.doctor_name) && r.doctor_name.ToLowerInvariant().Contains(q)) ||
+                (!string.IsNullOrWhiteSpace(r.priority) && r.priority.ToLowerInvariant().Contains(q)) ||
+                r.custid.ToString().Contains(q));
+        }
+    }
+
+    private void OpenAddScheduleModal(OtMasterModel? defaultTheater)
+    {
+        bookRequestId = Guid.Empty;
+        bookCustId = 0;
+        bookSearchText = "";
+        isBookDropdownOpen = false;
+        bookNotes = "";
+        bookDate = scheduledDate;
+        bookStartTime = null;
+        bookEndTime = null;
+
+        if (defaultTheater != null)
+        {
+            bookOtId = defaultTheater.ot_id;
+        }
+        else
+        {
+            bookOtId = Guid.Empty;
+        }
+
+        showAddScheduleModal = true;
+    }
+
+    private void CloseAddScheduleModal()
+    {
+        showAddScheduleModal = false;
+        isBookDropdownOpen = false;
+    }
+
+    private void SelectBookSurgeryRequest(OtSurgeryRequestListModel req)
+    {
+        bookRequestId = req.request_id;
+        bookCustId = req.custid;
+        var pat = GetPatientName(req.custid);
+        bookSearchText = $"{req.procedure_name} ({pat})";
+        isBookDropdownOpen = false;
+
+        // Auto-calculate end time from duration if start time is set
+        if (bookStartTime.HasValue)
+        {
+            int durMins = req.expected_duration_minutes ?? 60;
+            bookEndTime = bookStartTime.Value.AddMinutes(durMins);
+        }
+    }
+
+    private void ClearBookSurgerySelection()
+    {
+        bookRequestId = Guid.Empty;
+        bookCustId = 0;
+        bookSearchText = "";
+        isBookDropdownOpen = true;
+    }
+
+    private void OnBookSearchInput(ChangeEventArgs e)
+    {
+        bookSearchText = e.Value?.ToString() ?? "";
+        isBookDropdownOpen = true;
+    }
+
+    private void OnBookDateChanged(ChangeEventArgs e)
+    {
+        if (DateOnly.TryParse(e.Value?.ToString(), out var d))
+        {
+            bookDate = d;
+        }
+    }
+
+    private void OnBookStartTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t))
+        {
+            bookStartTime = t;
+            // auto adjust end time
+            var req = allRequests.FirstOrDefault(r => r.request_id == bookRequestId);
+            int dur = req?.expected_duration_minutes ?? 60;
+            bookEndTime = bookStartTime.Value.AddMinutes(dur);
+        }
+        else
+        {
+            bookStartTime = null;
+        }
+    }
+
+    private void OnBookEndTimeChanged(ChangeEventArgs e)
+    {
+        if (TimeOnly.TryParse(e.Value?.ToString(), out var t))
+        {
+            bookEndTime = t;
+        }
+        else
+        {
+            bookEndTime = null;
+        }
+    }
+
+    private async Task SaveAddScheduleAsync()
+    {
+        if (bookRequestId == Guid.Empty)
+        {
+            ToastService.ShowWarning("Please select a surgery request to schedule.");
+            return;
+        }
+
+        if (bookOtId == Guid.Empty)
+        {
+            ToastService.ShowWarning("Please select an Operation Theater.");
+            return;
+        }
+
+        if (!bookStartTime.HasValue)
+        {
+            ToastService.ShowWarning("Please specify a start time.");
+            return;
+        }
+
+        if (!bookEndTime.HasValue)
+        {
+            ToastService.ShowWarning("Please specify an estimated end time.");
+            return;
+        }
+
+        if (bookEndTime.Value <= bookStartTime.Value)
+        {
+            ToastService.ShowWarning("Estimated end time must be after start time.");
+            return;
+        }
+
+        isSaving = true;
+        StateHasChanged();
+
+        try
+        {
+            var req = new AddOtScheduleRequest
+            {
+                request_id = bookRequestId,
+                ot_id = bookOtId,
+                custid = bookCustId,
+                scheduled_date = bookDate,
+                scheduled_time = bookStartTime.Value,
+                estimated_end_time = bookEndTime.Value,
+                notes = bookNotes
+            };
+
+            var res = await OtService.AddScheduleAsync(req);
+            if (res != null && res.IsSuccess)
+            {
+                ToastService.ShowSuccess("OT Slot booked successfully!");
+                CloseAddScheduleModal();
+                scheduledDate = bookDate;
+                await LoadAllDataAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res?.message ?? "Failed to book slot.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error booking slot: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    // =========================================================================
+    // Slot Details Modal Methods
+    // =========================================================================
+    private void OpenSlotDetailModal(OtScheduleModel sched, OtSurgeryRequestListModel? req, OtMasterModel ot)
+    {
+        inspectedSchedule = sched;
+        inspectedRequest = req ?? allRequests.FirstOrDefault(r => r.request_id == sched.request_id);
+        inspectedTheater = ot;
+        showSlotDetailModal = true;
+    }
+
+    private void CloseSlotDetailModal()
+    {
+        showSlotDetailModal = false;
+        inspectedSchedule = null;
+        inspectedRequest = null;
+        inspectedTheater = null;
+    }
+
+    private string GetPatientName(decimal custid)
+    {
+        var req = allRequests.FirstOrDefault(r => r.custid == custid);
+        if (req != null && !string.IsNullOrWhiteSpace(req.patient_name))
+        {
+            return req.patient_name;
+        }
+        return $"Patient #{custid}";
+    }
+
+    private string GetDoctorName(int dcode)
+    {
+        if (dcode <= 0) return "Doctor";
+        var doc = doctorsList.FirstOrDefault(d => d.dcode == dcode);
+        if (doc != null)
+        {
+            return string.IsNullOrWhiteSpace(doc.name) ? (doc.doctorfullname ?? "Doctor") : doc.name;
+        }
+        return "Doctor";
+    }
+
+    private string GetTheaterName(Guid otId)
+    {
+        var ot = allTheaters.FirstOrDefault(t => t.ot_id == otId);
+        return ot?.ot_name ?? "OT Suite";
+    }
+
+    private string FormatTimings(TimeOnly? from, TimeOnly? to)
+    {
+        if (from == null && to == null) return "24/7 Operating";
+        var fromStr = from.HasValue ? from.Value.ToString("hh\\:mm tt") : "08:00 AM";
+        var toStr = to.HasValue ? to.Value.ToString("hh\\:mm tt") : "08:00 PM";
+        return $"{fromStr} - {toStr}";
+    }
+
+    private bool IsToday(DateOnly date) => date == DateOnly.FromDateTime(DateTime.Today);
+}

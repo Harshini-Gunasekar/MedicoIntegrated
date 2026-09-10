@@ -8,6 +8,7 @@
 @inject NurseNotesMasterService NotesMasterService
 @inject ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -201,11 +202,41 @@
     private bool hasCreateRight = true;
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
+    private string DefaultTenant = "";
 
     protected override async Task OnInitializedAsync()
     {
+        if (!string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+        {
+            DefaultTenant = TenantState.TenantCode;
+        }
         await LoadRights();
         await LoadData();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tcRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (tcRes.Success && !string.IsNullOrWhiteSpace(tcRes.Value))
+                {
+                    DefaultTenant = tcRes.Value;
+                }
+            }
+            catch { }
+
+            if (string.IsNullOrWhiteSpace(DefaultTenant) && !string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+            {
+                DefaultTenant = TenantState.TenantCode;
+            }
+
+            await LoadRights();
+            await LoadData();
+            StateHasChanged();
+        }
     }
 
     private async Task LoadRights()
@@ -235,11 +266,15 @@
         isLoading = true;
         try
         {
-            typesList = await NotesMasterService.GetScheduleTypesAsync(activeOnly: true);
+            var items = await NotesMasterService.GetScheduleTypesAsync(activeOnly: false, tenantCode: DefaultTenant);
+            typesList = items?
+                .Where(t => string.IsNullOrEmpty(t.tenant_code) || string.IsNullOrEmpty(DefaultTenant) || t.tenant_code == DefaultTenant)
+                .ToList() ?? new();
         }
         catch (Exception ex)
         {
             ToastService.ShowError($"Error loading schedule types: {ex.Message}");
+            typesList = new();
         }
         finally
         {
@@ -289,15 +324,17 @@
                 {
                     type_id = selectedId,
                     type_name = formName.Trim().ToUpper(),
-                    is_active = formIsActive
-                });
+                    is_active = formIsActive,
+                    tenant_code = DefaultTenant
+                }, DefaultTenant);
             }
             else
             {
                 success = await NotesMasterService.AddScheduleTypeAsync(new AddScheduleTypeRequest
                 {
-                    type_name = formName.Trim().ToUpper()
-                });
+                    type_name = formName.Trim().ToUpper(),
+                    tenant_code = DefaultTenant
+                }, DefaultTenant);
             }
 
             if (success)
@@ -344,7 +381,7 @@
     {
         try
         {
-            var success = await NotesMasterService.DeleteScheduleTypeAsync(deleteTargetId);
+            var success = await NotesMasterService.DeleteScheduleTypeAsync(deleteTargetId, DefaultTenant);
             if (success)
             {
                 ToastService.ShowSuccess("Schedule type deactivated successfully.");
