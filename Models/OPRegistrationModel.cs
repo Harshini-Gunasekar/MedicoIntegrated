@@ -10,16 +10,22 @@ namespace Booking.Models
         public class OpRegistrationModel
         {
             [ExplicitKey]
+            [JsonConverter(typeof(FlexibleGuidConverter))]
             public Guid op_id { get; set; } = Guid.NewGuid();
             public string op_no { get; set; } = string.Empty;
+
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? booking_id { get; set; }
             public string? booking_no { get; set; }
+
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }   // ✅ NEW — links to slot
             public decimal custid { get; set; }
             public int dcode { get; set; }
             public int? department_code { get; set; }
             public string visit_type { get; set; } = "NEWVISIT";
             public string reg_type { get; set; } = "ONLINE";    // Use ONLINE token allocation for slot-driven registrations; backend walk-in ranges are not always configured.
+            [JsonConverter(typeof(FlexibleDateOnlyConverter))]
             public DateOnly visit_date { get; set; }
             public string? token_no { get; set; }
             public int? queue_no { get; set; }
@@ -30,8 +36,11 @@ namespace Booking.Models
             [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool isdeleted { get; set; } = false;
 
+            [JsonConverter(typeof(FlexibleDateTimeConverter))]
             public DateTime created_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+            [JsonConverter(typeof(FlexibleDateTimeConverter))]
             public DateTime updated_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
 
@@ -152,6 +161,7 @@ namespace Booking.Models
 
         public class UpdateVisitStatusRequest
         {
+            [JsonConverter(typeof(FlexibleGuidConverter))]
             public Guid op_id { get; set; }
             public string visit_status { get; set; } = string.Empty;
         }
@@ -162,6 +172,7 @@ namespace Booking.Models
             public int? dcode { get; set; }           // null if patient doesn't know which doctor
             public int? duty_dcode { get; set; }      // assigned at reception if no dcode
             public int? department_code { get; set; }
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
             public string visit_type { get; set; } = "NEWVISIT";
             public string? notes { get; set; }
@@ -172,13 +183,16 @@ namespace Booking.Models
         // Transfer to another doctor after duty doctor consultation
         public class TransferDoctorRequest
         {
+            [JsonConverter(typeof(FlexibleGuidConverter))]
             public Guid op_id { get; set; }
             public int transfer_to_dcode { get; set; }
             public string? transfer_reason { get; set; }
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
         }
         public class DoctorBookingListModel
         {
+            [JsonConverter(typeof(FlexibleGuidConverter))]
             public Guid booking_id { get; set; }
             public string? booking_no { get; set; }
             public string? op_no { get; set; }
@@ -188,9 +202,13 @@ namespace Booking.Models
 
             public int dcode { get; set; }
 
+            [JsonConverter(typeof(FlexibleDateOnlyConverter))]
             public DateOnly appointment_date { get; set; }
 
+            [JsonConverter(typeof(FlexibleTimeOnlyConverter))]
             public TimeOnly slot_start_time { get; set; }
+
+            [JsonConverter(typeof(FlexibleTimeOnlyConverter))]
             public TimeOnly slot_end_time { get; set; }
 
             public int token_no { get; set; }
@@ -207,11 +225,13 @@ namespace Booking.Models
             public decimal custid { get; set; }
             public int dcode { get; set; }
             public int? department_code { get; set; }
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
             public string? notes { get; set; }
         }
         public class CancelOpRegistrationRequest
         {
+            [JsonConverter(typeof(FlexibleGuidConverter))]
             public Guid op_id { get; set; }
             public string? cancel_reason { get; set; }
         }

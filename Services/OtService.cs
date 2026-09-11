@@ -856,5 +856,161 @@ namespace Booking.Services
                 return null;
             }
         }
+
+        // ═══════════════════════════════════════════════════════════════
+        // 20. OT STAFF NOTES
+        // ═══════════════════════════════════════════════════════════════
+        public async Task<OtApiResponse> AddStaffNoteAsync(AddOtStaffNoteRequest req)
+        {
+            try
+            {
+                var res = await _http.PostAsJsonAsync("api/OT/staff-note/add", req);
+                return await HandleResponseAsync(res);
+            }
+            catch (Exception ex)
+            {
+                return new OtApiResponse { message = $"Error: {ex.Message}" };
+            }
+        }
+
+        public async Task<List<OtStaffNoteModel>> GetStaffNotesByRequestAsync(Guid requestId)
+        {
+            try
+            {
+                var res = await _http.GetFromJsonAsync<List<OtStaffNoteModel>>($"api/OT/staff-note/by-request?request_id={requestId}", _jsonOptions);
+                return res ?? new List<OtStaffNoteModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[OtService.GetStaffNotesByRequestAsync] Error: {ex.Message}");
+                return new List<OtStaffNoteModel>();
+            }
+        }
+
+        public async Task<OtApiResponse> DeleteStaffNoteAsync(Guid noteId)
+        {
+            try
+            {
+                var res = await _http.GetAsync($"api/OT/staff-note/delete?note_id={noteId}");
+                return await HandleResponseAsync(res);
+            }
+            catch (Exception ex)
+            {
+                return new OtApiResponse { message = $"Error: {ex.Message}" };
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // 21. OT FEE SPLIT MASTER
+        // ═══════════════════════════════════════════════════════════════
+        public async Task<OtApiResponse> AddFeeSplitMasterAsync(AddOtFeeSplitMasterRequest req)
+        {
+            try
+            {
+                var res = await _http.PostAsJsonAsync("api/OT/fee-split-master/add", req);
+                return await HandleResponseAsync(res);
+            }
+            catch (Exception ex)
+            {
+                return new OtApiResponse { message = $"Error: {ex.Message}" };
+            }
+        }
+
+        public async Task<OtApiResponse> UpdateFeeSplitMasterAsync(UpdateOtFeeSplitMasterRequest req)
+        {
+            try
+            {
+                var res = await _http.PostAsJsonAsync("api/OT/fee-split-master/update", req);
+                return await HandleResponseAsync(res);
+            }
+            catch (Exception ex)
+            {
+                return new OtApiResponse { message = $"Error: {ex.Message}" };
+            }
+        }
+
+        public async Task<List<OtFeeSplitMasterModel>> GetFeeSplitMastersAsync(bool activeOnly = false)
+        {
+            try
+            {
+                var url = $"api/OT/fee-split-master/list?activeOnly={activeOnly.ToString().ToLower()}";
+                var res = await _http.GetFromJsonAsync<List<OtFeeSplitMasterModel>>(url, _jsonOptions);
+                return res ?? new List<OtFeeSplitMasterModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[OtService.GetFeeSplitMastersAsync] Error: {ex.Message}");
+                return new List<OtFeeSplitMasterModel>();
+            }
+        }
+
+        public async Task<OtApiResponse> DeleteFeeSplitMasterAsync(Guid feeTypeId)
+        {
+            try
+            {
+                var res = await _http.GetAsync($"api/OT/fee-split-master/delete?fee_type_id={feeTypeId}");
+                return await HandleResponseAsync(res);
+            }
+            catch (Exception ex)
+            {
+                return new OtApiResponse { message = $"Error: {ex.Message}" };
+            }
+        }
+
+        // ═══════════════════════════════════════════════════════════════
+        // 22. OT FEE SPLIT ITEM & RECONCILIATION SUMMARY
+        // ═══════════════════════════════════════════════════════════════
+        public async Task<OtApiResponse> AddFeeSplitItemAsync(AddOtFeeSplitItemRequest req)
+        {
+            try
+            {
+                var res = await _http.PostAsJsonAsync("api/OT/fee-split/item/add", req);
+                return await HandleResponseAsync(res);
+            }
+            catch (Exception ex)
+            {
+                return new OtApiResponse { message = $"Error: {ex.Message}" };
+            }
+        }
+
+        public async Task<List<OtFeeSplitItemModel>> GetFeeSplitItemsByRequestAsync(Guid requestId)
+        {
+            try
+            {
+                var res = await _http.GetFromJsonAsync<List<OtFeeSplitItemModel>>($"api/OT/fee-split/item/by-request?request_id={requestId}", _jsonOptions);
+                return res ?? new List<OtFeeSplitItemModel>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[OtService.GetFeeSplitItemsByRequestAsync] Error: {ex.Message}");
+                return new List<OtFeeSplitItemModel>();
+            }
+        }
+
+        public async Task<OtApiResponse> DeleteFeeSplitItemAsync(Guid itemId)
+        {
+            try
+            {
+                var res = await _http.GetAsync($"api/OT/fee-split/item/delete?item_id={itemId}");
+                return await HandleResponseAsync(res);
+            }
+            catch (Exception ex)
+            {
+                return new OtApiResponse { message = $"Error: {ex.Message}" };
+            }
+        }
+
+        public async Task<OtFeeSplitSummaryModel?> GetFeeSplitSummaryAsync(Guid requestId)
+        {
+            try
+            {
+                return await _http.GetFromJsonAsync<OtFeeSplitSummaryModel>($"api/OT/fee-split/summary/{requestId}", _jsonOptions);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[OtService.GetFeeSplitSummaryAsync] Error: {ex.Message}");
+                return null;
+            }
+        }
     }
 }

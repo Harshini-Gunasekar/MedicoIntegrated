@@ -1,0 +1,2060 @@
+@page "/ot-staff-note"
+@page "/ot-staff-notes"
+@page "/ot-staff-note/{RequestId:guid}"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using Booking.Models
+@using Booking.Services
+@using Booking.Helpers
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using System.Text.Json
+@inject OtService OtService
+@inject DoctorService DoctorService
+@inject ToastService ToastService
+@inject NavigationManager Navigation
+@inject IJSRuntime JSRuntime
+@inject IHttpClientFactory ClientFactory
+@inject Booking.Services.UomMasterService UomService
+@inject Booking.Services.CaseSheetService CaseSheetService
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+
+<PageTitle>OT Staff Notes — Medico</PageTitle>
+
+<div class="referral-page ot-staff-page lc-fadeInUp">
+    <!-- ========================================================================= -->
+    <!-- 1. TOP HEADER CONSOLE WITH LIVE CASE SEARCH                                -->
+    <!-- ========================================================================= -->
+    <div class="staff-page-header">
+        <div class="header-title-left">
+            <div class="header-icon-box">
+                <i class="bi bi-journal-medical"></i>
+            </div>
+            <div class="header-title-text">
+                <div class="header-title-row">
+                    <h1 class="page-main-title">OT Staff Notes</h1>
+                    @if (selectedRequest != null && staffNotesList.Any())
+                    {
+                        <span class="total-items-pill">@staffNotesList.Count @(staffNotesList.Count == 1 ? "Item" : "Items") Logged</span>
+                    }
+                </div>
+                <div class="header-subtitle-row">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Intraoperative Medicines, Consumables &amp; Reusable Tools Log</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-controls-right">
+            <!-- Surgery Case Live Search Autocomplete Dropdown -->
+            <div class="case-search-dropdown-wrap" @onclick:stopPropagation>
+                <div class="case-search-box-inner @(isCaseDropdownOpen ? "focused" : "")">
+                    <i class="bi bi-search case-search-icon"></i>
+                    <input type="text"
+                           class="case-search-input"
+                           placeholder="Search patient name, procedure, ID..."
+                           value="@caseSearchQuery"
+                           @oninput="OnCaseSearchInput"
+                           @onfocus="OpenCaseDropdown"
+                           @onkeydown="HandleCaseSearchKeyDown" />
+                    @if (!string.IsNullOrWhiteSpace(caseSearchQuery))
+                    {
+                        <button type="button" class="case-search-clear-btn" @onclick="ClearCaseSearch" title="Clear Search">
+                            <i class="bi bi-x-circle-fill"></i>
+                        </button>
+                    }
+                    else
+                    {
+                        <button type="button" class="case-search-toggle-btn @(isCaseDropdownOpen ? "open" : "")" @onclick="ToggleCaseDropdown" title="Toggle Cases List">
+                            <i class="bi bi-chevron-down"></i>
+                        </button>
+                    }
+                </div>
+
+                @if (isCaseDropdownOpen)
+                {
+                    <div class="case-dropdown-popover">
+                        <div class="popover-header">
+                            <span class="popover-title">SURGERY CASES</span>
+                            <span class="popover-badge">@FilteredSurgeryCases.Count matching</span>
+                        </div>
+
+                        <div class="popover-list-body">
+                            @if (!FilteredSurgeryCases.Any())
+                            {
+                                <div class="popover-empty">
+                                    <i class="bi bi-search text-slate-300 fs-3 d-block mb-1"></i>
+                                    <div class="text-slate-600 font-bold font-13">No matching surgery cases</div>
+                                    <div class="text-slate-400 font-11">Try searching by patient name, procedure, or surgeon</div>
+                                </div>
+                            }
+                            else
+                            {
+                                @for (int idx = 0; idx < FilteredSurgeryCases.Count; idx++)
+                                {
+                                    var req = FilteredSurgeryCases[idx];
+                                    var isHighlighted = idx == highlightedCaseIndex;
+                                    var isSelected = selectedRequest?.request_id == req.request_id;
+                                    var patName = !string.IsNullOrWhiteSpace(req.patient_name) ? req.patient_name : $"Patient #{req.custid}";
+                                    var docName = GetDoctorName(req.dcode);
+                                    var localIdx = idx;
+
+                                    <div class="case-dropdown-item @(isHighlighted ? "is-highlighted" : "") @(isSelected ? "is-selected" : "")"
+                                         @onclick="() => SelectCase(req)"
+                                         @onmouseenter="() => highlightedCaseIndex = localIdx">
+                                        <div class="item-avatar-box">
+                                            <i class="bi bi-person-fill"></i>
+                                        </div>
+                                        <div class="item-main-info">
+                                            <div class="item-pat-row">
+                                                <span class="item-patient-name font-bold">@patName</span>
+                                                <span class="item-custid-tag">#@req.custid</span>
+                                                @if (req.isvip == true)
+                                                {
+                                                    <span class="item-vip-badge"><i class="bi bi-star-fill me-0.5"></i>VIP</span>
+                                                }
+                                            </div>
+                                            <div class="item-sub-row">
+                                                <span class="item-procedure-name font-semibold text-slate-700">
+                                                    <i class="bi bi-activity text-indigo-500 me-1"></i>@req.procedure_name
+                                                </span>
+                                                @if (!string.IsNullOrWhiteSpace(req.diagnosis))
+                                                {
+                                                    <span class="item-diag-text text-slate-400">(@req.diagnosis)</span>
+                                                }
+                                                <span class="item-doc-name text-slate-500">• Dr. @docName</span>
+                                            </div>
+                                        </div>
+                                        <div class="item-status-pill-wrap">
+                                            <span class="badge @GetStatusBadgeClass(req.status) font-bold">
+                                                @req.status.Replace("_", " ")
+                                            </span>
+                                            @if (isSelected)
+                                            {
+                                                <i class="bi bi-check-circle-fill text-indigo-600 font-14 ms-1" title="Currently Selected"></i>
+                                            }
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+
+            <!-- Action Button -->
+            <button type="button" class="btn-primary-action" @onclick="OpenAddStaffNoteModal" disabled="@(selectedRequest == null)" title="@(selectedRequest == null ? "Select a surgery case first" : "Log intraoperative item")">
+                <i class="bi bi-plus-circle-fill"></i>
+                <span>Log Staff Item</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Dropdown Click-Catcher Backdrop -->
+    @if (isCaseDropdownOpen)
+    {
+        <div class="case-dropdown-backdrop" @onclick="() => isCaseDropdownOpen = false"></div>
+    }
+
+    @if (isLoadingRequests)
+    {
+        <div class="p-5 text-center bg-white rounded-3 border my-3">
+            <div class="spinner-border text-indigo-600 mb-2" style="width: 2rem; height: 2rem;" role="status"></div>
+            <div class="text-slate-600 font-bold font-13">Loading surgery cases &amp; staff records...</div>
+        </div>
+    }
+    else
+    {
+        <!-- ========================================================================= -->
+        <!-- 2. ACTIVE SELECTED SURGERY CASE BANNER (Clean & Centered)                  -->
+        <!-- ========================================================================= -->
+        @if (selectedRequest != null)
+        {
+            <div class="active-case-meta-banner">
+                <div class="case-meta-patient-group">
+                    <div class="patient-avatar-box">
+                        <i class="bi bi-person-fill"></i>
+                    </div>
+                    <div class="patient-info-wrap">
+                        <div class="d-flex align-items-center gap-2">
+                            <span class="patient-name font-bold text-slate-800">
+                                @(!string.IsNullOrWhiteSpace(selectedRequest.patient_name) ? selectedRequest.patient_name : $"Patient #{selectedRequest.custid}")
+                            </span>
+                            <span class="patient-custid-badge">#@selectedRequest.custid</span>
+                            @if (selectedRequest.isvip == true)
+                            {
+                                <span class="vip-badge"><i class="bi bi-star-fill me-1"></i>VIP</span>
+                            }
+                        </div>
+                        <div class="patient-sub-meta">
+                            @if (!string.IsNullOrWhiteSpace(selectedRequest.gender) || selectedRequest.ageyears.HasValue)
+                            {
+                                <span>@selectedRequest.gender @(selectedRequest.ageyears.HasValue ? $"• {selectedRequest.ageyears} yrs" : "")</span>
+                            }
+                            else
+                            {
+                                <span>Registered Surgical Patient</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                <div class="case-meta-divider"></div>
+
+                <div class="case-meta-columns">
+                    <div class="meta-item">
+                        <span class="meta-label">PROCEDURE &amp; INDICATION</span>
+                        <span class="meta-value font-bold text-slate-800" title="@selectedRequest.diagnosis">
+                            <i class="bi bi-activity text-indigo-500 me-1"></i>
+                            @selectedRequest.procedure_name
+                            @if (!string.IsNullOrWhiteSpace(selectedRequest.diagnosis))
+                            {
+                                <span class="meta-sub text-slate-400">(@selectedRequest.diagnosis)</span>
+                            }
+                        </span>
+                    </div>
+
+                    <div class="meta-item">
+                        <span class="meta-label">OPERATING SURGEON</span>
+                        <span class="meta-value text-slate-800 font-semibold">
+                            <i class="bi bi-person-badge text-indigo-500 me-1"></i>
+                            Dr. @GetDoctorName(selectedRequest.dcode)
+                        </span>
+                    </div>
+
+                    <div class="meta-item">
+                        <span class="meta-label">CLINICAL STATUS</span>
+                        <span class="meta-value">
+                            <span class="badge @GetStatusBadgeClass(selectedRequest.status) font-bold">
+                                @selectedRequest.status.Replace("_", " ")
+                            </span>
+                        </span>
+                    </div>
+
+                    <div class="meta-item text-end">
+                        <span class="meta-label">PROCEDURE FEE</span>
+                        <span class="meta-value font-bold font-mono text-indigo-600">
+                            ₹@(selectedRequest.procedure_fee?.ToString("N2") ?? "0.00")
+                        </span>
+                    </div>
+                </div>
+            </div>
+        }
+        else
+        {
+            <!-- Empty State Prompt when no case is selected -->
+            <div class="empty-case-showcase">
+                <div class="empty-case-icon-box">
+                    <i class="bi bi-hospital"></i>
+                </div>
+                <h3 class="empty-case-title">Select a Surgery Case to Begin</h3>
+                <p class="empty-case-subtitle">Type a patient name, procedure, or surgeon in the search bar above to view intraoperative notes and log medicines or tools.</p>
+                
+                @if (allRequests.Any())
+                {
+                    <div class="recent-cases-tray">
+                        <span class="recent-tray-label">Quick Select Surgery Case:</span>
+                        <div class="recent-chips-list">
+                            @foreach (var r in allRequests.Take(6))
+                            {
+                                var pat = !string.IsNullOrWhiteSpace(r.patient_name) ? r.patient_name : $"Patient #{r.custid}";
+                                var doc = GetDoctorName(r.dcode);
+                                <button type="button" class="recent-case-chip" @onclick="() => SelectCase(r)">
+                                    <i class="bi bi-heart-pulse-fill text-indigo-500 me-1"></i>
+                                    <span class="recent-chip-patient font-bold">@pat</span>
+                                    <span class="recent-chip-proc text-slate-600">• @r.procedure_name</span>
+                                    <span class="recent-chip-doc text-slate-400">(Dr. @doc)</span>
+                                    <span class="badge @GetStatusBadgeClass(r.status) ms-1">@r.status</span>
+                                </button>
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (selectedRequest != null)
+        {
+            <!-- ========================================================================= -->
+            <!-- 3. KPI STATISTICS TILES                                                   -->
+            <!-- ========================================================================= -->
+            <div class="kpi-grid mb-3">
+                <div class="kpi-card">
+                    <div class="kpi-icon-box kpi-icon-indigo">
+                        <i class="bi bi-list-check"></i>
+                    </div>
+                    <div class="kpi-details">
+                        <span class="kpi-value">@staffNotesList.Count</span>
+                        <span class="kpi-label">Total Items Logged</span>
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-icon-box kpi-icon-emerald">
+                        <i class="bi bi-capsule"></i>
+                    </div>
+                    <div class="kpi-details">
+                        <span class="kpi-value">@staffNotesList.Count(n => n.item_type == "MEDICINE")</span>
+                        <span class="kpi-label">Medicines Administered</span>
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-icon-box kpi-icon-blue">
+                        <i class="bi bi-tools"></i>
+                    </div>
+                    <div class="kpi-details">
+                        <span class="kpi-value">@staffNotesList.Count(n => n.item_type == "TOOL")</span>
+                        <span class="kpi-label">Tools &amp; Sets Logged</span>
+                    </div>
+                </div>
+
+                <div class="kpi-card">
+                    <div class="kpi-icon-box kpi-icon-purple">
+                        <i class="bi bi-receipt"></i>
+                    </div>
+                    <div class="kpi-details">
+                        <span class="kpi-value font-mono text-emerald-700">₹@TotalNotesChargeableAmount.ToString("N2")</span>
+                        <span class="kpi-label">Pushed to Unbilled Charges</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ========================================================================= -->
+            <!-- 4. CONTENT TABLE CARD                                                     -->
+            <!-- ========================================================================= -->
+            <div class="content-table-card">
+                <div class="table-top-bar">
+                    <div class="table-title-wrap">
+                        <h3 class="table-heading-text m-0">Medicines &amp; Tools Used in Surgery</h3>
+                        <span class="badge-count">@FilteredNotes.Count() items</span>
+                    </div>
+
+                    <div class="table-actions-wrap">
+                        <!-- Item Type Filter -->
+                        <div class="filter-pill-group">
+                            <button type="button" class="filter-pill-btn @(notesTypeFilter == "ALL" ? "active" : "")" @onclick='() => notesTypeFilter = "ALL"'>All</button>
+                            <button type="button" class="filter-pill-btn @(notesTypeFilter == "MEDICINE" ? "active" : "")" @onclick='() => notesTypeFilter = "MEDICINE"'>Medicines</button>
+                            <button type="button" class="filter-pill-btn @(notesTypeFilter == "TOOL" ? "active" : "")" @onclick='() => notesTypeFilter = "TOOL"'>Tools</button>
+                            <button type="button" class="filter-pill-btn @(notesTypeFilter == "CHARGEABLE" ? "active" : "")" @onclick='() => notesTypeFilter = "CHARGEABLE"'>Chargeable</button>
+                            <button type="button" class="filter-pill-btn @(notesTypeFilter == "REUSABLE" ? "active" : "")" @onclick='() => notesTypeFilter = "REUSABLE"'>Reusable / Note-only</button>
+                        </div>
+
+                        <!-- Search Box -->
+                        <div class="tbl-search-box">
+                            <i class="bi bi-search search-icon"></i>
+                            <input type="text" placeholder="Search item, staff, remarks..." class="form-control form-control-sm tbl-search-input" @bind="notesSearchQuery" @bind:event="oninput" />
+                            @if (!string.IsNullOrWhiteSpace(notesSearchQuery))
+                            {
+                                <button type="button" class="btn-clear-search-sm" @onclick="() => notesSearchQuery = string.Empty"><i class="bi bi-x-lg"></i></button>
+                            }
+                        </div>
+                    </div>
+                </div>
+
+                @if (isLoadingNotes)
+                {
+                    <div class="table-loading-box">
+                        <span class="spinner-border text-indigo-600 spinner-border-sm me-2"></span>
+                        <span class="text-slate-600 font-bold font-13">Loading staff notes...</span>
+                    </div>
+                }
+                else if (!FilteredNotes.Any())
+                {
+                    <div class="table-empty-state-box">
+                        <div class="empty-state-icon-circle">
+                            <i class="bi bi-clipboard2-plus"></i>
+                        </div>
+                        <h4 class="empty-state-title">No medicines or tools logged for this surgery yet.</h4>
+                        <p class="empty-state-subtitle">Start recording intraoperative consumables, medicines, or reusable tools used during surgery.</p>
+                        <button type="button" class="btn-log-first-item" @onclick="OpenAddStaffNoteModal">
+                            <i class="bi bi-plus-lg"></i>
+                            <span>Log First Item</span>
+                        </button>
+                    </div>
+                }
+                else
+                {
+                    <div class="table-scroll-wrap">
+                        <table class="table custom-medico-table align-middle m-0">
+                            <thead>
+                                <tr>
+                                    <th class="text-center" style="width: 70px;">S.No</th>
+                                    <th style="width: 125px;">Item Type</th>
+                                    <th style="min-width: 220px;">Item Name</th>
+                                    <th class="text-center" style="width: 120px;">Qty &amp; Unit</th>
+                                    <th class="text-end" style="width: 110px;">Rate</th>
+                                    <th class="text-end" style="width: 135px;">Total Amount</th>
+                                    <th style="width: 140px;">Logged By</th>
+                                    <th class="text-center" style="width: 120px;">Billing Status</th>
+                                    <th class="text-center" style="width: 70px;">Action</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @for (int i = 0; i < FilteredNotes.Count; i++)
+                                {
+                                    var note = FilteredNotes[i];
+                                    var isChargeable = (note.amount ?? 0) > 0;
+                                    <tr>
+                                        <td class="text-center text-slate-500 font-mono font-12 font-bold">@(i + 1)</td>
+                                        <td>
+                                            @if (note.item_type == "MEDICINE")
+                                            {
+                                                <span class="type-pill pill-medicine">Medicine</span>
+                                            }
+                                            else if (note.item_type == "TOOL")
+                                            {
+                                                <span class="type-pill pill-tool">Tool / Set</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="type-pill pill-other">Consumable</span>
+                                            }
+                                        </td>
+                                        <td>
+                                            <span class="item-name-text">@note.item_name</span>
+                                        </td>
+                                        <td class="text-center">
+                                            <span class="qty-badge font-mono">@note.quantity @(!string.IsNullOrWhiteSpace(note.unit) ? note.unit : "")</span>
+                                        </td>
+                                        <td class="text-end">
+                                            @if (note.rate.HasValue && note.rate.Value > 0)
+                                            {
+                                                <span class="font-mono text-slate-700 font-semibold">₹@note.rate.Value.ToString("N2")</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-slate-400 font-11">-</span>
+                                            }
+                                        </td>
+                                        <td class="text-end">
+                                            @if (isChargeable)
+                                            {
+                                                <span class="font-mono font-bold text-emerald-700">₹@(note.amount?.ToString("N2") ?? "0.00")</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="badge bg-slate-100 text-slate-600 font-normal font-11">No Charge (Reusable)</span>
+                                            }
+                                        </td>
+                                        <td>
+                                            <span class="staff-tag">
+                                                <i class="bi bi-person-fill me-1 text-slate-400"></i>
+                                                @(!string.IsNullOrWhiteSpace(note.used_by) ? note.used_by : "OT Staff")
+                                            </span>
+                                        </td>
+                                        <td class="text-center">
+                                            @if (isChargeable)
+                                            {
+                                                @if (note.is_billed)
+                                                {
+                                                    <span class="status-pill-sub pill-billed">Billed</span>
+                                                }
+                                                else
+                                                {
+                                                    <span class="status-pill-sub pill-unbilled">Unbilled</span>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                <span class="status-pill-sub pill-note">Note-Only</span>
+                                            }
+                                        </td>
+                                        <td class="text-center">
+                                            <button type="button" class="btn-action-delete" @onclick="() => PromptDeleteStaffNote(note)" title="Delete Item">
+                                                <i class="bi bi-trash3-fill"></i>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </div>
+        }
+    }
+
+    <!-- ========================================================================= -->
+    <!-- 5. LOG STAFF ITEM MODAL POPUP                                             -->
+    <!-- ========================================================================= -->
+    @if (showAddStaffNoteModal && selectedRequest != null)
+    {
+        <div class="modal-overlay">
+            <div class="modal-form-card" @onclick:stopPropagation>
+                <div class="modal-header-bar">
+                    <div class="modal-header-left">
+                        <div class="modal-header-icon-box">
+                            <i class="bi bi-capsule-pill"></i>
+                        </div>
+                        <div class="modal-header-text">
+                            <h3 class="modal-title-text">Log Medicine / Tool Used</h3>
+                            <span class="modal-subtitle-text">@selectedRequest.procedure_name - @selectedRequest.patient_name</span>
+                        </div>
+                    </div>
+                    <button type="button" class="modal-close-btn" @onclick="() => showAddStaffNoteModal = false" title="Close">&times;</button>
+                </div>
+
+                <div class="modal-body-content">
+                    <!-- Item Type Selector (Dropdown) -->
+                    <div class="modal-form-group mb-3">
+                        <label class="modal-field-label">Item Type <span class="text-danger">*</span></label>
+                        <select class="form-select modal-select-control" value="@newNoteItemType" @onchange="OnItemTypeSelectChanged">
+                            <option value="MEDICINE">Medicine</option>
+                            <option value="TOOL">Tool / Set</option>
+                            <option value="OTHER">Consumable / Other</option>
+                        </select>
+                    </div>
+
+                    <!-- Item Name (Autocomplete for Medicine, Free text for others) -->
+                    @if (newNoteItemType == "MEDICINE")
+                    {
+                        <div class="modal-form-group mb-3" style="position: relative !important;">
+                            <label class="modal-field-label">ITEM NAME <span class="text-danger">*</span></label>
+                            <input type="text" 
+                                   class="form-control modal-input-control" 
+                                   @bind="newNoteItemName" 
+                                   @bind:event="oninput" 
+                                   @onfocus="OnMedicineFocus" 
+                                   @onblur="OnMedicineSearchBlur" 
+                                   placeholder="Type to search item name..." 
+                                   autocomplete="off" 
+                                   required />
+                            @if (isItemDropdownOpen)
+                            {
+                                var term = newNoteItemName?.Trim() ?? "";
+                                var filteredItems = inventoryItems
+                                    .Where(i => string.IsNullOrEmpty(term) 
+                                        || (!string.IsNullOrEmpty(i.itemname) && i.itemname.Contains(term, StringComparison.OrdinalIgnoreCase))
+                                        || (!string.IsNullOrEmpty(i.shortname) && i.shortname.Contains(term, StringComparison.OrdinalIgnoreCase))
+                                        || (!string.IsNullOrEmpty(i.drugname) && i.drugname.Contains(term, StringComparison.OrdinalIgnoreCase))
+                                        || i.itemcode.ToString().Contains(term))
+                                    .Take(25)
+                                    .ToList();
+
+                                if (filteredItems.Any())
+                                {
+                                    <div class="ot-typeahead-dropdown">
+                                        @foreach (var item in filteredItems)
+                                        {
+                                            var unitMrp = GetItemUnitMrp(item);
+                                            <div class="ot-typeahead-item" @onmousedown="() => SelectMedicineItem(item)">
+                                                <div style="font-weight: 700; color: #1e293b; font-size: 0.88rem;">@item.itemname</div>
+                                                <div style="font-size: 0.75rem; color: #64748b; display: flex; justify-content: space-between; margin-top: 2px;">
+                                                    <span>@(!string.IsNullOrWhiteSpace(item.shortname) ? item.shortname : (!string.IsNullOrWhiteSpace(item.drugname) ? item.drugname : $"Item #{item.itemcode}"))</span>
+                                                    <span style="color: #4f46e5; font-weight: 700;">₹@(unitMrp.ToString("N2"))</span>
+                                                </div>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(term))
+                                {
+                                    <div class="ot-typeahead-dropdown" style="padding: 10px; text-align: center; color: #64748b; font-size: 0.78rem;">
+                                        No matching items found
+                                    </div>
+                                }
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="modal-form-group mb-3">
+                            <label class="modal-field-label">@(newNoteItemType == "TOOL" ? "Tool / Set Name" : "Consumable Item Name") <span class="text-danger">*</span></label>
+                            <input type="text" 
+                                   class="form-control modal-input-control" 
+                                   placeholder="@(newNoteItemType == "TOOL" ? "e.g. Laparoscope Set B / Harmonic Scalpel" : "e.g. Trocar 10mm / Vicryl 2-0 Suture / Surgical Gloves")" 
+                                   @bind="newNoteItemName" 
+                                   autocomplete="off" />
+                        </div>
+                    }
+
+                    <!-- Quantity & Unit -->
+                    <div class="modal-form-row mb-3">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Quantity <span class="text-danger">*</span></label>
+                            <input type="number" step="1" min="1" class="form-control modal-input-control" @bind="newNoteQuantity" @bind:after="RecalculateNoteAmount" />
+                        </div>
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Unit</label>
+                            <select class="form-select modal-select-control" @bind="newNoteUnit">
+                                <option value="AMP">AMP (Ampoule)</option>
+                                <option value="VIAL">VIAL</option>
+                                <option value="PCS">PCS (Pieces)</option>
+                                <option value="SET">SET</option>
+                                <option value="PACK">PACK</option>
+                                <option value="BOX">BOX</option>
+                                <option value="BTL">BTL (Bottle)</option>
+                                <option value="TUBE">TUBE</option>
+                                <option value="STRIP">STRIP</option>
+                                <option value="MG">MG</option>
+                                <option value="ML">ML</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Rate & Total Amount -->
+                    <div class="modal-form-row mb-3">
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Rate (₹) <span class="text-slate-400 font-normal">@(newNoteItemType == "MEDICINE" ? "(Auto Unit MRP)" : "(0 or blank if Reusable)")</span></label>
+                            <input type="number" step="0.01" min="0" placeholder="0.00" class="form-control modal-input-control" @bind="newNoteRate" @bind:after="RecalculateNoteAmount" />
+                        </div>
+                        <div class="modal-form-col">
+                            <label class="modal-field-label">Total Amount (₹)</label>
+                            <input type="number" step="0.01" min="0" placeholder="0.00" class="form-control modal-input-control font-bold text-emerald-700 bg-slate-50" value="@newNoteAmount" readonly />
+                        </div>
+                    </div>
+
+                    <!-- Used By (Staff Name) -->
+                    <div class="modal-form-group mb-3">
+                        <label class="modal-field-label">Staff Name / Used By</label>
+                        <input type="text" class="form-control modal-input-control" placeholder="e.g. Nurse Priya / OT Tech Ravi" @bind="newNoteUsedBy" />
+                    </div>
+
+                    <!-- Remarks -->
+                    <div class="modal-form-group mb-1">
+                        <label class="modal-field-label">Remarks / Clinical Notes</label>
+                        <textarea class="form-control modal-textarea-control" rows="2" placeholder="e.g. Used during induction / Sterilized set" @bind="newNoteRemarks"></textarea>
+                    </div>
+                </div>
+
+                <div class="modal-footer-bar">
+                    <button type="button" class="btn-modal-cancel" @onclick="() => showAddStaffNoteModal = false">Cancel</button>
+                    <button type="button" class="btn-modal-save" @onclick="SaveStaffNoteAsync" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Saving...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check-circle-fill me-1"></i>
+                            <span>Save Staff Note</span>
+                        }
+                    </button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+<style>
+/* ═══════════════════════════════════════════════════════════════════
+   HEADER SEARCH AUTOCOMPLETE & ACTIVE CASE BANNER STYLES
+   ═══════════════════════════════════════════════════════════════════ */
+.staff-page-header {
+    position: relative !important;
+    z-index: 100 !important;
+}
+
+.case-search-dropdown-wrap {
+    position: relative !important;
+    width: 360px !important;
+    max-width: 100% !important;
+    z-index: 110 !important;
+}
+
+.case-search-box-inner {
+    position: relative !important;
+    display: flex !important;
+    align-items: center !important;
+    background: #ffffff !important;
+    border: 1px solid #c7d2fe !important;
+    border-radius: 9999px !important;
+    padding: 0 12px 0 36px !important;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.case-search-box-inner.focused {
+    border-color: #4f46e5 !important;
+    box-shadow: 0 0 0 3.5px rgba(79, 70, 229, 0.15) !important;
+    background: #ffffff !important;
+}
+
+.case-search-icon {
+    position: absolute !important;
+    left: 13px !important;
+    color: #6366f1 !important;
+    font-size: 14px !important;
+    pointer-events: none !important;
+}
+
+.case-search-input {
+    width: 100% !important;
+    border: none !important;
+    outline: none !important;
+    background: transparent !important;
+    padding: 8px 4px !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    color: #1e293b !important;
+}
+
+.case-search-input::placeholder {
+    color: #94a3b8 !important;
+    font-weight: 500 !important;
+}
+
+.case-search-clear-btn,
+.case-search-toggle-btn {
+    border: none !important;
+    background: transparent !important;
+    color: #94a3b8 !important;
+    font-size: 14px !important;
+    cursor: pointer !important;
+    padding: 0 2px !important;
+    display: flex !important;
+    align-items: center !important;
+    transition: all 0.15s ease !important;
+}
+
+.case-search-clear-btn:hover {
+    color: #ef4444 !important;
+}
+
+.case-search-toggle-btn:hover {
+    color: #4f46e5 !important;
+}
+
+.case-search-toggle-btn.open {
+    transform: rotate(180deg) !important;
+    color: #4f46e5 !important;
+}
+
+/* Custom Dropdown Popover */
+.case-dropdown-popover {
+    position: absolute !important;
+    top: calc(100% + 8px) !important;
+    right: 0 !important;
+    width: 480px !important;
+    max-width: 90vw !important;
+    background: #ffffff !important;
+    border: 1px solid #e0e7ff !important;
+    border-radius: 14px !important;
+    box-shadow: 0 20px 45px -8px rgba(15, 23, 42, 0.2), 0 0 0 1px rgba(79, 70, 229, 0.08) !important;
+    overflow: hidden !important;
+    animation: lc-popover-in 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+    z-index: 1050 !important;
+}
+
+.popover-header {
+    padding: 10px 16px !important;
+    background: #f8fafc !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+}
+
+.popover-title {
+    font-size: 11px !important;
+    font-weight: 800 !important;
+    color: #475569 !important;
+    letter-spacing: 0.6px !important;
+}
+
+.popover-badge {
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    color: #4f46e5 !important;
+    background: #eef2ff !important;
+    padding: 2px 8px !important;
+    border-radius: 9999px !important;
+}
+
+.popover-list-body {
+    max-height: 320px !important;
+    overflow-y: auto !important;
+}
+
+.popover-empty {
+    padding: 32px 20px !important;
+    text-align: center !important;
+}
+
+.case-dropdown-item {
+    padding: 11px 14px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    cursor: pointer !important;
+    transition: all 0.15s ease !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    position: relative !important;
+    text-align: left !important;
+}
+
+.case-dropdown-item:last-child {
+    border-bottom: none !important;
+}
+
+.case-dropdown-item:hover,
+.case-dropdown-item.is-highlighted {
+    background: #f5f7ff !important;
+}
+
+.case-dropdown-item.is-selected {
+    background: #eef2ff !important;
+    border-left: 3.5px solid #4f46e5 !important;
+}
+
+.item-avatar-box {
+    width: 36px !important;
+    height: 36px !important;
+    background: #eef2ff !important;
+    color: #4f46e5 !important;
+    border-radius: 9px !important;
+    display: flex !align-items: center !important;
+    justify-content: center !important;
+    font-size: 16px !important;
+    flex-shrink: 0 !important;
+    border: 1px solid rgba(79, 70, 229, 0.12) !important;
+}
+
+.item-main-info {
+    flex: 1 !important;
+    min-width: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+}
+
+.item-pat-row {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    flex-wrap: wrap !important;
+}
+
+.item-patient-name {
+    font-size: 13.5px !important;
+    color: #0f172a !important;
+}
+
+.item-custid-tag {
+    font-size: 11px !important;
+    color: #64748b !important;
+    font-family: monospace !important;
+}
+
+.item-vip-badge {
+    background: #fef3c7 !important;
+    color: #b45309 !important;
+    font-size: 10px !important;
+    font-weight: 800 !important;
+    padding: 1px 6px !important;
+    border-radius: 4px !important;
+    border: 1px solid #fde68a !important;
+}
+
+.item-sub-row {
+    font-size: 12px !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    flex-wrap: wrap !important;
+}
+
+.item-procedure-name {
+    color: #334155 !important;
+}
+
+.item-diag-text {
+    color: #64748b !important;
+}
+
+.item-doc-name {
+    color: #64748b !important;
+}
+
+.item-status-pill-wrap {
+    display: flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+    flex-shrink: 0 !important;
+}
+
+/* Dropdown Backdrop */
+.case-dropdown-backdrop {
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    z-index: 1040 !important;
+    background: transparent !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   ACTIVE CASE META BANNER
+   ═══════════════════════════════════════════════════════════════════ */
+.active-case-meta-banner {
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 12px !important;
+    padding: 14px 22px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 20px !important;
+    box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.04) !important;
+    flex-wrap: wrap !important;
+    margin-bottom: 16px !important;
+}
+
+.case-meta-patient-group {
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+    min-width: 220px !important;
+}
+
+.patient-avatar-box {
+    width: 42px !important;
+    height: 42px !important;
+    background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%) !important;
+    color: #4f46e5 !important;
+    border: 1px solid #c7d2fe !important;
+    border-radius: 10px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 19px !important;
+    flex-shrink: 0 !important;
+}
+
+.patient-info-wrap {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+}
+
+.patient-name {
+    font-size: 14px !important;
+    color: #0f172a !important;
+}
+
+.patient-custid-badge {
+    font-size: 11.5px !important;
+    color: #64748b !important;
+    font-family: monospace !important;
+}
+
+.vip-badge {
+    background: #fef3c7 !important;
+    color: #b45309 !important;
+    font-size: 10.5px !important;
+    font-weight: 800 !important;
+    padding: 1px 7px !important;
+    border-radius: 4px !important;
+    border: 1px solid #fde68a !important;
+}
+
+.patient-sub-meta {
+    font-size: 11.5px !important;
+    color: #64748b !important;
+}
+
+.case-meta-divider {
+    width: 1px !important;
+    height: 38px !important;
+    background: #e2e8f0 !important;
+}
+
+.case-meta-columns {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    gap: 28px !important;
+    flex: 1 !important;
+    flex-wrap: wrap !important;
+}
+
+.meta-item {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 2px !important;
+}
+
+.meta-label {
+    font-size: 10.5px !important;
+    font-weight: 700 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.5px !important;
+    color: #94a3b8 !important;
+}
+
+.meta-value {
+    font-size: 13px !important;
+}
+
+.meta-sub {
+    font-size: 11.5px !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   EMPTY STATES (TABLE & SHOWCASE)
+   ═══════════════════════════════════════════════════════════════════ */
+.table-empty-state-box {
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    justify-content: center !important;
+    text-align: center !important;
+    padding: 56px 24px !important;
+    background: #ffffff !important;
+}
+
+.empty-state-icon-circle {
+    width: 58px !important;
+    height: 58px !important;
+    border-radius: 50% !important;
+    background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%) !important;
+    color: #4f46e5 !important;
+    border: 1px solid #c7d2fe !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 24px !important;
+    margin-bottom: 14px !important;
+    box-shadow: 0 4px 12px rgba(79, 70, 229, 0.1) !important;
+}
+
+.empty-state-title {
+    font-size: 15px !important;
+    font-weight: 800 !important;
+    color: #1e293b !important;
+    margin: 0 0 6px 0 !important;
+}
+
+.empty-state-subtitle {
+    font-size: 12.5px !important;
+    color: #64748b !important;
+    margin: 0 0 20px 0 !important;
+    max-width: 440px !important;
+    line-height: 1.4 !important;
+}
+
+.btn-log-first-item {
+    background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
+    color: #ffffff !important;
+    border: none !important;
+    font-weight: 700 !important;
+    font-size: 13px !important;
+    padding: 9px 22px !important;
+    border-radius: 9999px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+    cursor: pointer !important;
+    box-shadow: 0 4px 14px rgba(79, 70, 229, 0.3) !important;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.btn-log-first-item:hover {
+    background: linear-gradient(135deg, #4338ca 0%, #3730a3 100%) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 6px 18px rgba(79, 70, 229, 0.4) !important;
+}
+
+.table-loading-box {
+    padding: 48px 24px !important;
+    text-align: center !important;
+}
+
+.empty-case-showcase {
+    padding: 44px 24px !important;
+    text-align: center !important;
+    background: #ffffff !important;
+    border: 1px solid #e2e8f0 !important;
+    border-radius: 14px !important;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.02) !important;
+    margin-bottom: 16px !important;
+}
+
+.empty-case-icon-box {
+    width: 60px !important;
+    height: 60px !important;
+    background: linear-gradient(135deg, #eef2ff 0%, #e0e7ff 100%) !important;
+    color: #4f46e5 !important;
+    border: 1px solid #c7d2fe !important;
+    border-radius: 50% !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 26px !important;
+    margin: 0 auto 14px auto !important;
+}
+
+.empty-case-title {
+    font-size: 16.5px !important;
+    font-weight: 800 !important;
+    color: #0f172a !important;
+    margin-bottom: 6px !important;
+}
+
+.empty-case-subtitle {
+    font-size: 13px !important;
+    color: #64748b !important;
+    max-width: 480px !important;
+    margin: 0 auto !important;
+    line-height: 1.5 !important;
+}
+
+.recent-cases-tray {
+    margin-top: 24px !important;
+    padding-top: 20px !important;
+    border-top: 1px dashed #e2e8f0 !important;
+    display: flex !important;
+    flex-direction: column !important;
+    align-items: center !important;
+    gap: 10px !important;
+}
+
+.recent-tray-label {
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    color: #64748b !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.5px !important;
+}
+
+.recent-chips-list {
+    display: flex !important;
+    flex-wrap: wrap !important;
+    justify-content: center !important;
+    gap: 8px !important;
+    max-width: 820px !important;
+}
+
+.recent-case-chip {
+    background: #f8fafc !important;
+    border: 1px solid #e2e8f0 !important;
+    padding: 6px 12px !important;
+    border-radius: 9999px !important;
+    font-size: 12px !important;
+    color: #1e293b !important;
+    cursor: pointer !important;
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 4px !important;
+}
+
+.recent-case-chip:hover {
+    background: #eef2ff !important;
+    border-color: #c7d2fe !important;
+    color: #4338ca !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 2px 6px rgba(79, 70, 229, 0.12) !important;
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   5. MODAL DIALOGS & MEDICINE TYPEAHEAD POPOVER
+   ═══════════════════════════════════════════════════════════════════ */
+.modal-overlay {
+    position: fixed !important;
+    inset: 0 !important;
+    background: rgba(15, 23, 42, 0.65) !important;
+    backdrop-filter: blur(5px) !important;
+    -webkit-backdrop-filter: blur(5px) !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    z-index: 2000 !important;
+    padding: 1rem !important;
+    animation: lc-modal-fade 0.2s ease-out !important;
+}
+
+.modal-form-card {
+    background: #ffffff !important;
+    border-radius: 16px !important;
+    width: 100% !important;
+    max-width: 540px !important;
+    box-shadow: 0 25px 50px -12px rgba(15, 23, 42, 0.25), 0 0 0 1px rgba(15, 23, 42, 0.08) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    overflow: visible !important;
+    z-index: 2010 !important;
+    animation: lc-modal-scale 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+.modal-header-bar {
+    padding: 16px 22px !important;
+    background: #f8fafc !important;
+    border-bottom: 1px solid #e2e8f0 !important;
+    display: flex !important;
+    justify-content: space-between !important;
+    align-items: center !important;
+    border-radius: 16px 16px 0 0 !important;
+}
+
+.modal-header-left {
+    display: flex !important;
+    align-items: center !important;
+    gap: 12px !important;
+}
+
+.modal-header-icon-box {
+    width: 40px !important;
+    height: 40px !important;
+    border-radius: 10px !important;
+    background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
+    color: #ffffff !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 1.15rem !important;
+    box-shadow: 0 3px 8px rgba(79, 70, 229, 0.25) !important;
+}
+
+.modal-title-text {
+    font-size: 1rem !important;
+    font-weight: 800 !important;
+    color: #1e293b !important;
+    margin: 0 !important;
+}
+
+.modal-subtitle-text {
+    font-size: 0.76rem !important;
+    color: #64748b !important;
+    display: block !important;
+    margin-top: 1px !important;
+}
+
+.modal-close-btn {
+    background: transparent !important;
+    border: none !important;
+    font-size: 1.4rem !important;
+    color: #94a3b8 !important;
+    cursor: pointer !important;
+    line-height: 1 !important;
+    width: 32px !important;
+    height: 32px !important;
+    border-radius: 8px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    transition: all 0.15s ease !important;
+}
+
+.modal-close-btn:hover {
+    background: #fee2e2 !important;
+    color: #ef4444 !important;
+}
+
+.modal-body-content {
+    padding: 20px 22px !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 0.75rem !important;
+    overflow: visible !important;
+}
+
+.modal-field-label {
+    font-size: 0.78rem !important;
+    font-weight: 700 !important;
+    color: #475569 !important;
+    margin-bottom: 6px !important;
+    display: block !important;
+}
+
+.modal-input-control,
+.modal-select-control,
+.modal-textarea-control {
+    border-radius: 9px !important;
+    border: 1px solid #cbd5e1 !important;
+    font-size: 0.85rem !important;
+    padding: 9px 12px !important;
+    color: #1e293b !important;
+    transition: all 0.18s ease !important;
+    width: 100% !important;
+    box-sizing: border-box !important;
+}
+
+.modal-input-control:focus,
+.modal-select-control:focus,
+.modal-textarea-control:focus {
+    border-color: #4f46e5 !important;
+    background-color: #ffffff !important;
+    box-shadow: 0 0 0 3.5px rgba(79, 70, 229, 0.14) !important;
+    outline: none !important;
+}
+
+/* OT Console Typeahead Dropdown */
+.ot-typeahead-dropdown {
+    position: absolute !important;
+    top: 100% !important;
+    left: 0 !important;
+    right: 0 !important;
+    z-index: 2500 !important;
+    max-height: 220px !important;
+    overflow-y: auto !important;
+    background: #ffffff !important;
+    border: 1.5px solid #cbd5e1 !important;
+    border-radius: 8px !important;
+    box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.15), 0 8px 10px -6px rgba(0, 0, 0, 0.1) !important;
+    margin-top: 4px !important;
+}
+
+.ot-typeahead-item {
+    padding: 8px 12px !important;
+    cursor: pointer !important;
+    font-size: 0.82rem !important;
+    text-align: left !important;
+    color: #1e293b !important;
+    border-bottom: 1px solid #f1f5f9 !important;
+    transition: background-color 0.15s, color 0.15s !important;
+}
+
+.ot-typeahead-item:last-child {
+    border-bottom: none !important;
+}
+
+.ot-typeahead-item:hover {
+    background-color: #f1f5f9 !important;
+    color: #4f46e5 !important;
+}
+
+.ot-typeahead-dropdown::-webkit-scrollbar {
+    width: 6px !important;
+}
+
+.ot-typeahead-dropdown::-webkit-scrollbar-thumb {
+    background: #cbd5e1 !important;
+    border-radius: 4px !important;
+}
+
+.ot-typeahead-dropdown::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8 !important;
+}
+
+.modal-form-row {
+    display: grid !important;
+    grid-template-columns: 1fr 1fr !important;
+    gap: 12px !important;
+}
+
+.billing-hint-box {
+    padding: 10px 14px !important;
+    border-radius: 9px !important;
+    font-size: 0.78rem !important;
+    display: flex !important;
+    align-items: center !important;
+}
+
+.hint-chargeable {
+    background: #ecfdf5 !important;
+    color: #065f46 !important;
+    border: 1px solid #a7f3d0 !important;
+}
+
+.modal-footer-bar {
+    padding: 14px 22px !important;
+    background: #f8fafc !important;
+    border-top: 1px solid #e2e8f0 !important;
+    display: flex !important;
+    justify-content: flex-end !important;
+    gap: 10px !important;
+    border-radius: 0 0 16px 16px !important;
+}
+
+.btn-modal-cancel {
+    background: #ffffff !important;
+    border: 1px solid #cbd5e1 !important;
+    color: #475569 !important;
+    padding: 8px 18px !important;
+    border-radius: 9px !important;
+    font-size: 0.84rem !important;
+    font-weight: 700 !important;
+    cursor: pointer !important;
+    transition: all 0.15s ease !important;
+}
+
+.btn-modal-cancel:hover {
+    background: #f1f5f9 !important;
+    border-color: #94a3b8 !important;
+}
+
+.btn-modal-save {
+    background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%) !important;
+    border: none !important;
+    color: #ffffff !important;
+    padding: 8px 22px !important;
+    border-radius: 9px !important;
+    font-size: 0.84rem !important;
+    font-weight: 700 !important;
+    cursor: pointer !important;
+    box-shadow: 0 3px 10px rgba(79, 70, 229, 0.28) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    transition: all 0.18s ease !important;
+}
+
+.btn-modal-save:hover:not(:disabled) {
+    background: linear-gradient(135deg, #4338ca 0%, #3730a3 100%) !important;
+    transform: translateY(-1px) !important;
+    box-shadow: 0 5px 14px rgba(79, 70, 229, 0.38) !important;
+}
+
+.btn-modal-save:disabled {
+    opacity: 0.6 !important;
+    cursor: not-allowed !important;
+}
+
+@@keyframes lc-popover-in {
+    from { opacity: 0; transform: scale(0.97) translateY(-6px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+@@keyframes lc-modal-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@@keyframes lc-modal-scale {
+    from { opacity: 0; transform: scale(0.95) translateY(10px); }
+    to { opacity: 1; transform: scale(1) translateY(0); }
+}
+</style>
+
+@code {
+    [Parameter] public Guid? RequestId { get; set; }
+
+    private bool isLoadingRequests = true;
+    private bool isLoadingNotes = false;
+    private bool isSaving = false;
+
+    private List<OtSurgeryRequestListModel> allRequests = new();
+    private OtSurgeryRequestListModel? selectedRequest = null;
+    private List<DoctorMasterModel> doctorsList = new();
+
+    // Inventory & UOM Masters for Medicine Autocomplete
+    private List<item_master> inventoryItems = new();
+    private List<UomMasterModel> uomList = new();
+    private bool isItemDropdownOpen = false;
+    private int highlightedItemIndex = 0;
+
+    // Surgery Case Search & Autocomplete State
+    private string caseSearchQuery = "";
+    private bool isCaseDropdownOpen = false;
+    private int highlightedCaseIndex = 0;
+
+    // Notes state
+    private List<OtStaffNoteModel> staffNotesList = new();
+    private string notesTypeFilter = "ALL";
+    private string notesSearchQuery = "";
+    private bool showAddStaffNoteModal = false;
+    private string newNoteItemType = "MEDICINE";
+    private string newNoteItemName = "";
+    private decimal newNoteQuantity = 1;
+    private string newNoteUnit = "AMP";
+    private decimal? newNoteRate = null;
+    private decimal? newNoteAmount = null;
+    private string newNoteUsedBy = "";
+    private string newNoteRemarks = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadInitialDataAsync();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (RequestId.HasValue && RequestId.Value != Guid.Empty)
+        {
+            var match = allRequests.FirstOrDefault(r => r.request_id == RequestId.Value);
+            if (match != null && (selectedRequest == null || selectedRequest.request_id != match.request_id))
+            {
+                await SelectCase(match);
+            }
+        }
+    }
+
+    private async Task LoadInitialDataAsync()
+    {
+        isLoadingRequests = true;
+        try
+        {
+            var tReq = OtService.GetSurgeryRequestsAsync();
+            var tDoc = DoctorService.GetDoctorsAsync();
+            var tInv = LoadInventoryItemsAsync();
+            var tUom = LoadUomsAsync();
+            await Task.WhenAll(tReq, tDoc, tInv, tUom);
+
+            allRequests = (await tReq) ?? new();
+            doctorsList = (await tDoc) ?? new();
+
+            // Auto-select request if param supplied or pick first active
+            if (RequestId.HasValue && RequestId.Value != Guid.Empty)
+            {
+                selectedRequest = allRequests.FirstOrDefault(r => r.request_id == RequestId.Value);
+            }
+            if (selectedRequest == null && allRequests.Any())
+            {
+                selectedRequest = allRequests.FirstOrDefault(r => r.status == "IN_PROGRESS" || r.status == "BOOKED") ?? allRequests.First();
+            }
+
+            if (selectedRequest != null)
+            {
+                caseSearchQuery = !string.IsNullOrWhiteSpace(selectedRequest.patient_name) 
+                    ? $"{selectedRequest.patient_name} (#{selectedRequest.custid}) - {selectedRequest.procedure_name}" 
+                    : $"Patient #{selectedRequest.custid} - {selectedRequest.procedure_name}";
+                await LoadStaffNotesAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error initializing OT data: {ex.Message}");
+        }
+        finally
+        {
+            isLoadingRequests = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadInventoryItemsAsync()
+    {
+        try
+        {
+            var effectiveTenant = !string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "";
+            
+            // 1. Try CaseSheetService
+            var items = await CaseSheetService.GetAllItemsAsync(effectiveTenant);
+            if (items != null && items.Any())
+            {
+                inventoryItems = items.Where(x => !x.deleted).OrderBy(x => x.itemname).ToList();
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OtStaffNote] CaseSheetService items error: {ex.Message}");
+        }
+
+        // 2. DoctorApi / InventoryApi relative endpoints
+        try
+        {
+            var client = ClientFactory.CreateClient("DoctorApi");
+            var effectiveTenant = TenantState?.TenantCode ?? "0010";
+            client.DefaultRequestHeaders.Remove("tenantcode");
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Remove("tenant-code");
+            client.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+            client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+            client.DefaultRequestHeaders.Add("tenant-code", effectiveTenant);
+            if (!string.IsNullOrEmpty(TenantState?.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var endpoints = new[] { "api/ItemMaster/getallitems", "ItemMaster/getallitems", "api/ItemMaster/getallitem" };
+            foreach (var ep in endpoints)
+            {
+                try
+                {
+                    var response = await client.GetStringAsync(ep);
+                    if (!string.IsNullOrWhiteSpace(response))
+                    {
+                        var list = ParseItemListResponse(response);
+                        if (list.Any())
+                        {
+                            inventoryItems = list;
+                            return;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+
+        // 3. Direct absolute HTTP client fallback
+        try
+        {
+            using var directClient = new HttpClient();
+            var effectiveTenant = TenantState?.TenantCode ?? "0010";
+            directClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+            directClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+            var resp = await directClient.GetStringAsync("http://medicoapi.iscansoft.com/api/ItemMaster/getallitems");
+            if (!string.IsNullOrWhiteSpace(resp))
+            {
+                var list = ParseItemListResponse(resp);
+                if (list.Any())
+                {
+                    inventoryItems = list;
+                    return;
+                }
+            }
+        }
+        catch { }
+
+        inventoryItems ??= new();
+    }
+
+    private List<item_master> ParseItemListResponse(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return new();
+        var options = new System.Text.Json.JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            System.Text.Json.JsonElement arrayElement = default;
+            bool found = false;
+            if (root.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                arrayElement = root;
+                found = true;
+            }
+            else if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    arrayElement = dataProp;
+                    found = true;
+                }
+                else
+                {
+                    foreach (var prop in root.EnumerateObject())
+                    {
+                        if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                        {
+                            arrayElement = prop.Value;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (found && arrayElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var list = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(arrayElement.GetRawText(), options);
+                return list?.Where(x => !x.deleted).OrderBy(x => x.itemname).ToList() ?? new();
+            }
+        }
+        catch { }
+
+        try
+        {
+            var direct = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(json, options);
+            if (direct != null && direct.Any()) return direct.Where(x => !x.deleted).OrderBy(x => x.itemname).ToList();
+        }
+        catch { }
+
+        return new();
+    }
+
+    private async Task LoadUomsAsync()
+    {
+        try
+        {
+            uomList = await UomService.GetUomMastersAsync();
+        }
+        catch { }
+    }
+
+    // =========================================================================
+    // Surgery Case Search & Autocomplete Handlers
+    // =========================================================================
+    private void OnCaseSearchInput(ChangeEventArgs e)
+    {
+        caseSearchQuery = e.Value?.ToString() ?? "";
+        isCaseDropdownOpen = true;
+        highlightedCaseIndex = 0;
+    }
+
+    private void OpenCaseDropdown()
+    {
+        isCaseDropdownOpen = true;
+        highlightedCaseIndex = 0;
+    }
+
+    private void ToggleCaseDropdown()
+    {
+        isCaseDropdownOpen = !isCaseDropdownOpen;
+        highlightedCaseIndex = 0;
+    }
+
+    private async Task HandleCaseSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (!isCaseDropdownOpen)
+        {
+            if (e.Key == "ArrowDown" || e.Key == "Enter")
+            {
+                isCaseDropdownOpen = true;
+                highlightedCaseIndex = 0;
+            }
+            return;
+        }
+
+        var cases = FilteredSurgeryCases;
+        if (e.Key == "ArrowDown")
+        {
+            if (cases.Count > 0)
+            {
+                highlightedCaseIndex = (highlightedCaseIndex + 1) % cases.Count;
+            }
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            if (cases.Count > 0)
+            {
+                highlightedCaseIndex = (highlightedCaseIndex - 1 + cases.Count) % cases.Count;
+            }
+        }
+        else if (e.Key == "Enter")
+        {
+            if (cases.Count > 0 && highlightedCaseIndex >= 0 && highlightedCaseIndex < cases.Count)
+            {
+                await SelectCase(cases[highlightedCaseIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            isCaseDropdownOpen = false;
+        }
+    }
+
+    private async Task SelectCase(OtSurgeryRequestListModel req)
+    {
+        selectedRequest = req;
+        caseSearchQuery = !string.IsNullOrWhiteSpace(req.patient_name) 
+            ? $"{req.patient_name} (#{req.custid}) - {req.procedure_name}" 
+            : $"Patient #{req.custid} - {req.procedure_name}";
+        isCaseDropdownOpen = false;
+        await LoadStaffNotesAsync();
+    }
+
+    private void ClearCaseSearch()
+    {
+        caseSearchQuery = "";
+        selectedRequest = null;
+        staffNotesList.Clear();
+        isCaseDropdownOpen = true;
+        highlightedCaseIndex = 0;
+    }
+
+    private List<OtSurgeryRequestListModel> FilteredSurgeryCases
+    {
+        get
+        {
+            var list = allRequests.AsEnumerable();
+            if (!string.IsNullOrWhiteSpace(caseSearchQuery))
+            {
+                var q = caseSearchQuery.Trim().ToLowerInvariant();
+                list = list.Where(r => 
+                    (r.patient_name?.ToLowerInvariant().Contains(q) ?? false) ||
+                    r.custid.ToString().Contains(q) ||
+                    (r.procedure_name?.ToLowerInvariant().Contains(q) ?? false) ||
+                    (r.diagnosis?.ToLowerInvariant().Contains(q) ?? false) ||
+                    (GetDoctorName(r.dcode).ToLowerInvariant().Contains(q)) ||
+                    (r.status?.ToLowerInvariant().Contains(q) ?? false));
+            }
+            return list.ToList();
+        }
+    }
+
+    private async Task LoadStaffNotesAsync()
+    {
+        if (selectedRequest == null) return;
+        isLoadingNotes = true;
+        StateHasChanged();
+        try
+        {
+            staffNotesList = await OtService.GetStaffNotesByRequestAsync(selectedRequest.request_id);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[LoadStaffNotesAsync] Error: {ex.Message}");
+        }
+        finally
+        {
+            isLoadingNotes = false;
+            StateHasChanged();
+        }
+    }
+
+    // =========================================================================
+    // Staff Notes Computed & Actions
+    // =========================================================================
+    private decimal TotalNotesChargeableAmount => staffNotesList.Where(n => (n.amount ?? 0) > 0).Sum(n => n.amount ?? 0);
+
+    private List<OtStaffNoteModel> FilteredNotes
+    {
+        get
+        {
+            var list = staffNotesList.AsEnumerable();
+            if (notesTypeFilter == "MEDICINE") list = list.Where(n => n.item_type == "MEDICINE");
+            else if (notesTypeFilter == "TOOL") list = list.Where(n => n.item_type == "TOOL");
+            else if (notesTypeFilter == "CHARGEABLE") list = list.Where(n => (n.amount ?? 0) > 0);
+            else if (notesTypeFilter == "REUSABLE") list = list.Where(n => (n.amount ?? 0) == 0);
+
+            if (!string.IsNullOrWhiteSpace(notesSearchQuery))
+            {
+                var q = notesSearchQuery.Trim().ToLowerInvariant();
+                list = list.Where(n => (n.item_name?.ToLowerInvariant().Contains(q) ?? false) ||
+                                       (n.used_by?.ToLowerInvariant().Contains(q) ?? false) ||
+                                       (n.remarks?.ToLowerInvariant().Contains(q) ?? false));
+            }
+            return list.OrderByDescending(n => n.created_at).ToList();
+        }
+    }
+
+    // =========================================================================
+    // Modal Form & Medicine Autocomplete
+    // =========================================================================
+    private async Task OpenAddStaffNoteModal()
+    {
+        isCaseDropdownOpen = false;
+        isItemDropdownOpen = false;
+        newNoteItemType = "MEDICINE";
+        newNoteItemName = "";
+        newNoteQuantity = 1;
+        newNoteUnit = "AMP";
+        newNoteRate = null;
+        newNoteAmount = null;
+        newNoteUsedBy = "";
+        newNoteRemarks = "";
+        showAddStaffNoteModal = true;
+
+        if (!inventoryItems.Any())
+        {
+            await LoadInventoryItemsAsync();
+        }
+        if (!uomList.Any())
+        {
+            await LoadUomsAsync();
+        }
+    }
+
+    private void OnItemTypeSelectChanged(ChangeEventArgs e)
+    {
+        var val = e.Value?.ToString() ?? "MEDICINE";
+        SetItemType(val);
+    }
+
+    private void SetItemType(string type)
+    {
+        newNoteItemType = type;
+        isItemDropdownOpen = false;
+        newNoteItemName = "";
+        if (type == "TOOL")
+        {
+            newNoteUnit = "SET";
+            newNoteRate = null;
+            newNoteAmount = null;
+        }
+        else if (type == "MEDICINE")
+        {
+            newNoteUnit = "AMP";
+            newNoteRate = null;
+            newNoteAmount = null;
+        }
+        else
+        {
+            newNoteUnit = "PCS";
+            newNoteRate = null;
+            newNoteAmount = null;
+        }
+        RecalculateNoteAmount();
+    }
+
+    private async Task OnMedicineFocus()
+    {
+        isItemDropdownOpen = true;
+        if (!inventoryItems.Any())
+        {
+            await LoadInventoryItemsAsync();
+            StateHasChanged();
+        }
+    }
+
+    private async Task OnMedicineSearchBlur()
+    {
+        await Task.Delay(200);
+        isItemDropdownOpen = false;
+        StateHasChanged();
+    }
+
+    private void SelectMedicineItem(item_master item)
+    {
+        if (item == null) return;
+        newNoteItemName = item.itemname ?? "";
+
+        // Rate
+        newNoteRate = GetItemUnitMrp(item);
+
+        // Unit
+        var uom = uomList.FirstOrDefault(u => u.ucode == item.uomcode);
+        string matchedUnit = uom?.shortname ?? uom?.name ?? item.packaging ?? "";
+        newNoteUnit = MapToStandardUnit(matchedUnit);
+
+        isItemDropdownOpen = false;
+        RecalculateNoteAmount();
+        StateHasChanged();
+    }
+
+    private decimal GetItemUnitMrp(item_master? item)
+    {
+        if (item == null) return 0;
+        decimal packSize = item.packsize > 0 ? item.packsize : 1;
+        if (item.mrp > 0)
+        {
+            return Math.Round(item.mrp / packSize, 2);
+        }
+        if (item.salesrate > 0)
+        {
+            return Math.Round(item.salesrate / packSize, 2);
+        }
+        return 0;
+    }
+
+    private string MapToStandardUnit(string? uomName)
+    {
+        if (string.IsNullOrWhiteSpace(uomName)) return "PCS";
+        var u = uomName.Trim().ToUpperInvariant();
+        if (u.Contains("AMP")) return "AMP";
+        if (u.Contains("VIAL")) return "VIAL";
+        if (u.Contains("BTL") || u.Contains("BOTTLE")) return "BTL";
+        if (u.Contains("TAB") || u.Contains("CAP") || u.Contains("STRIP")) return "STRIP";
+        if (u.Contains("TUBE")) return "TUBE";
+        if (u.Contains("BOX")) return "BOX";
+        if (u.Contains("SET")) return "SET";
+        if (u.Contains("PACK")) return "PACK";
+        if (u.Contains("ML")) return "ML";
+        if (u.Contains("MG")) return "MG";
+        return "PCS";
+    }
+
+    private void ClearMedicineSelection()
+    {
+        newNoteItemName = "";
+        newNoteRate = null;
+        newNoteAmount = null;
+        isItemDropdownOpen = true;
+    }
+
+    private void RecalculateNoteAmount()
+    {
+        if (newNoteRate.HasValue && newNoteRate.Value > 0 && newNoteQuantity > 0)
+        {
+            newNoteAmount = newNoteQuantity * newNoteRate.Value;
+        }
+        else
+        {
+            newNoteAmount = null;
+        }
+    }
+
+    private async Task SaveStaffNoteAsync()
+    {
+        if (selectedRequest == null) return;
+        if (string.IsNullOrWhiteSpace(newNoteItemName))
+        {
+            ToastService.ShowWarning("Please enter an item name or description.");
+            return;
+        }
+
+        isSaving = true;
+        StateHasChanged();
+        try
+        {
+            var req = new AddOtStaffNoteRequest
+            {
+                request_id = selectedRequest.request_id,
+                item_type = newNoteItemType,
+                item_name = newNoteItemName.Trim(),
+                quantity = newNoteQuantity,
+                unit = newNoteUnit,
+                rate = newNoteRate,
+                amount = newNoteAmount,
+                used_by = newNoteUsedBy?.Trim(),
+                remarks = newNoteRemarks?.Trim()
+            };
+
+            var res = await OtService.AddStaffNoteAsync(req);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess("Staff note logged successfully!");
+                showAddStaffNoteModal = false;
+                await LoadStaffNotesAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error saving note: {ex.Message}");
+        }
+        finally
+        {
+            isSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PromptDeleteStaffNote(OtStaffNoteModel note)
+    {
+        var confirmed = await JSRuntime.InvokeAsync<bool>("confirm", $"Are you sure you want to delete '{note.item_name}'?");
+        if (!confirmed) return;
+
+        try
+        {
+            var res = await OtService.DeleteStaffNoteAsync(note.note_id);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess("Staff note item removed.");
+                await LoadStaffNotesAsync();
+            }
+            else
+            {
+                ToastService.ShowError(res.message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error deleting item: {ex.Message}");
+        }
+    }
+
+    // =========================================================================
+    // General Helpers
+    // =========================================================================
+    private string GetDoctorName(int dcode)
+    {
+        if (dcode <= 0) return "Clinician";
+        var doc = doctorsList.FirstOrDefault(d => d.dcode == dcode);
+        return doc != null ? (string.IsNullOrWhiteSpace(doc.name) ? (doc.doctorfullname ?? "Clinician") : doc.name) : "Clinician";
+    }
+
+    private string GetStatusBadgeClass(string? status)
+    {
+        return (status?.ToUpperInvariant()) switch
+        {
+            "IN_PROGRESS" or "IN_OP" or "SURGERY" => "bg-purple-100 text-purple-800 border border-purple-200",
+            "COMPLETED" => "bg-emerald-100 text-emerald-800 border border-emerald-200",
+            "IN_RECOVERY" or "RECOVERY" or "RECOVERED" => "bg-sky-100 text-sky-800 border border-sky-200",
+            "TRANSFERRED" or "DISCHARGED" => "bg-teal-100 text-teal-800 border border-teal-200",
+            "CANCELLED" => "bg-rose-100 text-rose-800 border border-rose-200",
+            "REQUESTED" => "bg-amber-100 text-amber-800 border border-amber-200",
+            _ => "bg-indigo-100 text-indigo-800 border border-indigo-200"
+        };
+    }
+
+    private class ServiceResponse<T>
+    {
+        public T? data { get; set; }
+    }
+}

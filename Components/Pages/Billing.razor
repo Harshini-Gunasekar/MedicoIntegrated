@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @using Newtonsoft.Json
 @using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
+@using Booking.Helpers
 @inject Booking.Services.DoctorService DoctorService
 @inject Booking.Services.AppointmentBookingService AppointmentBookingService
 @inject Booking.Services.CaseSheetService CaseSheetService
@@ -376,19 +377,26 @@
                                         (!string.IsNullOrEmpty(i.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(i.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
                                         (!string.IsNullOrEmpty(i.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(i.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
                                     );
+                                    var chargeDate = GetUnbilledChargeDate(uc);
                                     <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                                         <div>
                                             <span style="font-size: 0.9rem; font-weight: 700; color: #1e293b;">@GetUnbilledChargeName(uc)</span>
-                                            <div style="font-size: 0.75rem; color: #64748b; margin-top: 0.15rem;">
-                                                @if (string.Equals(uc.entrytype, "CONSULTATION", StringComparison.OrdinalIgnoreCase))
+                                            <div style="font-size: 0.75rem; color: #64748b; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.15rem;">
+                                                <div>
+                                                    @if (string.Equals(uc.entrytype, "CONSULTATION", StringComparison.OrdinalIgnoreCase))
+                                                    {
+                                                        <span>Type: <strong style="color: #4f46e5;">@uc.entrytype</strong> | Particulars: <strong style="color: #4f46e5;">@GetUnbilledChargeName(uc)</strong></span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span>Type: <strong style="color: #4f46e5;">@uc.entrytype</strong></span>
+                                                    }
+                                                    | Qty: @uc.quantity
+                                                </div>
+                                                @if (chargeDate.HasValue)
                                                 {
-                                                    <span>Type: <strong style="color: #4f46e5;">@uc.entrytype</strong> | Particulars: <strong style="color: #4f46e5;">@GetUnbilledChargeName(uc)</strong></span>
+                                                    <div>Date: <strong style="color: #475569;">@chargeDate.Value.ToIndianTime().ToString("dd-MM-yyyy")</strong></div>
                                                 }
-                                                else
-                                                {
-                                                    <span>Type: <strong style="color: #4f46e5;">@uc.entrytype</strong></span>
-                                                }
-                                                | Qty: @uc.quantity
                                             </div>
                                         </div>
                                         <div style="display: flex; align-items: center; gap: 1rem;">
@@ -2456,6 +2464,50 @@
         {
             loadingUnbilled = false;
         }
+    }
+
+    private DateTime? GetUnbilledChargeDate(UnbilledChargeSummary uc)
+    {
+        if (uc == null) return null;
+
+        // 1. Check direct chargedate / entered_date
+        if (uc.chargedate.HasValue && uc.chargedate.Value != DateTime.MinValue)
+        {
+            return uc.chargedate.Value;
+        }
+
+        // 2. Lookup in allRegistrations by opvisitid or entryid
+        if (allRegistrations != null && allRegistrations.Count > 0)
+        {
+            var reg = allRegistrations.FirstOrDefault(r =>
+                (!string.IsNullOrEmpty(uc.opvisitid) && (string.Equals(r.op_id.ToString(), uc.opvisitid.Trim(), StringComparison.OrdinalIgnoreCase) || string.Equals(r.op_no, uc.opvisitid.Trim(), StringComparison.OrdinalIgnoreCase))) ||
+                (!string.IsNullOrEmpty(uc.entryid) && (string.Equals(r.op_id.ToString(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase) || (r.booking_id.HasValue && string.Equals(r.booking_id.Value.ToString(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))))
+            );
+
+            if (reg != null)
+            {
+                if (reg.created_at != DateTime.MinValue)
+                {
+                    return reg.created_at;
+                }
+                if (reg.visit_date != default)
+                {
+                    return reg.visit_date.ToDateTime(TimeOnly.MinValue);
+                }
+            }
+        }
+
+        // 3. Fallback to activeAdmissions for IP charges
+        if (activeAdmissions != null && activeAdmissions.Count > 0 && uc.ip_id.HasValue && uc.ip_id.Value != Guid.Empty)
+        {
+            var adm = activeAdmissions.FirstOrDefault(a => a.ip_id == uc.ip_id.Value);
+            if (adm != null && adm.admitdate != DateTime.MinValue)
+            {
+                return adm.admitdate;
+            }
+        }
+
+        return null;
     }
 
     private string GetUnbilledChargeName(UnbilledChargeSummary uc)

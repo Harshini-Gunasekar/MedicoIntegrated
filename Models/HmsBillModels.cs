@@ -76,7 +76,29 @@ namespace Booking.Models
         public string? unbilledid { get; set; }
         public string? entrytype { get; set; }
         public string? entryid { get; set; }
+        [System.Text.Json.Serialization.JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
         public DateTime? chargedate { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("entered_date")]
+        [Newtonsoft.Json.JsonProperty("entered_date")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
+        public DateTime? entered_date { get => chargedate; set { if (value.HasValue) chargedate = value; } }
+
+        [System.Text.Json.Serialization.JsonPropertyName("entereddate")]
+        [Newtonsoft.Json.JsonProperty("entereddate")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
+        public DateTime? entereddate { get => chargedate; set { if (value.HasValue) chargedate = value; } }
+
+        [System.Text.Json.Serialization.JsonPropertyName("entrydate")]
+        [Newtonsoft.Json.JsonProperty("entrydate")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
+        public DateTime? entrydate { get => chargedate; set { if (value.HasValue) chargedate = value; } }
+
+        [System.Text.Json.Serialization.JsonPropertyName("created_at")]
+        [Newtonsoft.Json.JsonProperty("created_at")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
+        public DateTime? created_at { get => chargedate; set { if (value.HasValue) chargedate = value; } }
+
         public int? tcode { get; set; }
         public double? quantity { get; set; }
         public double? rate { get; set; }
