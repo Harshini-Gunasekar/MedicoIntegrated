@@ -13,6 +13,9 @@
 @using Booking.Helpers
 @inject LabCare.Services.UserService UserService
 @using LIMS_Backend.Model
+@inject Booking.Services.AppointmentBookingService BookingService
+@inject Booking.Services.IpRegistrationService IpService
+@using medico_backend.Model
 
 <div class="bills-wrapper">
     <!-- Header -->
@@ -154,6 +157,30 @@
                 <button class="btn btn-outline" @onclick="PrintOverallConsolidatedReport" disabled="@isPrintingReport" title="Overall Consolidated Bill Report">
                     <i class="bi bi-receipt" style="color: #059669;"></i> Overall Consolidated Bill
                 </button>
+
+                <!-- Counts for OP, Dressing, Other Services, and IP for Selected Date Range -->
+                <div class="category-count-container">
+                    <div class="cat-count-pill pill-op" title="OP Consultation Count">
+                        <i class="bi bi-person-badge-fill"></i>
+                        <span>OP</span>
+                        <span class="cat-count-badge">@opCount</span>
+                    </div>
+                    <div class="cat-count-pill pill-dressing" title="Dressing Count">
+                        <i class="bi bi-bandaid-fill"></i>
+                        <span>Dressing</span>
+                        <span class="cat-count-badge">@dressingCount</span>
+                    </div>
+                    <div class="cat-count-pill pill-others" title="Services Count">
+                        <i class="bi bi-grid-fill"></i>
+                        <span>Services</span>
+                        <span class="cat-count-badge">@otherServicesCount</span>
+                    </div>
+                    <div class="cat-count-pill pill-ip" title="Inpatient (IP) Count">
+                        <i class="bi bi-hospital-fill"></i>
+                        <span>IP</span>
+                        <span class="cat-count-badge">@ipCount</span>
+                    </div>
+                </div>
             </div>
             <div class="filter-actions-right">
                 <button class="btn btn-primary-action" @onclick="LoadBillsAsync" disabled="@isLoading">
@@ -586,6 +613,12 @@
     private double TotalPaid => totalPaidAll;
     private double TotalBalance => totalBalanceAll;
 
+    // Service Category & IP Counts
+    private int opCount = 0;
+    private int dressingCount = 0;
+    private int otherServicesCount = 0;
+    private int ipCount = 0;
+
     private bool showDetailsModal = false;
     private bool showReportsModal = false;
     private bool isPrintingReport = false;
@@ -913,6 +946,160 @@
         StateHasChanged();
     }
 
+    private async Task LoadCategoryCountsAsync(List<HmsBillSummary> billedData)
+    {
+        try
+        {
+            if (billedData == null || !billedData.Any())
+            {
+                opCount = 0;
+                dressingCount = 0;
+                otherServicesCount = 0;
+                ipCount = 0;
+                return;
+            }
+
+            // Fetch OP Registrations to accurately classify OP bills into OP, Dressing, or Other Services
+            var opRegistrations = await BookingService.GetAllOpRegistrationsAsync() ?? new();
+
+            // Create fast lookups
+            var opByGuid = new Dictionary<string, OPRegistrationModel.OpRegistrationModel>(StringComparer.OrdinalIgnoreCase);
+            var opByNo = new Dictionary<string, OPRegistrationModel.OpRegistrationModel>(StringComparer.OrdinalIgnoreCase);
+            var opByCustDate = new Dictionary<string, OPRegistrationModel.OpRegistrationModel>();
+
+            foreach (var r in opRegistrations.Where(x => !x.isdeleted))
+            {
+                var opIdStr = r.op_id.ToString();
+                opByGuid[opIdStr] = r;
+
+                if (r.booking_id.HasValue)
+                {
+                    opByGuid[r.booking_id.Value.ToString()] = r;
+                }
+
+                if (!string.IsNullOrWhiteSpace(r.op_no))
+                {
+                    opByNo[r.op_no.Trim()] = r;
+                }
+
+                if (r.custid > 0)
+                {
+                    var key = $"{r.custid}_{r.visit_date:yyyyMMdd}";
+                    if (!opByCustDate.ContainsKey(key))
+                    {
+                        opByCustDate[key] = r;
+                    }
+                }
+            }
+
+            int op = 0;
+            int dressing = 0;
+            int others = 0;
+            int ip = 0;
+
+            foreach (var b in billedData)
+            {
+                // 1. IP Billed Check
+                if (b.ip_id.HasValue && b.ip_id.Value != Guid.Empty)
+                {
+                    ip++;
+                    continue;
+                }
+
+                // 2. OP Billed Categorization (OP, Dressing, Other Services)
+                OPRegistrationModel.OpRegistrationModel? matchedReg = null;
+
+                if (!string.IsNullOrWhiteSpace(b.opvisitid))
+                {
+                    var cleanId = b.opvisitid.Trim();
+                    if (opByGuid.TryGetValue(cleanId, out var reg1))
+                    {
+                        matchedReg = reg1;
+                    }
+                    else if (opByNo.TryGetValue(cleanId, out var reg2))
+                    {
+                        matchedReg = reg2;
+                    }
+                }
+
+                if (matchedReg == null && b.custid.HasValue && b.custid.Value > 0 && b.bill_date.HasValue)
+                {
+                    var custDateKey = $"{b.custid.Value}_{b.bill_date.Value:yyyyMMdd}";
+                    if (opByCustDate.TryGetValue(custDateKey, out var reg3))
+                    {
+                        matchedReg = reg3;
+                    }
+                }
+
+                if (matchedReg == null && b.custid.HasValue && b.custid.Value > 0)
+                {
+                    matchedReg = opRegistrations.FirstOrDefault(r => !r.isdeleted && r.custid == b.custid.Value);
+                }
+
+                if (matchedReg != null)
+                {
+                    var cat = GetOpRegistrationCategory(matchedReg);
+                    if (cat == "DRESSING")
+                    {
+                        dressing++;
+                    }
+                    else if (cat == "OTHERS")
+                    {
+                        others++;
+                    }
+                    else
+                    {
+                        op++;
+                    }
+                }
+                else
+                {
+                    // Default for non-IP bill without explicit dressing/other match is OP Consultation
+                    op++;
+                }
+            }
+
+            opCount = op;
+            dressingCount = dressing;
+            otherServicesCount = others;
+            ipCount = ip;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error calculating billed category counts: {ex.Message}");
+            opCount = 0;
+            dressingCount = 0;
+            otherServicesCount = 0;
+            ipCount = 0;
+        }
+    }
+
+    private string GetOpRegistrationCategory(OPRegistrationModel.OpRegistrationModel r)
+    {
+        // 1. Dressing
+        if (r.is_dressing)
+            return "DRESSING";
+        if (!string.IsNullOrEmpty(r.notes) && r.notes.Contains("Dressing", StringComparison.OrdinalIgnoreCase))
+            return "DRESSING";
+        if (!string.IsNullOrEmpty(r.service_name) && r.service_name.Contains("Dressing", StringComparison.OrdinalIgnoreCase))
+            return "DRESSING";
+
+        // 2. Other Services
+        if ((r.service_id.HasValue && r.service_id.Value > 0) || (r.serviceid.HasValue && r.serviceid.Value > 0))
+            return "OTHERS";
+        if (!string.IsNullOrEmpty(r.service_name) && 
+            !r.service_name.Contains("Consultation", StringComparison.OrdinalIgnoreCase) && 
+            !r.service_name.Equals("OP", StringComparison.OrdinalIgnoreCase))
+            return "OTHERS";
+        if (!string.IsNullOrEmpty(r.notes) && (r.notes.Contains("[OTHERS]", StringComparison.OrdinalIgnoreCase) || r.notes.Contains("[SERVICE_WALKIN]", StringComparison.OrdinalIgnoreCase)))
+            return "OTHERS";
+        if (!string.IsNullOrEmpty(r.reg_type) && r.reg_type.Equals("OTHERS", StringComparison.OrdinalIgnoreCase))
+            return "OTHERS";
+
+        // 3. OP Consultation (default)
+        return "OP";
+    }
+
     private async Task LoadAllRecordsTotalsAsync()
     {
         try
@@ -954,20 +1141,29 @@
                 totalNetAll = filteredData.Sum(b => b.net_amount ?? 0);
                 totalPaidAll = filteredData.Sum(b => b.paid_amount ?? 0);
                 totalBalanceAll = filteredData.Sum(b => b.balance_amount ?? 0);
+
+                await LoadCategoryCountsAsync(filteredData);
             }
             else
             {
                 totalNetAll = 0;
                 totalPaidAll = 0;
                 totalBalanceAll = 0;
+                opCount = 0;
+                dressingCount = 0;
+                otherServicesCount = 0;
+                ipCount = 0;
             }
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error calculating all records totals: {ex.Message}");
             totalNetAll = 0;
             totalPaidAll = 0;
             totalBalanceAll = 0;
+            opCount = 0;
+            dressingCount = 0;
+            otherServicesCount = 0;
+            ipCount = 0;
         }
     }
 
