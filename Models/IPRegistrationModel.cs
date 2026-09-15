@@ -91,7 +91,7 @@ namespace medico_backend.Model
             public int? department_code { get; set; }
             public string admission_type { get; set; } = "PLANNED";
             public string? admission_reason { get; set; }
-            public DateTime? admitdate { get; set; }
+            public DateTime? admitdate { get; set; } = DateTime.Today;
             public DateTime? expected_dischargedate { get; set; }
 
             public int? branchcode { get; set; }

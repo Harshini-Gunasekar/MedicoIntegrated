@@ -245,7 +245,7 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/list", request);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/billno/list", request);
                 if (response.IsSuccessStatusCode)
                 {
                     return await response.Content.ReadFromJsonAsync<BillNoListResponse>();
@@ -263,7 +263,7 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.GetAsync($"api/HmsBilling/billno/{bncode}");
+                var response = await GetClient().GetAsync($"api/HmsBilling/billno/{bncode}");
                 if (response.IsSuccessStatusCode)
                 {
                     return await response.Content.ReadFromJsonAsync<BillNoConfig>();
@@ -281,7 +281,7 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/create", model);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/billno/create", model);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 return rawResponse;
             }
@@ -296,7 +296,7 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/update", model);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/billno/update", model);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 return rawResponse;
             }
@@ -312,7 +312,7 @@ namespace Booking.Services
             try
             {
                 var payload = new BillNoDeleteRequest { bncode = bncode, usercode = usercode };
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/billno/delete", payload);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/billno/delete", payload);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"--- BillNo Delete Response (bncode={bncode}) ---");
                 Console.WriteLine(rawResponse);
