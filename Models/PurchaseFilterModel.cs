@@ -14,6 +14,8 @@ public class purchase_filter_result
     public string? paymentmode { get; set; }
     public string? paymentstatus { get; set; }
     public DateTime createddate { get; set; }
+    public string? chequeno { get; set; } 
+    public string? accountno { get; set; }
 }
 
 // ─── PURCHASE BULK STATUS UPDATE ──────────────────────────────────────────────
@@ -21,5 +23,8 @@ public class purchase_bulk_status_request
 {
     public List<long> purchasecodes { get; set; } = new();
     public string paymentstatus { get; set; } = string.Empty;
+    public string? paymentmode { get; set; }   // NEW
+    public string? chequeno { get; set; }      // NEW
+    public string? accountno { get; set; }     // NEW
     public long? usercode { get; set; }
-}  
+}
