@@ -337,6 +337,7 @@ namespace medico_backend.Model
 
     public class SaveOtAnesthesiaRequest
     {
+        public Guid? anesthesia_id { get; set; }
         public Guid request_id { get; set; }
         public decimal custid { get; set; }
         public string? anesthesia_type { get; set; }
@@ -377,6 +378,7 @@ namespace medico_backend.Model
 
     public class SaveOtIntraOpRequest
     {
+        public Guid? intraop_id { get; set; }
         public Guid request_id { get; set; }
         public decimal custid { get; set; }
         public string? procedure_performed { get; set; }

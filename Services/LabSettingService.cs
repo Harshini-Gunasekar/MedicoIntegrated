@@ -13,7 +13,6 @@ namespace Booking.Services
         private readonly HttpClient _http;
         public static bool? ShowAllCustomersCache { get; set; }
         public static bool? IsSlotRequiredCache { get; set; }
-        public static bool? OpAgeWiseSplitCache { get; set; }
         public static bool? CriticalValueIndicationCache { get; set; }
         public static bool? ShowPhysicalBillCache { get; set; }
 
@@ -62,18 +61,9 @@ namespace Booking.Services
                     IsSlotRequiredCache = true;
                 }
 
-                if (OpAgeWiseSplitCache.HasValue)
-                {
-                    setting.op_age_wise_split = OpAgeWiseSplitCache.Value;
-                }
-                else if (setting.op_age_wise_split.HasValue)
-                {
-                    OpAgeWiseSplitCache = setting.op_age_wise_split.Value;
-                }
-                else
+                if (!setting.op_age_wise_split.HasValue)
                 {
                     setting.op_age_wise_split = false;
-                    OpAgeWiseSplitCache = false;
                 }
 
                 if (CriticalValueIndicationCache.HasValue)
@@ -118,10 +108,7 @@ namespace Booking.Services
                 {
                     fallback.is_slot_required = IsSlotRequiredCache.Value;
                 }
-                if (OpAgeWiseSplitCache.HasValue)
-                {
-                    fallback.op_age_wise_split = OpAgeWiseSplitCache.Value;
-                }
+                fallback.op_age_wise_split = false;
                 if (CriticalValueIndicationCache.HasValue)
                 {
                     fallback.critical_value_indication = CriticalValueIndicationCache.Value;
@@ -163,10 +150,6 @@ namespace Booking.Services
                 {
                     IsSlotRequiredCache = model.is_slot_required.Value;
                 }
-                if (model.op_age_wise_split.HasValue)
-                {
-                    OpAgeWiseSplitCache = model.op_age_wise_split.Value;
-                }
                 if (model.critical_value_indication.HasValue)
                 {
                     CriticalValueIndicationCache = model.critical_value_indication.Value;
@@ -203,10 +186,6 @@ namespace Booking.Services
                 if (model.is_slot_required.HasValue)
                 {
                     IsSlotRequiredCache = model.is_slot_required.Value;
-                }
-                if (model.op_age_wise_split.HasValue)
-                {
-                    OpAgeWiseSplitCache = model.op_age_wise_split.Value;
                 }
                 if (model.critical_value_indication.HasValue)
                 {

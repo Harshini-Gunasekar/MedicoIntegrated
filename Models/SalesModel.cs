@@ -23,9 +23,15 @@
 
      public string? patientname { get; set; }    // Patient Name
 
+     public string? customername { get; set; }   // Customer / Patient Name Alias
+
      public string? address { get; set; }        // Patient Address
 
      public string? consultant { get; set; }     // Consultant Name
+
+    public int? prescribeddays { get; set; }   // total days prescribed by doctor
+    
+    public int? converteddays { get; set; }
 
      public decimal grossamount { get; set; }
 
@@ -71,6 +77,10 @@
 
      public long itemcode { get; set; }
 
+    public string? itemname { get; set; }
+
+     public int? days { get; set; }
+
      public decimal quantity { get; set; }
 
      public decimal freequantity { get; set; }
@@ -100,6 +110,8 @@
      // Sales Specific
 
      public decimal soldqty { get; set; }
+
+     public decimal packsize { get; set; } = 1;
 
      public long? warehousecode { get; set; }
 

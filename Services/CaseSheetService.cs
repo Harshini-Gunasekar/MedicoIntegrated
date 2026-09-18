@@ -213,14 +213,15 @@ namespace Booking.Services
                     {
                         // Fallback in case of wrapper
                         var wrapper = await response.Content.ReadFromJsonAsync<HistoryResponseWrapper>();
-                        if (wrapper?.items != null)
+                        var wrapperItems = wrapper?.items ?? wrapper?.value ?? wrapper?.data;
+                        if (wrapperItems != null)
                         {
-                            foreach (var item in wrapper.items)
+                            foreach (var item in wrapperItems)
                             {
                                 AdjustViewModelDatesToIst(item);
                             }
                         }
-                        return wrapper?.items ?? new List<CaseSheetViewModel>();
+                        return wrapperItems ?? new List<CaseSheetViewModel>();
                     }
                 }
                 return new List<CaseSheetViewModel>();
@@ -569,8 +570,11 @@ namespace Booking.Services
         // Helper class to deserialize paginated histories if wrapped
         private class HistoryResponseWrapper
         {
-            public List<CaseSheetViewModel> items { get; set; } = new();
+            public List<CaseSheetViewModel>? items { get; set; }
+            public List<CaseSheetViewModel>? value { get; set; }
+            public List<CaseSheetViewModel>? data { get; set; }
             public int totalCount { get; set; }
+            public int Count { get; set; }
         }
     }
 }

@@ -20,6 +20,7 @@ public class PharmacyPrescriptionQueueRow
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public string? duration { get; set; }
     public string? route { get; set; }
     public string? notes { get; set; }
 
@@ -51,6 +52,7 @@ public class PrescriptionQueueItem
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public string? duration { get; set; }
     public string? route { get; set; }
     public string? notes { get; set; }
 }

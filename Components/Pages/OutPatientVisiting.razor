@@ -66,10 +66,6 @@
                 <i class="bi bi-person-plus-fill" style="color: #026aa7;"></i>
                 <span>Quick Register</span>
             </button>
-            <a href="@(!string.IsNullOrEmpty(TenantState?.TenantCode) ? $"/op-token-display?tenant_code={Uri.EscapeDataString(TenantState.TenantCode)}" : "/op-token-display")" target="_blank" class="btn-header-action secondary" title="Open Live OP Token Display Signage in new tab" style="height: 38px; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; background: #eff6ff; color: #0284c7; border: 1px solid #bae6fd; font-weight: 700;">
-                <i class="bi bi-display" style="color: #0284c7;"></i>
-                <span>OP Token Display</span>
-            </a>
             <button class="btn-header-action secondary" @onclick="LoadDataAsync" disabled="@loading" style="height: 38px;">
                 @if (loading)
                 {
@@ -139,7 +135,7 @@
                 </div>
                 <div class="filter-group filter-status-group">
                     <label>Status</label>
-                    <select class="filter-control" @bind="filterStatus" @bind:after="ApplyFilters">
+                    <select class="filter-control" @bind="filterStatus" @bind:after="OnStatusFilterChanged">
                         <option value="ALL">All Statuses</option>
                         <option value="UNREGISTERED">Unregistered</option>
                         <option value="WAITING">Waiting</option>
@@ -1391,14 +1387,6 @@
                 </div>
 
                 <div class="form-group">
-                    <label class="walkin-label-bold">DEPARTMENT</label>
-                    <select class="walkin-input" @bind="directWalkinRequest.department_code">
-                        <option value="5">General OPD (5)</option>
-                        <option value="3">Specialty OPD (3)</option>
-                    </select>
-                </div>
-
-                <div class="form-group">
                     <label class="walkin-label-bold">VISIT TYPE</label>
                     <select class="walkin-input" @bind="directWalkinRequest.visit_type">
                         <option value="NEWVISIT">New Visit</option>
@@ -1870,18 +1858,19 @@
 
     // Filter states
     private DateTime? filterDate = DateTime.UtcNow.ToIndianTime().Date;
-    private string filterStatus = "ALL";
+    private string filterStatus = "WAITING";
     private int filterDoctor = 0;
     private string filterType = "ALL";
     private string filterSlot = "ALL";
     private string filterSearch = string.Empty;
-    // Pagination Toggle state (true: Paginated, false: Show All) - Default is OFF (Show All)
-    private bool enablePagination = false;
+    // Pagination Toggle state (true: Paginated, false: Show All) - Default is ON (10/Page)
+    private bool enablePagination = true;
 
     private void TogglePagination()
     {
         enablePagination = !enablePagination;
         currentPage = 1;
+        _ = SavePaginationFilterAsync(enablePagination);
     }
 
     // Actions dropdown state
@@ -2135,6 +2124,7 @@
     {
         sortFirstCreatedFirst = !sortFirstCreatedFirst;
         ApplyFilters();
+        _ = SaveQueueOrderFilterAsync(sortFirstCreatedFirst);
     }
 
     private string selectedCategoryFilter = "OP"; // "OP", "DRESSING", "OTHERS", "ALL"
@@ -2199,13 +2189,142 @@
         _ = SaveCategoryFilterAsync(category);
     }
 
+    private async Task<string> GetEffectiveTenantCodeAsync()
+    {
+        string tenant = TenantState?.TenantCode ?? "";
+        if (string.IsNullOrWhiteSpace(tenant))
+        {
+            try
+            {
+                var tenantRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (tenantRes.Success && !string.IsNullOrWhiteSpace(tenantRes.Value))
+                {
+                    tenant = tenantRes.Value;
+                }
+            }
+            catch { }
+        }
+        return string.IsNullOrWhiteSpace(tenant) ? "default" : tenant.Trim();
+    }
+
+    private async Task SaveStatusFilterAsync(string status)
+    {
+        try
+        {
+            var tenant = await GetEffectiveTenantCodeAsync();
+            await _sessionStorage.SetAsync($"op_visiting_status_{tenant}", status);
+            await _sessionStorage.SetAsync("op_visiting_status", status);
+        }
+        catch { }
+    }
+
+    private async Task SaveQueueOrderFilterAsync(bool queueOrder)
+    {
+        try
+        {
+            var tenant = await GetEffectiveTenantCodeAsync();
+            await _sessionStorage.SetAsync($"op_visiting_queue_order_{tenant}", queueOrder);
+            await _sessionStorage.SetAsync("op_visiting_queue_order", queueOrder);
+        }
+        catch { }
+    }
+
+    private async Task SavePaginationFilterAsync(bool pagination)
+    {
+        try
+        {
+            var tenant = await GetEffectiveTenantCodeAsync();
+            await _sessionStorage.SetAsync($"op_visiting_pagination_{tenant}", pagination);
+            await _sessionStorage.SetAsync("op_visiting_pagination", pagination);
+        }
+        catch { }
+    }
+
     private async Task SaveCategoryFilterAsync(string category)
     {
         try
         {
+            var tenant = await GetEffectiveTenantCodeAsync();
+            await _sessionStorage.SetAsync($"op_visiting_category_filter_{tenant}", category);
             await _sessionStorage.SetAsync("op_visiting_category_filter", category);
         }
         catch { }
+    }
+
+    private async Task<bool> LoadStoredPreferencesAsync()
+    {
+        bool changed = false;
+        try
+        {
+            var tenant = await GetEffectiveTenantCodeAsync();
+
+            // 1. Status Filter
+            try
+            {
+                var statusRes = await _sessionStorage.GetAsync<string>($"op_visiting_status_{tenant}");
+                if (!statusRes.Success || string.IsNullOrEmpty(statusRes.Value))
+                {
+                    statusRes = await _sessionStorage.GetAsync<string>("op_visiting_status");
+                }
+                if (statusRes.Success && !string.IsNullOrEmpty(statusRes.Value) && statusRes.Value != filterStatus)
+                {
+                    filterStatus = statusRes.Value;
+                    changed = true;
+                }
+            }
+            catch { }
+
+            // 2. Queue Order
+            try
+            {
+                var queueOrderRes = await _sessionStorage.GetAsync<bool>($"op_visiting_queue_order_{tenant}");
+                if (!queueOrderRes.Success)
+                {
+                    queueOrderRes = await _sessionStorage.GetAsync<bool>("op_visiting_queue_order");
+                }
+                if (queueOrderRes.Success && queueOrderRes.Value != sortFirstCreatedFirst)
+                {
+                    sortFirstCreatedFirst = queueOrderRes.Value;
+                    changed = true;
+                }
+            }
+            catch { }
+
+            // 3. Pagination
+            try
+            {
+                var paginationRes = await _sessionStorage.GetAsync<bool>($"op_visiting_pagination_{tenant}");
+                if (!paginationRes.Success)
+                {
+                    paginationRes = await _sessionStorage.GetAsync<bool>("op_visiting_pagination");
+                }
+                if (paginationRes.Success && paginationRes.Value != enablePagination)
+                {
+                    enablePagination = paginationRes.Value;
+                    changed = true;
+                }
+            }
+            catch { }
+
+            // 4. Category Filter
+            try
+            {
+                var catRes = await _sessionStorage.GetAsync<string>($"op_visiting_category_filter_{tenant}");
+                if (!catRes.Success || string.IsNullOrEmpty(catRes.Value))
+                {
+                    catRes = await _sessionStorage.GetAsync<string>("op_visiting_category_filter");
+                }
+                if (catRes.Success && !string.IsNullOrEmpty(catRes.Value) && catRes.Value != selectedCategoryFilter)
+                {
+                    selectedCategoryFilter = catRes.Value;
+                    changed = true;
+                }
+            }
+            catch { }
+        }
+        catch { }
+
+        return changed;
     }
 
     private int GetCategoryCount(string category)
@@ -2230,14 +2349,19 @@
     {
         filterDate = DateTime.UtcNow.ToIndianTime().Date;
         filterDoctor = 0;
-        filterStatus = "ALL";
+        filterStatus = "WAITING";
         filterType = "ALL";
         filterSlot = "ALL";
         filterSearch = string.Empty;
         selectedCategoryFilter = "OP";
         showCategoryDropdown = false;
         sortFirstCreatedFirst = true;
-        _ = _sessionStorage.SetAsync("op_visiting_category_filter", "OP");
+        enablePagination = true;
+        currentPage = 1;
+        _ = SaveStatusFilterAsync("WAITING");
+        _ = SaveQueueOrderFilterAsync(true);
+        _ = SavePaginationFilterAsync(true);
+        _ = SaveCategoryFilterAsync("OP");
         ApplyFilters();
     }
 
@@ -2277,25 +2401,7 @@
             }
             catch { }
 
-            try
-            {
-                var opSplitRes = await _sessionStorage.GetAsync<bool>("ls_op_age_wise_split");
-                if (opSplitRes.Success)
-                {
-                    LabSettingService.OpAgeWiseSplitCache = opSplitRes.Value;
-                }
-            }
-            catch { }
-
-            try
-            {
-                var catRes = await _sessionStorage.GetAsync<string>("op_visiting_category_filter");
-                if (catRes.Success && !string.IsNullOrEmpty(catRes.Value))
-                {
-                    selectedCategoryFilter = catRes.Value;
-                }
-            }
-            catch { }
+            await LoadStoredPreferencesAsync();
 
             labSetting = await LabSettingService.GetLabSettingAsync() ?? new LabSettingModel();
         }
@@ -2314,10 +2420,9 @@
         {
             try
             {
-                var catRes = await _sessionStorage.GetAsync<string>("op_visiting_category_filter");
-                if (catRes.Success && !string.IsNullOrEmpty(catRes.Value) && catRes.Value != selectedCategoryFilter)
+                var changed = await LoadStoredPreferencesAsync();
+                if (changed)
                 {
-                    selectedCategoryFilter = catRes.Value;
                     ApplyFilters();
                     StateHasChanged();
                 }
@@ -2406,11 +2511,19 @@
         }
     }
 
+    private void OnStatusFilterChanged()
+    {
+        currentPage = 1;
+        ApplyFilters();
+        _ = SaveStatusFilterAsync(filterStatus);
+    }
+
     private void SetStatusFilter(string status)
     {
         filterStatus = status;
         currentPage = 1;
         ApplyFilters();
+        _ = SaveStatusFilterAsync(status);
     }
 
     private void ApplyFilters()
@@ -2468,6 +2581,13 @@
             if (filterStatus == "UNREGISTERED")
             {
                 list = list.Where(b => !opRegistrations.ContainsKey(b.booking_id)).ToList();
+            }
+            else if (filterStatus == "WAITING")
+            {
+                list = list.Where(b => 
+                    opRegistrations.TryGetValue(b.booking_id, out var op) && 
+                    (string.IsNullOrEmpty(op?.visit_status) || op.visit_status.Equals("WAITING", StringComparison.OrdinalIgnoreCase))
+                ).ToList();
             }
             else
             {

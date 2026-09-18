@@ -277,6 +277,7 @@ namespace medico_backend.Model
         {
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
+            public DateTime? entry_date { get; set; }
             public string shift { get; set; } = "MORNING";
             public string doctor_name { get; set; } = string.Empty;
             public string? specialization { get; set; }
@@ -289,6 +290,7 @@ namespace medico_backend.Model
         public class UpdateVisitingDoctorRequest
         {
             public Guid visit_id { get; set; }
+            public DateTime? entry_date { get; set; }
             public string shift { get; set; } = "MORNING";
             public string doctor_name { get; set; } = string.Empty;
             public string? specialization { get; set; }
