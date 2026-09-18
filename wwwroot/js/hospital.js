@@ -223,13 +223,44 @@ document.addEventListener('keydown', function (e) {
         }
     }
 
-    // Find the closest container card/modal/form section for scoped navigation
+    // Selector for focusable input controls
+    const selector = 'input:not([type="hidden"]):not([readonly]):not([disabled]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), select:not([disabled]), textarea:not([disabled]), button.btn-save, button.btn-save-customer, button.btn-primary-custom, button.btn-submit, button.btn-add-item, button.btn-add-medicine-dashed';
+
+    // 1. Table Row Scoped Enter Navigation (for Nurse Notes spreadsheet & inline edit/new rows)
+    const row = target.closest('tr.table-inline-entry-row, tr.active-new-row, tr.is-inline-editing, tr.lc-table-row, tr');
+    if (row) {
+        const rowInputs = Array.from(row.querySelectorAll(selector)).filter(el => {
+            return el.offsetWidth > 0 && el.offsetHeight > 0 && window.getComputedStyle(el).visibility !== 'hidden';
+        });
+
+        const rIndex = rowInputs.indexOf(target);
+        if (rIndex > -1) {
+            if (rIndex < rowInputs.length - 1) {
+                // Move to next field in the row
+                e.preventDefault();
+                e.stopPropagation();
+
+                const nextEl = rowInputs[rIndex + 1];
+                nextEl.focus();
+
+                if (typeof nextEl.select === 'function' && nextEl.tagName === 'INPUT' && nextEl.type !== 'date' && nextEl.type !== 'time' && nextEl.type !== 'datetime-local') {
+                    try {
+                        nextEl.select();
+                    } catch (ex) { }
+                }
+                return;
+            } else {
+                // Reached the LAST field in the row -> Let Blazor's @onkeydown on the field handle the save.
+                // Do NOT trigger saveBtn.click() here to avoid duplicate concurrent save execution.
+                return;
+            }
+        }
+    }
+
+    // 2. Fallback to Form/Modal Scoped Container Navigation
     const container = target.closest(
         '.casesheet-modal, .casesheet-backdrop, .casesheet-body, .notes-tab-form, .vitals-tab-form, .symptoms-tab-form, .diagnosis-tab-form, .prescription-tab-form, .investigation-tab-form, .tab-content, .modal-overlay, .modal-form-card, .modal-dialog-custom, .modal-content, .modal-body, .glass-modal, .large-modal-custom, .form-grid-layout, .filter-card, .dashboard-container, .referral-page, form'
     ) || document.body;
-
-    // Selector for focusable input controls
-    const selector = 'input:not([type="hidden"]):not([readonly]):not([disabled]):not([type="file"]):not([type="checkbox"]):not([type="radio"]), select:not([disabled]), textarea:not([disabled]), button.btn-save, button.btn-save-customer, button.btn-primary-custom, button.btn-submit, button.btn-add-item, button.btn-add-medicine-dashed';
 
     const focusables = Array.from(container.querySelectorAll(selector)).filter(el => {
         return el.offsetWidth > 0 && el.offsetHeight > 0 && window.getComputedStyle(el).visibility !== 'hidden';
