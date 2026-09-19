@@ -233,7 +233,7 @@
             </div>
 
             <div class="modal-inner">
-                <EditForm Model="CurrentRequest" OnValidSubmit="SaveIndent" autocomplete="off">
+                <EditForm Model="CurrentRequest" OnValidSubmit="SaveIndent" autocomplete="off" onkeydown="if(event.key==='Enter' && event.target.tagName==='INPUT' && event.target.type!=='submit'){event.preventDefault();}">
                     <DataAnnotationsValidator />
                     <div class="modal-scroll-area" style="overflow-x: hidden; padding: 0 10px 20px 0;">
                         
@@ -245,7 +245,7 @@
                         <div class="form-grid">
                             <div class="field-group col-4">
                                 <label class="field-label">Indent Number</label>
-                                <InputText class="form-control premium-input" @bind-Value="CurrentRequest.master.indentno" placeholder="Auto-generated if empty" />
+                                <InputText class="form-control premium-input" @bind-Value="CurrentRequest.master.indentno" />
                             </div>
                             <div class="field-group col-4">
                                 <label class="field-label required">Indent Date</label>
@@ -301,7 +301,8 @@
                                                        value="@(ItemSearchTexts.GetValueOrDefault(searchKey, ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode)?.itemname ?? ""))"
                                                        @oninput="@(e => OnItemTypeaheadInput(e, detail, searchKey))"
                                                        @onfocus="@(() => ActiveItemSearchRow = index)"
-                                                       @onblur="OnSearchBlur" />
+                                                       @onblur="OnSearchBlur"
+                                                       @onkeydown="@(async e => await HandleItemKeyDown(e, detail, index, searchKey))" />
 
                                                 @if (ActiveItemSearchRow == index)
                                                 {
@@ -316,7 +317,7 @@
                                                             @foreach (var item in filteredItems)
                                                             {
                                                                 <div class="custom-typeahead-item" 
-                                                                     @onmousedown="@(() => SelectItemFromDropdown(detail, item, searchKey))">
+                                                                     @onmousedown="@(async () => await SelectItemFromDropdown(detail, item, searchKey))">
                                                                     @item.itemname
                                                                 </div>
                                                             }
@@ -325,15 +326,21 @@
                                                 }
                                             </td>
                                             <td style="padding: 0; text-align: center; width: 150px;">
-                                                <input type="number" class="purchase-item-input text-center" @bind="detail.requestedqty" />
+                                                <input id="qty-@index"
+                                                       type="number"
+                                                       min="0"
+                                                       step="any"
+                                                       class="purchase-item-input text-center"
+                                                       @bind:get="GetRequestedQty(detail)"
+                                                       @bind:set="(val) => SetRequestedQty(detail, val)"
+                                                       @bind:event="oninput"
+                                                       placeholder="0"
+                                                       @onkeydown="@(async e => await HandleQtyKeyDown(e, index))" />
                                             </td>
                                             <td style="padding: 0; text-align: center; width: 80px; vertical-align: middle;">
-                                                @if (CurrentRequest.details.Count > 1)
-                                                {
-                                                    <button type="button" class="btn btn-outline-danger btn-sm" style="border-radius: 6px; padding: 4px 8px; border: none; background: rgba(239, 68, 68, 0.08); color: #dc2626; margin: 0 auto; display: block;" @onclick="() => RemoveDetailRow(detail)" title="Delete">
-                                                        <i class="bi bi-trash"></i>
-                                                    </button>
-                                                }
+                                                <button type="button" class="btn btn-outline-danger btn-sm" style="border-radius: 6px; padding: 4px 8px; border: none; background: rgba(239, 68, 68, 0.08); color: #dc2626; margin: 0 auto; display: block;" @onclick="() => RemoveDetailRow(detail)" title="Delete">
+                                                    <i class="bi bi-trash"></i>
+                                                </button>
                                             </td>
                                         </tr>
                                     }
@@ -822,12 +829,73 @@
         StateHasChanged();
     }
 
-    private void SelectItemFromDropdown(indent_detail detail, inventory_item_master item, int searchKey)
+    private decimal? GetRequestedQty(indent_detail detail) => detail.requestedqty == 0 ? null : detail.requestedqty;
+    private void SetRequestedQty(indent_detail detail, decimal? val)
+    {
+        detail.requestedqty = val ?? 0;
+    }
+
+    private async Task HandleItemKeyDown(KeyboardEventArgs e, indent_detail detail, int index, int searchKey)
+    {
+        if (e.Key == "Enter" || e.Key == "Tab")
+        {
+            var searchText = ItemSearchTexts.GetValueOrDefault(searchKey, "");
+            if (detail.itemcode == 0 && !string.IsNullOrWhiteSpace(searchText))
+            {
+                var matched = ItemList.FirstOrDefault(i =>
+                    string.Equals(i.itemname, searchText, StringComparison.OrdinalIgnoreCase) ||
+                    (i.itemname != null && i.itemname.StartsWith(searchText, StringComparison.OrdinalIgnoreCase)));
+                if (matched != null)
+                {
+                    await SelectItemFromDropdown(detail, matched, searchKey);
+                    return;
+                }
+            }
+            ActiveItemSearchRow = null;
+            try
+            {
+                await JS.InvokeVoidAsync("focusElement", $"qty-{index}");
+            }
+            catch { }
+        }
+    }
+
+    private async Task HandleQtyKeyDown(KeyboardEventArgs e, int index)
+    {
+        if (e.Key == "Enter" || e.Key == "Tab")
+        {
+            int nextRow = index + 1;
+            if (nextRow >= CurrentRequest.details.Count)
+            {
+                AddDetailRow();
+                StateHasChanged();
+            }
+            try
+            {
+                await JS.InvokeVoidAsync("focusElement", $"item-input-{nextRow}");
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HandleQtyKeyDown] Error focusing element: {ex.Message}");
+            }
+        }
+    }
+
+    private async Task SelectItemFromDropdown(indent_detail detail, inventory_item_master item, int searchKey)
     {
         detail.itemcode = item.itemcode;
         ItemSearchTexts[searchKey] = item.itemname ?? "";
         ActiveItemSearchRow = null;
         StateHasChanged();
+        var index = CurrentRequest.details.IndexOf(detail);
+        if (index >= 0)
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("focusElement", $"qty-{index}");
+            }
+            catch { }
+        }
     }
 
     private void AddDetailRow()
@@ -840,6 +908,10 @@
         var searchKey = detail.GetHashCode();
         ItemSearchTexts.Remove(searchKey);
         CurrentRequest.details.Remove(detail);
+        if (!CurrentRequest.details.Any())
+        {
+            AddDetailRow();
+        }
     }
 
     private async Task SaveIndent()

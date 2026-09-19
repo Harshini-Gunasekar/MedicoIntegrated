@@ -175,10 +175,14 @@ namespace Booking.Models
         public bool salesallow { get; set; } = false;
         public bool isdoctor_room { get; set; } = false;
         public bool isdoctorroom { get => isdoctor_room; set => isdoctor_room = value; }
-    public string? druglicenseno { get; set; }
-     public string? pharmacyregistrationno { get; set; }
-     public string? gstno { get; set; }
-     public string? msmeno { get; set; }
+        public bool isdoctorallowed { get => isdoctor_room; set => isdoctor_room = value; }
+        public bool isdoctor_allowed { get => isdoctor_room; set => isdoctor_room = value; }
+        public bool is_doctor_room { get => isdoctor_room; set => isdoctor_room = value; }
+        public bool doctorroom { get => isdoctor_room; set => isdoctor_room = value; }
+        public string? druglicenseno { get; set; }
+        public string? pharmacyregistrationno { get; set; }
+        public string? gstno { get; set; }
+        public string? msmeno { get; set; }
     }
 
     public class item_master

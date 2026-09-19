@@ -214,7 +214,7 @@
             </div>
 
             <div class="modal-inner">
-                <EditForm Model="CurrentRequest" OnValidSubmit="SaveApproval" autocomplete="off">
+                <EditForm Model="CurrentRequest" OnValidSubmit="SaveApproval" autocomplete="off" onkeydown="if(event.key==='Enter' && event.target.tagName==='INPUT' && event.target.type!=='submit'){event.preventDefault();}">
                     <DataAnnotationsValidator />
                     <div class="modal-scroll-area" style="overflow-x: hidden; padding: 0 10px 20px 0;">
                         @if (IsPartialIssueCase)
@@ -269,11 +269,11 @@
                                 </select>
                             </div>
                             <div class="field-group col-3">
-                                <label class="field-label required">Approved By ID</label>
-                                <InputNumber class="form-control premium-input" @bind-Value="CurrentRequest.master.approvedby" placeholder="Approver ID" disabled="@(string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))" />
+                                <label class="field-label">Approved By</label>
+                                <input type="text" class="form-control premium-input" value="@(string.IsNullOrWhiteSpace(LoggedInUserName) ? "Administrator" : LoggedInUserName)" readonly disabled="@(string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))" />
                             </div>
                             <div class="field-group col-3">
-                                <label class="field-label required">Approved Date</label>
+                                <label class="field-label">Approved Date</label>
                                 <InputDate class="form-control premium-input" @bind-Value="CurrentRequest.master.approveddate" disabled="@(string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))" />
                             </div>
                             <div class="field-group col-3">
@@ -312,10 +312,28 @@
                                                 @detail.requestedqty
                                             </td>
                                             <td style="padding: 0; text-align: center; width: 120px;">
-                                                <input type="number" class="purchase-item-input text-center" @bind="detail.approvedqty" @bind:event="oninput" />
+                                                <input id="approvedqty-@index"
+                                                       type="number"
+                                                       min="0"
+                                                       step="any"
+                                                       class="purchase-item-input text-center"
+                                                       @bind:get="GetApprovedQty(detail)"
+                                                       @bind:set="(val) => SetApprovedQty(detail, val)"
+                                                       @bind:event="oninput"
+                                                       placeholder="0"
+                                                       @onkeydown="@(async e => await HandleApprovedQtyKeyDown(e, index))" />
                                             </td>
                                             <td style="padding: 0; text-align: center; width: 120px;">
-                                                <input type="number" class="purchase-item-input text-center" @bind="detail.issuedqty" @bind:event="oninput" />
+                                                <input id="issuedqty-@index"
+                                                       type="number"
+                                                       min="0"
+                                                       step="any"
+                                                       class="purchase-item-input text-center"
+                                                       @bind:get="GetIssuedQty(detail)"
+                                                       @bind:set="(val) => SetIssuedQty(detail, val)"
+                                                       @bind:event="oninput"
+                                                       placeholder="0"
+                                                       @onkeydown="@(async e => await HandleIssuedQtyKeyDown(e, index))" />
                                             </td>
                                         </tr>
                                     }
@@ -358,6 +376,8 @@
     private bool IsCardView = false;
     
     private string DefaultTenant = "";
+    private string LoggedInUserName = "";
+    private long? LoggedInUserCode = null;
     private int CurrentPage = 1;
     private int ItemsPerPage => IsCardView ? 6 : 12;
 
@@ -435,6 +455,8 @@
                     var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
                     if (userResult.Success && userResult.Value != null)
                     {
+                        LoggedInUserName = userResult.Value.UserName ?? "";
+                        LoggedInUserCode = userResult.Value.UserCode;
                         isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
                                   userResult.Value.UserCode == 0 ||
                                   userResult.Value.UserCode == 1;
@@ -668,9 +690,9 @@
                 var isAlreadyApproved = string.Equals(CurrentRequest.master.approvalstatus, "APPROVED", StringComparison.OrdinalIgnoreCase);
                 if (!isAlreadyApproved)
                 {
-                    CurrentRequest.master.approvalstatus = "";
+                    CurrentRequest.master.approvalstatus = "APPROVED";
                 }
-                CurrentRequest.master.approvedby ??= 101;
+                CurrentRequest.master.approvedby = (LoggedInUserCode.HasValue && LoggedInUserCode.Value > 0) ? LoggedInUserCode.Value : (CurrentRequest.master.approvedby ?? 101);
                 CurrentRequest.master.approveddate ??= DateTime.Now;
                 
                 // Default approved and issued quantities to 0 so they are typed by the approver ONLY if new approval
@@ -694,6 +716,10 @@
                 return;
             }
             ShowModal = true;
+            if (CurrentRequest.details != null && CurrentRequest.details.Any())
+            {
+                _ = JS.InvokeVoidAsync("focusElement", "approvedqty-0");
+            }
         } 
         catch (Exception ex) 
         {
@@ -702,6 +728,50 @@
         finally
         {
             IsLoading = false;
+        }
+    }
+
+    private decimal? GetApprovedQty(indent_detail detail) => detail.approvedqty == 0 ? null : detail.approvedqty;
+    private void SetApprovedQty(indent_detail detail, decimal? val)
+    {
+        detail.approvedqty = val ?? 0;
+    }
+
+    private decimal? GetIssuedQty(indent_detail detail) => detail.issuedqty == 0 ? null : detail.issuedqty;
+    private void SetIssuedQty(indent_detail detail, decimal? val)
+    {
+        detail.issuedqty = val ?? 0;
+    }
+
+    private async Task HandleApprovedQtyKeyDown(KeyboardEventArgs e, int index)
+    {
+        if (e.Key == "Enter" || e.Key == "Tab")
+        {
+            try
+            {
+                await JS.InvokeVoidAsync("focusElement", $"issuedqty-{index}");
+            }
+            catch { }
+        }
+    }
+
+    private async Task HandleIssuedQtyKeyDown(KeyboardEventArgs e, int index)
+    {
+        if (e.Key == "Enter")
+        {
+            int nextIndex = index + 1;
+            if (CurrentRequest.details != null && nextIndex < CurrentRequest.details.Count)
+            {
+                try
+                {
+                    await JS.InvokeVoidAsync("focusElement", $"approvedqty-{nextIndex}");
+                }
+                catch { }
+            }
+            else
+            {
+                await SaveApproval();
+            }
         }
     }
 
@@ -786,8 +856,7 @@
         }
         if (string.IsNullOrEmpty(CurrentRequest.master.approvalstatus))
         {
-            ToastService.ShowWarning("Please select an Approval Status decision.");
-            return;
+            CurrentRequest.master.approvalstatus = "APPROVED";
         }
 
         IsSaving = true;

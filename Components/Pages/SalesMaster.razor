@@ -2292,10 +2292,6 @@
             {
                 detail.rate = stock.mrpunit;
             }
-            if (detail.quantity <= 0)
-            {
-                detail.quantity = 1;
-            }
             if (detail.expirydate.HasValue && detail.expirydate.Value.Date < DateTime.Today)
             {
                 var itemName = matchedItem?.itemname ?? "Item";
@@ -2347,10 +2343,6 @@
                     ItemSearchTexts[detail] = itemName;
                 }
             }
-            if (detail.quantity <= 0)
-            {
-                detail.quantity = 1;
-            }
         }
         else
         {
@@ -2400,10 +2392,6 @@
                         ItemSearchTexts[detail] = itemName;
                     }
                 }
-                if (detail.quantity <= 0)
-                {
-                    detail.quantity = 1;
-                }
                 CalculateRow(detail);
 
                 if (detail.expirydate.HasValue && detail.expirydate.Value.Date < DateTime.Today)
@@ -2440,10 +2428,6 @@
             {
                 ItemSearchTexts[detail] = itemName;
             }
-        }
-        if (detail.quantity <= 0)
-        {
-            detail.quantity = 1;
         }
         ActiveBatchSearchRow = null;
         CalculateRow(detail);
@@ -2537,10 +2521,20 @@
                 nextRow = rowIndex + 1;
                 // If next row doesn't exist, add one
                 if (nextRow >= CurrentRequest.details.Count)
+                {
                     AddDetailRow();
+                    StateHasChanged();
+                }
             }
             var targetId = $"{_rowFieldPrefixes[nextField]}-{nextRow}";
-            await JS.InvokeVoidAsync("focusElement", targetId);
+            try
+            {
+                await JS.InvokeVoidAsync("focusElement", targetId);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HandleRowKeyDown] Error focusing element '{targetId}': {ex.Message}");
+            }
         }
     }
 
@@ -2584,6 +2578,16 @@
                 var dailyQty = detail.quantity / (decimal)detail.days.Value;
                 _originalPrescriptionMap[detail] = (detail.quantity, detail.days.Value);
                 detail.quantity = Math.Round(dailyQty * (decimal)days, 2);
+            }
+            else if (detail.quantity > 0)
+            {
+                _originalPrescriptionMap[detail] = (detail.quantity, days);
+            }
+            else
+            {
+                // When days is entered and quantity is 0, default quantity = days * 1
+                detail.quantity = (decimal)days * 1m;
+                _originalPrescriptionMap[detail] = (detail.quantity, days);
             }
             detail.days = days;
             CalculateRow(detail);
@@ -2778,7 +2782,14 @@
     }
 
     private decimal? GetQty(sales_detail detail) => !IsEdit && detail.quantity == 0 ? null : detail.quantity;
-    private void SetQty(sales_detail detail, decimal? value) => detail.quantity = value ?? 0;
+    private void SetQty(sales_detail detail, decimal? value)
+    {
+        detail.quantity = value ?? 0;
+        if (detail.days.HasValue && detail.days.Value > 0 && detail.quantity > 0)
+        {
+            _originalPrescriptionMap[detail] = (detail.quantity, detail.days.Value);
+        }
+    }
 
     private decimal? GetRate(sales_detail detail) => !IsEdit && detail.rate == 0 ? null : detail.rate;
     private void SetRate(sales_detail detail, decimal? value) => detail.rate = value ?? 0;
@@ -3471,8 +3482,11 @@
             return;
         }
         IsEdit = true;
+        long targetSalesCode = master.salescode;
+        string? targetBillNo = !string.IsNullOrWhiteSpace(master.billno) ? master.billno : master.invoiceno;
+
         var ids = new List<string>();
-        if (master.salescode > 0) ids.Add(master.salescode.ToString());
+        if (targetSalesCode > 0) ids.Add(targetSalesCode.ToString());
         if (!string.IsNullOrEmpty(master.billno)) ids.Add(master.billno);
         if (!string.IsNullOrEmpty(master.invoiceno)) ids.Add(master.invoiceno);
         
@@ -3510,8 +3524,10 @@
  
                     if (response.IsSuccessStatusCode) {
                         var responseString = await response.Content.ReadAsStringAsync();
-                        var loaded = ParseRequestResponse(responseString);
-                        if (loaded != null) {
+                        var loaded = ParseRequestResponse(responseString, targetSalesCode, targetBillNo);
+                        if (loaded != null && (
+                            (targetSalesCode > 0 && loaded.master.salescode == targetSalesCode) ||
+                            (!string.IsNullOrEmpty(targetBillNo) && (string.Equals(loaded.master.billno, targetBillNo, StringComparison.OrdinalIgnoreCase) || string.Equals(loaded.master.invoiceno, targetBillNo, StringComparison.OrdinalIgnoreCase))))) {
                             CurrentRequest = loaded;
                             fetchSuccess = true;
                             break;
@@ -3520,6 +3536,23 @@
                 } catch { }
             }
             if (fetchSuccess) break;
+        }
+
+        if (!fetchSuccess) {
+            try {
+                var client = CreateClient();
+                var response = await client.GetAsync("api/ItemMaster/getsales");
+                if (response.IsSuccessStatusCode) {
+                    var responseString = await response.Content.ReadAsStringAsync();
+                    var loaded = ParseRequestResponse(responseString, targetSalesCode, targetBillNo);
+                    if (loaded != null && (
+                        (targetSalesCode > 0 && loaded.master.salescode == targetSalesCode) ||
+                        (!string.IsNullOrEmpty(targetBillNo) && (string.Equals(loaded.master.billno, targetBillNo, StringComparison.OrdinalIgnoreCase) || string.Equals(loaded.master.invoiceno, targetBillNo, StringComparison.OrdinalIgnoreCase))))) {
+                        CurrentRequest = loaded;
+                        fetchSuccess = true;
+                    }
+                }
+            } catch { }
         }
  
         if (!fetchSuccess) {
@@ -3715,6 +3748,7 @@
     {
         ItemSearchTexts.Remove(detail);
         ExpiryDateTexts.Remove(detail.GetHashCode());
+        _originalPrescriptionMap.Remove(detail);
 
         if (CurrentRequest.details != null && CurrentRequest.details.Count > 0 && CurrentRequest.details[0] == detail)
         {
@@ -4414,7 +4448,7 @@
         return new();
     }
 
-    private sales_request? ParseRequestResponse(string json)
+    private sales_request? ParseRequestResponse(string json, long? targetSalesCode = null, string? targetBillNo = null)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         var options = new JsonSerializerOptions { 
@@ -4431,9 +4465,36 @@
                 root = dataProp;
             }
             
-            // 2. Handle array (take first element)
+            // 2. Handle array: Find the exact element matching target sales code or bill number
             if (root.ValueKind == JsonValueKind.Array) {
-                if (root.GetArrayLength() > 0) {
+                JsonElement? matchedElement = null;
+                
+                foreach (var item in root.EnumerateArray()) {
+                    sales_master? m = null;
+                    if (item.ValueKind == JsonValueKind.Object) {
+                        m = ParseMaster(item, options);
+                    }
+                    if (m != null) {
+                        if (targetSalesCode.HasValue && targetSalesCode.Value > 0 && m.salescode == targetSalesCode.Value) {
+                            matchedElement = item;
+                            break;
+                        }
+                        if (!string.IsNullOrWhiteSpace(targetBillNo) && (
+                            string.Equals(m.billno?.Trim(), targetBillNo.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(m.invoiceno?.Trim(), targetBillNo.Trim(), StringComparison.OrdinalIgnoreCase))) {
+                            matchedElement = item;
+                            break;
+                        }
+                    }
+                }
+
+                if (targetSalesCode.HasValue && targetSalesCode.Value > 0 || !string.IsNullOrWhiteSpace(targetBillNo)) {
+                    if (matchedElement.HasValue) {
+                        root = matchedElement.Value;
+                    } else {
+                        return null;
+                    }
+                } else if (root.GetArrayLength() > 0) {
                     root = root[0];
                 } else {
                     return null;
@@ -4457,7 +4518,11 @@
                 // Or maybe it's just a direct sales_master (without details)
                 var directMaster = ParseMaster(root, options);
                 if (directMaster != null && directMaster.salescode > 0) {
-                    return new sales_request { master = directMaster, details = new() };
+                    var req = new sales_request { master = directMaster, details = new() };
+                    if (TryGetPropertyIgnoreCase(root, "details", out var detailsProp) && detailsProp.ValueKind == JsonValueKind.Array) {
+                        req.details = JsonSerializer.Deserialize<List<sales_detail>>(detailsProp.GetRawText(), options) ?? new();
+                    }
+                    return req;
                 }
             }
         } catch (Exception ex) {
@@ -4466,19 +4531,24 @@
 
         try {
             var direct = JsonSerializer.Deserialize<sales_request>(json, options);
-            if (direct != null && direct.master != null) return direct;
+            if (direct != null && direct.master != null) {
+                if (!targetSalesCode.HasValue || direct.master.salescode == targetSalesCode.Value) return direct;
+            }
         } catch {}
 
         try {
             var wrapped = JsonSerializer.Deserialize<ServiceResponse<sales_request>>(json, options);
-            if (wrapped?.data != null) return wrapped.data;
+            if (wrapped?.data?.master != null) {
+                if (!targetSalesCode.HasValue || wrapped.data.master.salescode == targetSalesCode.Value) return wrapped.data;
+            }
         } catch {}
 
         try {
             var directMaster = JsonSerializer.Deserialize<sales_master>(json, options);
             if (directMaster != null && directMaster.salescode > 0)
             {
-                return new sales_request { master = directMaster, details = new() };
+                if (!targetSalesCode.HasValue || directMaster.salescode == targetSalesCode.Value)
+                    return new sales_request { master = directMaster, details = new() };
             }
         } catch {}
 
