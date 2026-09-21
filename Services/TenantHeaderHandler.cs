@@ -28,7 +28,8 @@ namespace Booking.Services
                     uriStr = uriStr.Replace("/api/api/", "/api/", StringComparison.OrdinalIgnoreCase);
                     request.RequestUri = new Uri(uriStr);
                 }
-                else if (request.RequestUri.Host.Equals("medicoapi.iscansoft.com", StringComparison.OrdinalIgnoreCase) &&
+                else if ((request.RequestUri.Host.Equals("medicoapi.iscansoft.com", StringComparison.OrdinalIgnoreCase) ||
+                         request.RequestUri.Host.Equals("medicotestapi.reachbs.com", StringComparison.OrdinalIgnoreCase)) &&
                          !request.RequestUri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
                 {
                     var builder = new UriBuilder(request.RequestUri);

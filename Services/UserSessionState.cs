@@ -11,7 +11,7 @@ namespace MedicoAi.Services
         {
             _tenantState = tenantState;
             Role = configuration["MedicoAi:Role"] ?? "Chief Medical Officer";
-            ApiBaseUrl = configuration["MedicoAi:ApiBaseUrl"] ?? "http://medicoapi.iscansoft.com";
+            ApiBaseUrl = configuration["MedicoAi:ApiBaseUrl"] ?? configuration["ApiBaseUrl"] ?? "http://medicoapi.iscansoft.com";
             AiApiBaseUrl = configuration["MedicoAi:AiApiBaseUrl"] ?? "https://ai.seyotechnologies.com";
             AiModel = configuration["MedicoAi:AiModel"] ?? "gemini-1.5-flash";
             GeminiApiKey = configuration["MedicoAi:GeminiApiKey"] ?? configuration["AI_GEMINI_API_KEY"] ?? string.Empty;

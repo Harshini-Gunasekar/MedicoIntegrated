@@ -225,7 +225,7 @@
                                         <td>@(((CurrentPage - 1) * ItemsPerPage) + row.index + 1)</td>
                                         <td class="fw-bold text-primary">#@(string.IsNullOrEmpty(row.value.billno) ? row.value.salescode.ToString() : row.value.billno)</td>
                                         <td>@(row.value.billdate.ToString("yyyy-MM-dd"))</td>
-                                        <td>@(string.IsNullOrWhiteSpace(row.value.patientid) ? (row.value.customercode > 0 ? row.value.customercode.ToString() : "N/A") : row.value.patientid)</td>
+                                        <td>@GetDisplayCustomerId(row.value)</td>
                                         <td>@(string.IsNullOrWhiteSpace(row.value.patientname) ? (CustomerList.FirstOrDefault(c => c.customercode == row.value.customercode)?.customername ?? "N/A") : row.value.patientname)</td>
                                         <td>@(string.IsNullOrWhiteSpace(row.value.mobileno) ? "-" : row.value.mobileno)</td>
                                         <td class="fw-bold">₹@row.value.netamount.ToString("N2")</td>
@@ -292,7 +292,7 @@
                                 </div>
                                 <div class="item-card-body">
                                      <div class="detail-row"><span>Date</span><strong>@(s.billdate.ToString("yyyy-MM-dd"))</strong></div>
-                                     <div class="detail-row"><span>Customer ID</span><strong>@(string.IsNullOrWhiteSpace(s.patientid) ? (s.customercode > 0 ? s.customercode.ToString() : "N/A") : s.patientid)</strong></div>
+                                     <div class="detail-row"><span>Customer ID</span><strong>@GetDisplayCustomerId(s)</strong></div>
                                      <div class="detail-row"><span>Customer Name</span><strong>@(string.IsNullOrWhiteSpace(s.patientname) ? (CustomerList.FirstOrDefault(c => c.customercode == s.customercode)?.customername ?? "N/A") : s.patientname)</strong></div>
                                      <div class="detail-row"><span>Net Amount</span><strong>₹@s.netamount.ToString("N2")</strong></div>
                                      <div class="detail-row"><span>Status</span><strong>@s.paymentstatus</strong></div>
@@ -2957,11 +2957,79 @@
                     (s.patientid?.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
                     (s.patientname?.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
                     (s.mobileno?.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    GetDisplayCustomerId(s).Contains(SearchQuery, StringComparison.OrdinalIgnoreCase) ||
                     CustomerList.Any(c => c.customercode == s.customercode && c.customername != null && c.customername.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)));
             }
 
             return query;
         }
+    }
+
+    private string GetDisplayCustomerId(sales_master? s)
+    {
+        if (s == null) return "N/A";
+
+        // 1. If customercode is set and > 0, return customercode (cust_id)
+        if (s.customercode.HasValue && s.customercode.Value > 0)
+        {
+            return s.customercode.Value.ToString();
+        }
+
+        // 2. If patientid is numeric, return patientid (cust_id)
+        if (!string.IsNullOrWhiteSpace(s.patientid) && long.TryParse(s.patientid.Trim(), out var numPid) && numPid > 0)
+        {
+            return numPid.ToString();
+        }
+
+        // 3. If patientid is OP / IP number (e.g. OPD/2026/09/0050, IPD/2026/09/0003), resolve custid from registrations
+        if (!string.IsNullOrWhiteSpace(s.patientid))
+        {
+            var cleanPid = s.patientid.Trim();
+            var opMatch = OpRegistrationList.FirstOrDefault(o => !string.IsNullOrWhiteSpace(o.op_no) && string.Equals(o.op_no.Trim(), cleanPid, StringComparison.OrdinalIgnoreCase) && o.custid > 0);
+            if (opMatch != null) return opMatch.custid.ToString();
+
+            var ipMatch = IpRegistrationList.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.ip_no) && string.Equals(i.ip_no.Trim(), cleanPid, StringComparison.OrdinalIgnoreCase) && i.custid > 0);
+            if (ipMatch != null) return ipMatch.custid.ToString();
+        }
+
+        // 4. Resolve from OpRegistrationList / IpRegistrationList / PatientPartitionList by mobile
+        if (!string.IsNullOrWhiteSpace(s.mobileno))
+        {
+            var cleanMob = s.mobileno.Trim();
+            var opByMob = OpRegistrationList.FirstOrDefault(o => !string.IsNullOrWhiteSpace(o.mobile) && o.mobile.Trim() == cleanMob && o.custid > 0);
+            if (opByMob != null) return opByMob.custid.ToString();
+
+            var ipByMob = IpRegistrationList.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.mobile) && i.mobile.Trim() == cleanMob && i.custid > 0);
+            if (ipByMob != null) return ipByMob.custid.ToString();
+
+            var partByMob = PatientPartitionList.FirstOrDefault(p => (!string.IsNullOrWhiteSpace(p.mobile) && p.mobile.Trim() == cleanMob) || (!string.IsNullOrWhiteSpace(p.mobileno) && p.mobileno.Trim() == cleanMob));
+            if (partByMob != null && partByMob.custid.HasValue && partByMob.custid.Value > 0) return partByMob.custid.Value.ToString();
+        }
+
+        // 5. Resolve from PatientPartitionList / OP / IP by patient name
+        if (!string.IsNullOrWhiteSpace(s.patientname))
+        {
+            var cleanName = s.patientname.Trim();
+            var partByName = PatientPartitionList.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.name) && string.Equals(p.name.Trim(), cleanName, StringComparison.OrdinalIgnoreCase));
+            if (partByName != null && partByName.custid.HasValue && partByName.custid.Value > 0) return partByName.custid.Value.ToString();
+
+            var opByName = OpRegistrationList.FirstOrDefault(o => !string.IsNullOrWhiteSpace(o.patient_name) && string.Equals(o.patient_name.Trim(), cleanName, StringComparison.OrdinalIgnoreCase) && o.custid > 0);
+            if (opByName != null) return opByName.custid.ToString();
+
+            var ipByName = IpRegistrationList.FirstOrDefault(i => !string.IsNullOrWhiteSpace(i.patient_name) && string.Equals(i.patient_name.Trim(), cleanName, StringComparison.OrdinalIgnoreCase) && i.custid > 0);
+            if (ipByName != null) return ipByName.custid.ToString();
+
+            var custByName = CustomerList.FirstOrDefault(c => !string.IsNullOrWhiteSpace(c.customername) && string.Equals(c.customername.Trim(), cleanName, StringComparison.OrdinalIgnoreCase) && c.customercode > 0);
+            if (custByName != null) return custByName.customercode.ToString();
+        }
+
+        // 6. Fallback to patientid or N/A
+        if (!string.IsNullOrWhiteSpace(s.patientid))
+        {
+            return s.patientid;
+        }
+
+        return "N/A";
     }
 
     private void OnFilterChanged()
@@ -3202,16 +3270,75 @@
 
     private async Task LoadPatientPartition()
     {
+        var list = new List<PatientPartitionModel>();
         try {
             using var directClient = new HttpClient();
             directClient.DefaultRequestHeaders.Add("tenant_code", "0004");
-            var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-            var response = await directClient.GetFromJsonAsync<List<PatientPartitionModel>>("http://labcareapi.iscansoft.com/api/Customer/partition?pagenumber=1&pagesize=1000", options);
-            if (response != null) {
-                PatientPartitionList = response;
+            var partResp = await directClient.GetStringAsync("http://labcareapi.iscansoft.com/api/Customer/partition?pagenumber=1&pagesize=1000");
+            if (!string.IsNullOrWhiteSpace(partResp)) {
+                using var doc = JsonDocument.Parse(partResp);
+                var root = doc.RootElement;
+                JsonElement arrayEl = default;
+                if (root.ValueKind == JsonValueKind.Array) arrayEl = root;
+                else if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var dProp) && dProp.ValueKind == JsonValueKind.Array) arrayEl = dProp;
+
+                if (arrayEl.ValueKind == JsonValueKind.Array) {
+                    foreach (var el in arrayEl.EnumerateArray()) {
+                        long? cid = null;
+                        if (el.TryGetProperty("custid", out var cProp)) {
+                            if (cProp.ValueKind == JsonValueKind.Number && cProp.TryGetInt64(out var cNum)) cid = cNum;
+                            else if (cProp.ValueKind == JsonValueKind.String && long.TryParse(cProp.GetString(), out var cStr)) cid = cStr;
+                        }
+                        string? name = el.TryGetProperty("name", out var nProp) ? nProp.GetString() : (el.TryGetProperty("customername", out var cnProp) ? cnProp.GetString() : null);
+                        string? mob = el.TryGetProperty("mobile", out var mProp) ? mProp.GetString() : (el.TryGetProperty("mobileno", out var mnProp) ? mnProp.GetString() : null);
+                        string? city = el.TryGetProperty("city", out var ctProp) ? ctProp.GetString() : null;
+
+                        if (cid.HasValue || !string.IsNullOrWhiteSpace(name)) {
+                            list.Add(new PatientPartitionModel { custid = cid, name = name, mobile = mob, mobileno = mob, city = city });
+                        }
+                    }
+                }
             }
         } catch (Exception ex) {
-            Console.WriteLine($"Error loading patient partition: {ex.Message}");
+            Console.WriteLine($"Error loading direct patient partition: {ex.Message}");
+        }
+
+        try {
+            var client = CreateClient();
+            var partitionResp = await client.GetStringAsync("api/Customer/partition?pagenumber=1&pagesize=1000");
+            if (!string.IsNullOrWhiteSpace(partitionResp)) {
+                using var doc = JsonDocument.Parse(partitionResp);
+                var root = doc.RootElement;
+                JsonElement arrayEl = default;
+                if (root.ValueKind == JsonValueKind.Array) arrayEl = root;
+                else if (root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var dProp) && dProp.ValueKind == JsonValueKind.Array) arrayEl = dProp;
+
+                if (arrayEl.ValueKind == JsonValueKind.Array) {
+                    foreach (var el in arrayEl.EnumerateArray()) {
+                        long? cid = null;
+                        if (el.TryGetProperty("custid", out var cProp)) {
+                            if (cProp.ValueKind == JsonValueKind.Number && cProp.TryGetInt64(out var cNum)) cid = cNum;
+                            else if (cProp.ValueKind == JsonValueKind.String && long.TryParse(cProp.GetString(), out var cStr)) cid = cStr;
+                        }
+                        else if (el.TryGetProperty("customercode", out var ccProp)) {
+                            if (ccProp.ValueKind == JsonValueKind.Number && ccProp.TryGetInt64(out var ccNum)) cid = ccNum;
+                            else if (ccProp.ValueKind == JsonValueKind.String && long.TryParse(ccProp.GetString(), out var ccStr)) cid = ccStr;
+                        }
+
+                        string? name = el.TryGetProperty("name", out var nProp) ? nProp.GetString() : (el.TryGetProperty("customername", out var cnProp) ? cnProp.GetString() : null);
+                        string? mob = el.TryGetProperty("mobile", out var mProp) ? mProp.GetString() : (el.TryGetProperty("mobileno", out var mnProp) ? mnProp.GetString() : null);
+                        string? city = el.TryGetProperty("city", out var ctProp) ? ctProp.GetString() : null;
+
+                        if (cid.HasValue && !list.Any(x => x.custid == cid)) {
+                            list.Add(new PatientPartitionModel { custid = cid, name = name, mobile = mob, mobileno = mob, city = city });
+                        }
+                    }
+                }
+            }
+        } catch { }
+
+        if (list.Any()) {
+            PatientPartitionList = list;
         }
     }
 
@@ -3789,7 +3916,7 @@
         CalculateTotals();
 
         if (SelectedWarehouseCode == null || SelectedWarehouseCode <= 0) {
-            ToastService.ShowWarning("Please select a store");
+            ToastService.ShowWarning("Please select Store");
             return;
         }
 
@@ -3798,25 +3925,101 @@
             if (!string.IsNullOrWhiteSpace(PatientIdSearchText)) CurrentRequest.master.patientid = PatientIdSearchText;
             if (!string.IsNullOrWhiteSpace(PatientMobileSearchText)) CurrentRequest.master.mobileno = PatientMobileSearchText;
 
-            if (string.IsNullOrEmpty(CurrentRequest.master.patientname) && string.IsNullOrEmpty(CurrentRequest.master.patientid)) {
+            if (string.IsNullOrWhiteSpace(CurrentRequest.master.patientname) && string.IsNullOrWhiteSpace(CurrentRequest.master.patientid)) {
                 ToastService.ShowWarning($"Please select {(SelectedSalesType == "IP Sales" ? "an IP" : "an OP")} patient");
                 return;
             }
         } else {
-            if (string.IsNullOrEmpty(CurrentRequest.master.patientname)) {
-                ToastService.ShowWarning("Please enter patient name");
+            if (string.IsNullOrWhiteSpace(CurrentRequest.master.patientname)) {
+                ToastService.ShowWarning("Please enter Patient Name");
                 return;
             }
-            // For counter sales, set customer code to 0 or null as it is not a registered partition customer
-            CurrentRequest.master.customercode = null;
+
+            if (!CurrentRequest.master.customercode.HasValue || CurrentRequest.master.customercode.Value <= 0)
+            {
+                if (!string.IsNullOrWhiteSpace(CurrentRequest.master.mobileno))
+                {
+                    var cleanMob = CurrentRequest.master.mobileno.Trim();
+                    var partMatch = PatientPartitionList.FirstOrDefault(p => (!string.IsNullOrWhiteSpace(p.mobile) && p.mobile.Trim() == cleanMob) || (!string.IsNullOrWhiteSpace(p.mobileno) && p.mobileno.Trim() == cleanMob))
+                                   ?? OpRegistrationList.Select(o => new PatientPartitionModel { custid = (long)o.custid, mobile = o.mobile }).FirstOrDefault(o => !string.IsNullOrWhiteSpace(o.mobile) && o.mobile.Trim() == cleanMob);
+                    if (partMatch != null && partMatch.custid.HasValue && partMatch.custid.Value > 0)
+                    {
+                        CurrentRequest.master.customercode = partMatch.custid.Value;
+                        if (string.IsNullOrWhiteSpace(CurrentRequest.master.patientid)) CurrentRequest.master.patientid = partMatch.custid.Value.ToString();
+                    }
+                }
+
+                if ((!CurrentRequest.master.customercode.HasValue || CurrentRequest.master.customercode.Value <= 0) && !string.IsNullOrWhiteSpace(CurrentRequest.master.patientname))
+                {
+                    var cleanNm = CurrentRequest.master.patientname.Trim();
+                    var partMatch = PatientPartitionList.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.name) && string.Equals(p.name.Trim(), cleanNm, StringComparison.OrdinalIgnoreCase))
+                                   ?? OpRegistrationList.Select(o => new PatientPartitionModel { custid = (long)o.custid, name = o.patient_name }).FirstOrDefault(o => !string.IsNullOrWhiteSpace(o.name) && string.Equals(o.name.Trim(), cleanNm, StringComparison.OrdinalIgnoreCase));
+                    if (partMatch != null && partMatch.custid.HasValue && partMatch.custid.Value > 0)
+                    {
+                        CurrentRequest.master.customercode = partMatch.custid.Value;
+                        if (string.IsNullOrWhiteSpace(CurrentRequest.master.patientid)) CurrentRequest.master.patientid = partMatch.custid.Value.ToString();
+                    }
+                }
+            }
         }
 
-        CurrentRequest.details = CurrentRequest.details.Where(d => (d.itemcode > 0) && (d.quantity > 0)).ToList();
-        if (!CurrentRequest.details.Any()) {
-            ToastService.ShowWarning("Please add at least one valid item with quantity");
+        // Filter out completely blank rows
+        var activeDetails = CurrentRequest.details
+            .Where(d => d.itemcode > 0 || !string.IsNullOrWhiteSpace(d.batchno) || d.quantity > 0 || d.days.HasValue)
+            .ToList();
+
+        if (!activeDetails.Any()) {
+            ToastService.ShowWarning("Please add at least one Item");
             if (!CurrentRequest.details.Any()) AddDetailRow();
             return;
         }
+
+        // Validate each item row for missing fields
+        for (int i = 0; i < activeDetails.Count; i++)
+        {
+            var detail = activeDetails[i];
+            var rowNum = i + 1;
+            var itemName = ItemList.FirstOrDefault(it => it.itemcode == detail.itemcode)?.itemname;
+            var itemLabel = !string.IsNullOrWhiteSpace(itemName) ? $"'{itemName}'" : $"Item in Row {rowNum}";
+
+            if (detail.itemcode <= 0)
+            {
+                ToastService.ShowWarning($"Please select an Item for Row {rowNum}");
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(detail.batchno))
+            {
+                ToastService.ShowWarning($"Please enter Batch No for {itemLabel}");
+                return;
+            }
+
+            if (!detail.expirydate.HasValue)
+            {
+                ToastService.ShowWarning($"Please enter Expiry Date for {itemLabel}");
+                return;
+            }
+
+            if (!detail.days.HasValue || detail.days.Value <= 0)
+            {
+                ToastService.ShowWarning($"Please enter Days for {itemLabel}");
+                return;
+            }
+
+            if (detail.quantity <= 0)
+            {
+                ToastService.ShowWarning($"Please enter Quantity for {itemLabel}");
+                return;
+            }
+
+            if (detail.rate <= 0)
+            {
+                ToastService.ShowWarning($"Please enter Rate for {itemLabel}");
+                return;
+            }
+        }
+
+        CurrentRequest.details = activeDetails;
 
         // Check if any medicine in the bill is expired
         var expiredItems = CurrentRequest.details.Where(d => d.itemcode > 0 && d.expirydate.HasValue && d.expirydate.Value.Date < DateTime.Today).ToList();
@@ -3891,7 +4094,15 @@
                 detail.salescode = CurrentRequest.master.salescode;
                 detail.soldqty = detail.quantity; // Sync soldqty with quantity
                 detail.uomcode ??= 0;
+                detail.days = detail.days.GetValueOrDefault(1);
+                if (detail.days <= 0) detail.days = 1;
             }
+
+            if (CurrentRequest.master.prescribeddays == null || CurrentRequest.master.prescribeddays <= 0)
+            {
+                CurrentRequest.master.prescribeddays = CurrentRequest.details.Where(d => d.days.HasValue && d.days.Value > 0).Select(d => d.days!.Value).DefaultIfEmpty(1).Max();
+            }
+            CurrentRequest.master.converteddays ??= CurrentRequest.master.prescribeddays;
 
             CurrentRequest.master.remarks ??= "";
             CurrentRequest.master.address ??= "";
@@ -4129,15 +4340,31 @@
                         {
                             foreach (var item in prop.Value.EnumerateArray())
                             {
-                                errList.Add($"{prop.Name}: {item.GetString()}");
+                                var errStr = item.GetString() ?? "";
+                                if (errStr.Contains("days", StringComparison.OrdinalIgnoreCase) || prop.Name.Contains("days", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    errList.Add("Please enter Days for all items");
+                                }
+                                else
+                                {
+                                    errList.Add($"{prop.Name}: {errStr}");
+                                }
                             }
                         }
                         else
                         {
-                            errList.Add($"{prop.Name}: {prop.Value.ToString()}");
+                            var errStr = prop.Value.ToString();
+                            if (errStr.Contains("days", StringComparison.OrdinalIgnoreCase) || prop.Name.Contains("days", StringComparison.OrdinalIgnoreCase))
+                            {
+                                errList.Add("Please enter Days for all items");
+                            }
+                            else
+                            {
+                                errList.Add($"{prop.Name}: {errStr}");
+                            }
                         }
                     }
-                    if (errList.Any()) return string.Join(" | ", errList);
+                    if (errList.Any()) return string.Join(" | ", errList.Distinct());
                 }
 
                 if (root.TryGetProperty("title", out var titleProp) && titleProp.ValueKind == JsonValueKind.String)
@@ -4308,7 +4535,7 @@
             }
         }
         if (string.IsNullOrEmpty(m.patientid)) {
-            foreach(var key in new[] { "patientid", "patient_id", "customercode", "customer_code" }) {
+            foreach(var key in new[] { "patientid", "patient_id", "custid", "cust_id", "customer_id", "customerid", "customercode", "customer_code", "uhid", "patientcode" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
                     var pid = GetJsonStringSafe(p);
                     if (!string.IsNullOrEmpty(pid) && pid != "0") {
@@ -4319,7 +4546,7 @@
             }
         }
         if (!m.customercode.HasValue || m.customercode.Value == 0) {
-            foreach(var key in new[] { "customercode", "customer_code", "custid", "cust_id" }) {
+            foreach(var key in new[] { "customercode", "customer_code", "custid", "cust_id", "customer_id", "customerid", "patientcode" }) {
                 if (TryGetPropertyIgnoreCase(target, key, out var p)) {
                     if (p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var cVal)) { m.customercode = cVal; break; }
                     else if (p.ValueKind == JsonValueKind.String && long.TryParse(p.GetString(), out var cStrVal)) { m.customercode = cStrVal; break; }

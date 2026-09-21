@@ -5,6 +5,28 @@ using Booking.Handlers;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Load Active Environment Settings (Test / Live) from appsettings.json
+var selectedEnv = builder.Configuration["Environment"] ?? builder.Configuration["ActiveEnvironment"] ?? "Test";
+var envSection = builder.Configuration.GetSection("Environments").GetChildren()
+    .FirstOrDefault(c => string.Equals(c.Key, selectedEnv, StringComparison.OrdinalIgnoreCase));
+
+if (envSection != null)
+{
+    var envDict = new Dictionary<string, string?>();
+    foreach (var child in envSection.GetChildren())
+    {
+        envDict[child.Key] = child.Value;
+    }
+
+    if (!string.IsNullOrEmpty(envSection["ApiBaseUrl"]))
+    {
+        envDict["ApiSettings:MedicoApiUrl"] = envSection["ApiBaseUrl"];
+        envDict["MedicoAi:ApiBaseUrl"] = envSection["ApiBaseUrl"];
+    }
+
+    builder.Configuration.AddInMemoryCollection(envDict);
+}
+
 // Add services to the container.
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();

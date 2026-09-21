@@ -107,6 +107,7 @@ namespace medico_backend.Model
             public string? authorizationno { get; set; }
             public string? tpa_name { get; set; }
             public double? insurance_approved_amount { get; set; }
+            public string? insurance_status { get; set; } = "PENDING";
 
             public string? guardian_name { get; set; }
             public string? guardian_relation { get; set; }
