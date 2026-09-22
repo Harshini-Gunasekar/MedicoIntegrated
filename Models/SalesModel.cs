@@ -35,6 +35,8 @@
 
      public decimal grossamount { get; set; }
 
+     public decimal discountpercentage { get; set; }
+
      public decimal discountamount { get; set; }
 
      public decimal taxamount { get; set; }

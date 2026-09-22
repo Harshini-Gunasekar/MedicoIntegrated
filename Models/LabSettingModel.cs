@@ -153,5 +153,6 @@ namespace Booking.Models
         public bool? show_all_customers { get; set; } // true = show all customers across tenants, false = show current tenant customers only
         public bool? critical_value_indication { get; set; } = false;
         public bool? show_physical_bill { get; set; } = true;
+        public bool? payment_required_online_reg { get; set; } = false;
     }
 }

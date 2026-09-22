@@ -297,6 +297,11 @@ namespace Booking.Services
         {
             try
             {
+                if (request != null)
+                {
+                    request.new_slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_slot_start_time);
+                    request.new_slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_slot_end_time);
+                }
                 var response = await _http.PostAsJsonAsync("api/AppointmentBooking/reschedule-whole-slot", request);
                 return response.IsSuccessStatusCode;
             }

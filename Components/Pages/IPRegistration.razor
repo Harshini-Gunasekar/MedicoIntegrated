@@ -528,7 +528,7 @@
                                              @onmouseover="() => activeDropdownIndex = pIndex">
                                             <div>
                                                 <div class="ip-patient-item-name">
-                                                    @(string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials) (@(string.IsNullOrEmpty(p.custcode) ? $"CUST-{p.custid}" : p.custcode))
+                                                    @(string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials)
                                                 </div>
                                                 @if (!string.IsNullOrWhiteSpace(p.mobile))
                                                 {
@@ -1378,8 +1378,16 @@
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
 
+    private static List<SharedComponents.Rcl.Models.CustomerModel>? _cachedCustomers;
+    private static DateTime _lastCustomerCacheTime = DateTime.MinValue;
+
     protected override async Task OnInitializedAsync()
     {
+        if (_cachedCustomers != null && _cachedCustomers.Any())
+        {
+            customersList = _cachedCustomers;
+            UpdateFilteredPatients();
+        }
         await LoadDataAsync();
     }
 
@@ -1395,8 +1403,8 @@
                 var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
                 AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
 
-                await LoadCustomersAsync();
-                await LoadDataAsync();
+                _ = LoadCustomersAsync();
+
                 bool hasViewRight = true;
                 try
                 {
@@ -1500,8 +1508,15 @@
         }
     }
 
-    private async Task LoadCustomersAsync()
+    private async Task LoadCustomersAsync(bool forceRefresh = false)
     {
+        if (!forceRefresh && _cachedCustomers != null && _cachedCustomers.Any() && (DateTime.UtcNow - _lastCustomerCacheTime).TotalMinutes < 15)
+        {
+            customersList = _cachedCustomers;
+            UpdateFilteredPatients();
+            return;
+        }
+
         try
         {
             var client = ClientFactory.CreateClient("LabCareUrl");
@@ -1526,7 +1541,12 @@
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync();
-                customersList = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+                var list = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json) ?? new();
+                customersList = list;
+                _cachedCustomers = list;
+                _lastCustomerCacheTime = DateTime.UtcNow;
+                UpdateFilteredPatients();
+                await InvokeAsync(StateHasChanged);
             }
         }
         catch (Exception ex)
@@ -1540,17 +1560,27 @@
         loading = true;
         try
         {
-            // Load dropdown lists
-            doctorsList = await DoctorService.GetDoctorsAsync();
-            floorsList = await FloorService.GetFloorMastersAsync();
-            roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
-            wardsList = await WardService.GetWardMastersAsync();
-            bedsList = await BedService.GetBedMastersAsync();
-            blocksList = await BlockService.GetBlockMastersAsync();
+            // Load dropdown masters and IP admissions in parallel
+            var doctorsTask = DoctorService.GetDoctorsAsync();
+            var floorsTask = FloorService.GetFloorMastersAsync();
+            var roomTypesTask = RoomTypeService.GetRoomTypeMastersAsync();
+            var wardsTask = WardService.GetWardMastersAsync();
+            var bedsTask = BedService.GetBedMastersAsync();
+            var blocksTask = BlockService.GetBlockMastersAsync();
+            var activeTask = IpService.GetIpRegistrationsAsync("ADMITTED");
+            var dischargedTask = IpService.GetIpRegistrationsAsync("DISCHARGED");
 
-            // Load Admissions
-            var active = await IpService.GetIpRegistrationsAsync("ADMITTED");
-            var discharged = await IpService.GetIpRegistrationsAsync("DISCHARGED");
+            await Task.WhenAll(doctorsTask, floorsTask, roomTypesTask, wardsTask, bedsTask, blocksTask, activeTask, dischargedTask);
+
+            doctorsList = await doctorsTask ?? new();
+            floorsList = await floorsTask ?? new();
+            roomTypes = await roomTypesTask ?? new();
+            wardsList = await wardsTask ?? new();
+            bedsList = await bedsTask ?? new();
+            blocksList = await blocksTask ?? new();
+
+            var active = await activeTask ?? new();
+            var discharged = await dischargedTask ?? new();
             var sortedDischarged = discharged.OrderByDescending(d => d.dischargedate).ToList();
             admissionsList = active.Concat(sortedDischarged).ToList();
 
@@ -1953,15 +1983,28 @@
     private int activeDropdownIndex = 0;
     private List<SharedComponents.Rcl.Models.CustomerModel> filteredPatientsForDropdown = new();
 
-    private void OnPatientSearchInput(ChangeEventArgs e)
+    private CancellationTokenSource? _patientSearchCts;
+
+    private async void OnPatientSearchInput(ChangeEventArgs e)
     {
         selectedPatientSearchName = e.Value?.ToString() ?? "";
         UpdateFilteredPatients();
         showPatientDropdown = true;
         activeDropdownIndex = 0;
-        if (!string.IsNullOrWhiteSpace(selectedPatientSearchName) && selectedPatientSearchName.Trim().Length >= 3)
+
+        var search = selectedPatientSearchName.Trim();
+        if (!string.IsNullOrWhiteSpace(search) && search.Length >= 2)
         {
-            _ = SearchPatientsRemoteAsync(selectedPatientSearchName.Trim());
+            _patientSearchCts?.Cancel();
+            _patientSearchCts = new CancellationTokenSource();
+            var token = _patientSearchCts.Token;
+
+            try
+            {
+                await Task.Delay(200, token);
+                await SearchPatientsRemoteAsync(search, token);
+            }
+            catch (TaskCanceledException) { }
         }
     }
 
@@ -1985,11 +2028,11 @@
         }
     }
 
-    private async Task SearchPatientsRemoteAsync(string search)
+    private async Task SearchPatientsRemoteAsync(string search, CancellationToken token = default)
     {
         try
         {
-            if (string.IsNullOrWhiteSpace(search) || search.Length < 3) return;
+            if (string.IsNullOrWhiteSpace(search) || search.Length < 2) return;
             var client = ClientFactory.CreateClient("LabCareUrl");
             if (!string.IsNullOrEmpty(TenantCode))
             {
@@ -2000,10 +2043,10 @@
             {
                 client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
             }
-            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(search)}");
+            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(search)}", token);
             if (response.IsSuccessStatusCode)
             {
-                var json = await response.Content.ReadAsStringAsync();
+                var json = await response.Content.ReadAsStringAsync(token);
                 var results = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(json);
                 if (results != null && results.Any())
                 {
@@ -2042,7 +2085,7 @@
     private void SelectPatientFromDropdown(SharedComponents.Rcl.Models.CustomerModel p)
     {
         admitRequest.custid = p.custid;
-        selectedPatientSearchName = $"{p.custcode} {(string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials)}";
+        selectedPatientSearchName = string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials;
         showPatientDropdown = false;
         StateHasChanged();
         PrintPayload();
@@ -2809,16 +2852,16 @@
                     var match = customersList.FirstOrDefault(c => c.custid == newCustId);
                     if (match != null)
                     {
-                        selectedPatientSearchName = $"{match.custcode} {(string.IsNullOrEmpty(match.namewithinitials) ? match.name : match.namewithinitials)}".Trim();
+                        selectedPatientSearchName = (string.IsNullOrEmpty(match.namewithinitials) ? match.name : match.namewithinitials).Trim();
                     }
                     else
                     {
-                        selectedPatientSearchName = $"{newCustCode} {newCustName}".Trim();
+                        selectedPatientSearchName = newCustName.Trim();
                     }
                 }
                 else
                 {
-                    selectedPatientSearchName = $"{newCustName} ({quickCustomer.mobile})";
+                    selectedPatientSearchName = newCustName.Trim();
                 }
 
                 ToastService.ShowSuccess("Patient registered and loaded for admission successfully!");

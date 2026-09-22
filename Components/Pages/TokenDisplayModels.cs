@@ -265,10 +265,10 @@ namespace Medico.Components.Pages
 
         public string GetFormattedName()
         {
-            if (!string.IsNullOrWhiteSpace(doctorfullname))
+            if (!string.IsNullOrWhiteSpace(doctorfullname) && !doctorfullname.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
                 return doctorfullname;
             
-            if (!string.IsNullOrWhiteSpace(name))
+            if (!string.IsNullOrWhiteSpace(name) && !name.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
             {
                 string title = !string.IsNullOrWhiteSpace(nametitle) ? nametitle.Trim() : "Dr.";
                 if (!title.EndsWith(".")) title += ".";

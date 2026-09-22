@@ -461,6 +461,8 @@
         }
     }
 
+    private Dictionary<string, (byte[] Bytes, string FileName, string ContentType)> pendingFiles = new();
+
     private void InitializeNewModel()
     {
         model = new TenantReportMethodModel
@@ -489,6 +491,7 @@
         };
         isEditMode = false;
         imagePreviews.Clear();
+        pendingFiles.Clear();
     }
 
     private async Task LoadImagePreview(string? key, string fieldName)
@@ -527,69 +530,33 @@
             var file = e.File;
             if (file != null)
             {
-                // 1. Immediately read file locally and update the preview for instantaneous real-time rendering!
-                using var stream = file.OpenReadStream(maxAllowedSize: 1024 * 1024 * 5); // 5MB limit
+                using var stream = file.OpenReadStream(maxAllowedSize: 1024 * 1024 * 10); // 10MB limit
                 using var ms = new System.IO.MemoryStream();
                 await stream.CopyToAsync(ms);
                 var bytes = ms.ToArray();
+
+                pendingFiles[fieldName] = (bytes, file.Name, file.ContentType);
                 imagePreviews[fieldName] = $"data:{file.ContentType};base64,{Convert.ToBase64String(bytes)}";
                 StateHasChanged();
-
-                // 2. Upload file in the background
-                var client = HttpClientFactory.CreateClient("DoctorApi");
-                if (client.DefaultRequestHeaders.Contains("tenant_code"))
-                {
-                    client.DefaultRequestHeaders.Remove("tenant_code");
-                }
-                client.DefaultRequestHeaders.Add("tenant_code", tenantCode);
-
-                using var content = new MultipartFormDataContent();
-                var fileContent = new ByteArrayContent(bytes);
-                fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
-                content.Add(fileContent, "file", file.Name);
-
-                var entityId = model.id > 0 ? model.id : 1;
-                var uploadUrl = $"api/files/upload?prefix={tenantCode}&entityType=tenant-settings&entityId={entityId}";
-                
-                var response = await client.PostAsync(uploadUrl, content);
-                if (response.IsSuccessStatusCode)
-                {
-                    var responseStr = await response.Content.ReadAsStringAsync();
-                    var json = JObject.Parse(responseStr);
-                    var key = json["key"]?.ToString();
-                    if (!string.IsNullOrEmpty(key))
-                    {
-                        if (fieldName == "logo") model.logo_url = key;
-                        else if (fieldName == "letterhead") model.letterhead_url = key;
-                        else if (fieldName == "bottom") model.bottom_url = key;
-                        else if (fieldName == "watermark") model.watermark_url = key;
-                        else if (fieldName == "signature") model.signature_url = key;
-
-                        Toast.ShowSuccess($"{fieldName} uploaded successfully!");
-                    }
-                }
-                else
-                {
-                    var err = await response.Content.ReadAsStringAsync();
-                    Toast.ShowError($"Upload failed: {err}");
-                }
             }
         }
         catch (Exception ex)
         {
-            Toast.ShowError($"Error uploading file: {ex.Message}");
+            Toast.ShowError($"Error reading file: {ex.Message}");
         }
     }
 
     private void RemoveImage(string fieldName)
     {
+        pendingFiles.Remove(fieldName);
+        imagePreviews.Remove(fieldName);
+
         if (fieldName == "logo") model.logo_url = null;
         else if (fieldName == "letterhead") model.letterhead_url = null;
         else if (fieldName == "bottom") model.bottom_url = null;
         else if (fieldName == "watermark") model.watermark_url = null;
         else if (fieldName == "signature") model.signature_url = null;
 
-        imagePreviews.Remove(fieldName);
         StateHasChanged();
     }
 
@@ -607,17 +574,18 @@
             bool success;
             if (isEditMode)
             {
-                success = await TenantService.UpdateTenantReportMethodAsync(model, tenantCode);
+                success = await TenantService.UpdateTenantReportMethodAsync(model, tenantCode, pendingFiles);
             }
             else
             {
                 model.created_at = DateTime.UtcNow;
-                success = await TenantService.InsertTenantReportMethodAsync(model, tenantCode);
+                success = await TenantService.InsertTenantReportMethodAsync(model, tenantCode, pendingFiles);
             }
 
             if (success)
             {
-                Toast.ShowSuccess("Settings saved successfully!");
+                Toast.ShowSuccess("Settings and images saved successfully!");
+                pendingFiles.Clear();
                 await LoadTenantReportSettings();
             }
             else

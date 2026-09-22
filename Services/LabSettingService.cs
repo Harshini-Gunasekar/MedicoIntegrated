@@ -15,6 +15,7 @@ namespace Booking.Services
         public static bool? IsSlotRequiredCache { get; set; }
         public static bool? CriticalValueIndicationCache { get; set; }
         public static bool? ShowPhysicalBillCache { get; set; }
+        public static bool? PaymentRequiredOnlineRegCache { get; set; }
 
         public LabSettingService(HttpClient http)
         {
@@ -94,6 +95,20 @@ namespace Booking.Services
                     ShowPhysicalBillCache = true;
                 }
 
+                if (PaymentRequiredOnlineRegCache.HasValue)
+                {
+                    setting.payment_required_online_reg = PaymentRequiredOnlineRegCache.Value;
+                }
+                else if (setting.payment_required_online_reg.HasValue)
+                {
+                    PaymentRequiredOnlineRegCache = setting.payment_required_online_reg.Value;
+                }
+                else
+                {
+                    setting.payment_required_online_reg = false;
+                    PaymentRequiredOnlineRegCache = false;
+                }
+
                 return setting;
             }
             catch (Exception ex)
@@ -116,6 +131,10 @@ namespace Booking.Services
                 if (ShowPhysicalBillCache.HasValue)
                 {
                     fallback.show_physical_bill = ShowPhysicalBillCache.Value;
+                }
+                if (PaymentRequiredOnlineRegCache.HasValue)
+                {
+                    fallback.payment_required_online_reg = PaymentRequiredOnlineRegCache.Value;
                 }
                 return fallback;
             }
@@ -158,6 +177,10 @@ namespace Booking.Services
                 {
                     ShowPhysicalBillCache = model.show_physical_bill.Value;
                 }
+                if (model.payment_required_online_reg.HasValue)
+                {
+                    PaymentRequiredOnlineRegCache = model.payment_required_online_reg.Value;
+                }
 
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
@@ -194,6 +217,10 @@ namespace Booking.Services
                 if (model.show_physical_bill.HasValue)
                 {
                     ShowPhysicalBillCache = model.show_physical_bill.Value;
+                }
+                if (model.payment_required_online_reg.HasValue)
+                {
+                    PaymentRequiredOnlineRegCache = model.payment_required_online_reg.Value;
                 }
 
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };

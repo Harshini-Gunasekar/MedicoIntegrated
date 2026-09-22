@@ -87,7 +87,7 @@
                                     }
                                     @(ip?.ip_no ?? "-")
                                 </td>
-                                <td class="font-bold text-slate-800">@(customers.FirstOrDefault(c => c.custid.ToString() == t.custid.ToString())?.name ?? "-")</td>
+                                <td class="font-bold text-slate-800">@(GetPatientName(t.custid, t.lastvisitid))</td>
                                 <td class="text-slate-600">
                                     @(beds.FirstOrDefault(b => b.bedcode == t.currentbed)?.bedname ?? t.currentbed?.ToString() ?? "-")
                                 </td>
@@ -153,11 +153,12 @@
                                                 {
                                                     var pIndex = idx;
                                                     var a = filteredAdmissionsForDropdown[idx];
-                                                    var patientName = customers.FirstOrDefault(c => c.custid.ToString() == a.custid.ToString())?.name ?? a.custid.ToString();
+                                                    var patientName = GetPatientName(a.custid, a.GetPatientName());
+                                                    var displayPatientName = string.IsNullOrWhiteSpace(patientName) || patientName == "-" ? $"Patient #{a.custid}" : patientName;
                                                     var bedName = beds.FirstOrDefault(b => b.bedcode == a.bedcode)?.bedname ?? a.bedcode?.ToString() ?? "No Bed";
                                                     <div @onmousedown="() => SelectAdmissionFromDropdown(a)" 
                                                          style="padding: 6px 12px; cursor: pointer; font-size: 0.8rem; color: #1e293b; background-color: @(idx == activeDropdownIndex ? "#f1f5f9" : "transparent");">
-                                                        @patientName - @(a.ip_no ?? "No IP No") (Bed: @bedName)
+                                                        @displayPatientName - @(a.ip_no ?? "No IP No") (Bed: @bedName)
                                                     </div>
                                                 }
                                             }
@@ -177,7 +178,7 @@
                             <div class="um-grid-cols-3" style="background: #f8fafc; padding: 8px; border-radius: 8px; margin-bottom: 12px; border: 1px solid #e2e8f0;">
                                 <div class="form-group mb-0">
                                     <label>Patient Name</label>
-                                    <span class="font-bold text-indigo-600 font-13">@(customers.FirstOrDefault(c => c.custid.ToString() == current.custid.ToString())?.name ?? "-")</span>
+                                    <span class="font-bold text-indigo-600 font-13">@(GetPatientName(current.custid, current.lastvisitid))</span>
                                 </div>
                                 <div class="form-group mb-0">
                                     <label>IP Number</label>
@@ -310,7 +311,7 @@
     private IEnumerable<BedTransferModel> FilteredTransfersBySearch =>
         transfers
             .Where(t => {
-                var patientName = customers.FirstOrDefault(c => c.custid.ToString() == t.custid.ToString())?.name ?? "";
+                var patientName = GetPatientName(t.custid, t.lastvisitid);
                 var ip = ipRegistrations.FirstOrDefault(ip => ip.ip_id.ToString().Equals(t.lastvisitid, StringComparison.OrdinalIgnoreCase)) 
                           ?? ipRegistrations.FirstOrDefault(ip => ip.custid.ToString() == t.custid.ToString());
                 var ipNo = ip?.ip_no ?? "";
@@ -428,6 +429,143 @@
         }
     }
 
+    private string GetPatientName(decimal? custId, string? lastVisitIdOrAdmissionName = null)
+    {
+        if (custId.HasValue && custId.Value > 0)
+        {
+            var c = customers.FirstOrDefault(c => c.custid.ToString() == custId.Value.ToString() || c.custid == custId.Value);
+            if (c != null && !string.IsNullOrWhiteSpace(c.name))
+                return c.name;
+            if (c != null && !string.IsNullOrWhiteSpace(c.namewithinitials))
+                return c.namewithinitials;
+        }
+
+        if (!string.IsNullOrWhiteSpace(lastVisitIdOrAdmissionName))
+        {
+            if (Guid.TryParse(lastVisitIdOrAdmissionName, out var ipGuid))
+            {
+                var adm = activeAdmissions.FirstOrDefault(a => a.ip_id == ipGuid) 
+                       ?? ipRegistrations.FirstOrDefault(a => a.ip_id == ipGuid);
+                if (adm != null)
+                {
+                    var pName = adm.GetPatientName();
+                    if (!string.IsNullOrWhiteSpace(pName))
+                        return pName;
+                }
+            }
+            else
+            {
+                return lastVisitIdOrAdmissionName;
+            }
+        }
+
+        if (custId.HasValue && custId.Value > 0)
+        {
+            var adm = activeAdmissions.FirstOrDefault(a => a.custid == custId.Value) 
+                   ?? ipRegistrations.FirstOrDefault(a => a.custid == custId.Value);
+            if (adm != null)
+            {
+                var pName = adm.GetPatientName();
+                if (!string.IsNullOrWhiteSpace(pName))
+                    return pName;
+            }
+        }
+
+        return "-";
+    }
+
+    private async Task<SharedComponents.Rcl.Models.CustomerModel?> FetchCustomerByIdAsync(decimal custId)
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            }
+            if (!string.IsNullOrEmpty(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            var response = await client.GetAsync($"api/Customer/get?custid={custId}");
+            if (response.IsSuccessStatusCode)
+            {
+                var rawJson = (await response.Content.ReadAsStringAsync())?.Trim() ?? "";
+                if (!string.IsNullOrWhiteSpace(rawJson))
+                {
+                    if (rawJson.StartsWith("["))
+                    {
+                        var list = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson);
+                        var found = list?.FirstOrDefault(c => c.custid == custId) ?? list?.FirstOrDefault();
+                        if (found != null && !string.IsNullOrWhiteSpace(found.name)) return found;
+                    }
+                    else if (rawJson.StartsWith("{"))
+                    {
+                        var cust = JsonConvert.DeserializeObject<SharedComponents.Rcl.Models.CustomerModel>(rawJson);
+                        if (cust != null && !string.IsNullOrWhiteSpace(cust.name)) return cust;
+                    }
+                }
+            }
+
+            // Fallback to search
+            var searchResp = await client.GetAsync($"api/Customer/search?key={custId}");
+            if (searchResp.IsSuccessStatusCode)
+            {
+                var rawJson = (await searchResp.Content.ReadAsStringAsync())?.Trim() ?? "";
+                if (!string.IsNullOrWhiteSpace(rawJson))
+                {
+                    if (rawJson.StartsWith("["))
+                    {
+                        var list = JsonConvert.DeserializeObject<List<SharedComponents.Rcl.Models.CustomerModel>>(rawJson);
+                        var found = list?.FirstOrDefault(c => c.custid == custId) ?? list?.FirstOrDefault();
+                        if (found != null && !string.IsNullOrWhiteSpace(found.name)) return found;
+                    }
+                    else if (rawJson.StartsWith("{"))
+                    {
+                        var cust = JsonConvert.DeserializeObject<SharedComponents.Rcl.Models.CustomerModel>(rawJson);
+                        if (cust != null && !string.IsNullOrWhiteSpace(cust.name)) return cust;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error fetching customer by id {custId}: {ex.Message}");
+        }
+        return null;
+    }
+
+    private async Task EnsureCustomersForAdmissionsAsync()
+    {
+        try
+        {
+            var missingCustIds = activeAdmissions
+                .Select(a => a.custid)
+                .Where(id => id > 0 && !customers.Any(c => c.custid == id || c.custid.ToString() == id.ToString()))
+                .Distinct()
+                .ToList();
+
+            if (missingCustIds.Any())
+            {
+                foreach (var id in missingCustIds)
+                {
+                    var cust = await FetchCustomerByIdAsync(id);
+                    if (cust != null && !customers.Any(c => c.custid == cust.custid))
+                    {
+                        customers.Add(cust);
+                    }
+                }
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error ensuring customers for admissions: {ex.Message}");
+        }
+    }
+
     private async Task LoadCustomersAsync()
     {
         try
@@ -492,6 +630,8 @@
             var discharged = await IpService.GetIpRegistrationsAsync("DISCHARGED");
             var cancelled = await IpService.GetIpRegistrationsAsync("CANCELLED");
             ipRegistrations = active.Concat(discharged).Concat(cancelled).ToList();
+
+            _ = EnsureCustomersForAdmissionsAsync();
         }
         catch (Exception ex)
         {
@@ -539,9 +679,10 @@
         _selectedTargetBedCode = "";
         showForm = true;
         isSubmitted = false;
+        _ = EnsureCustomersForAdmissionsAsync();
     }
 
-    private void OnAdmissionSelected(string val)
+    private async void OnAdmissionSelected(string val)
     {
         if (string.IsNullOrEmpty(val))
         {
@@ -561,7 +702,16 @@
         if (adm != null)
         {
             current.custid = adm.custid;
-            current.custcode = customers.FirstOrDefault(c => c.custid.ToString() == adm.custid.ToString())?.custcode;
+            var c = customers.FirstOrDefault(c => c.custid.ToString() == adm.custid.ToString() || c.custid == adm.custid);
+            if (c == null && adm.custid > 0)
+            {
+                c = await FetchCustomerByIdAsync(adm.custid);
+                if (c != null && !customers.Any(existing => existing.custid == c.custid))
+                {
+                    customers.Add(c);
+                }
+            }
+            current.custcode = c?.custcode;
             current.lastvisitid = adm.ip_id.ToString();
             current.admitteddate = adm.admitdate;
             current.currentfloor = adm.flrcode;
@@ -573,6 +723,7 @@
             current.transroom = adm.rmtcode;
             current.transbed = null;
             _selectedTargetBedCode = "";
+            await InvokeAsync(StateHasChanged);
             PrintPayload();
         }
     }
@@ -641,6 +792,7 @@
                 // Refresh active admissions and available beds
                 activeAdmissions = await IpService.GetIpRegistrationsAsync("ADMITTED");
                 availableBeds = await BedService.GetAvailableBedsAsync();
+                _ = EnsureCustomersForAdmissionsAsync();
                 ToastService.ShowSuccess("Bed transfer completed successfully!");
                 showForm = false;
                 StateHasChanged();
@@ -689,13 +841,14 @@
         {
             filteredAdmissionsForDropdown = activeAdmissions
                 .Where(a => {
-                    var patientName = customers.FirstOrDefault(c => c.custid.ToString() == a.custid.ToString())?.name ?? "";
+                    var patientName = GetPatientName(a.custid, a.GetPatientName());
                     var ipNo = a.ip_no ?? "";
                     var bedName = beds.FirstOrDefault(b => b.bedcode == a.bedcode)?.bedname ?? a.bedcode?.ToString() ?? "";
 
-                    return patientName.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase) ||
+                    return (patientName != "-" && patientName.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase)) ||
                            ipNo.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase) ||
-                           bedName.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase);
+                           bedName.Contains(selectedAdmissionSearchName, StringComparison.OrdinalIgnoreCase) ||
+                           a.custid.ToString().Contains(selectedAdmissionSearchName);
                 })
                 .ToList();
         }
@@ -705,6 +858,7 @@
     {
         UpdateFilteredAdmissions();
         showAdmissionDropdown = true;
+        _ = EnsureCustomersForAdmissionsAsync();
     }
 
     private async Task HideAdmissionDropdownWithDelay()
@@ -713,9 +867,25 @@
         showAdmissionDropdown = false;
     }
 
-    private void SelectAdmissionFromDropdown(IPRegistrationModel.IpRegistrationModel a)
+    private async Task SelectAdmissionFromDropdown(IPRegistrationModel.IpRegistrationModel a)
     {
-        var patientName = customers.FirstOrDefault(c => c.custid.ToString() == a.custid.ToString())?.name ?? a.custid.ToString();
+        var patientName = GetPatientName(a.custid, a.GetPatientName());
+        if (string.IsNullOrWhiteSpace(patientName) || patientName == "-")
+        {
+            var fetched = await FetchCustomerByIdAsync(a.custid);
+            if (fetched != null)
+            {
+                if (!customers.Any(c => c.custid == fetched.custid))
+                {
+                    customers.Add(fetched);
+                }
+                patientName = fetched.name ?? fetched.namewithinitials ?? $"Patient #{a.custid}";
+            }
+            else
+            {
+                patientName = $"Patient #{a.custid}";
+            }
+        }
         var bedName = beds.FirstOrDefault(b => b.bedcode == a.bedcode)?.bedname ?? a.bedcode?.ToString() ?? "No Bed";
         selectedAdmissionSearchName = $"{patientName} - {a.ip_no} (Bed: {bedName})";
         selectedLastVisitId = a.ip_id.ToString();
@@ -744,7 +914,7 @@
         {
             if (filteredAdmissionsForDropdown.Any() && activeDropdownIndex >= 0 && activeDropdownIndex < filteredAdmissionsForDropdown.Count)
             {
-                SelectAdmissionFromDropdown(filteredAdmissionsForDropdown[activeDropdownIndex]);
+                _ = SelectAdmissionFromDropdown(filteredAdmissionsForDropdown[activeDropdownIndex]);
             }
         }
     }

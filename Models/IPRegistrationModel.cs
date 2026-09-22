@@ -68,6 +68,18 @@ namespace medico_backend.Model
             public string? patient_name { get; set; }
 
             [Write(false)]
+            public string? name { get; set; }
+
+            [Write(false)]
+            public string? custname { get; set; }
+
+            [Write(false)]
+            public string? cust_name { get; set; }
+
+            [Write(false)]
+            public string? patientname { get; set; }
+
+            [Write(false)]
             public string? mobile { get; set; }
 
             [Write(false)]
@@ -78,6 +90,16 @@ namespace medico_backend.Model
 
             [Write(false)]
             public string? viprole { get; set; }
+
+            public string GetPatientName()
+            {
+                if (!string.IsNullOrWhiteSpace(patient_name)) return patient_name;
+                if (!string.IsNullOrWhiteSpace(name)) return name;
+                if (!string.IsNullOrWhiteSpace(custname)) return custname;
+                if (!string.IsNullOrWhiteSpace(cust_name)) return cust_name;
+                if (!string.IsNullOrWhiteSpace(patientname)) return patientname;
+                return string.Empty;
+            }
         }
 
         // ─── Request DTOs ──────────────────────────────

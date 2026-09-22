@@ -35,7 +35,10 @@ namespace LabCare.Services
         public async Task<List<UserFormRightsModel.usermodules>> GetModulesAsync()
         {
             ConfigureHeaders();
-            try { return await _http.GetFromJsonAsync<List<UserFormRightsModel.usermodules>>("api/userrights/modules") ?? new(); }
+            try { 
+                var modules = await _http.GetFromJsonAsync<List<UserFormRightsModel.usermodules>>("api/userrights/modules") ?? new(); 
+                return modules.OrderBy(m => m.modulename).ToList();
+            }
             catch { return new(); }
         }
 

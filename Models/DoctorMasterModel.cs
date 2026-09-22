@@ -125,14 +125,15 @@ namespace Booking.Models
         public long? group_id { get; set; }
         public int? room_no { get; set; }
         public string? token_prefix { get; set; }
+        public decimal? online_payment_charges { get; set; }
         [NotMapped] public string? DoctorImageBase64 { get; set; }
 
         public string GetFormattedName()
         {
-            if (!string.IsNullOrWhiteSpace(doctorfullname))
+            if (!string.IsNullOrWhiteSpace(doctorfullname) && !doctorfullname.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
                 return doctorfullname;
             
-            if (!string.IsNullOrWhiteSpace(name))
+            if (!string.IsNullOrWhiteSpace(name) && !name.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
             {
                 string title = !string.IsNullOrWhiteSpace(nametitle) ? nametitle.Trim() : "Dr.";
                 if (!title.EndsWith(".")) title += ".";
