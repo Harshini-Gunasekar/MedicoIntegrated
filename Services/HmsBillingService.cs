@@ -513,5 +513,45 @@ namespace Booking.Services
             }
             return new List<UnbilledChargeSummary>();
         }
+
+        public async Task<BillingSummaryCombinedResponse?> GetBillingSummaryCombinedAsync(int custId, string? opNo = null, string? ipNo = null)
+        {
+            try
+            {
+                var queryParams = new List<string> { $"custid={custId}" };
+                if (!string.IsNullOrWhiteSpace(opNo))
+                {
+                    queryParams.Add($"op_no={Uri.EscapeDataString(opNo.Trim())}");
+                }
+                if (!string.IsNullOrWhiteSpace(ipNo))
+                {
+                    queryParams.Add($"ip_no={Uri.EscapeDataString(ipNo.Trim())}");
+                }
+
+                string url = $"api/BillingSummary/combined?{string.Join("&", queryParams)}";
+                Console.WriteLine($"[HmsBillingService] Calling: {url}");
+
+                var client = GetClient();
+                var response = await client.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                {
+                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var rawJson = await response.Content.ReadAsStringAsync();
+                    return System.Text.Json.JsonSerializer.Deserialize<BillingSummaryCombinedResponse>(rawJson, options);
+                }
+                else
+                {
+                    var err = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine($"[HmsBillingService] GetBillingSummaryCombinedAsync failed ({response.StatusCode}): {err}");
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HmsBillingService] Error fetching combined billing summary: {ex.Message}");
+                return null;
+            }
+        }
     }
 }
+

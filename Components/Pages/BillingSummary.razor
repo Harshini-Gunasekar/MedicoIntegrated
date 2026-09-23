@@ -1,0 +1,1226 @@
+@page "/billing-summary"
+@rendermode InteractiveServer
+@inject Booking.Services.HmsBillingService HmsBillingService
+@inject NavigationManager Navigation
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject IHttpClientFactory ClientFactory
+@inject Booking.Services.AppointmentBookingService BookingService
+@inject Booking.Services.IpRegistrationService IpService
+@inject Booking.Services.DoctorService DoctorService
+@using Booking.Models
+@using Booking.Helpers
+
+<div class="bills-wrapper">
+    <!-- Header -->
+    <div class="lab-header-card flex-between">
+        <div class="gap-16 display-flex align-center">
+            <div class="bg-indigo-50 p-2 rounded-lg shadow-sm flex-center icon-box-container">
+                <span class="material-symbols-outlined text-indigo-600 icon-lg">receipt_long</span>
+            </div>
+            <div>
+                <h2 class="m-0 lab-title-text">Billing Summary</h2>
+                <div class="gap-8 flex-start mt-2px">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">Combined OP &amp; IP Patient Billing Statement</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Top Header Summary Cards -->
+        <div class="header-summary-cards">
+            <div class="summary-card net-card">
+                <div class="summary-icon">
+                    <i class="bi bi-cash-stack"></i>
+                </div>
+                <div class="summary-content">
+                    <div class="summary-label">TOTAL CHARGES</div>
+                    <div class="summary-value">₹@string.Format("{0:N2}", TotalCharges)</div>
+                </div>
+            </div>
+            <div class="summary-card paid-card">
+                <div class="summary-icon">
+                    <i class="bi bi-check-circle"></i>
+                </div>
+                <div class="summary-content">
+                    <div class="summary-label">TOTAL BILLED</div>
+                    <div class="summary-value">₹@string.Format("{0:N2}", TotalBilled)</div>
+                </div>
+            </div>
+            <div class="summary-card balance-card">
+                <div class="summary-icon">
+                    <i class="bi bi-hourglass-split"></i>
+                </div>
+                <div class="summary-content">
+                    <div class="summary-label">TOTAL UNBILLED</div>
+                    <div class="summary-value">₹@string.Format("{0:N2}", TotalUnbilled)</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Filters Card -->
+    <div class="filters-card">
+        <div class="bills-filters-body">
+            <!-- Column 1: Patient Search / Autocomplete -->
+            <div class="filter-column-item">
+                <div class="filter-column-title">
+                    <i class="bi bi-person-search"></i>
+                    <span>Patient Search</span>
+                </div>
+                <div class="search-input-box-wrapper">
+                    <i class="bi bi-search search-box-icon"></i>
+                    <input type="text"
+                           @bind="patientSearchText"
+                           @bind:event="oninput"
+                           @bind:after="PerformPatientFilter"
+                           @onkeyup="OnPatientSearchKeyUp"
+                           @onfocus="OnPatientSearchFocus"
+                           placeholder="Search Name, Mobile or ID..."
+                           class="form-control-search" />
+                    @if (!string.IsNullOrEmpty(patientSearchText))
+                    {
+                        <i class="bi bi-x-circle text-muted" style="cursor: pointer; font-size: 0.8rem;" @onclick="ClearPatientSearch"></i>
+                    }
+                </div>
+
+                @if (showPatientDropdown && filteredPatients.Any())
+                {
+                    <div class="autocomplete-dropdown">
+                        @foreach (var p in filteredPatients)
+                        {
+                            <div class="autocomplete-item" @onclick="() => SelectPatient(p)">
+                                <div>
+                                    <div class="autocomplete-name">@p.PatientName</div>
+                                    <div class="autocomplete-sub">Cust ID: @p.CustId | Mobile: @(string.IsNullOrEmpty(p.Mobile) ? "-" : p.Mobile)</div>
+                                </div>
+                                <div class="d-flex gap-1">
+                                    @if (!string.IsNullOrEmpty(p.OpNo))
+                                    {
+                                        <span class="autocomplete-badge op">@p.OpNo</span>
+                                    }
+                                    @if (!string.IsNullOrEmpty(p.IpNo))
+                                    {
+                                        <span class="autocomplete-badge ip">@p.IpNo</span>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+            </div>
+
+            <!-- Column 2: OP Number -->
+            <div class="filter-column-item">
+                <div class="filter-column-title">
+                    <i class="bi bi-person-badge"></i>
+                    <span>OP Number</span>
+                </div>
+                <div class="search-input-box-wrapper">
+                    <i class="bi bi-receipt search-box-icon"></i>
+                    <input type="text" @bind="filterOpNo" @onkeydown="HandleKeyDown" placeholder="e.g. OPD/2026/09/0155" class="form-control-search" />
+                    @if (!string.IsNullOrEmpty(filterOpNo))
+                    {
+                        <i class="bi bi-x-circle text-muted" style="cursor: pointer; font-size: 0.8rem;" @onclick="() => filterOpNo = null"></i>
+                    }
+                </div>
+            </div>
+
+            <!-- Column 3: IP Number -->
+            <div class="filter-column-item">
+                <div class="filter-column-title">
+                    <i class="bi bi-hospital"></i>
+                    <span>IP Number</span>
+                </div>
+                <div class="search-input-box-wrapper">
+                    <i class="bi bi-hospital search-box-icon"></i>
+                    <input type="text" @bind="filterIpNo" @onkeydown="HandleKeyDown" placeholder="e.g. IPD/2026/07/0001" class="form-control-search" />
+                    @if (!string.IsNullOrEmpty(filterIpNo))
+                    {
+                        <i class="bi bi-x-circle text-muted" style="cursor: pointer; font-size: 0.8rem;" @onclick="() => filterIpNo = null"></i>
+                    }
+                </div>
+            </div>
+
+            <!-- Column 4: Cust ID -->
+            <div class="filter-column-item">
+                <div class="filter-column-title">
+                    <i class="bi bi-person-vcard"></i>
+                    <span>Cust ID</span>
+                </div>
+                <div class="search-input-box-wrapper">
+                    <i class="bi bi-card-text search-box-icon"></i>
+                    <input type="number" @bind="filterCustId" @onkeydown="HandleKeyDown" placeholder="e.g. 68645" class="form-control-search" />
+                    @if (filterCustId.HasValue)
+                    {
+                        <i class="bi bi-x-circle text-muted" style="cursor: pointer; font-size: 0.8rem;" @onclick="() => filterCustId = null"></i>
+                    }
+                </div>
+            </div>
+
+            <!-- Column 5: Filter Chips for OP/IP View Mode -->
+            <div class="filter-column-item">
+                <div class="filter-column-title">
+                    <i class="bi bi-funnel"></i>
+                    <span>View Type</span>
+                </div>
+                <div class="chips-container">
+                    <button type="button" class="filter-chip @(viewType == "ALL" ? "active" : "")" @onclick='() => SetViewType("ALL")'>
+                        <span>Combined</span>
+                    </button>
+                    <button type="button" class="filter-chip @(viewType == "OP" ? "active" : "")" @onclick='() => SetViewType("OP")'>
+                        <span>OP</span>
+                    </button>
+                    <button type="button" class="filter-chip @(viewType == "IP" ? "active" : "")" @onclick='() => SetViewType("IP")'>
+                        <span>IP</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Enhanced Filter Actions Row (Without Print Statement button, refined spacing & metrics) -->
+        <div class="filter-actions-inline">
+            <!-- Left: Status Filter Segment -->
+            <div class="status-chips-group">
+                <button type="button" class="filter-chip-sm @(statusFilter == "ALL" ? "active" : "")" @onclick='() => SetStatusFilter("ALL")'>
+                    <i class="bi bi-grid-fill"></i>
+                    <span>All Items</span>
+                </button>
+                <button type="button" class="filter-chip-sm @(statusFilter == "UNBILLED" ? "active" : "")" @onclick='() => SetStatusFilter("UNBILLED")'>
+                    <i class="bi bi-hourglass-split text-warning"></i>
+                    <span>Unbilled Only</span>
+                </button>
+                <button type="button" class="filter-chip-sm @(statusFilter == "BILLED" ? "active" : "")" @onclick='() => SetStatusFilter("BILLED")'>
+                    <i class="bi bi-check-circle-fill text-success"></i>
+                    <span>Billed Only</span>
+                </button>
+            </div>
+
+            <!-- Center: Metrics Stats Breakdown -->
+            <div class="category-count-container">
+                <div class="cat-count-pill pill-op" title="OP Total Charges">
+                    <i class="bi bi-person-lines-fill"></i>
+                    <span>OP Total:</span>
+                    <span class="cat-count-badge">₹@string.Format("{0:0.00}", opTotal)</span>
+                </div>
+                <div class="cat-count-pill pill-ip" title="IP Total Charges">
+                    <i class="bi bi-hospital"></i>
+                    <span>IP Total:</span>
+                    <span class="cat-count-badge">₹@string.Format("{0:0.00}", ipTotal)</span>
+                </div>
+                <div class="cat-count-pill pill-unbilled" title="Total Unbilled Items">
+                    <i class="bi bi-clock-history"></i>
+                    <span>Unbilled:</span>
+                    <span class="cat-count-badge">@unbilledCount</span>
+                </div>
+                <div class="cat-count-pill pill-billed" title="Total Billed Items">
+                    <i class="bi bi-receipt"></i>
+                    <span>Billed:</span>
+                    <span class="cat-count-badge">@billedCount</span>
+                </div>
+            </div>
+
+            <!-- Right: Search and Reset Actions -->
+            <div class="filter-actions-right">
+                <button class="btn btn-primary-action" @onclick="LoadBillingSummaryAsync" disabled="@isLoading">
+                    @if (isLoading)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        <span>Searching...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-search"></i>
+                        <span>Search</span>
+                    }
+                </button>
+                <button class="btn btn-refresh" @onclick="ResetFiltersAsync" disabled="@isLoading">
+                    <i class="bi bi-arrow-clockwise"></i>
+                    <span>Reset</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-warning py-2 px-3 rounded-3 d-flex align-items-center justify-content-between gap-2 mb-0" role="alert" style="font-size: 0.85rem;">
+            <div class="d-flex align-items-center gap-2">
+                <i class="bi bi-exclamation-triangle-fill text-warning"></i>
+                <span>@errorMessage</span>
+            </div>
+            <button type="button" class="btn-close" style="font-size: 0.75rem;" @onclick="() => errorMessage = string.Empty"></button>
+        </div>
+    }
+
+    <!-- Patient & Visit Details Strip -->
+    @if (summaryResponse != null && (summaryResponse.has_op || summaryResponse.has_ip))
+    {
+        <div class="patient-info-strip">
+            <div class="patient-profile-block">
+                <div class="patient-avatar">
+                    @(string.IsNullOrEmpty(currentPatientName) ? "P" : currentPatientName[0].ToString().ToUpper())
+                </div>
+                <div>
+                    <div class="patient-meta-name">@currentPatientName</div>
+                    <div class="patient-meta-sub">
+                        <span class="patient-meta-item"><i class="bi bi-person-vcard"></i> Cust ID: <strong>@summaryResponse.custid</strong></span>
+                        @if (!string.IsNullOrEmpty(currentPatientMobile))
+                        {
+                            <span class="patient-meta-item"><i class="bi bi-telephone"></i> @currentPatientMobile</span>
+                        }
+                        @if (currentDoctorName != null)
+                        {
+                            <span class="patient-meta-item"><i class="bi bi-heart-pulse"></i> Dr. @currentDoctorName</span>
+                        }
+                    </div>
+                </div>
+            </div>
+
+            <div class="patient-visit-pills">
+                @if (summaryResponse.has_op && summaryResponse.op != null)
+                {
+                    <div class="visit-badge op-badge">
+                        <i class="bi bi-person-lines-fill"></i>
+                        <span>OP No: @summaryResponse.op.number</span>
+                        @if (!string.IsNullOrEmpty(summaryResponse.op.status))
+                        {
+                            <span class="badge bg-indigo-100 text-indigo-800" style="font-size: 0.65rem;">@summaryResponse.op.status</span>
+                        }
+                    </div>
+                }
+                @if (summaryResponse.has_ip && summaryResponse.ip != null)
+                {
+                    <div class="visit-badge ip-badge">
+                        <i class="bi bi-hospital"></i>
+                        <span>IP No: @summaryResponse.ip.number</span>
+                        @if (!string.IsNullOrEmpty(summaryResponse.ip.status))
+                        {
+                            <span class="badge bg-purple-100 text-purple-800" style="font-size: 0.65rem;">@summaryResponse.ip.status</span>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+    }
+
+    <!-- Table Card -->
+    <div class="table-card">
+        <div class="table-responsive">
+            <table class="bills-table">
+                <thead>
+                    <tr>
+                        <th class="sno-cell">S.NO</th>
+                        <th>VISIT TYPE</th>
+                        <th>VISIT NO</th>
+                        <th>ENTRY TYPE / SERVICE</th>
+                        <th>PARTICULARS</th>
+                        <th>CHARGE DATE</th>
+                        <th style="text-align: right;">QTY</th>
+                        <th style="text-align: right;">RATE</th>
+                        <th style="text-align: right;">DISCOUNT</th>
+                        <th style="text-align: right;">AMOUNT</th>
+                        <th style="text-align: center;">STATUS</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (isLoading)
+                    {
+                        <tr>
+                            <td colspan="11" class="text-center py-5">
+                                <div class="spinner-border text-primary" role="status">
+                                    <span class="visually-hidden">Loading patient billing summary...</span>
+                                </div>
+                                <div class="mt-2 text-muted" style="font-size: 0.8rem;">Fetching combined billing data...</div>
+                            </td>
+                        </tr>
+                    }
+                    else if (!hasSearched)
+                    {
+                        <tr>
+                            <td colspan="11" class="text-center py-5 text-muted">
+                                <i class="bi bi-search d-block mb-2" style="font-size: 1.5rem; color: #94a3b8;"></i>
+                                Search by Patient Name, OP Number, IP Number, or Cust ID to view combined billing details.
+                            </td>
+                        </tr>
+                    }
+                    else if (!pagedItems.Any())
+                    {
+                        <tr>
+                            <td colspan="11" class="text-center py-5 text-muted">
+                                <i class="bi bi-clipboard-x d-block mb-2" style="font-size: 1.5rem; color: #94a3b8;"></i>
+                                No billing records found for the selected criteria.
+                            </td>
+                        </tr>
+                    }
+                    else
+                    {
+                        @foreach (var item in pagedItems)
+                        {
+                            <tr>
+                                <td class="sno-cell">@item.SNo</td>
+                                <td>
+                                    <span class="type-pill @(item.VisitType.ToLower())">@item.VisitType</span>
+                                </td>
+                                <td>
+                                    <span class="fw-bold text-slate-800" style="font-size: 0.78rem;">@(string.IsNullOrEmpty(item.VisitNumber) ? "-" : item.VisitNumber)</span>
+                                </td>
+                                <td>
+                                    <span class="category-tag">@(string.IsNullOrEmpty(item.EntryType) ? "SERVICE" : item.EntryType)</span>
+                                </td>
+                                <td>
+                                    <span class="fw-bold text-slate-800">@(string.IsNullOrEmpty(item.Particulars) ? (item.EntryType ?? "Service Charge") : item.Particulars)</span>
+                                </td>
+                                <td>@(item.ChargeDate.HasValue ? DateTimeHelper.ConvertUtcToIst(item.ChargeDate)?.ToString("dd-MMM-yyyy HH:mm") : "-")</td>
+                                <td style="text-align: right;">@item.Quantity</td>
+                                <td style="text-align: right;">₹@string.Format("{0:0.00}", item.Rate)</td>
+                                <td style="text-align: right; color: #b91c1c;">₹@string.Format("{0:0.00}", item.Discount)</td>
+                                <td style="text-align: right; font-weight: 700; color: #1e293b;">₹@string.Format("{0:0.00}", item.NetAmount)</td>
+                                <td style="text-align: center;">
+                                    @if (item.IsBilled)
+                                    {
+                                        <span class="status-pill billed" title="@($"Billed: {item.BillNo}")">
+                                            <i class="bi bi-check-circle-fill"></i>
+                                            <span>BILLED @(string.IsNullOrEmpty(item.BillNo) ? "" : $"({item.BillNo})")</span>
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="status-pill unbilled" title="Unbilled Charge">
+                                            <i class="bi bi-hourglass-split"></i>
+                                            <span>UNBILLED</span>
+                                        </span>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        @if (filteredItems.Any())
+        {
+            <div class="pagination-area">
+                <div class="pagination-info">
+                    Showing @((currentPage - 1) * pageSize + 1) to @(Math.Min(currentPage * pageSize, filteredItems.Count)) of @filteredItems.Count records
+                </div>
+                <div class="pagination-controls">
+                    <button class="page-btn" disabled="@(currentPage <= 1)" @onclick="PrevPage">
+                        <i class="bi bi-chevron-left"></i>
+                    </button>
+                    @{
+                        int totalPages = (int)Math.Ceiling((double)filteredItems.Count / pageSize);
+                        if (totalPages == 0) totalPages = 1;
+
+                        for (int i = 1; i <= totalPages; i++)
+                        {
+                            var pageNum = i;
+                            if (pageNum == currentPage || (pageNum >= currentPage - 2 && pageNum <= currentPage + 2))
+                            {
+                                <button class="page-btn @(pageNum == currentPage ? "active" : "")" @onclick="() => GoToPage(pageNum)">
+                                    @pageNum
+                                </button>
+                            }
+                        }
+                    }
+                    <button class="page-btn" disabled="@(currentPage >= totalPages)" @onclick="NextPage">
+                        <i class="bi bi-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+        }
+    </div>
+</div>
+
+<!-- Modal for Statement / Item Details -->
+@if (showDetailsModal && selectedDisplayItem != null)
+{
+    <div class="modal-backdrop" @onclick="CloseDetailsModal">
+        <div class="modal-content-lg" @onclick:stopPropagation>
+            <div class="modal-header">
+                <h5 class="mb-0 fw-bold">Charge Details</h5>
+                <button type="button" class="btn-close-custom" @onclick="CloseDetailsModal"><i class="bi bi-x-lg"></i></button>
+            </div>
+            <div class="modal-body print-area">
+                <div class="receipt-header-card">
+                    <div class="receipt-brand-logo">
+                        <i class="bi bi-heart-pulse-fill"></i>
+                    </div>
+                    <div class="receipt-brand-info">
+                        <h3>MEDICO BILLING SUMMARY</h3>
+                        <p class="receipt-brand-addr">Patient Statement &amp; Charge Summary</p>
+                    </div>
+                </div>
+
+                <div class="receipt-meta-grid">
+                    <div class="receipt-meta-column">
+                        <div class="meta-row">
+                            <span class="meta-label">Patient:</span>
+                            <span class="meta-value text-highlight">@currentPatientName</span>
+                        </div>
+                        <div class="meta-row">
+                            <span class="meta-label">Cust ID:</span>
+                            <span class="meta-value">@summaryResponse?.custid</span>
+                        </div>
+                        <div class="meta-row">
+                            <span class="meta-label">Mobile:</span>
+                            <span class="meta-value">@(string.IsNullOrEmpty(currentPatientMobile) ? "-" : currentPatientMobile)</span>
+                        </div>
+                    </div>
+                    <div class="receipt-meta-column">
+                        <div class="meta-row">
+                            <span class="meta-label">Visit Type:</span>
+                            <span class="meta-value">@selectedDisplayItem.VisitType (@selectedDisplayItem.VisitNumber)</span>
+                        </div>
+                        <div class="meta-row">
+                            <span class="meta-label">Charge Date:</span>
+                            <span class="meta-value">@(selectedDisplayItem.ChargeDate.HasValue ? DateTimeHelper.ConvertUtcToIst(selectedDisplayItem.ChargeDate)?.ToString("dd-MMM-yyyy HH:mm") : "-")</span>
+                        </div>
+                        <div class="meta-row">
+                            <span class="meta-label">Status:</span>
+                            <span class="meta-value">@(selectedDisplayItem.IsBilled ? $"Billed ({selectedDisplayItem.BillNo})" : "Unbilled")</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="receipt-table-wrapper">
+                    <table class="receipt-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px; text-align: center;">S.No</th>
+                                <th>Category</th>
+                                <th>Particulars</th>
+                                <th style="text-align: right; width: 80px;">Qty</th>
+                                <th style="text-align: right; width: 90px;">Rate</th>
+                                <th style="text-align: right; width: 90px;">Discount</th>
+                                <th style="text-align: right; width: 100px;">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <tr>
+                                <td style="text-align: center;">1</td>
+                                <td>@selectedDisplayItem.EntryType</td>
+                                <td style="font-weight: 600;">@selectedDisplayItem.Particulars</td>
+                                <td style="text-align: right;">@selectedDisplayItem.Quantity</td>
+                                <td style="text-align: right;">₹@string.Format("{0:0.00}", selectedDisplayItem.Rate)</td>
+                                <td style="text-align: right; color: #b91c1c;">₹@string.Format("{0:0.00}", selectedDisplayItem.Discount)</td>
+                                <td style="text-align: right; font-weight: 700;">₹@string.Format("{0:0.00}", selectedDisplayItem.NetAmount)</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="receipt-summary-section">
+                    <div class="receipt-summary-card">
+                        <div class="summary-item-row">
+                            <span>Gross Rate</span>
+                            <span>₹@string.Format("{0:0.00}", selectedDisplayItem.Rate * selectedDisplayItem.Quantity)</span>
+                        </div>
+                        <div class="summary-item-row">
+                            <span>Discount</span>
+                            <span class="text-danger">- ₹@string.Format("{0:0.00}", selectedDisplayItem.Discount)</span>
+                        </div>
+                        <div class="summary-item-row highlight-row">
+                            <span>Net Total</span>
+                            <span>₹@string.Format("{0:0.00}", selectedDisplayItem.NetAmount)</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn-detail-close" @onclick="CloseDetailsModal">Close</button>
+                <button type="button" class="btn-detail-print" @onclick="TriggerPrint">
+                    <i class="bi bi-printer-fill"></i>
+                    <span>Print</span>
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    private string patientSearchText = "";
+    private string? filterOpNo;
+    private string? filterIpNo;
+    private int? filterCustId;
+
+    private string viewType = "ALL"; // ALL, OP, IP
+    private string statusFilter = "ALL"; // ALL, UNBILLED, BILLED
+
+    private bool isLoading = false;
+    private bool hasSearched = false;
+    private string errorMessage = "";
+
+    private BillingSummaryCombinedResponse? summaryResponse;
+    private List<BillingSummaryDisplayItem> allDisplayItems = new();
+    private List<BillingSummaryDisplayItem> filteredItems = new();
+
+    private int currentPage = 1;
+    private int pageSize = 10;
+
+    private IEnumerable<BillingSummaryDisplayItem> pagedItems =>
+        filteredItems.Skip((currentPage - 1) * pageSize).Take(pageSize);
+
+    // Dynamic totals
+    private decimal opTotal = 0;
+    private decimal ipTotal = 0;
+    private decimal unbilledTotal = 0;
+    private decimal billedTotal = 0;
+    private int unbilledCount = 0;
+    private int billedCount = 0;
+
+    private decimal TotalCharges => opTotal + ipTotal;
+    private decimal TotalBilled => billedTotal;
+    private decimal TotalUnbilled => unbilledTotal;
+
+    // Patient info helpers
+    private string currentPatientName = "";
+    private string currentPatientMobile = "";
+    private string? currentDoctorName = null;
+
+    // Modals
+    private bool showDetailsModal = false;
+    private BillingSummaryDisplayItem? selectedDisplayItem;
+
+    // Autocomplete list
+    private bool showPatientDropdown = false;
+    private List<PatientLookupItem> patientDirectory = new();
+    private List<PatientLookupItem> filteredPatients = new();
+    private Dictionary<int, string> doctorNames = new();
+
+    private class PatientLookupItem
+    {
+        public int CustId { get; set; }
+        public string PatientName { get; set; } = "";
+        public string Mobile { get; set; } = "";
+        public string? OpNo { get; set; }
+        public string? IpNo { get; set; }
+        public int? Dcode { get; set; }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadPatientDirectoryAsync();
+        await LoadDoctorsAsync();
+    }
+
+    private void HandleKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            _ = LoadBillingSummaryAsync();
+        }
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            var doctors = await DoctorService.GetDoctorsAsync() ?? new();
+            doctorNames = doctors.Where(d => d.dcode > 0)
+                                 .ToDictionary(d => d.dcode, d => d.name ?? "");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading doctors: {ex.Message}");
+        }
+    }
+
+    private async Task LoadPatientDirectoryAsync()
+    {
+        try
+        {
+            var directory = new List<PatientLookupItem>();
+
+            // 1. Fetch OP registrations
+            var opRegs = await BookingService.GetAllOpRegistrationsAsync() ?? new();
+            foreach (var op in opRegs.Where(x => !x.isdeleted && x.custid > 0))
+            {
+                int cid = (int)op.custid;
+                directory.Add(new PatientLookupItem
+                {
+                    CustId = cid,
+                    PatientName = op.patient_name ?? "Patient",
+                    Mobile = op.mobile ?? "",
+                    OpNo = op.op_no,
+                    Dcode = op.dcode
+                });
+            }
+
+            // 2. Fetch IP registrations
+            var ipRegs = await IpService.GetIpRegistrationsAsync() ?? new();
+            foreach (var ip in ipRegs.Where(x => !x.isdeleted && x.custid > 0))
+            {
+                int cid = (int)ip.custid;
+                directory.Add(new PatientLookupItem
+                {
+                    CustId = cid,
+                    PatientName = ip.patient_name ?? "Patient",
+                    Mobile = ip.mobile ?? "",
+                    IpNo = ip.ip_no,
+                    Dcode = ip.dcode
+                });
+            }
+
+            patientDirectory = directory
+                .GroupBy(x => new { x.CustId, x.OpNo, x.IpNo })
+                .Select(g => g.First())
+                .OrderBy(x => x.PatientName)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading patient directory: {ex.Message}");
+        }
+    }
+
+    private void PerformPatientFilter()
+    {
+        if (string.IsNullOrWhiteSpace(patientSearchText))
+        {
+            filteredPatients = new();
+            showPatientDropdown = false;
+            return;
+        }
+
+        var q = patientSearchText.Trim();
+        var matches = patientDirectory.Where(p =>
+            p.PatientName.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+            p.Mobile.Contains(q, StringComparison.OrdinalIgnoreCase) ||
+            p.CustId.ToString().Contains(q) ||
+            (!string.IsNullOrEmpty(p.OpNo) && p.OpNo.Contains(q, StringComparison.OrdinalIgnoreCase)) ||
+            (!string.IsNullOrEmpty(p.IpNo) && p.IpNo.Contains(q, StringComparison.OrdinalIgnoreCase))
+        );
+
+        filteredPatients = matches
+            .OrderBy(p =>
+            {
+                if (p.PatientName.Equals(q, StringComparison.OrdinalIgnoreCase)) return 0;
+                if (p.PatientName.StartsWith(q, StringComparison.OrdinalIgnoreCase)) return 1;
+                if (p.PatientName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(w => w.StartsWith(q, StringComparison.OrdinalIgnoreCase))) return 2;
+                if (p.PatientName.Contains(q, StringComparison.OrdinalIgnoreCase)) return 3;
+                if (p.CustId.ToString() == q) return 4;
+                if (p.Mobile.StartsWith(q, StringComparison.OrdinalIgnoreCase)) return 5;
+                if (!string.IsNullOrEmpty(p.OpNo) && p.OpNo.Contains(q, StringComparison.OrdinalIgnoreCase)) return 6;
+                if (!string.IsNullOrEmpty(p.IpNo) && p.IpNo.Contains(q, StringComparison.OrdinalIgnoreCase)) return 7;
+                return 8;
+            })
+            .ThenBy(p => p.PatientName)
+            .Take(100)
+            .ToList();
+
+        showPatientDropdown = filteredPatients.Any();
+    }
+
+    private void OnPatientSearchFocus()
+    {
+        if (!string.IsNullOrWhiteSpace(patientSearchText))
+        {
+            PerformPatientFilter();
+        }
+    }
+
+    private void OnPatientSearchKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            if (filteredPatients.Any())
+            {
+                SelectPatient(filteredPatients.First());
+            }
+            else
+            {
+                _ = LoadBillingSummaryAsync();
+            }
+            return;
+        }
+
+        PerformPatientFilter();
+    }
+
+    private void SelectPatient(PatientLookupItem p)
+    {
+        patientSearchText = p.PatientName;
+        filterCustId = p.CustId;
+        filterOpNo = !string.IsNullOrWhiteSpace(p.OpNo) ? p.OpNo : null;
+        filterIpNo = !string.IsNullOrWhiteSpace(p.IpNo) ? p.IpNo : null;
+        showPatientDropdown = false;
+
+        _ = LoadBillingSummaryAsync();
+    }
+
+    private void ClearPatientSearch()
+    {
+        patientSearchText = "";
+        filterCustId = null;
+        filterOpNo = null;
+        filterIpNo = null;
+        showPatientDropdown = false;
+        filteredPatients = new();
+    }
+
+    private async Task LoadBillingSummaryAsync()
+    {
+        errorMessage = "";
+        showPatientDropdown = false;
+
+        // Ensure patient directory is populated
+        if (!patientDirectory.Any())
+        {
+            await LoadPatientDirectoryAsync();
+        }
+
+        // =========================================================================
+        // Auto-Resolution Logic for searching by OP, IP, Cust ID, or Name separately
+        // =========================================================================
+
+        // 1. If user provided OP Number
+        if (!string.IsNullOrWhiteSpace(filterOpNo))
+        {
+            var cleanOp = filterOpNo.Trim();
+            var matched = patientDirectory.FirstOrDefault(p => !string.IsNullOrEmpty(p.OpNo) && p.OpNo.Equals(cleanOp, StringComparison.OrdinalIgnoreCase))
+                       ?? patientDirectory.FirstOrDefault(p => !string.IsNullOrEmpty(p.OpNo) && p.OpNo.Contains(cleanOp, StringComparison.OrdinalIgnoreCase));
+
+            // If not found in directory, check live OP registrations
+            if (matched == null)
+            {
+                var opRegs = await BookingService.GetAllOpRegistrationsAsync() ?? new();
+                var op = opRegs.FirstOrDefault(x => !x.isdeleted && !string.IsNullOrEmpty(x.op_no) &&
+                            (x.op_no.Equals(cleanOp, StringComparison.OrdinalIgnoreCase) || x.op_no.Contains(cleanOp, StringComparison.OrdinalIgnoreCase)));
+                if (op != null)
+                {
+                    matched = new PatientLookupItem
+                    {
+                        CustId = (int)op.custid,
+                        PatientName = op.patient_name ?? "Patient",
+                        Mobile = op.mobile ?? "",
+                        OpNo = op.op_no,
+                        Dcode = op.dcode
+                    };
+                    patientDirectory.Add(matched);
+                }
+            }
+
+            if (matched != null)
+            {
+                if (!filterCustId.HasValue || filterCustId.Value <= 0)
+                {
+                    filterCustId = matched.CustId;
+                }
+                if (string.IsNullOrWhiteSpace(patientSearchText))
+                {
+                    patientSearchText = matched.PatientName;
+                }
+                if (!string.IsNullOrWhiteSpace(matched.OpNo))
+                {
+                    filterOpNo = matched.OpNo;
+                }
+            }
+        }
+
+        // 2. If user provided IP Number
+        if (!string.IsNullOrWhiteSpace(filterIpNo))
+        {
+            var cleanIp = filterIpNo.Trim();
+            var matched = patientDirectory.FirstOrDefault(p => !string.IsNullOrEmpty(p.IpNo) && p.IpNo.Equals(cleanIp, StringComparison.OrdinalIgnoreCase))
+                       ?? patientDirectory.FirstOrDefault(p => !string.IsNullOrEmpty(p.IpNo) && p.IpNo.Contains(cleanIp, StringComparison.OrdinalIgnoreCase));
+
+            // If not found in directory, check live IP registrations
+            if (matched == null)
+            {
+                var ipRegs = await IpService.GetIpRegistrationsAsync() ?? new();
+                var ip = ipRegs.FirstOrDefault(x => !x.isdeleted && !string.IsNullOrEmpty(x.ip_no) &&
+                            (x.ip_no.Equals(cleanIp, StringComparison.OrdinalIgnoreCase) || x.ip_no.Contains(cleanIp, StringComparison.OrdinalIgnoreCase)));
+                if (ip != null)
+                {
+                    matched = new PatientLookupItem
+                    {
+                        CustId = (int)ip.custid,
+                        PatientName = ip.patient_name ?? "Patient",
+                        Mobile = ip.mobile ?? "",
+                        IpNo = ip.ip_no,
+                        Dcode = ip.dcode
+                    };
+                    patientDirectory.Add(matched);
+                }
+            }
+
+            if (matched != null)
+            {
+                if (!filterCustId.HasValue || filterCustId.Value <= 0)
+                {
+                    filterCustId = matched.CustId;
+                }
+                if (string.IsNullOrWhiteSpace(patientSearchText))
+                {
+                    patientSearchText = matched.PatientName;
+                }
+                if (!string.IsNullOrWhiteSpace(matched.IpNo))
+                {
+                    filterIpNo = matched.IpNo;
+                }
+            }
+        }
+
+        // 3. If user provided Cust ID alone (and OP / IP are not entered)
+        if (filterCustId.HasValue && filterCustId.Value > 0 && string.IsNullOrWhiteSpace(filterOpNo) && string.IsNullOrWhiteSpace(filterIpNo))
+        {
+            var matchedList = patientDirectory.Where(p => p.CustId == filterCustId.Value).ToList();
+            var opMatch = matchedList.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.OpNo));
+            var ipMatch = matchedList.FirstOrDefault(p => !string.IsNullOrWhiteSpace(p.IpNo));
+
+            if (opMatch != null) filterOpNo = opMatch.OpNo;
+            if (ipMatch != null) filterIpNo = ipMatch.IpNo;
+            if (string.IsNullOrWhiteSpace(patientSearchText) && matchedList.Any())
+            {
+                patientSearchText = matchedList.First().PatientName;
+            }
+
+            if (string.IsNullOrWhiteSpace(filterOpNo) && string.IsNullOrWhiteSpace(filterIpNo))
+            {
+                // Fallback to live OP/IP queries
+                var opRegs = await BookingService.GetAllOpRegistrationsAsync() ?? new();
+                var op = opRegs.LastOrDefault(x => !x.isdeleted && x.custid == filterCustId.Value);
+                if (op != null && !string.IsNullOrWhiteSpace(op.op_no))
+                {
+                    filterOpNo = op.op_no;
+                    if (string.IsNullOrWhiteSpace(patientSearchText)) patientSearchText = op.patient_name ?? "";
+                }
+
+                var ipRegs = await IpService.GetIpRegistrationsAsync() ?? new();
+                var ip = ipRegs.LastOrDefault(x => !x.isdeleted && x.custid == filterCustId.Value);
+                if (ip != null && !string.IsNullOrWhiteSpace(ip.ip_no))
+                {
+                    filterIpNo = ip.ip_no;
+                    if (string.IsNullOrWhiteSpace(patientSearchText)) patientSearchText = ip.patient_name ?? "";
+                }
+            }
+        }
+
+        // 4. If user typed Patient Name or Mobile alone
+        if ((!filterCustId.HasValue || filterCustId.Value <= 0) && !string.IsNullOrWhiteSpace(patientSearchText))
+        {
+            var q = patientSearchText.Trim();
+            var matched = patientDirectory.FirstOrDefault(p => p.PatientName.Equals(q, StringComparison.OrdinalIgnoreCase))
+                       ?? patientDirectory.FirstOrDefault(p => p.PatientName.StartsWith(q, StringComparison.OrdinalIgnoreCase))
+                       ?? patientDirectory.FirstOrDefault(p => p.PatientName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Any(w => w.StartsWith(q, StringComparison.OrdinalIgnoreCase)))
+                       ?? patientDirectory.FirstOrDefault(p => p.PatientName.Contains(q, StringComparison.OrdinalIgnoreCase) || p.Mobile.Contains(q) || p.CustId.ToString() == q);
+            if (matched != null)
+            {
+                filterCustId = matched.CustId;
+                if (string.IsNullOrWhiteSpace(filterOpNo) && !string.IsNullOrWhiteSpace(matched.OpNo)) filterOpNo = matched.OpNo;
+                if (string.IsNullOrWhiteSpace(filterIpNo) && !string.IsNullOrWhiteSpace(matched.IpNo)) filterIpNo = matched.IpNo;
+            }
+        }
+
+        // Final Validation
+        if (!filterCustId.HasValue || filterCustId.Value <= 0)
+        {
+            errorMessage = "Please enter a valid Patient Name, OP Number, IP Number, or Cust ID.";
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(filterOpNo) && string.IsNullOrWhiteSpace(filterIpNo))
+        {
+            errorMessage = $"No OP or IP registration found for Cust ID: {filterCustId.Value}.";
+            return;
+        }
+
+        isLoading = true;
+        hasSearched = true;
+        StateHasChanged();
+
+        try
+        {
+            summaryResponse = await HmsBillingService.GetBillingSummaryCombinedAsync(filterCustId.Value, filterOpNo, filterIpNo);
+
+            if (summaryResponse == null)
+            {
+                errorMessage = "Failed to load billing summary. Please verify the patient OP/IP details.";
+                allDisplayItems = new();
+                filteredItems = new();
+                RecalculateTotals();
+                return;
+            }
+
+            if (!string.IsNullOrEmpty(summaryResponse.op_error) && !string.IsNullOrEmpty(summaryResponse.ip_error))
+            {
+                errorMessage = $"{summaryResponse.op_error} | {summaryResponse.ip_error}";
+            }
+            else if (!string.IsNullOrEmpty(summaryResponse.op_error) && !summaryResponse.has_ip)
+            {
+                errorMessage = summaryResponse.op_error;
+            }
+            else if (!string.IsNullOrEmpty(summaryResponse.ip_error) && !summaryResponse.has_op)
+            {
+                errorMessage = summaryResponse.ip_error;
+            }
+
+            // Extract patient header metadata
+            currentPatientName = summaryResponse.op?.patient_name ?? summaryResponse.ip?.patient_name ?? patientSearchText;
+            currentPatientMobile = summaryResponse.op?.mobile ?? summaryResponse.ip?.mobile ?? "";
+
+            int? docCode = summaryResponse.op?.details?.dcode ?? summaryResponse.ip?.details?.dcode;
+            if (docCode.HasValue && doctorNames.TryGetValue(docCode.Value, out var dname))
+            {
+                currentDoctorName = dname;
+            }
+            else
+            {
+                currentDoctorName = null;
+            }
+
+            // Build unified display items list
+            BuildDisplayItemsList();
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading summary: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void BuildDisplayItemsList()
+    {
+        allDisplayItems = new List<BillingSummaryDisplayItem>();
+        int sno = 1;
+
+        // Process OP Data
+        if (summaryResponse?.has_op == true && summaryResponse.op != null)
+        {
+            var op = summaryResponse.op;
+
+            // 1. OP Unbilled Items
+            if (op.unbilled_items != null)
+            {
+                foreach (var item in op.unbilled_items)
+                {
+                    allDisplayItems.Add(new BillingSummaryDisplayItem
+                    {
+                        SNo = sno++,
+                        VisitType = "OP",
+                        VisitNumber = op.number ?? "",
+                        EntryType = item.entrytype ?? "CONSULTATION",
+                        Particulars = item.particulars ?? item.entrytype ?? "OP Consultation",
+                        ChargeDate = item.chargedate,
+                        Quantity = item.quantity ?? 1,
+                        Rate = item.rate ?? 0,
+                        Discount = item.discount ?? 0,
+                        NetAmount = item.amount ?? 0,
+                        IsBilled = false,
+                        IsPaid = item.paid_status ?? false,
+                        UnbilledId = item.unbilledid,
+                        RawEntryId = item.entryid
+                    });
+                }
+            }
+
+            // 2. OP Billed Items
+            if (op.billed_items != null)
+            {
+                foreach (var item in op.billed_items)
+                {
+                    allDisplayItems.Add(new BillingSummaryDisplayItem
+                    {
+                        SNo = sno++,
+                        VisitType = "OP",
+                        VisitNumber = op.number ?? "",
+                        EntryType = item.entrytype ?? "CONSULTATION",
+                        Particulars = item.particulars ?? item.entrytype ?? "OP Consultation",
+                        ChargeDate = item.chargedate,
+                        Quantity = item.quantity ?? (item.billedquantity ?? 1),
+                        Rate = item.rate ?? 0,
+                        Discount = item.discount ?? 0,
+                        NetAmount = item.amount ?? (item.billedamount ?? 0),
+                        IsBilled = true,
+                        BillNo = item.billno,
+                        BillId = item.billid,
+                        BilledDate = item.billeddate,
+                        IsPaid = item.paid_status ?? false,
+                        UnbilledId = item.unbilledid,
+                        RawEntryId = item.entryid
+                    });
+                }
+            }
+        }
+
+        // Process IP Data
+        if (summaryResponse?.has_ip == true && summaryResponse.ip != null)
+        {
+            var ip = summaryResponse.ip;
+
+            // 1. IP Unbilled Items
+            if (ip.unbilled_items != null)
+            {
+                foreach (var item in ip.unbilled_items)
+                {
+                    allDisplayItems.Add(new BillingSummaryDisplayItem
+                    {
+                        SNo = sno++,
+                        VisitType = "IP",
+                        VisitNumber = ip.number ?? "",
+                        EntryType = item.entrytype ?? "IP CHARGE",
+                        Particulars = item.particulars ?? item.entrytype ?? "Inpatient Service",
+                        ChargeDate = item.chargedate,
+                        Quantity = item.quantity ?? 1,
+                        Rate = item.rate ?? 0,
+                        Discount = item.discount ?? 0,
+                        NetAmount = item.amount ?? 0,
+                        IsBilled = false,
+                        IsPaid = item.paid_status ?? false,
+                        UnbilledId = item.unbilledid,
+                        RawEntryId = item.entryid
+                    });
+                }
+            }
+
+            // 2. IP Billed Items
+            if (ip.billed_items != null)
+            {
+                foreach (var item in ip.billed_items)
+                {
+                    allDisplayItems.Add(new BillingSummaryDisplayItem
+                    {
+                        SNo = sno++,
+                        VisitType = "IP",
+                        VisitNumber = ip.number ?? "",
+                        EntryType = item.entrytype ?? "IP CHARGE",
+                        Particulars = item.particulars ?? item.entrytype ?? "Inpatient Service",
+                        ChargeDate = item.chargedate,
+                        Quantity = item.quantity ?? (item.billedquantity ?? 1),
+                        Rate = item.rate ?? 0,
+                        Discount = item.discount ?? 0,
+                        NetAmount = item.amount ?? (item.billedamount ?? 0),
+                        IsBilled = true,
+                        BillNo = item.billno,
+                        BillId = item.billid,
+                        BilledDate = item.billeddate,
+                        IsPaid = item.paid_status ?? false,
+                        UnbilledId = item.unbilledid,
+                        RawEntryId = item.entryid
+                    });
+                }
+            }
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        var list = allDisplayItems.AsEnumerable();
+
+        if (viewType == "OP")
+        {
+            list = list.Where(x => x.VisitType.Equals("OP", StringComparison.OrdinalIgnoreCase));
+        }
+        else if (viewType == "IP")
+        {
+            list = list.Where(x => x.VisitType.Equals("IP", StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (statusFilter == "UNBILLED")
+        {
+            list = list.Where(x => !x.IsBilled);
+        }
+        else if (statusFilter == "BILLED")
+        {
+            list = list.Where(x => x.IsBilled);
+        }
+
+        filteredItems = list.ToList();
+
+        // Re-index SNo
+        int s = 1;
+        foreach (var itm in filteredItems)
+        {
+            itm.SNo = s++;
+        }
+
+        currentPage = 1;
+        RecalculateTotals();
+    }
+
+    private void RecalculateTotals()
+    {
+        opTotal = summaryResponse?.op != null ? (summaryResponse.op.unbilled_total + summaryResponse.op.billed_total) : 0;
+        ipTotal = summaryResponse?.ip != null ? (summaryResponse.ip.unbilled_total + summaryResponse.ip.billed_total) : 0;
+
+        unbilledTotal = (summaryResponse?.op?.unbilled_total ?? 0) + (summaryResponse?.ip?.unbilled_total ?? 0);
+        billedTotal = (summaryResponse?.op?.billed_total ?? 0) + (summaryResponse?.ip?.billed_total ?? 0);
+
+        unbilledCount = allDisplayItems.Count(x => !x.IsBilled);
+        billedCount = allDisplayItems.Count(x => x.IsBilled);
+    }
+
+    private void SetViewType(string type)
+    {
+        viewType = type;
+        ApplyFilters();
+    }
+
+    private void SetStatusFilter(string status)
+    {
+        statusFilter = status;
+        ApplyFilters();
+    }
+
+    private void ResetFiltersAsync()
+    {
+        patientSearchText = "";
+        filterCustId = null;
+        filterOpNo = null;
+        filterIpNo = null;
+        viewType = "ALL";
+        statusFilter = "ALL";
+        summaryResponse = null;
+        allDisplayItems = new();
+        filteredItems = new();
+        hasSearched = false;
+        errorMessage = "";
+        currentPatientName = "";
+        currentPatientMobile = "";
+        currentDoctorName = null;
+        RecalculateTotals();
+    }
+
+    private void GoToPage(int page)
+    {
+        currentPage = page;
+    }
+
+    private void NextPage()
+    {
+        int totalPages = (int)Math.Ceiling((double)filteredItems.Count / pageSize);
+        if (currentPage < totalPages) currentPage++;
+    }
+
+    private void PrevPage()
+    {
+        if (currentPage > 1) currentPage--;
+    }
+
+    private void ViewItemDetails(BillingSummaryDisplayItem item)
+    {
+        selectedDisplayItem = item;
+        showDetailsModal = true;
+    }
+
+    private void CloseDetailsModal()
+    {
+        showDetailsModal = false;
+        selectedDisplayItem = null;
+    }
+
+    private async Task TriggerPrint()
+    {
+        await JS.InvokeVoidAsync("window.print");
+    }
+}

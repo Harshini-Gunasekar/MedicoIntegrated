@@ -12,8 +12,12 @@ namespace Booking.Services
             _http = http;
         }
 
-        public async Task<List<IPRegistrationModel.IpRegistrationModel>> GetIpRegistrationsAsync(string status)
+        public async Task<List<IPRegistrationModel.IpRegistrationModel>> GetIpRegistrationsAsync(string? status = null)
         {
+            if (string.IsNullOrWhiteSpace(status) || status.Equals("ALL", StringComparison.OrdinalIgnoreCase))
+            {
+                return await FetchIpListAsync("api/IpRegistration/get");
+            }
             return await FetchIpListAsync($"api/IpRegistration/get?ip_status={status}");
         }
 
