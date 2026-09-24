@@ -235,5 +235,29 @@ namespace Booking.Models
             public Guid op_id { get; set; }
             public string? cancel_reason { get; set; }
         }
+        public class ComboRegistrationItemRequest
+        {
+            public string item_type { get; set; } = "SERVICE"; // "SERVICE" | "DRESSING"
+            public int? service_id { get; set; }                // required when item_type = SERVICE
+        }
+
+        public class ComboRegistrationRequest
+        {
+            public decimal custid { get; set; }
+            public int dcode { get; set; }
+            public int? department_code { get; set; }
+            public Guid? slot_detail_id { get; set; }
+
+            // What the single op_registration row itself represents
+            public string primary_type { get; set; } = "CONSULTATION"; // "CONSULTATION" | "SERVICE" | "DRESSING"
+            public int? primary_service_id { get; set; }               // required when primary_type = SERVICE/DRESSING
+
+            public string? notes { get; set; }
+            public int? enteredbhcode { get; set; }
+            public int? cntcode { get; set; }
+
+            // Everything else gets billed onto the SAME op_id, no separate token
+            public List<ComboRegistrationItemRequest> additional_items { get; set; } = new();
+        }
     } 
 }

@@ -540,6 +540,44 @@ namespace Booking.Services
             }
         }
 
+        public async Task<string> ComboRegistrationAsync(OPRegistrationModel.ComboRegistrationRequest request)
+        {
+            try
+            {
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- COMBO REGISTRATION PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("----------------------------------");
+
+                var response = await _http.PostAsJsonAsync("api/OpRegistration/combo-registration", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- COMBO REGISTRATION RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("-----------------------------------");
+
+                if (!response.IsSuccessStatusCode || 
+                    rawResponse.Contains("token range not configured", StringComparison.OrdinalIgnoreCase) || 
+                    rawResponse.Contains("not configured on this slot", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("[ComboRegistrationAsync] Token range error detected. Nullifying slot_detail_id...");
+                    request.slot_detail_id = null;
+
+                    var fallbackResponse = await _http.PostAsJsonAsync("api/OpRegistration/combo-registration", request);
+                    var fallbackRaw = await fallbackResponse.Content.ReadAsStringAsync();
+                    return fallbackRaw;
+                }
+
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error doing combo registration: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
         public async Task<bool> SaveOpVitalsAsync(OPRegistrationModel.PatientVitalsModel request)
         {
             try

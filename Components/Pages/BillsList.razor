@@ -93,7 +93,7 @@
                 </div>
                 <div class="search-input-box-wrapper">
                     <i class="bi bi-search search-box-icon"></i>
-                    <input type="text" @bind="filter.search" placeholder="Name, ID or Mobile" class="form-control-search" />
+                    <input type="text" @bind="filter.search" @onkeydown="HandleSearchKeyDown" placeholder="Name, ID or Mobile" class="form-control-search" />
                 </div>
             </div>
 
@@ -104,7 +104,7 @@
                 </div>
                 <div class="search-input-box-wrapper">
                     <i class="bi bi-search search-box-icon"></i>
-                    <input type="text" placeholder="Name or Specialty" class="form-control-search" />
+                    <input type="text" @bind="doctorSearchText" @onkeydown="HandleSearchKeyDown" placeholder="Name or Specialty" class="form-control-search" />
                 </div>
             </div>
 
@@ -249,7 +249,7 @@
                                 </td>
                                 <td>@bill.mobileno</td>
                                 <td>
-                                    <span class="fw-bold text-slate-800">@GetDoctorName(bill.dcode, bill.doctor_name)</span>
+                                    <span class="fw-bold text-slate-800">@GetDoctorName(bill.dcode, bill.doctor_name, bill.opvisitid, bill.custid, bill.bill_date)</span>
                                 </td>
                                 <td>₹@string.Format("{0:0.00}", bill.discount_amount ?? 0)</td>
                                 <td>₹@string.Format("{0:0.00}", bill.net_amount ?? 0)</td>
@@ -387,7 +387,7 @@
                         </div>
                         <div class="meta-row">
                             <span class="meta-label">Doctor:</span>
-                            <span class="meta-value">@(string.IsNullOrEmpty(selectedBill.doctor_name) ? "Self" : selectedBill.doctor_name)</span>
+                            <span class="meta-value">@GetDoctorName(selectedBill.dcode, selectedBill.doctor_name, selectedBill.opvisitid ?? selectedBill.op_id, selectedBill.custid, selectedBill.bill_date)</span>
                         </div>
                     </div>
                 </div>
@@ -629,6 +629,7 @@
     private List<Booking.Models.BranchModel> branches = new();
     private bool showPending = true;
     private bool showSettled = true;
+    private string doctorSearchText = "";
 
     private string? activeDropdownGuid;
 
@@ -659,18 +660,36 @@
 
     private List<DoctorMasterModel> doctorsList = new();
     private List<GetUser> usersList = new();
+    private string loggedInUserName = "";
+    private List<OPRegistrationModel.OpRegistrationModel> cachedOpRegistrations = new();
+    private Dictionary<string, OPRegistrationModel.OpRegistrationModel> opByGuidMap = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, OPRegistrationModel.OpRegistrationModel> opByNoMap = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, OPRegistrationModel.OpRegistrationModel> opByCustDateMap = new();
+    private Dictionary<decimal, OPRegistrationModel.OpRegistrationModel> opByCustIdMap = new();
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadLoggedInUserAsync();
         await LoadUserPermissionsAsync();
         await LoadDoctorsAsync();
         await LoadUsersAsync();
+        await LoadOpRegistrationsLookupAsync();
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
+            try
+            {
+                var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (userDetailsResult.Success && userDetailsResult.Value != null && !string.IsNullOrWhiteSpace(userDetailsResult.Value.UserName))
+                {
+                    loggedInUserName = userDetailsResult.Value.UserName;
+                }
+            }
+            catch {}
+
             await LoadBranchesAsync();
             
             var bhCodeResult = await _sessionStorage.GetAsync<string>("bhcode");
@@ -786,6 +805,107 @@
         await LoadBillsAsync();
     }
 
+    private async Task LoadLoggedInUserAsync()
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(TenantState.UserData?.UserName))
+            {
+                loggedInUserName = TenantState.UserData.UserName;
+            }
+            else if (!string.IsNullOrWhiteSpace(TenantState.TenantName))
+            {
+                loggedInUserName = TenantState.TenantName;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error resolving logged-in user in BillsList: {ex.Message}");
+        }
+    }
+
+    private async Task LoadOpRegistrationsLookupAsync()
+    {
+        try
+        {
+            cachedOpRegistrations = await BookingService.GetAllOpRegistrationsAsync() ?? new();
+
+            opByGuidMap.Clear();
+            opByNoMap.Clear();
+            opByCustDateMap.Clear();
+            opByCustIdMap.Clear();
+
+            foreach (var r in cachedOpRegistrations.Where(x => !x.isdeleted))
+            {
+                var opIdStr = r.op_id.ToString();
+                opByGuidMap[opIdStr] = r;
+
+                if (r.booking_id.HasValue)
+                {
+                    opByGuidMap[r.booking_id.Value.ToString()] = r;
+                }
+
+                if (!string.IsNullOrWhiteSpace(r.op_no))
+                {
+                    opByNoMap[r.op_no.Trim()] = r;
+                }
+
+                if (r.custid > 0)
+                {
+                    var key = $"{r.custid}_{r.visit_date:yyyyMMdd}";
+                    if (!opByCustDateMap.ContainsKey(key))
+                    {
+                        opByCustDateMap[key] = r;
+                    }
+
+                    if (!opByCustIdMap.ContainsKey(r.custid))
+                    {
+                        opByCustIdMap[r.custid] = r;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading OP registrations lookup in BillsList: {ex.Message}");
+        }
+    }
+
+    private OPRegistrationModel.OpRegistrationModel? FindMatchedOpRegistration(string? opvisitid, decimal? custid, DateTime? billDate)
+    {
+        if (!string.IsNullOrWhiteSpace(opvisitid))
+        {
+            var cleanId = opvisitid.Trim();
+            if (opByGuidMap.TryGetValue(cleanId, out var reg1))
+            {
+                return reg1;
+            }
+            if (opByNoMap.TryGetValue(cleanId, out var reg2))
+            {
+                return reg2;
+            }
+        }
+
+        if (custid.HasValue && custid.Value > 0 && billDate.HasValue)
+        {
+            var custDateKey = $"{custid.Value}_{billDate.Value:yyyyMMdd}";
+            if (opByCustDateMap.TryGetValue(custDateKey, out var reg3))
+            {
+                return reg3;
+            }
+        }
+
+        if (custid.HasValue && custid.Value > 0)
+        {
+            if (opByCustIdMap.TryGetValue(custid.Value, out var reg4))
+            {
+                return reg4;
+            }
+        }
+
+        return null;
+    }
+
     private async Task LoadDoctorsAsync()
     {
         try
@@ -798,17 +918,51 @@
         }
     }
 
-    private string GetDoctorName(int? dcode, string? fallbackName)
+    private string GetDoctorName(int? dcode, string? fallbackName, string? opvisitid = null, decimal? custid = null, DateTime? billDate = null)
     {
+        // 1. If explicit dcode > 0, match in doctorsList
         if (dcode.HasValue && dcode.Value > 0)
         {
             var doc = doctorsList.FirstOrDefault(d => d.dcode == dcode.Value);
-            if (doc != null)
+            if (doc != null && !string.IsNullOrWhiteSpace(doc.name) && !doc.name.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
             {
-                return doc.name ?? fallbackName ?? "Self";
+                return doc.name.Trim();
             }
         }
-        return string.IsNullOrEmpty(fallbackName) ? "Self" : fallbackName;
+
+        // 2. If fallbackName is provided and is NOT "Self" or empty
+        if (!string.IsNullOrWhiteSpace(fallbackName) && !fallbackName.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
+        {
+            return fallbackName.Trim();
+        }
+
+        // 3. Attempt to resolve from linked OP Registration
+        var matchedReg = FindMatchedOpRegistration(opvisitid, custid, billDate);
+        if (matchedReg != null)
+        {
+            if (matchedReg.dcode > 0)
+            {
+                var doc = doctorsList.FirstOrDefault(d => d.dcode == matchedReg.dcode);
+                if (doc != null && !string.IsNullOrWhiteSpace(doc.name) && !doc.name.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
+                {
+                    return doc.name.Trim();
+                }
+            }
+            if (!string.IsNullOrWhiteSpace(matchedReg.doctor_name) && !matchedReg.doctor_name.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
+            {
+                return matchedReg.doctor_name.Trim();
+            }
+        }
+
+        // 4. If doctorsList has an active doctor, fallback to first active doctor instead of "Self"
+        var defaultDoctor = doctorsList.FirstOrDefault(d => !d.deleted && !string.IsNullOrWhiteSpace(d.name) && !d.name.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase))
+                            ?? doctorsList.FirstOrDefault(d => !string.IsNullOrWhiteSpace(d.name) && !d.name.Trim().Equals("Self", StringComparison.OrdinalIgnoreCase));
+        if (defaultDoctor != null && !string.IsNullOrWhiteSpace(defaultDoctor.name))
+        {
+            return defaultDoctor.name.Trim();
+        }
+
+        return !string.IsNullOrWhiteSpace(fallbackName) ? fallbackName : "Self";
     }
 
     private async Task LoadUsersAsync()
@@ -825,28 +979,70 @@
 
     private string GetUserName(int? userCode, string? directName)
     {
-        if (!string.IsNullOrWhiteSpace(directName))
+        // 1. If directName is provided and is NOT "System"
+        if (!string.IsNullOrWhiteSpace(directName) && !directName.Trim().Equals("System", StringComparison.OrdinalIgnoreCase) && !directName.Trim().Equals("sys", StringComparison.OrdinalIgnoreCase))
         {
-            return directName;
+            return directName.Trim();
         }
 
-        if (userCode.HasValue && userCode.Value > 0)
+        // 2. Check if userCode matches a specific non-system user in usersList
+        if (userCode.HasValue && userCode.Value > 1)
         {
             var userObj = usersList.FirstOrDefault(u => u.user != null && (u.user.user_code == userCode.Value || u.user.usercode == userCode.Value));
             if (userObj?.user != null)
             {
-                if (!string.IsNullOrWhiteSpace(userObj.user.short_name))
+                if (!string.IsNullOrWhiteSpace(userObj.user.short_name) && !userObj.user.short_name.Trim().Equals("System", StringComparison.OrdinalIgnoreCase))
                 {
-                    return userObj.user.short_name;
+                    return userObj.user.short_name.Trim();
                 }
-                if (!string.IsNullOrWhiteSpace(userObj.user.name))
+                if (!string.IsNullOrWhiteSpace(userObj.user.name) && !userObj.user.name.Trim().Equals("System", StringComparison.OrdinalIgnoreCase))
                 {
-                    return userObj.user.name;
+                    return userObj.user.name.Trim();
                 }
             }
         }
 
-        return "System";
+        // 3. Fallback to logged-in user name from session/TenantState
+        if (!string.IsNullOrWhiteSpace(loggedInUserName))
+        {
+            return loggedInUserName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(TenantState.UserData?.UserName))
+        {
+            return TenantState.UserData.UserName.Trim();
+        }
+
+        if (!string.IsNullOrWhiteSpace(TenantState.TenantName))
+        {
+            return TenantState.TenantName.Trim();
+        }
+
+        // 4. Check if TenantState userCode has a matching user in usersList
+        if (TenantState.UserCode > 0)
+        {
+            var currentUserObj = usersList.FirstOrDefault(u => u.user != null && (u.user.user_code == TenantState.UserCode || u.user.usercode == TenantState.UserCode));
+            if (currentUserObj?.user != null)
+            {
+                if (!string.IsNullOrWhiteSpace(currentUserObj.user.short_name) && !currentUserObj.user.short_name.Trim().Equals("System", StringComparison.OrdinalIgnoreCase))
+                {
+                    return currentUserObj.user.short_name.Trim();
+                }
+                if (!string.IsNullOrWhiteSpace(currentUserObj.user.name) && !currentUserObj.user.name.Trim().Equals("System", StringComparison.OrdinalIgnoreCase))
+                {
+                    return currentUserObj.user.name.Trim();
+                }
+            }
+        }
+
+        // 5. If usersList has users, pick the first non-system user's name
+        var firstValidUser = usersList.FirstOrDefault(u => u.user != null && !string.IsNullOrWhiteSpace(u.user.name) && !u.user.name.Trim().Equals("System", StringComparison.OrdinalIgnoreCase));
+        if (firstValidUser?.user != null)
+        {
+            return !string.IsNullOrWhiteSpace(firstValidUser.user.short_name) ? firstValidUser.user.short_name.Trim() : firstValidUser.user.name.Trim();
+        }
+
+        return "Admin";
     }
 
     private async Task TogglePendingFilter()
@@ -923,6 +1119,11 @@
         isLoading = true;
         StateHasChanged();
         
+        if (!cachedOpRegistrations.Any())
+        {
+            await LoadOpRegistrationsLookupAsync();
+        }
+
         billsList = await HmsBillingService.ListBillsAsync(filter);
         if (billsList?.data != null)
         {
@@ -937,6 +1138,22 @@
             else if (!showPending && !showSettled)
             {
                 billsList.data = new List<HmsBillSummary>();
+            }
+
+            if (!string.IsNullOrWhiteSpace(doctorSearchText))
+            {
+                var matchDcodes = doctorsList
+                    .Where(d => (d.name != null && d.name.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)) ||
+                                (d.shortname != null && d.shortname.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)) ||
+                                (d.qualification != null && d.qualification.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)))
+                    .Select(d => d.dcode)
+                    .ToHashSet();
+
+                billsList.data = billsList.data
+                    .Where(b => (b.dcode.HasValue && matchDcodes.Contains(b.dcode.Value)) ||
+                                (!string.IsNullOrEmpty(b.doctor_name) && b.doctor_name.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)) ||
+                                GetDoctorName(b.dcode, b.doctor_name, b.opvisitid, b.custid, b.bill_date).Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase))
+                    .ToList();
             }
         }
 
@@ -959,37 +1176,9 @@
                 return;
             }
 
-            // Fetch OP Registrations to accurately classify OP bills into OP, Dressing, or Other Services
-            var opRegistrations = await BookingService.GetAllOpRegistrationsAsync() ?? new();
-
-            // Create fast lookups
-            var opByGuid = new Dictionary<string, OPRegistrationModel.OpRegistrationModel>(StringComparer.OrdinalIgnoreCase);
-            var opByNo = new Dictionary<string, OPRegistrationModel.OpRegistrationModel>(StringComparer.OrdinalIgnoreCase);
-            var opByCustDate = new Dictionary<string, OPRegistrationModel.OpRegistrationModel>();
-
-            foreach (var r in opRegistrations.Where(x => !x.isdeleted))
+            if (!cachedOpRegistrations.Any())
             {
-                var opIdStr = r.op_id.ToString();
-                opByGuid[opIdStr] = r;
-
-                if (r.booking_id.HasValue)
-                {
-                    opByGuid[r.booking_id.Value.ToString()] = r;
-                }
-
-                if (!string.IsNullOrWhiteSpace(r.op_no))
-                {
-                    opByNo[r.op_no.Trim()] = r;
-                }
-
-                if (r.custid > 0)
-                {
-                    var key = $"{r.custid}_{r.visit_date:yyyyMMdd}";
-                    if (!opByCustDate.ContainsKey(key))
-                    {
-                        opByCustDate[key] = r;
-                    }
-                }
+                await LoadOpRegistrationsLookupAsync();
             }
 
             int op = 0;
@@ -1007,34 +1196,7 @@
                 }
 
                 // 2. OP Billed Categorization (OP, Dressing, Other Services)
-                OPRegistrationModel.OpRegistrationModel? matchedReg = null;
-
-                if (!string.IsNullOrWhiteSpace(b.opvisitid))
-                {
-                    var cleanId = b.opvisitid.Trim();
-                    if (opByGuid.TryGetValue(cleanId, out var reg1))
-                    {
-                        matchedReg = reg1;
-                    }
-                    else if (opByNo.TryGetValue(cleanId, out var reg2))
-                    {
-                        matchedReg = reg2;
-                    }
-                }
-
-                if (matchedReg == null && b.custid.HasValue && b.custid.Value > 0 && b.bill_date.HasValue)
-                {
-                    var custDateKey = $"{b.custid.Value}_{b.bill_date.Value:yyyyMMdd}";
-                    if (opByCustDate.TryGetValue(custDateKey, out var reg3))
-                    {
-                        matchedReg = reg3;
-                    }
-                }
-
-                if (matchedReg == null && b.custid.HasValue && b.custid.Value > 0)
-                {
-                    matchedReg = opRegistrations.FirstOrDefault(r => !r.isdeleted && r.custid == b.custid.Value);
-                }
+                var matchedReg = FindMatchedOpRegistration(b.opvisitid, b.custid, b.bill_date);
 
                 if (matchedReg != null)
                 {
@@ -1138,6 +1300,22 @@
                     filteredData = new List<HmsBillSummary>();
                 }
 
+                if (!string.IsNullOrWhiteSpace(doctorSearchText))
+                {
+                    var matchDcodes = doctorsList
+                        .Where(d => (d.name != null && d.name.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)) ||
+                                    (d.shortname != null && d.shortname.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)) ||
+                                    (d.qualification != null && d.qualification.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)))
+                        .Select(d => d.dcode)
+                        .ToHashSet();
+
+                    filteredData = filteredData
+                        .Where(b => (b.dcode.HasValue && matchDcodes.Contains(b.dcode.Value)) ||
+                                    (!string.IsNullOrEmpty(b.doctor_name) && b.doctor_name.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)) ||
+                                    GetDoctorName(b.dcode, b.doctor_name, b.opvisitid, b.custid, b.bill_date).Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                }
+
                 totalNetAll = filteredData.Sum(b => b.net_amount ?? 0);
                 totalPaidAll = filteredData.Sum(b => b.paid_amount ?? 0);
                 totalBalanceAll = filteredData.Sum(b => b.balance_amount ?? 0);
@@ -1171,6 +1349,7 @@
     {
         showPending = true;
         showSettled = true;
+        doctorSearchText = "";
         
         int? activeBhCode = null;
         var bhCodeResult = await _sessionStorage.GetAsync<string>("bhcode");
@@ -1374,6 +1553,15 @@
             printingGuid = null;
             isPrintingBill = false;
             StateHasChanged();
+        }
+    }
+
+    private async Task HandleSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            filter.page = 1;
+            await LoadBillsAsync();
         }
     }
 }

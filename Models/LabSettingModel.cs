@@ -154,5 +154,9 @@ namespace Booking.Models
         public bool? critical_value_indication { get; set; } = false;
         public bool? show_physical_bill { get; set; } = true;
         public bool? payment_required_online_reg { get; set; } = false;
+        // ✅ NEW — lets reception bundle dressing/service items onto one OP visit
+public bool? enable_combo_registration { get; set; } = false;
+// ✅ NEW — tells the frontend to jump straight to billing after a successful register
+public bool? auto_route_billing_after_register { get; set; } = false;
     }
 }

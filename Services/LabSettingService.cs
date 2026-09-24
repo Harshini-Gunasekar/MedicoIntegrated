@@ -16,6 +16,8 @@ namespace Booking.Services
         public static bool? CriticalValueIndicationCache { get; set; }
         public static bool? ShowPhysicalBillCache { get; set; }
         public static bool? PaymentRequiredOnlineRegCache { get; set; }
+        public static bool? EnableComboRegistrationCache { get; set; }
+        public static bool? AutoRouteBillingAfterRegisterCache { get; set; }
 
         public LabSettingService(HttpClient http)
         {
@@ -34,109 +36,31 @@ namespace Booking.Services
                 var list = await _http.GetFromJsonAsync<List<LabSettingModel>>(url);
                 var setting = list?.FirstOrDefault() ?? new LabSettingModel();
                 
-                if (ShowAllCustomersCache.HasValue)
-                {
-                    setting.show_all_customers = ShowAllCustomersCache.Value;
-                }
-                else if (setting.show_all_customers.HasValue)
-                {
-                    ShowAllCustomersCache = setting.show_all_customers.Value;
-                }
-                else
-                {
-                    setting.show_all_customers = true;
-                    ShowAllCustomersCache = true;
-                }
-
-                if (IsSlotRequiredCache.HasValue)
-                {
-                    setting.is_slot_required = IsSlotRequiredCache.Value;
-                }
-                else if (setting.is_slot_required.HasValue)
-                {
-                    IsSlotRequiredCache = setting.is_slot_required.Value;
-                }
-                else
-                {
-                    setting.is_slot_required = true;
-                    IsSlotRequiredCache = true;
-                }
-
-                if (!setting.op_age_wise_split.HasValue)
-                {
-                    setting.op_age_wise_split = false;
-                }
-
-                if (CriticalValueIndicationCache.HasValue)
-                {
-                    setting.critical_value_indication = CriticalValueIndicationCache.Value;
-                }
-                else if (setting.critical_value_indication.HasValue)
-                {
-                    CriticalValueIndicationCache = setting.critical_value_indication.Value;
-                }
-                else
-                {
-                    setting.critical_value_indication = false;
-                    CriticalValueIndicationCache = false;
-                }
-
-                if (ShowPhysicalBillCache.HasValue)
-                {
-                    setting.show_physical_bill = ShowPhysicalBillCache.Value;
-                }
-                else if (setting.show_physical_bill.HasValue)
-                {
-                    ShowPhysicalBillCache = setting.show_physical_bill.Value;
-                }
-                else
-                {
-                    setting.show_physical_bill = true;
-                    ShowPhysicalBillCache = true;
-                }
-
-                if (PaymentRequiredOnlineRegCache.HasValue)
-                {
-                    setting.payment_required_online_reg = PaymentRequiredOnlineRegCache.Value;
-                }
-                else if (setting.payment_required_online_reg.HasValue)
-                {
-                    PaymentRequiredOnlineRegCache = setting.payment_required_online_reg.Value;
-                }
-                else
-                {
-                    setting.payment_required_online_reg = false;
-                    PaymentRequiredOnlineRegCache = false;
-                }
+                if (!setting.show_all_customers.HasValue) setting.show_all_customers = true;
+                if (!setting.is_slot_required.HasValue) setting.is_slot_required = true;
+                if (!setting.op_age_wise_split.HasValue) setting.op_age_wise_split = false;
+                if (!setting.critical_value_indication.HasValue) setting.critical_value_indication = false;
+                if (!setting.show_physical_bill.HasValue) setting.show_physical_bill = true;
+                if (!setting.payment_required_online_reg.HasValue) setting.payment_required_online_reg = false;
+                if (!setting.enable_combo_registration.HasValue) setting.enable_combo_registration = false;
+                if (!setting.auto_route_billing_after_register.HasValue) setting.auto_route_billing_after_register = false;
 
                 return setting;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error fetching LabSetting: {ex.Message}");
-                var fallback = new LabSettingModel();
-                if (ShowAllCustomersCache.HasValue)
+                return new LabSettingModel
                 {
-                    fallback.show_all_customers = ShowAllCustomersCache.Value;
-                }
-                if (IsSlotRequiredCache.HasValue)
-                {
-                    fallback.is_slot_required = IsSlotRequiredCache.Value;
-                }
-                fallback.op_age_wise_split = false;
-                if (CriticalValueIndicationCache.HasValue)
-                {
-                    fallback.critical_value_indication = CriticalValueIndicationCache.Value;
-                }
-                if (ShowPhysicalBillCache.HasValue)
-                {
-                    fallback.show_physical_bill = ShowPhysicalBillCache.Value;
-                }
-                if (PaymentRequiredOnlineRegCache.HasValue)
-                {
-                    fallback.payment_required_online_reg = PaymentRequiredOnlineRegCache.Value;
-                }
-                return fallback;
+                    show_all_customers = true,
+                    is_slot_required = true,
+                    op_age_wise_split = false,
+                    critical_value_indication = false,
+                    show_physical_bill = true,
+                    payment_required_online_reg = false,
+                    enable_combo_registration = false,
+                    auto_route_billing_after_register = false
+                };
             }
         }
 
@@ -161,27 +85,6 @@ namespace Booking.Services
         {
             try
             {
-                if (model.show_all_customers.HasValue)
-                {
-                    ShowAllCustomersCache = model.show_all_customers.Value;
-                }
-                if (model.is_slot_required.HasValue)
-                {
-                    IsSlotRequiredCache = model.is_slot_required.Value;
-                }
-                if (model.critical_value_indication.HasValue)
-                {
-                    CriticalValueIndicationCache = model.critical_value_indication.Value;
-                }
-                if (model.show_physical_bill.HasValue)
-                {
-                    ShowPhysicalBillCache = model.show_physical_bill.Value;
-                }
-                if (model.payment_required_online_reg.HasValue)
-                {
-                    PaymentRequiredOnlineRegCache = model.payment_required_online_reg.Value;
-                }
-
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
                 Console.WriteLine($"[LabSettingService] Insert Payload:\n{jsonPayload}");
@@ -202,27 +105,6 @@ namespace Booking.Services
         {
             try
             {
-                if (model.show_all_customers.HasValue)
-                {
-                    ShowAllCustomersCache = model.show_all_customers.Value;
-                }
-                if (model.is_slot_required.HasValue)
-                {
-                    IsSlotRequiredCache = model.is_slot_required.Value;
-                }
-                if (model.critical_value_indication.HasValue)
-                {
-                    CriticalValueIndicationCache = model.critical_value_indication.Value;
-                }
-                if (model.show_physical_bill.HasValue)
-                {
-                    ShowPhysicalBillCache = model.show_physical_bill.Value;
-                }
-                if (model.payment_required_online_reg.HasValue)
-                {
-                    PaymentRequiredOnlineRegCache = model.payment_required_online_reg.Value;
-                }
-
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
                 Console.WriteLine($"[LabSettingService] Update Payload:\n{jsonPayload}");

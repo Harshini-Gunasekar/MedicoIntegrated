@@ -100,10 +100,32 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/list-bills", filter);
+                var sanitizedFilter = new HmsBillFilterRequest
+                {
+                    bhcode = filter.bhcode.HasValue && filter.bhcode.Value > 0 ? filter.bhcode.Value : null,
+                    cntcode = filter.cntcode.HasValue && filter.cntcode.Value > 0 ? filter.cntcode.Value : null,
+                    ip_id = filter.ip_id,
+                    fromdate = filter.fromdate.HasValue ? filter.fromdate.Value.Date : null,
+                    todate = filter.todate.HasValue ? filter.todate.Value.Date.AddDays(1).AddSeconds(-1) : null,
+                    custid = filter.custid,
+                    dcode = filter.dcode,
+                    pendingonly = filter.pendingonly,
+                    iscashbill = filter.iscashbill,
+                    iscreditbill = filter.iscreditbill,
+                    search = filter.search,
+                    page = filter.page,
+                    pagesize = filter.pagesize
+                };
+
+                Console.WriteLine($"[ListBillsAsync] Request: from={sanitizedFilter.fromdate:yyyy-MM-dd HH:mm:ss}, to={sanitizedFilter.todate:yyyy-MM-dd HH:mm:ss}, bh={sanitizedFilter.bhcode}, pending={sanitizedFilter.pendingonly}, search={sanitizedFilter.search}");
+
+                var response = await _http.PostAsJsonAsync("api/HmsBilling/list-bills", sanitizedFilter);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[ListBillsAsync] Response ({response.StatusCode}): {rawResponse}");
+
                 if (response.IsSuccessStatusCode)
                 {
-                    return await response.Content.ReadFromJsonAsync<HmsBillListResponse>();
+                    return Newtonsoft.Json.JsonConvert.DeserializeObject<HmsBillListResponse>(rawResponse);
                 }
                 return null;
             }

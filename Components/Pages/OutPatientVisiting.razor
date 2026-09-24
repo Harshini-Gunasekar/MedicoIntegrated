@@ -439,8 +439,9 @@
                                      <td>
                                           @if (isRegistered && opData != null)
                                           {
-                                              <select class="status-select @opData.visit_status.ToLower()" 
-                                                      value="@opData.visit_status" 
+                                              var currentStatus = string.IsNullOrWhiteSpace(opData.visit_status) ? "WAITING" : opData.visit_status.ToUpper();
+                                              <select class="status-select @currentStatus.ToLower()" 
+                                                      value="@currentStatus" 
                                                       @onchange="(e) => OnStatusSelectChanged(opData, e.Value?.ToString())">
                                                   <option value="WAITING">Waiting</option>
                                                   <option value="IN_CONSULTATION">In Consultation</option>
@@ -1401,6 +1402,64 @@
                     <label class="walkin-label-bold">NOTES / COMPLAINT</label>
                     <textarea class="walkin-textarea" @bind="directWalkinRequest.notes" rows="3" placeholder="General consultation"></textarea>
                 </div>
+
+                @if (labSetting.enable_combo_registration ?? LabSettingService.EnableComboRegistrationCache ?? false)
+                {
+                    <div class="form-group combo-bundle-section">
+                        <div class="combo-bundle-header">
+                            <div>
+                                <label class="walkin-label-bold" style="margin-bottom: 2px;">
+                                    <i class="bi bi-layers-fill me-1"></i> COMBO REGISTRATION BUNDLE
+                                </label>
+                                <div class="combo-bundle-subtext">Bundle items onto the same OP visit / token</div>
+                            </div>
+                            <button type="button" class="btn-combo-add-service" @onclick="AddComboServiceItem" title="Add another service to bundle">
+                                <i class="bi bi-plus-circle-fill"></i> Add Service
+                            </button>
+                        </div>
+
+                        <!-- Quick Toggle for Dressing if not primary -->
+                        @if (walkinRegType != "DRESSING")
+                        {
+                            <div class="combo-dressing-toggle-row">
+                                <label class="combo-switch-container">
+                                    <input type="checkbox" checked="@isComboDressingIncluded" @onchange="ToggleComboDressing" />
+                                    <span class="combo-switch-slider"></span>
+                                </label>
+                                <span class="combo-switch-text">
+                                    <i class="bi bi-bandaid text-primary me-1"></i> Include Dressing
+                                </span>
+                            </div>
+                        }
+
+                        <!-- List of Additional Service Items -->
+                        @if (comboServiceItems != null && comboServiceItems.Any())
+                        {
+                            <div class="combo-service-items-container">
+                                @for (int i = 0; i < comboServiceItems.Count; i++)
+                                {
+                                    var itemIndex = i;
+                                    var item = comboServiceItems[i];
+                                    <div class="combo-service-item-row">
+                                        <div class="combo-item-badge">
+                                            <i class="bi bi-gear-fill"></i> Service #@(itemIndex + 1)
+                                        </div>
+                                        <select class="walkin-input combo-service-select" value="@(item.service_id ?? 0)" @onchange="(e) => OnComboServiceChanged(itemIndex, e)">
+                                            <option value="0">-- Select Additional Service --</option>
+                                            @foreach (var st in serviceTypesList)
+                                            {
+                                                <option value="@st.service_id">@st.service_name @(string.IsNullOrWhiteSpace(st.token_prefix) ? "" : $"({st.token_prefix})")</option>
+                                            }
+                                        </select>
+                                        <button type="button" class="btn-combo-delete" @onclick="() => RemoveComboItem(itemIndex)" title="Remove item">
+                                            <i class="bi bi-trash3-fill"></i>
+                                        </button>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                }
             </div>
 
             @if (labSetting.is_slot_required != false)
@@ -1945,6 +2004,45 @@
     private List<AvailableSlotModel> directWalkinSlots = new();
     private AvailableSlotModel? selectedDirectWalkinSlot = null;
 
+    // Combo Registration State
+    private bool isComboDressingIncluded = false;
+    private List<OPRegistrationModel.ComboRegistrationItemRequest> comboServiceItems = new();
+
+    private void AddComboServiceItem()
+    {
+        int initialServiceId = serviceTypesList.FirstOrDefault()?.service_id ?? 0;
+        comboServiceItems.Add(new OPRegistrationModel.ComboRegistrationItemRequest
+        {
+            item_type = "SERVICE",
+            service_id = initialServiceId > 0 ? initialServiceId : (int?)null
+        });
+        _ = SaveDirectWalkinDraftAsync();
+    }
+
+    private void RemoveComboItem(int index)
+    {
+        if (index >= 0 && index < comboServiceItems.Count)
+        {
+            comboServiceItems.RemoveAt(index);
+            _ = SaveDirectWalkinDraftAsync();
+        }
+    }
+
+    private void ToggleComboDressing(ChangeEventArgs e)
+    {
+        isComboDressingIncluded = e.Value is bool b ? b : false;
+        _ = SaveDirectWalkinDraftAsync();
+    }
+
+    private void OnComboServiceChanged(int index, ChangeEventArgs e)
+    {
+        if (index >= 0 && index < comboServiceItems.Count && int.TryParse(e.Value?.ToString(), out int sId))
+        {
+            comboServiceItems[index].service_id = sId > 0 ? sId : null;
+            _ = SaveDirectWalkinDraftAsync();
+        }
+    }
+
     private void SetWalkinRegType(string type)
     {
         walkinRegType = type;
@@ -2404,6 +2502,26 @@
             }
             catch { }
 
+            try
+            {
+                var comboRes = await _sessionStorage.GetAsync<bool>("ls_enable_combo_registration");
+                if (comboRes.Success)
+                {
+                    LabSettingService.EnableComboRegistrationCache = comboRes.Value;
+                }
+            }
+            catch { }
+
+            try
+            {
+                var routeRes = await _sessionStorage.GetAsync<bool>("ls_auto_route_billing_after_register");
+                if (routeRes.Success)
+                {
+                    LabSettingService.AutoRouteBillingAfterRegisterCache = routeRes.Value;
+                }
+            }
+            catch { }
+
             await LoadStoredPreferencesAsync();
 
             labSetting = await LabSettingService.GetLabSettingAsync() ?? new LabSettingModel();
@@ -2473,6 +2591,11 @@
 
             foreach (var r in regs.Where(x => !x.isdeleted))
             {
+                if (string.IsNullOrWhiteSpace(r.visit_status))
+                {
+                    r.visit_status = "WAITING";
+                }
+
                 var item = new AppointmentBookingModel
                 {
                     booking_id = r.op_id,
@@ -2678,7 +2801,7 @@
             Console.WriteLine("========================================================================");
 
             var result = await BookingService.RegisterOpAsync(newOpRequest);
-            if (result != null && result.StartsWith("Success"))
+            if (TryParseRegistrationResponse(result, out var parsedOpId, out var parsedOpNo, out var parsedToken, out var serverRouteToBilling, out var parseError))
             {
                 ToastService.ShowSuccess("Outpatient registered successfully!");
                 CloseRegisterModal();
@@ -2686,7 +2809,7 @@
             }
             else
             {
-                ToastService.ShowError($"Failed to register outpatient: {result}");
+                ToastService.ShowError($"Failed to register outpatient: {parseError ?? result}");
             }
         }
         catch (Exception ex)
@@ -2931,7 +3054,9 @@
                 WalkinRegType = walkinRegType,
                 SelectedServiceId = selectedServiceId,
                 WalkinNotes = directWalkinRequest.notes ?? "",
-                SelectedSlotDetailId = selectedDirectWalkinSlot?.slot_detail_id
+                SelectedSlotDetailId = selectedDirectWalkinSlot?.slot_detail_id,
+                IsComboDressingIncluded = isComboDressingIncluded,
+                ComboServiceItems = comboServiceItems
             };
             var json = Newtonsoft.Json.JsonConvert.SerializeObject(model);
             await _sessionStorage.SetAsync("WalkinDraftState", json);
@@ -2954,6 +3079,8 @@
         public int SelectedServiceId { get; set; } = 0;
         public string WalkinNotes { get; set; } = "";
         public Guid? SelectedSlotDetailId { get; set; }
+        public bool IsComboDressingIncluded { get; set; } = false;
+        public List<OPRegistrationModel.ComboRegistrationItemRequest> ComboServiceItems { get; set; } = new();
     }
 
     private async Task RestoreDirectWalkinDraftAsync()
@@ -3008,6 +3135,8 @@
                     walkinRegType = model.WalkinRegType ?? "OP";
                     selectedServiceId = model.SelectedServiceId;
                     directWalkinRequest.notes = model.WalkinNotes ?? "";
+                    isComboDressingIncluded = model.IsComboDressingIncluded;
+                    comboServiceItems = model.ComboServiceItems ?? new();
 
                     int targetDcode = directWalkinSelectedDcode == -1 ? directWalkinDutyDcode : directWalkinSelectedDcode;
                     if (targetDcode > 0)
@@ -3090,6 +3219,8 @@
         directWalkinDate = DateTime.UtcNow.ToIndianTime().Date;
         selectedDirectWalkinSlot = null;
         directWalkinSlots.Clear();
+        isComboDressingIncluded = false;
+        comboServiceItems.Clear();
         showDirectWalkinModal = true;
         isDirectWalkinMinimized = false;
         
@@ -3255,7 +3386,92 @@
         try
         {
             string result;
-            if (walkinRegType == "DRESSING")
+            bool isComboEnabled = labSetting.enable_combo_registration ?? LabSettingService.EnableComboRegistrationCache ?? false;
+
+            if (isComboEnabled)
+            {
+                var targetDcode = walkinRegType == "DRESSING" 
+                    ? directWalkinSelectedDcode 
+                    : (directWalkinSelectedDcode == -1 ? directWalkinDutyDcode : directWalkinSelectedDcode);
+
+                var docObj = doctors.FirstOrDefault(d => d.dcode == targetDcode);
+                int? deptCode = directWalkinRequest.department_code;
+                if ((!deptCode.HasValue || deptCode.Value == 0) && docObj != null && docObj.spcode.HasValue)
+                {
+                    deptCode = docObj.spcode.Value;
+                }
+
+                int? branchCode = TenantState.BranchCode ?? TenantState.UserData?.BranchCode;
+                if (!branchCode.HasValue || branchCode.Value == 0)
+                {
+                    try
+                    {
+                        var bhRes = await _sessionStorage.GetAsync<int>("bhcode");
+                        if (bhRes.Success && bhRes.Value > 0) branchCode = bhRes.Value;
+                        else
+                        {
+                            var bhStrRes = await _sessionStorage.GetAsync<string>("bhcode");
+                            if (bhStrRes.Success && int.TryParse(bhStrRes.Value, out var parsedBh) && parsedBh > 0) branchCode = parsedBh;
+                        }
+                    }
+                    catch { }
+                }
+
+                int? counterCode = TenantState.CounterCode ?? TenantState.UserData?.CounterCode;
+                if (!counterCode.HasValue || counterCode.Value == 0)
+                {
+                    try
+                    {
+                        var cntRes = await _sessionStorage.GetAsync<int>("cntcode");
+                        if (cntRes.Success && cntRes.Value > 0) counterCode = cntRes.Value;
+                        else
+                        {
+                            var cntStrRes = await _sessionStorage.GetAsync<string>("cntcode");
+                            if (cntStrRes.Success && int.TryParse(cntStrRes.Value, out var parsedCnt) && parsedCnt > 0) counterCode = parsedCnt;
+                        }
+                    }
+                    catch { }
+                }
+
+                var comboRequest = new OPRegistrationModel.ComboRegistrationRequest
+                {
+                    custid = directWalkinRequest.custid,
+                    dcode = targetDcode,
+                    department_code = deptCode,
+                    slot_detail_id = directWalkinRequest.slot_detail_id,
+                    primary_type = walkinRegType == "OP" ? "CONSULTATION" : (walkinRegType == "DRESSING" ? "DRESSING" : "SERVICE"),
+                    primary_service_id = walkinRegType == "OTHERS" ? (selectedServiceId > 0 ? selectedServiceId : null) : (walkinRegType == "DRESSING" ? (selectedServiceId > 0 ? selectedServiceId : null) : null),
+                    notes = directWalkinRequest.notes,
+                    enteredbhcode = branchCode.HasValue && branchCode.Value > 0 ? branchCode.Value : 1,
+                    cntcode = counterCode.HasValue && counterCode.Value > 0 ? counterCode.Value : 1,
+                    additional_items = new List<OPRegistrationModel.ComboRegistrationItemRequest>()
+                };
+
+                if (walkinRegType != "DRESSING" && isComboDressingIncluded)
+                {
+                    comboRequest.additional_items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
+                    {
+                        item_type = "DRESSING"
+                    });
+                }
+
+                foreach (var sItem in comboServiceItems.Where(s => s.service_id.HasValue && s.service_id.Value > 0))
+                {
+                    comboRequest.additional_items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
+                    {
+                        item_type = "SERVICE",
+                        service_id = sItem.service_id.Value
+                    });
+                }
+
+                string jsonPayload = System.Text.Json.JsonSerializer.Serialize(comboRequest, new System.Text.Json.JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull });
+                Console.WriteLine("================ COMBO REGISTRATION PAYLOAD ================");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("====================================================================");
+
+                result = await BookingService.ComboRegistrationAsync(comboRequest);
+            }
+            else if (walkinRegType == "DRESSING")
             {
                 var dressingRequest = new OPRegistrationModel.DressingRegistrationRequest
                 {
@@ -3283,15 +3499,15 @@
                 result = await BookingService.DirectWalkinAsync(directWalkinRequest);
             }
 
-            if (result != null && result.StartsWith("Success"))
+            if (TryParseRegistrationResponse(result, out var parsedOpId, out var parsedOpNo, out var parsedToken, out var serverRouteToBilling, out var parseError))
             {
-                ToastService.ShowSuccess($"{(walkinRegType == "DRESSING" ? "Dressing" : walkinRegType == "OTHERS" ? "Service Walk-in" : "Direct Walk-in")} registered successfully!");
+                ToastService.ShowSuccess("Outpatient registered successfully!");
                 await CloseDirectWalkinModal();
                 await LoadDataAsync();
             }
             else
             {
-                ToastService.ShowError($"Failed to register: {result}");
+                ToastService.ShowError($"Failed to register: {parseError ?? result}");
             }
         }
         catch (Exception ex)
@@ -3302,6 +3518,144 @@
         {
             saving = false;
         }
+    }
+
+    private static bool TryParseRegistrationResponse(string? result, out Guid? opId, out string? opNo, out string? tokenNo, out bool? routeToBilling, out string? errorMessage)
+    {
+        opId = null;
+        opNo = null;
+        tokenNo = null;
+        routeToBilling = null;
+        errorMessage = null;
+
+        if (string.IsNullOrWhiteSpace(result))
+        {
+            errorMessage = "Empty response received from server.";
+            return false;
+        }
+
+        var trimmed = result.Trim();
+
+        // 1. JSON response format
+        if (trimmed.StartsWith("{") && trimmed.EndsWith("}"))
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(trimmed);
+                var root = doc.RootElement;
+
+                bool isSuccess = false;
+                if (root.TryGetProperty("status", out var statusProp))
+                {
+                    var statusStr = statusProp.GetString();
+                    if (string.Equals(statusStr, "Success", StringComparison.OrdinalIgnoreCase) || string.Equals(statusStr, "SUCCESS", StringComparison.OrdinalIgnoreCase) || string.Equals(statusStr, "OK", StringComparison.OrdinalIgnoreCase))
+                    {
+                        isSuccess = true;
+                    }
+                }
+                else if (root.TryGetProperty("success", out var succProp))
+                {
+                    if (succProp.ValueKind == System.Text.Json.JsonValueKind.True)
+                    {
+                        isSuccess = true;
+                    }
+                    else if (succProp.ValueKind == System.Text.Json.JsonValueKind.String && bool.TryParse(succProp.GetString(), out var bVal))
+                    {
+                        isSuccess = bVal;
+                    }
+                }
+
+                // Extract opId / op_id
+                foreach (var key in new[] { "opId", "op_id", "opid", "id" })
+                {
+                    if (root.TryGetProperty(key, out var p))
+                    {
+                        if (p.TryGetGuid(out var g)) { opId = g; break; }
+                        else if (p.ValueKind == System.Text.Json.JsonValueKind.String && Guid.TryParse(p.GetString(), out var parsedG)) { opId = parsedG; break; }
+                    }
+                }
+
+                // Extract opNo / op_no
+                foreach (var key in new[] { "opNo", "op_no", "opno" })
+                {
+                    if (root.TryGetProperty(key, out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String)
+                    {
+                        opNo = p.GetString();
+                        if (!string.IsNullOrEmpty(opNo)) break;
+                    }
+                }
+
+                // Extract token / token_no
+                foreach (var key in new[] { "token", "tokenNo", "token_no" })
+                {
+                    if (root.TryGetProperty(key, out var p))
+                    {
+                        tokenNo = p.ValueKind == System.Text.Json.JsonValueKind.String ? p.GetString() : p.GetRawText();
+                        if (!string.IsNullOrEmpty(tokenNo)) break;
+                    }
+                }
+
+                // Extract routeToBilling / auto_route_billing
+                foreach (var key in new[] { "routeToBilling", "route_to_billing", "autoRouteBilling" })
+                {
+                    if (root.TryGetProperty(key, out var p))
+                    {
+                        if (p.ValueKind == System.Text.Json.JsonValueKind.True) { routeToBilling = true; break; }
+                        if (p.ValueKind == System.Text.Json.JsonValueKind.False) { routeToBilling = false; break; }
+                        if (p.ValueKind == System.Text.Json.JsonValueKind.String && bool.TryParse(p.GetString(), out var rbVal)) { routeToBilling = rbVal; break; }
+                    }
+                }
+
+                // Check error
+                if (root.TryGetProperty("error", out var errProp) && errProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                {
+                    var errStr = errProp.GetString();
+                    if (!string.IsNullOrWhiteSpace(errStr))
+                    {
+                        errorMessage = errStr;
+                    }
+                }
+                else if (root.TryGetProperty("message", out var msgProp) && msgProp.ValueKind == System.Text.Json.JsonValueKind.String && !isSuccess)
+                {
+                    errorMessage = msgProp.GetString();
+                }
+
+                if (isSuccess)
+                {
+                    return true;
+                }
+            }
+            catch { }
+        }
+
+        // 2. Pipe delimited format "Success|{opId}|{token}"
+        if (trimmed.StartsWith("Success", StringComparison.OrdinalIgnoreCase))
+        {
+            if (trimmed.Contains("|"))
+            {
+                var parts = trimmed.Split('|');
+                if (parts.Length > 1 && Guid.TryParse(parts[1], out var g))
+                {
+                    opId = g;
+                }
+                if (parts.Length > 2)
+                {
+                    tokenNo = parts[2];
+                }
+            }
+            return true;
+        }
+
+        // 3. Fallback check for "Success" anywhere inside JSON
+        if (trimmed.Contains("\"status\":\"Success\"", StringComparison.OrdinalIgnoreCase) || 
+            trimmed.Contains("\"status\":\"SUCCESS\"", StringComparison.OrdinalIgnoreCase) || 
+            trimmed.Contains("\"success\":true", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        errorMessage ??= result;
+        return false;
     }
 
     private string editingUnpaidId = "";
