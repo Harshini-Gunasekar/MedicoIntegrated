@@ -6,16 +6,31 @@ using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Booking.Helpers;
 using Booking.Models;
+using medico_backend.Model;
 
 namespace Booking.Services
 {
     public class AppointmentBookingService
     {
         private readonly HttpClient _http;
+        private readonly SharedComponents.Rcl.Services.TenantSessionState? _tenantState;
 
-        public AppointmentBookingService(HttpClient http)
+        public AppointmentBookingService(HttpClient http, SharedComponents.Rcl.Services.TenantSessionState? tenantState = null)
         {
             _http = http;
+            _tenantState = tenantState;
+        }
+
+        private int GetEffectiveUserCode(int? usercode)
+        {
+            if (usercode.HasValue && usercode.Value > 0) return usercode.Value;
+            if (_tenantState != null)
+            {
+                if (_tenantState.UserCode > 0) return _tenantState.UserCode;
+                if (_tenantState.UserData != null && _tenantState.UserData.UserCode.HasValue && _tenantState.UserData.UserCode.Value > 0)
+                    return _tenantState.UserData.UserCode.Value;
+            }
+            return 0;
         }
 
         public async Task<List<AvailableSlotModel>> GetAvailableSlotsAsync(int dcode, DateOnly appointmentDate)
@@ -59,6 +74,13 @@ namespace Booking.Services
                 booking.booking_type = normalizedBookingType;
                 booking.notes = string.IsNullOrWhiteSpace(normalizedNotes) ? null : normalizedNotes;
 
+                var effectiveUserCode = GetEffectiveUserCode(booking.usercode);
+                booking.usercode = effectiveUserCode;
+                if (string.IsNullOrWhiteSpace(booking.tenant_code) && _tenantState != null && !string.IsNullOrWhiteSpace(_tenantState.TenantCode))
+                {
+                    booking.tenant_code = _tenantState.TenantCode;
+                }
+
                 // Convert slot times to UTC for backend API requirement
                 var apiPayload = new AppointmentBookingModel
                 {
@@ -79,6 +101,8 @@ namespace Booking.Services
                     cancel_reason = booking.cancel_reason,
                     cancelled_at = booking.cancelled_at,
                     notes = booking.notes,
+                    op_token_no = booking.op_token_no,
+                    op_queue_no = booking.op_queue_no,
                     tenant_code = booking.tenant_code,
                     isdeleted = booking.isdeleted,
                     created_at = booking.created_at,
@@ -87,7 +111,8 @@ namespace Booking.Services
                     mobile = booking.mobile,
                     isvip = booking.isvip,
                     is_vip = booking.is_vip,
-                    viprole = booking.viprole
+                    viprole = booking.viprole,
+                    usercode = effectiveUserCode
                 };
 
                 var jsonPayload = Newtonsoft.Json.JsonConvert.SerializeObject(apiPayload, Newtonsoft.Json.Formatting.Indented);
@@ -173,7 +198,8 @@ namespace Booking.Services
                         duty_dcode = null,
                         transferred_to_dcode = null,
                         transfer_reason = null,
-                        is_dressing = false
+                        is_dressing = false,
+                        usercode = GetEffectiveUserCode(savedBooking.usercode > 0 ? savedBooking.usercode : booking.usercode)
                     };
 
                     opResult = await RegisterOpAsync(opRegistration);
@@ -280,6 +306,11 @@ namespace Booking.Services
             {
                 if (request?.new_booking != null)
                 {
+                    request.new_booking.usercode = GetEffectiveUserCode(request.new_booking.usercode);
+                    if (string.IsNullOrWhiteSpace(request.new_booking.tenant_code) && _tenantState != null && !string.IsNullOrWhiteSpace(_tenantState.TenantCode))
+                    {
+                        request.new_booking.tenant_code = _tenantState.TenantCode;
+                    }
                     request.new_booking.slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_start_time);
                     request.new_booking.slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_end_time);
                 }
@@ -299,6 +330,7 @@ namespace Booking.Services
             {
                 if (request != null)
                 {
+                    request.usercode = GetEffectiveUserCode(request.usercode);
                     request.new_slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_slot_start_time);
                     request.new_slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_slot_end_time);
                 }
@@ -346,6 +378,11 @@ namespace Booking.Services
             {
                 if (request?.new_booking != null)
                 {
+                    request.new_booking.usercode = GetEffectiveUserCode(request.new_booking.usercode);
+                    if (string.IsNullOrWhiteSpace(request.new_booking.tenant_code) && _tenantState != null && !string.IsNullOrWhiteSpace(_tenantState.TenantCode))
+                    {
+                        request.new_booking.tenant_code = _tenantState.TenantCode;
+                    }
                     request.new_booking.slot_start_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_start_time);
                     request.new_booking.slot_end_time = Booking.Helpers.DateTimeExtensions.ToUtcFromIndianTime(request.new_booking.slot_end_time);
                 }
@@ -365,6 +402,7 @@ namespace Booking.Services
             {
                 request.reg_type = "ONLINE";
                 request.is_direct_walkin = false;
+                request.usercode = GetEffectiveUserCode(request.usercode);
                 if (!string.IsNullOrWhiteSpace(request.notes) && request.notes.StartsWith("[WALKIN]", StringComparison.OrdinalIgnoreCase))
                 {
                     request.notes = request.notes.Substring("[WALKIN]".Length).Trim();
@@ -411,6 +449,7 @@ namespace Booking.Services
         {
             try
             {
+                request.usercode = GetEffectiveUserCode(request.usercode);
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
                 Console.WriteLine("--- DIRECT WALKIN PAYLOAD ---");
@@ -506,6 +545,7 @@ namespace Booking.Services
         {
             try
             {
+                request.usercode = GetEffectiveUserCode(request.usercode);
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
                 Console.WriteLine("--- DRESSING REGISTRATION PAYLOAD ---");
@@ -544,6 +584,7 @@ namespace Booking.Services
         {
             try
             {
+                request.usercode = GetEffectiveUserCode(request.usercode);
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
                 Console.WriteLine("--- COMBO REGISTRATION PAYLOAD ---");
@@ -574,6 +615,33 @@ namespace Booking.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"Error doing combo registration: {ex.Message}");
+                return $"Error|{ex.Message}";
+            }
+        }
+
+        public async Task<string> AddServicesToOpAsync(OPRegistrationModel.AddServicesToOpRequest request)
+        {
+            try
+            {
+                request.usercode = GetEffectiveUserCode(request.usercode);
+                var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, jsonOptions);
+                Console.WriteLine("--- ADD SERVICES TO OP PAYLOAD ---");
+                Console.WriteLine(jsonPayload);
+                Console.WriteLine("----------------------------------");
+
+                var response = await _http.PostAsJsonAsync("api/OpRegistration/add-services", request);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine("--- ADD SERVICES TO OP RESPONSE ---");
+                Console.WriteLine(rawResponse);
+                Console.WriteLine("-----------------------------------");
+
+                return rawResponse;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error adding services to op: {ex.Message}");
                 return $"Error|{ex.Message}";
             }
         }

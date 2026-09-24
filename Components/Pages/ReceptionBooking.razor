@@ -226,9 +226,9 @@
                                     if (string.IsNullOrWhiteSpace(displayNotes)) displayNotes = "-";
                                 }
                                 <tr class="@(book.isvip == true || book.is_vip == true ? "vip-row" : "")">
-                                    <td style="font-weight: 800; color: #026aa7;">#@book.booking_no</td>
+                                    <td class="booking-no-cell">#@book.booking_no</td>
                                     <td>
-                                        <span style="font-weight: 700; color: #334155;">@GetPatientName(book)</span>
+                                        <span class="patient-name-val">@GetPatientName(book)</span>
                                         @{
                                             var bookVipRole = (book.isvip == true || book.is_vip == true)
                                                 ? (!string.IsNullOrWhiteSpace(book.viprole) ? book.viprole : GetPatientVipRole(book))
@@ -243,8 +243,8 @@
                                             }
                                         }
                                     </td>
-                                    <td><span style="color: #64748b; font-weight: 600;">@GetPatientPhone(book)</span></td>
-                                    <td style="font-weight: 700; color: #334155;">Dr. @GetDoctorName(book.dcode)</td>
+                                    <td><span class="patient-phone-val">@GetPatientPhone(book)</span></td>
+                                    <td class="doctor-name-val">Dr. @GetDoctorName(book.dcode)</td>
                                     @if (labSetting.is_slot_required != false)
                                     {
                                         <td>
@@ -1297,9 +1297,35 @@
     private bool loadingWholeTargetSlots = false;
 
     private LabSettingModel labSetting = new();
+    private int currentUserCode = 0;
+
+    private async Task<int> GetResolvedUserCodeAsync()
+    {
+        if (currentUserCode > 0) return currentUserCode;
+        if (TenantState?.UserCode > 0)
+        {
+            currentUserCode = TenantState.UserCode;
+            return currentUserCode;
+        }
+        try
+        {
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null && userDetailsResult.Value.UserCode.HasValue && userDetailsResult.Value.UserCode.Value > 0)
+            {
+                currentUserCode = userDetailsResult.Value.UserCode.Value;
+                return currentUserCode;
+            }
+        }
+        catch { }
+        return TenantState?.UserCode > 0 ? TenantState.UserCode : 1;
+    }
 
     protected override async Task OnInitializedAsync()
     {
+        if (TenantState?.UserCode > 0)
+        {
+            currentUserCode = TenantState.UserCode;
+        }
         try
         {
             try
@@ -1333,6 +1359,10 @@
     {
         if (firstRender)
         {
+            if (currentUserCode <= 0)
+            {
+                _ = await GetResolvedUserCodeAsync();
+            }
             await RestoreWalkinDraftAsync();
         }
     }
@@ -1598,10 +1628,21 @@
         return $"{startPart} {startAmPm} - {endPart} {endAmPm}";
     }
 
+    private string FormatSlotRange(TimeOnly? startTime, TimeOnly? endTime)
+    {
+        return FormatSlotRange(startTime ?? default(TimeOnly), endTime ?? default(TimeOnly));
+    }
+
     private string FormatTime(TimeOnly time)
     {
         if (time == default(TimeOnly)) return "-";
         return time.Minute == 0 ? time.ToString("%h tt") : time.ToString("h:mm tt");
+    }
+
+    private string FormatTime(TimeOnly? time)
+    {
+        if (!time.HasValue || time.Value == default(TimeOnly)) return "-";
+        return FormatTime(time.Value);
     }
 
     private async Task UpdateBookingStatus(AppointmentBookingModel booking, string newStatus)
@@ -1704,7 +1745,7 @@
     {
         if (isWalkinMinimized)
         {
-            return "position: fixed; bottom: 24px; right: 24px; z-index: 1060; max-width: 480px; width: 92%; background: #ffffff; border-radius: 14px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2); border: 2px solid #026aa7; transition: all 0.25s ease-in-out;";
+            return "position: fixed; bottom: 16px; right: 16px; z-index: 1060; max-width: calc(100vw - 32px); width: 440px; background: #ffffff; border-radius: 14px; box-shadow: 0 12px 32px rgba(0, 0, 0, 0.2); border: 2px solid #026aa7; transition: all 0.25s ease-in-out;";
         }
         return "max-width: 780px; width: 95%;";
     }
@@ -1974,6 +2015,8 @@
             string finalNotes = string.IsNullOrWhiteSpace(walkinNotes) ? "Walk-in booking" : walkinNotes;
             finalNotes = finalNotes.Replace("[WALKIN]", string.Empty, StringComparison.OrdinalIgnoreCase).Trim();
 
+            var resolvedUserCode = await GetResolvedUserCodeAsync();
+
             var newBooking = new AppointmentBookingModel
             {
                 booking_id = Guid.NewGuid(),
@@ -1987,6 +2030,8 @@
                 booking_type = resolvedBookingType,
                 booking_status = "BOOKED",
                 notes = finalNotes,
+                tenant_code = TenantState?.TenantCode,
+                usercode = resolvedUserCode,
                 isdeleted = false
             };
 
@@ -2050,6 +2095,12 @@
         registerSaving = true;
         try
         {
+            var resolvedUserCode = await GetResolvedUserCodeAsync();
+            newOpRequest.usercode = resolvedUserCode;
+            if (string.IsNullOrWhiteSpace(newOpRequest.tenant_code))
+            {
+                newOpRequest.tenant_code = TenantState?.TenantCode;
+            }
             var result = await BookingService.RegisterOpAsync(newOpRequest);
             if (result != null && result.StartsWith("Success"))
             {
@@ -2213,6 +2264,8 @@
         bookingInProgress = true;
         try
         {
+            var resolvedUserCode = await GetResolvedUserCodeAsync();
+
             var req = new RescheduleAppointmentRequest
             {
                 old_booking_id = selectedBookingToReschedule.booking_id,
@@ -2233,6 +2286,8 @@
                     notes = selectedBookingToReschedule.notes,
                     patient_name = selectedBookingToReschedule.patient_name,
                     mobile = selectedBookingToReschedule.mobile,
+                    tenant_code = TenantState?.TenantCode,
+                    usercode = resolvedUserCode,
                     isdeleted = false
                 }
             };
@@ -2381,6 +2436,7 @@
         bookingInProgress = true;
         try
         {
+            var resolvedUserCode = await GetResolvedUserCodeAsync();
             var req = new RescheduleWholeSlotRequest
             {
                 slot_master_id = selectedWholeSourceSlot.slot_master_id,
@@ -2390,7 +2446,8 @@
                 new_slot_start_time = selectedWholeTargetSlot.slot_start_time,
                 new_slot_end_time = selectedWholeTargetSlot.slot_end_time,
                 new_dcode = selectedWholeTargetSlot.dcode,
-                reschedule_reason = wholeRescheduleReason
+                reschedule_reason = wholeRescheduleReason,
+                usercode = resolvedUserCode
             };
 
             var success = await BookingService.RescheduleWholeSlotAsync(req);

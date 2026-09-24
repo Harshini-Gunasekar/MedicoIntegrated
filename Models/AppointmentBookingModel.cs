@@ -16,20 +16,20 @@ namespace Booking.Models
         public decimal custid { get; set; }
         public int dcode { get; set; }
 
-        [JsonConverter(typeof(FlexibleGuidConverter))]
-        public Guid slot_detail_id { get; set; }
+        [JsonConverter(typeof(FlexibleNullableGuidConverter))]
+        public Guid? slot_detail_id { get; set; }
 
-        [JsonConverter(typeof(FlexibleGuidConverter))]
-        public Guid slot_master_id { get; set; }
+        [JsonConverter(typeof(FlexibleNullableGuidConverter))]
+        public Guid? slot_master_id { get; set; }
 
         [JsonConverter(typeof(FlexibleDateOnlyConverter))]
         public DateOnly appointment_date { get; set; }
 
-        [JsonConverter(typeof(FlexibleTimeOnlyConverter))]
-        public TimeOnly slot_start_time { get; set; }
+        [JsonConverter(typeof(FlexibleNullableTimeOnlyConverter))]
+        public TimeOnly? slot_start_time { get; set; }
 
-        [JsonConverter(typeof(FlexibleTimeOnlyConverter))]
-        public TimeOnly slot_end_time { get; set; }
+        [JsonConverter(typeof(FlexibleNullableTimeOnlyConverter))]
+        public TimeOnly? slot_end_time { get; set; }
 
         public int token_no { get; set; } = 0;
         public string booking_status { get; set; } = "BOOKED";
@@ -43,10 +43,14 @@ namespace Booking.Models
         [JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
         public DateTime? cancelled_at { get; set; }
         public string? notes { get; set; }
+        public string? op_token_no { get; set; }
+        public int? op_queue_no { get; set; }
         public string? tenant_code { get; set; }
 
         [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool isdeleted { get; set; } = false;
+
+        public int usercode { get; set; } = 0;
 
         [JsonConverter(typeof(FlexibleDateTimeConverter))]
         public DateTime created_at { get; set; } =
@@ -85,6 +89,7 @@ namespace Booking.Models
     {
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid old_booking_id { get; set; }
+        // ✅ booking_type needed to correctly decrement old slot counters
         public string booking_type { get; set; } = "ONLINE";
         public string? reschedule_reason { get; set; }
         public AppointmentBookingModel new_booking { get; set; } = new();
@@ -96,8 +101,10 @@ namespace Booking.Models
         public Guid old_booking_id { get; set; }
         public string booking_type { get; set; } = "ONLINE";
         public string? reschedule_reason { get; set; }
+
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid new_slot_detail_id { get; set; }
+
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid new_slot_master_id { get; set; }
 
@@ -112,14 +119,18 @@ namespace Booking.Models
 
         public int new_dcode { get; set; }
         public string? notes { get; set; }
+        public int usercode { get; set; }
     }
 
+    // ✅ NEW — used by reschedule-whole-slot endpoint
     public class RescheduleWholeSlotRequest
     {
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid slot_master_id { get; set; }
+
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid new_slot_detail_id { get; set; }
+
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid new_slot_master_id { get; set; }
 
@@ -134,6 +145,7 @@ namespace Booking.Models
 
         public int new_dcode { get; set; }
         public string? reschedule_reason { get; set; }
+        public int usercode { get; set; }
     }
     
     public class AppointmentBookingViewModel
@@ -158,21 +170,25 @@ namespace Booking.Models
         public string? booking_status { get; set; }
         public string? booking_type { get; set; }
         public string? tenant_code { get; set; }
+        public int? usercode { get; set; }
     }
     
     public class AppointmentBookingLogModel
     {
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid log_id { get; set; } = Guid.NewGuid();
+
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid booking_id { get; set; }
         public string? booking_no { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
-        public string action { get; set; } = string.Empty;
-        public string? action_by { get; set; }
+        public string action { get; set; } = string.Empty;   // BOOKED / RESCHEDULED
+        public string? action_by { get; set; }               // custid as string
+
         [JsonConverter(typeof(FlexibleNullableGuidConverter))]
         public Guid? old_slot_detail_id { get; set; }
+
         [JsonConverter(typeof(FlexibleNullableGuidConverter))]
         public Guid? new_slot_detail_id { get; set; }
 
@@ -204,11 +220,64 @@ namespace Booking.Models
         public string? reschedule_reason { get; set; }
         public AppointmentBookingModel new_booking { get; set; } = new();
     }
+
+    public class AppointmentBookingLogViewModel
+    {
+        [JsonConverter(typeof(FlexibleGuidConverter))]
+        public Guid log_id { get; set; }
+
+        [JsonConverter(typeof(FlexibleGuidConverter))]
+        public Guid booking_id { get; set; }
+        public string? booking_no { get; set; }
+        public decimal custid { get; set; }
+        public int dcode { get; set; }
+        public string? doctor_name { get; set; }
+        public string? action { get; set; }
+        public string? action_by { get; set; }
+        public string? booking_status { get; set; }
+        public string? booking_type { get; set; }
+        public int token_no { get; set; }
+        public string? cancel_reason { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableDateTimeConverter))]
+        public DateTime? cancelled_at { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableGuidConverter))]
+        public Guid? rescheduled_from { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableGuidConverter))]
+        public Guid? old_slot_detail_id { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableDateOnlyConverter))]
+        public DateOnly? old_appointment_date { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableTimeOnlyConverter))]
+        public TimeOnly? old_slot_start_time { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableGuidConverter))]
+        public Guid? new_slot_detail_id { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableDateOnlyConverter))]
+        public DateOnly? new_appointment_date { get; set; }
+
+        [JsonConverter(typeof(FlexibleNullableTimeOnlyConverter))]
+        public TimeOnly? new_slot_start_time { get; set; }
+
+        public string? remarks { get; set; }
+
+        [JsonConverter(typeof(FlexibleDateTimeConverter))]
+        public DateTime created_at { get; set; }
+
+        public string? tenant_code { get; set; }  // ✅ added
+        public string? customer_name { get; set; }
+        public string? mobile { get; set; }
+    }
     
     public class AvailableSlotModel
     {
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid slot_detail_id { get; set; }
+
         [JsonConverter(typeof(FlexibleGuidConverter))]
         public Guid slot_master_id { get; set; }
         public int dcode { get; set; }
@@ -259,9 +328,11 @@ namespace Booking.Models
         public string? booking_type { get; set; }
         public string? reg_type { get; set; }
         public string? notes { get; set; }
+
         [JsonConverter(typeof(FlexibleNullableBoolConverter))]
         public bool? isvip { get; set; }
         public string? viprole { get; set; }
+
         [JsonConverter(typeof(FlexibleBoolConverter))]
         public bool refer_to_ip { get; set; } = false;
 

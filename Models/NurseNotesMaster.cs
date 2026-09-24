@@ -88,4 +88,57 @@ namespace medico_backend.Model
         public bool is_active { get; set; } = true;
         public string? tenant_code { get; set; }
     }
+
+    // ═══════════════════════════════════════
+    // 4. NURSE NOTE MEDICINE
+    // ═══════════════════════════════════════
+    [Table("ip_nurse_note_medicine")]
+    public class NurseMedicineModel
+    {
+        [ExplicitKey] public Guid med_id { get; set; } = Guid.NewGuid();
+        public Guid ip_id { get; set; }
+        public decimal custid { get; set; }
+        public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+        public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+        public string shift { get; set; } = "MORNING";
+        public string medicine_name { get; set; } = string.Empty;
+        public decimal? dose { get; set; }
+        public string? unit { get; set; }
+        public string? route { get; set; }
+        public decimal quantity { get; set; } = 1;
+        public string status { get; set; } = "GIVEN";   // GIVEN / REFUSED / MISSED
+        public string? remarks { get; set; }
+        public int? usercode { get; set; }
+        public string? tenant_code { get; set; }
+        public bool isdeleted { get; set; } = false;
+        public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+        public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+    }
+
+    public class AddMedicineRequest
+    {
+        public Guid ip_id { get; set; }
+        public decimal custid { get; set; }
+        public string shift { get; set; } = "MORNING";
+        public string medicine_name { get; set; } = string.Empty;
+        public decimal? dose { get; set; }
+        public string? unit { get; set; }
+        public string? route { get; set; }
+        public decimal quantity { get; set; } = 1;
+        public string status { get; set; } = "GIVEN";
+        public string? remarks { get; set; }
+    }
+
+    public class UpdateMedicineRequest
+    {
+        public Guid med_id { get; set; }
+        public string shift { get; set; } = "MORNING";
+        public string medicine_name { get; set; } = string.Empty;
+        public decimal? dose { get; set; }
+        public string? unit { get; set; }
+        public string? route { get; set; }
+        public decimal quantity { get; set; } = 1;
+        public string status { get; set; } = "GIVEN";
+        public string? remarks { get; set; }
+    }
 }

@@ -1,12 +1,15 @@
 using System;
-                                                                                                                using System.Text.Json.Serialization;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Text.Json.Serialization;
 using Dapper.Contrib.Extensions;
+using Booking.Helpers;
 
 namespace Booking.Models
 {
     public class OPRegistrationModel
     {
-        [Table("op_registration")]
+        [Dapper.Contrib.Extensions.Table("op_registration")]
         public class OpRegistrationModel
         {
             [ExplicitKey]
@@ -19,15 +22,16 @@ namespace Booking.Models
             public string? booking_no { get; set; }
 
             [JsonConverter(typeof(FlexibleNullableGuidConverter))]
-            public Guid? slot_detail_id { get; set; }   // ✅ NEW — links to slot
+            public Guid? slot_detail_id { get; set; }   
             public decimal custid { get; set; }
             public int dcode { get; set; }
             public int? department_code { get; set; }
             public string visit_type { get; set; } = "NEWVISIT";
-            public string reg_type { get; set; } = "ONLINE";    // Use ONLINE token allocation for slot-driven registrations; backend walk-in ranges are not always configured.
+            public string reg_type { get; set; } = "WALKIN";    
+
             [JsonConverter(typeof(FlexibleDateOnlyConverter))]
             public DateOnly visit_date { get; set; }
-            public string? token_no { get; set; }
+            public string? token_no { get; set; }   
             public int? queue_no { get; set; }
             public string visit_status { get; set; } = "WAITING";
             public string? notes { get; set; }
@@ -56,6 +60,7 @@ namespace Booking.Models
 
             public int? service_id { get; set; }
             public int? serviceid { get; set; }
+            public int? usercode { get; set; }
 
             [Write(false)]
             public string? service_name { get; set; }
@@ -102,13 +107,18 @@ namespace Booking.Models
             public TimeOnly? slot_end_time { get; set; }
         }
 
-        [Table("patient_vitals")]
+        [Dapper.Contrib.Extensions.Table("patient_vitals")]
         public class PatientVitalsModel
         {
             [ExplicitKey]
+            [JsonConverter(typeof(FlexibleGuidConverter))]
             public Guid vital_id { get; set; } = Guid.NewGuid();
+
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? op_id { get; set; }          
             public string? op_no { get; set; }        
+
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? ip_id { get; set; }          
             public string? ip_no { get; set; }
             public decimal custid { get; set; }
@@ -152,9 +162,17 @@ namespace Booking.Models
 
             public string? entered_by { get; set; }
             public string? tenant_code { get; set; }
+
+            [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool isdeleted { get; set; } = false;
+
+            public int? usercode { get; set; }
+
+            [JsonConverter(typeof(FlexibleDateTimeConverter))]
             public DateTime created_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+
+            [JsonConverter(typeof(FlexibleDateTimeConverter))]
             public DateTime updated_at { get; set; } =
                 DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         }
@@ -165,6 +183,7 @@ namespace Booking.Models
             public Guid op_id { get; set; }
             public string visit_status { get; set; } = string.Empty;
         }
+
         // Direct walk-in — no booking needed
         public class DirectWalkinRequest
         {
@@ -172,12 +191,15 @@ namespace Booking.Models
             public int? dcode { get; set; }           // null if patient doesn't know which doctor
             public int? duty_dcode { get; set; }      // assigned at reception if no dcode
             public int? department_code { get; set; }
+
             [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
             public string visit_type { get; set; } = "NEWVISIT";
             public string? notes { get; set; }
             public int? serviceid { get; set; }
             public int? service_id { get; set; }
+            public string? tenant_code { get; set; }
+            public int? usercode { get; set; }
         }
 
         // Transfer to another doctor after duty doctor consultation
@@ -187,9 +209,13 @@ namespace Booking.Models
             public Guid op_id { get; set; }
             public int transfer_to_dcode { get; set; }
             public string? transfer_reason { get; set; }
+
             [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
+            public DateOnly? visit_date { get; set; }
+            public int? usercode { get; set; }
         }
+
         public class DoctorBookingListModel
         {
             [JsonConverter(typeof(FlexibleGuidConverter))]
@@ -217,24 +243,52 @@ namespace Booking.Models
             public string? booking_type { get; set; }
 
             public string? notes { get; set; }
+
             [JsonConverter(typeof(FlexibleBoolConverter))]
             public bool refer_to_ip { get; set; } = false;
+
+            public int? usercode { get; set; }
         }
+
         public class DressingRegistrationRequest
         {
             public decimal custid { get; set; }
             public int dcode { get; set; }
             public int? department_code { get; set; }
+
             [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
             public string? notes { get; set; }
+            public int? usercode { get; set; }
         }
+
+        public class CancelOpRequest
+        {
+            [JsonConverter(typeof(FlexibleGuidConverter))]
+            public Guid op_id { get; set; }
+            public string? cancel_reason { get; set; }
+        }
+
         public class CancelOpRegistrationRequest
         {
             [JsonConverter(typeof(FlexibleGuidConverter))]
             public Guid op_id { get; set; }
             public string? cancel_reason { get; set; }
         }
+
+        public class ServiceRegistrationRequest
+        {
+            public decimal custid { get; set; }
+            public int dcode { get; set; }
+            public int service_id { get; set; }
+            public int? department_code { get; set; }
+
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
+            public Guid? slot_detail_id { get; set; }
+            public string? notes { get; set; }
+            public int? usercode { get; set; }
+        }
+
         public class ComboRegistrationItemRequest
         {
             public string item_type { get; set; } = "SERVICE"; // "SERVICE" | "DRESSING"
@@ -246,6 +300,8 @@ namespace Booking.Models
             public decimal custid { get; set; }
             public int dcode { get; set; }
             public int? department_code { get; set; }
+
+            [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
 
             // What the single op_registration row itself represents
@@ -258,6 +314,21 @@ namespace Booking.Models
 
             // Everything else gets billed onto the SAME op_id, no separate token
             public List<ComboRegistrationItemRequest> additional_items { get; set; } = new();
+            public int? usercode { get; set; }
+        }
+
+        // Add services (and/or dressing) to an ALREADY-REGISTERED op visit.
+        // No new op_registration row, no token — purely billing line items
+        // attached to the existing op_id, same as combo's "additional_items".
+        public class AddServicesToOpRequest
+        {
+            [JsonConverter(typeof(FlexibleGuidConverter))]
+            public Guid op_id { get; set; }
+            public string? op_no { get; set; }              // optional cross-check against op_id
+            public List<ComboRegistrationItemRequest> items { get; set; } = new();
+            public int? enteredbhcode { get; set; }
+            public int? cntcode { get; set; }
+            public int? usercode { get; set; }               // who added it — logged in notes only
         }
     } 
 }
