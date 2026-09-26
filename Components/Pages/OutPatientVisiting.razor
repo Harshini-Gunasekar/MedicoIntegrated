@@ -7,6 +7,7 @@
 @using Medico_Backend.Model
 
 @inject AppointmentBookingService BookingService
+@inject CaseSheetService CaseSheetService
 @inject HmsBillingService HmsBillingService
 @inject DoctorService DoctorService
 @inject ToastService ToastService
@@ -49,7 +50,7 @@
 </div>
 
 <div class="dashboard-container" @onclick="() => showCategoryDropdown = false">
-    <DnaLoader IsLoading="@(loading || isPrintingBill || isDownloadingBillPdf)" Message="@(isPrintingBill ? "Generating Consolidated Bill..." : (isDownloadingBillPdf ? "Downloading Consolidated Bill..." : "Loading Outpatients..."))" />
+    <DnaLoader IsLoading="@(loading || isPrintingBill || isDownloadingBillPdf || isPreviewingCaseSheet || isPrintingCaseSheet)" Message="@(isPrintingCaseSheet ? "Printing Case Sheet..." : (isPreviewingCaseSheet ? "Generating Case Sheet Preview..." : (isPrintingBill ? "Generating Consolidated Bill..." : (isDownloadingBillPdf ? "Downloading Consolidated Bill..." : "Loading Outpatients..."))))" />
     <!-- Header -->
     <div class="dashboard-header">
         <div class="dashboard-title">
@@ -554,6 +555,12 @@
                                                          <button type="button" class="action-icon-btn download-bill" title="Download Consolidated Bill PDF" @onclick="() => { DownloadConsolidatedBillPdf(opData); ToggleDropdown(booking.booking_id); }">
                                                              <i class="bi bi-file-earmark-pdf-fill"></i>
                                                          </button>
+                                                          <button type="button" class="action-icon-btn preview-casesheet" title="Preview Case Sheet" @onclick="() => { PreviewCaseSheet(opData); ToggleDropdown(booking.booking_id); }">
+                                                              <i class="bi bi-journal-medical"></i>
+                                                          </button>
+                                                          <button type="button" class="action-icon-btn print-casesheet" title="Print Case Sheet" @onclick="() => { PrintCaseSheet(opData); ToggleDropdown(booking.booking_id); }">
+                                                              <i class="bi bi-printer"></i>
+                                                          </button>
                                                          <button type="button" class="action-icon-btn vitals" title="Patient Vitals" @onclick="() => { OpenVitalsModal(opData); ToggleDropdown(booking.booking_id); }">
                                                              <i class="bi bi-heart-pulse-fill"></i>
                                                          </button>
@@ -4484,6 +4491,221 @@
         finally
         {
             isDownloadingBillPdf = false;
+            StateHasChanged();
+        }
+    }
+
+    // --- Case Sheet Preview & Print ---
+    private bool isPreviewingCaseSheet = false;
+    private bool isPrintingCaseSheet = false;
+
+    private async Task<string> FetchCaseSheetBase64(OPRegistrationModel.OpRegistrationModel opData)
+    {
+        string tenant = !string.IsNullOrWhiteSpace(TenantState?.TenantCode) ? TenantState.TenantCode : "0010";
+        string token = !string.IsNullOrWhiteSpace(TenantState?.AuthToken) ? TenantState.AuthToken : "";
+
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            try
+            {
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                if (!tokenResult.Success || string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    tokenResult = await _sessionStorage.GetAsync<string>("auth_token");
+                }
+                if (tokenResult.Success && !string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    token = tokenResult.Value;
+                }
+            }
+            catch { }
+        }
+
+        if (string.IsNullOrWhiteSpace(tenant) || tenant == "0010")
+        {
+            try
+            {
+                var tenantResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (!tenantResult.Success || string.IsNullOrEmpty(tenantResult.Value))
+                {
+                    tenantResult = await _sessionStorage.GetAsync<string>("tenantcode");
+                }
+                if (tenantResult.Success && !string.IsNullOrEmpty(tenantResult.Value))
+                {
+                    tenant = tenantResult.Value;
+                }
+            }
+            catch { }
+        }
+
+        string opIdStr = opData.op_id.ToString();
+        string sheetId = "";
+
+        try
+        {
+            var caseSheetVm = await CaseSheetService.GetCaseSheetByVisitAsync(opId: opData.op_id);
+            if (caseSheetVm != null && !string.IsNullOrEmpty(caseSheetVm.sheet_id))
+            {
+                sheetId = caseSheetVm.sheet_id;
+            }
+        }
+        catch { }
+
+        var candidateUrls = new List<string>
+        {
+            $"api/Report/getopcasesheet?op_id={opIdStr}&isletterhead=true",
+            $"api/report/getopcasesheet?op_id={opIdStr}&isletterhead=true",
+            $"api/Report/GetOpCaseSheet?op_id={opIdStr}&isletterhead=true",
+            $"api/Report/getopcasesheet?op_id={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
+            $"api/report/getopcasesheet?op_id={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}"
+        };
+
+        if (!string.IsNullOrEmpty(sheetId))
+        {
+            candidateUrls.Insert(0, $"api/Report/getopcasesheet?sheet_id={sheetId}&isletterhead=true");
+            candidateUrls.Insert(1, $"api/report/getopcasesheet?sheet_id={sheetId}&isletterhead=true");
+            candidateUrls.Add($"api/Report/getopcasesheet?sheet_id={sheetId}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}");
+            candidateUrls.Add($"api/report/getopcasesheet?sheet_id={sheetId}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}");
+        }
+
+        candidateUrls.Add($"https://medicoapi.iscansoft.com/api/report/getopcasesheet?op_id={opIdStr}&isletterhead=true");
+        candidateUrls.Add($"https://medicoapi.iscansoft.com/api/report/getopcasesheet?op_id={opIdStr}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}");
+        if (!string.IsNullOrEmpty(sheetId))
+        {
+            candidateUrls.Add($"https://medicoapi.iscansoft.com/api/report/getopcasesheet?sheet_id={sheetId}&isletterhead=true");
+            candidateUrls.Add($"https://medicoapi.iscansoft.com/api/report/getopcasesheet?sheet_id={sheetId}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}");
+        }
+
+        var client = ClientFactory.CreateClient("Medico");
+        string lastError = "";
+
+        foreach (var url in candidateUrls)
+        {
+            try
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                if (!string.IsNullOrEmpty(token))
+                {
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                }
+                if (!req.Headers.Contains("tenantcode")) req.Headers.Add("tenantcode", tenant);
+                if (!req.Headers.Contains("tenant_code")) req.Headers.Add("tenant_code", tenant);
+                if (!req.Headers.Contains("tenant-code")) req.Headers.Add("tenant-code", tenant);
+
+                var response = await client.SendAsync(req);
+
+                if (response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NoContent)
+                {
+                    var contentStr = await response.Content.ReadAsStringAsync();
+                    contentStr = contentStr.Trim('"').Trim();
+
+                    string base64Data = contentStr;
+                    try
+                    {
+                        using var doc = System.Text.Json.JsonDocument.Parse(contentStr);
+                        var root = doc.RootElement;
+                        if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                        {
+                            if (root.TryGetProperty("data", out var dProp)) base64Data = dProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("base64", out var bProp)) base64Data = bProp.GetString() ?? contentStr;
+                            else if (root.TryGetProperty("file", out var fProp)) base64Data = fProp.GetString() ?? contentStr;
+                        }
+                        else if (root.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            base64Data = root.GetString() ?? contentStr;
+                        }
+                    }
+                    catch { }
+
+                    if (!string.IsNullOrWhiteSpace(base64Data) && base64Data.Length >= 50)
+                    {
+                        return base64Data;
+                    }
+                }
+                else
+                {
+                    var errContent = await response.Content.ReadAsStringAsync();
+                    lastError = $"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}): {errContent}";
+                }
+            }
+            catch (Exception ex)
+            {
+                lastError = ex.Message;
+            }
+        }
+
+        throw new Exception(string.IsNullOrEmpty(lastError) ? "Backend report endpoint returned empty data." : lastError);
+    }
+
+    private async Task PreviewCaseSheet(OPRegistrationModel.OpRegistrationModel opData)
+    {
+        if (opData == null || opData.op_id == Guid.Empty)
+        {
+            ToastService.ShowWarning("Invalid Outpatient visit record.");
+            return;
+        }
+
+        try
+        {
+            isPreviewingCaseSheet = true;
+            StateHasChanged();
+
+            string base64Data = await FetchCaseSheetBase64(opData);
+
+            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            {
+                string title = string.IsNullOrWhiteSpace(opData.op_no) ? "Case Sheet" : $"Case Sheet - {opData.op_no}";
+                await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64Data, title);
+            }
+            else
+            {
+                ToastService.ShowWarning("Case sheet not available or empty for this visit.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading case sheet: {ex.Message}");
+        }
+        finally
+        {
+            isPreviewingCaseSheet = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PrintCaseSheet(OPRegistrationModel.OpRegistrationModel opData)
+    {
+        if (opData == null || opData.op_id == Guid.Empty)
+        {
+            ToastService.ShowWarning("Invalid Outpatient visit record.");
+            return;
+        }
+
+        try
+        {
+            isPrintingCaseSheet = true;
+            StateHasChanged();
+
+            string base64Data = await FetchCaseSheetBase64(opData);
+
+            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            {
+                string title = string.IsNullOrWhiteSpace(opData.op_no) ? "Case Sheet" : $"Case Sheet - {opData.op_no}";
+                await JSRuntime.InvokeVoidAsync("openBase64Pdf", base64Data, title);
+                ToastService.ShowSuccess("Case sheet sent to printer.");
+            }
+            else
+            {
+                ToastService.ShowWarning("Case sheet not available or empty for this visit.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error printing case sheet: {ex.Message}");
+        }
+        finally
+        {
+            isPrintingCaseSheet = false;
             StateHasChanged();
         }
     }

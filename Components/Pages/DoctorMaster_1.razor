@@ -2610,7 +2610,10 @@
             tempSlabs.Clear();
             deletedSlabIds.Clear();
 
-            if (isConsultant)
+            bool hasCredentials = !string.IsNullOrWhiteSpace(docMobile) || !string.IsNullOrWhiteSpace(docEmail) || !string.IsNullOrWhiteSpace(docPass);
+            bool shouldSyncUser = isConsultant || hasCredentials;
+
+            if (shouldSyncUser)
             {
                 try
                 {
@@ -2623,22 +2626,30 @@
 
                     var allUsers = await UserService.GetAllAsync();
                     string fullName = $"{docTitle} {docName}".Trim();
+                    if (string.IsNullOrWhiteSpace(fullName)) fullName = docName;
                     
                     var existingUser = allUsers.FirstOrDefault(u => 
                         u?.user != null && (
                             (dcode > 0 && u.user.consultant_dcode == dcode) ||
-                            (!string.IsNullOrEmpty(docName) && u.user.name?.Equals(fullName, StringComparison.OrdinalIgnoreCase) == true)
+                            (!string.IsNullOrEmpty(docName) && (
+                                u.user.name?.Equals(fullName, StringComparison.OrdinalIgnoreCase) == true ||
+                                u.user.name?.Equals(docName, StringComparison.OrdinalIgnoreCase) == true ||
+                                (!string.IsNullOrEmpty(docShortName) && u.user.short_name?.Equals(docShortName, StringComparison.OrdinalIgnoreCase) == true) ||
+                                u.user.short_name?.Equals(docName, StringComparison.OrdinalIgnoreCase) == true
+                            )) ||
+                            (!string.IsNullOrWhiteSpace(docEmail) && u.user.email?.Equals(docEmail, StringComparison.OrdinalIgnoreCase) == true) ||
+                            (!string.IsNullOrWhiteSpace(docMobile) && u.user.mobile == docMobile)
                         )
                     );
 
-                    string password = !string.IsNullOrWhiteSpace(docPass) ? docPass : "123456";
+                    string password = !string.IsNullOrWhiteSpace(docPass) ? docPass : (existingUser?.user?.password ?? "123456");
                     string shortName = !string.IsNullOrWhiteSpace(docShortName) ? docShortName : docName;
                     if (string.IsNullOrWhiteSpace(shortName)) shortName = $"Doc{dcode}";
 
-                    string email = !string.IsNullOrWhiteSpace(docEmail) ? docEmail : $"{shortName.Replace(" ", "").ToLower()}@hospital.com";
+                    string email = !string.IsNullOrWhiteSpace(docEmail) ? docEmail : (existingUser?.user?.email ?? $"{shortName.Replace(" ", "").ToLower()}@hospital.com");
                     if (!email.Contains('@')) email += "@hospital.com";
 
-                    string mobile = !string.IsNullOrWhiteSpace(docMobile) ? docMobile : "9999999999";
+                    string mobile = !string.IsNullOrWhiteSpace(docMobile) ? docMobile : (existingUser?.user?.mobile ?? "9999999999");
                     string tenant = string.IsNullOrEmpty(tenantCodeToUse) ? TenantCode : tenantCodeToUse;
                     int bhCode = TenantState.BranchCode > 0 ? TenantState.BranchCode.Value : 1;
 
@@ -2655,7 +2666,7 @@
                     if (existingUser?.user != null)
                     {
                         var u = existingUser.user;
-                        u.is_consultant = true;
+                        if (isConsultant) u.is_consultant = true;
                         if (dcode > 0) u.consultant_dcode = dcode;
                         u.name = fullName;
                         u.short_name = shortName;
@@ -2664,15 +2675,15 @@
                         u.mobile = mobile;
                         u.tenant_code = tenant;
 
-                        var updateRes = await UserService.UpdateAsync(u, branchList);
+                        var updateRes = await UserService.UpdateAsync(u, branchList, userImageFile: selectedPhotoBytes, userImageFileName: selectedPhotoName);
                         if (updateRes.IsSuccessStatusCode)
                         {
-                            ToastService.ShowSuccess($"User login updated in User Master for Consultant: {shortName}");
+                            ToastService.ShowSuccess($"User login updated in User Master for Doctor: {fullName}");
                         }
                         else
                         {
                             var errStr = await updateRes.Content.ReadAsStringAsync();
-                            Console.WriteLine($"[Consultant Sync] Update failed: {errStr}");
+                            Console.WriteLine($"[Doctor User Sync] Update failed: {errStr}");
                         }
                     }
                     else
@@ -2682,12 +2693,12 @@
                             user_code = 0, // NEW USER MUST BE 0
                             name = fullName,
                             short_name = shortName,
-                            description = $"Consultant Doctor - {fullName}",
+                            description = isConsultant ? $"Consultant Doctor - {fullName}" : $"Doctor - {fullName}",
                             password = password,
                             email = email,
                             mobile = mobile,
                             role = "0",
-                            is_consultant = true,
+                            is_consultant = isConsultant,
                             consultant_dcode = dcode > 0 ? dcode : null,
                             tenant_code = tenant,
                             all_branch = true,
@@ -2698,21 +2709,21 @@
                             ibs_date = DateTime.Now
                         };
 
-                        var res = await UserService.RegisterAsync(newUser, branchList);
+                        var res = await UserService.RegisterAsync(newUser, branchList, userImageFile: selectedPhotoBytes, userImageFileName: selectedPhotoName);
                         if (res.IsSuccessStatusCode)
                         {
-                            Console.WriteLine($"[Consultant Sync] User login created in User Master for Consultant (Username: {shortName})");
+                            ToastService.ShowSuccess($"User login created automatically in User Master for Doctor: {fullName} (Username: {shortName})");
                         }
                         else
                         {
                             var errStr = await res.Content.ReadAsStringAsync();
-                            Console.WriteLine($"[Consultant Sync] Register failed: {errStr}");
+                            Console.WriteLine($"[Doctor User Sync] Register failed: {errStr}");
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"Error creating user master entry for consultant doctor: {ex.Message}");
+                    Console.Error.WriteLine($"Error creating/updating user master entry for doctor: {ex.Message}");
                 }
             }
         } else {

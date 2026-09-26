@@ -120,6 +120,7 @@ namespace Booking.Models
         public int packsize { get; set; }
         public decimal packg { get; set; }
         public decimal mrp { get; set; }
+        public string? hsncode { get; set; }
     }
 
     public class PurchaseRequest
