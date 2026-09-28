@@ -14,6 +14,7 @@
 @inject IJSRuntime JSRuntime
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject SharedComponents.Rcl.Services.SubscriptionService SubService
 
 <div class="login-page-container">
     <!-- Top Right Theme Switcher Button -->
@@ -119,56 +120,54 @@
                     </div>
                 }
 
-                <EditForm Model="@loginModel" OnValidSubmit="HandleLogin" autocomplete="off">
-                    <!-- Dummy inputs to prevent browser autofill/saved password popup cards -->
-                    <input type="text" name="prevent_autofill_user" style="display:none; position:absolute; left:-9999px;" tabindex="-1" autocomplete="off" />
-                    <input type="password" name="prevent_autofill_pass" style="display:none; position:absolute; left:-9999px;" tabindex="-1" autocomplete="off" />
+                @if (!string.IsNullOrEmpty(errorMessage))
+                {
+                    <div class="alert alert-danger" role="alert">
+                        <svg class="alert-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="10"></circle>
+                            <line x1="12" y1="8" x2="12" y2="12"></line>
+                            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                        </svg>
+                        <div class="alert-content">
+                            <strong>@errorMessage</strong>
+                        </div>
+                    </div>
+                }
 
+                <EditForm Model="@loginModel" OnValidSubmit="HandleLogin" FormName="medico-user-login">
                     <div class="form-group">
-                        <label class="form-label">Email Address or Mobile Number</label>
+                        <label class="form-label" for="login-input">Email Address or Mobile Number</label>
                         <div class="input-wrapper">
                             <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
                                 <circle cx="12" cy="7" r="4"></circle>
                             </svg>
-                            <input type="text" class="form-control custom-input" 
+                            <input id="login-input"
+                                   type="text" 
+                                   class="form-control custom-input" 
                                    @bind="loginModel.Input" 
-                                   @bind:event="oninput" 
-                                   @onkeydown="HandleKeyDown" 
                                    placeholder="Enter email or mobile number" 
-                                   autocomplete="off"
-                                   aria-autocomplete="none"
+                                   autocomplete="username"
                                    spellcheck="false"
-                                   autocorrect="off"
-                                   autocapitalize="off"
-                                   data-lpignore="true"
-                                   data-1p-ignore="true"
-                                   data-bwignore="true"
-                                   data-form-type="other" />
+                                   required />
                         </div>
                     </div>
 
                     <div class="form-group password-group">
-                        <label class="form-label">Password</label>
+                        <label class="form-label" for="login-password">Password</label>
                         <div class="input-wrapper password-input-wrapper">
                             <svg class="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
                                 <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
                             </svg>
-                            <input type="@passwordInputType" class="form-control custom-input" 
+                            <input id="login-password"
+                                   type="@passwordInputType" 
+                                   class="form-control custom-input" 
                                    @bind="loginModel.Password" 
-                                   @bind:event="oninput" 
-                                   @onkeydown="HandleKeyDown" 
                                    placeholder="••••••••" 
-                                   autocomplete="off"
-                                   aria-autocomplete="none"
+                                   autocomplete="current-password"
                                    spellcheck="false"
-                                   autocorrect="off"
-                                   autocapitalize="off"
-                                   data-lpignore="true"
-                                   data-1p-ignore="true"
-                                   data-bwignore="true"
-                                   data-form-type="other" />
+                                   required />
                             <button type="button" class="btn-eye" @onclick="TogglePasswordVisibility" aria-label="Toggle password visibility">
                                 @if (showPassword)
                                 {
@@ -222,7 +221,13 @@
 </div>
 
 @code {
-    private UserLoginModel loginModel = new UserLoginModel { Input = "", Password = "" };
+    [SupplyParameterFromForm]
+    private UserLoginModel? loginModel { get; set; }
+
+    protected override void OnInitialized()
+    {
+        loginModel ??= new UserLoginModel { Input = "", Password = "" };
+    }
     private string? errorMessage;
     private string? successMessage;
     private string? userName;
@@ -277,26 +282,44 @@
         showPassword = !showPassword;
     }
 
-    private async Task HandleKeyDown(KeyboardEventArgs e)
-    {
-        if (e.Key == "Enter" || e.Key == "NumpadEnter")
-        {
-            await HandleLogin();
-        }
-    }
-
     private async Task HandleLogin()
     {
         if (isLoading) return;
+        loginModel ??= new UserLoginModel { Input = "", Password = "" };
+
+        // Sync values from DOM in case browser/password manager autofilled without triggering events
+        try
+        {
+            var domInput = await JSRuntime.InvokeAsync<string>("medicoGetInputValue", "login-input");
+            var domPass = await JSRuntime.InvokeAsync<string>("medicoGetInputValue", "login-password");
+            if (string.IsNullOrWhiteSpace(loginModel.Input) && !string.IsNullOrWhiteSpace(domInput))
+            {
+                loginModel.Input = domInput;
+            }
+            if (string.IsNullOrWhiteSpace(loginModel.Password) && !string.IsNullOrWhiteSpace(domPass))
+            {
+                loginModel.Password = domPass;
+            }
+        }
+        catch { }
+
+        if (string.IsNullOrWhiteSpace(loginModel.Input) || string.IsNullOrWhiteSpace(loginModel.Password))
+        {
+            errorMessage = "Please enter your username, email or mobile number and password.";
+            Toast.ShowError(errorMessage);
+            return;
+        }
+
         isLoading = true;
         errorMessage = null;
         successMessage = null;
+        StateHasChanged();
 
         try
         {
             var payload = new LIMS_Backend.Model.LoginDto 
             {
-                input = loginModel.Input,
+                input = loginModel.Input.Trim(),
                 password = loginModel.Password
             };
 
@@ -426,7 +449,7 @@
                     TenantName = name,
                     AuthToken = safeToken,
                     UserCode = resolvedUserCode,
-                    BranchCode = null,
+                    BranchCode = bhCodeVal,
                     CounterCode = counterCodeVal,
                     Branches = userBranches,
                     Claim = null
@@ -436,7 +459,14 @@
                 await _sessionStorage.SetAsync("tenant_code", tenantCode);
                 await _sessionStorage.SetAsync("tenant_name", name);
                 await _sessionStorage.SetAsync("IsTenantAdmin", finalIsAdmin);
-                await _sessionStorage.DeleteAsync("bhcode");
+                if (bhCodeVal.HasValue && bhCodeVal.Value > 0)
+                {
+                    await _sessionStorage.SetAsync("bhcode", bhCodeVal.Value.ToString());
+                }
+                else
+                {
+                    await _sessionStorage.DeleteAsync("bhcode");
+                }
                 if (counterCodeVal.HasValue) await _sessionStorage.SetAsync("cntcode", counterCodeVal.Value.ToString());
                 await _sessionStorage.SetAsync("UserDetails", userDetails);
                 await _sessionStorage.SetAsync("UserRights", resolvedUserRights);
@@ -444,16 +474,63 @@
                 var userBranchCodes = userBranches.Select(b => b.bh_code).Distinct().ToList();
                 await _sessionStorage.SetAsync("UserBranchCodes", userBranchCodes);
                 
-                TenantState.SetSession(tenantCode, safeToken, name, resolvedUserCode, null, counterCodeVal, userDetails, resolvedUserRights);
+                TenantState.SetSession(tenantCode, safeToken, name, resolvedUserCode, bhCodeVal, counterCodeVal, userDetails, resolvedUserRights);
                 
-                Toast.ShowSuccess($"Login successful! Tenant: {tenantCode}");
-                await Task.Delay(1000);
+                // Check subscription validity for this tenant with MEDICO_APP
+                try
+                {
+                    var validityRec = await SubService.CheckValidityAsync(tenantCode, "MEDICO_APP");
+                    bool hasActiveSub = validityRec != null && validityRec.is_valid && 
+                                        !string.Equals(validityRec.status, "Expired", StringComparison.OrdinalIgnoreCase) && 
+                                        !string.Equals(validityRec.status, "NotSubscribed", StringComparison.OrdinalIgnoreCase);
+
+                    if (!hasActiveSub)
+                    {
+                        if (finalIsAdmin || isPowerUser)
+                        {
+                            await _sessionStorage.SetAsync("is_subscription_expired", true);
+                            TenantState.SetSubscriptionExpired(true, validityRec);
+                            Toast.ShowWarning("Please choose a subscription plan to activate all Medico features.");
+                            await Task.Delay(1000);
+                            NavigationManager.NavigateTo("/subscription", replace: true);
+                            return;
+                        }
+                        else
+                        {
+                            Toast.ShowError("Your Medico subscription is not active. Please contact your organization administrator to subscribe.");
+                            errorMessage = "Your Medico subscription is not active. Please contact your organization administrator to subscribe.";
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        await _sessionStorage.SetAsync("is_subscription_expired", false);
+                        TenantState.SetSubscriptionExpired(false, validityRec);
+                    }
+                }
+                catch (Exception subEx)
+                {
+                    Console.WriteLine($"[UserLogin] Subscription check warning: {subEx.Message}");
+                    await _sessionStorage.SetAsync("is_subscription_expired", false);
+                    TenantState.SetSubscriptionExpired(false);
+                }
+                
+                Toast.ShowSuccess($"Login successful! Welcome back, {name}");
+                await Task.Delay(500);
                 NavigationManager.NavigateTo("/home", replace: true);
             }
             else
             {
                 var responseContent = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"[UserLogin] Error Response: {responseContent}");
+                
+                // Fallback: If staff login failed, attempt facility/tenant admin login
+                bool adminSuccess = await TryAdminLoginAsync();
+                if (adminSuccess)
+                {
+                    return;
+                }
+
                 string detailedError = ExtractErrorMessage(responseContent);
 
                 if (!string.IsNullOrEmpty(detailedError) && (detailedError.Contains("No application module is assigned", StringComparison.OrdinalIgnoreCase) || detailedError.Contains("module is assigned", StringComparison.OrdinalIgnoreCase)))
@@ -485,6 +562,7 @@
         finally
         {
             isLoading = false;
+            StateHasChanged();
         }
     }
 
@@ -542,7 +620,7 @@
             var client = HttpClientFactory.CreateClient("LabCareUrl");
             var payload = new 
             {
-                email = loginModel.Input,
+                email = loginModel.Input.Trim(),
                 password = loginModel.Password
             };
 
@@ -599,8 +677,38 @@
                     
                     TenantState.SetSession(tenantCodeVal, safeToken, tenantNameVal ?? "", 0, null, null, userDetails, new List<SharedComponents.Rcl.Models.User_Rights>());
                     
+                    // Check subscription validity for this tenant with MEDICO_APP
+                    try
+                    {
+                        var adminValidityRec = await SubService.CheckValidityAsync(tenantCodeVal, "MEDICO_APP");
+                        bool adminHasActiveSub = adminValidityRec != null && adminValidityRec.is_valid && 
+                                                !string.Equals(adminValidityRec.status, "Expired", StringComparison.OrdinalIgnoreCase) && 
+                                                !string.Equals(adminValidityRec.status, "NotSubscribed", StringComparison.OrdinalIgnoreCase);
+
+                        if (!adminHasActiveSub)
+                        {
+                            await _sessionStorage.SetAsync("is_subscription_expired", true);
+                            TenantState.SetSubscriptionExpired(true, adminValidityRec);
+                            Toast.ShowWarning("Please choose a subscription plan to activate Medico.");
+                            await Task.Delay(1000);
+                            NavigationManager.NavigateTo("/subscription", replace: true);
+                            return true;
+                        }
+                        else
+                        {
+                            await _sessionStorage.SetAsync("is_subscription_expired", false);
+                            TenantState.SetSubscriptionExpired(false, adminValidityRec);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[AdminLoginFallback] Subscription check warning: {ex.Message}");
+                        await _sessionStorage.SetAsync("is_subscription_expired", false);
+                        TenantState.SetSubscriptionExpired(false);
+                    }
+                    
                     Toast.ShowSuccess($"Admin login successful!");
-                    await Task.Delay(1000);
+                    await Task.Delay(500);
                     NavigationManager.NavigateTo("/home", replace: true);
                     return true;
                 }

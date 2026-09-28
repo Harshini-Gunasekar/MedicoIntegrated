@@ -145,6 +145,27 @@ builder.Services.AddScoped<Booking.Services.PrefixMasterService>();
 builder.Services.AddScoped<Booking.Services.MasterTenantServices>();
 builder.Services.AddScoped<SharedComponents.Rcl.Services.NotificationService>();
 builder.Services.AddScoped<SharedComponents.Rcl.Services.TenantSessionState>();
+builder.Services.AddScoped<SharedComponents.Rcl.Services.SubscriptionService>(sp =>
+{
+    var factory = sp.GetRequiredService<IHttpClientFactory>();
+    var http = factory.CreateClient("RidoUrl");
+    var config = sp.GetRequiredService<IConfiguration>();
+    return new SharedComponents.Rcl.Services.SubscriptionService(http, config);
+});
+builder.Services.AddScoped<SharedComponents.Rcl.Services.ThemeService>();
+builder.Services.AddSingleton<SharedComponents.Rcl.Models.AppSettings>(sp =>
+{
+    var config = sp.GetRequiredService<Microsoft.Extensions.Configuration.IConfiguration>();
+    var env = config["Environment"] ?? "live";
+    var envSec = config.GetSection($"Environments:{env}");
+    return new SharedComponents.Rcl.Models.AppSettings
+    {
+        
+        BaseUrl = envSec["BaseUrl"] ?? config["BaseUrl"] ?? config["LabCareSettings:BaseUrl"] ?? string.Empty,
+        UniIdentityBaseUrl = envSec["UniIdentityBaseUrl"] ?? config["UniIdentityBaseUrl"] ?? "http://localhost:5099/",
+        RidoBaseUrl = envSec["RidoBaseUrl"] ?? config["RidoBaseUrl"] ?? string.Empty
+    };
+});
 builder.Services.AddScoped<Booking.Services.RoomTypeMasterService>();
 builder.Services.AddScoped<Booking.Services.WardMasterService>();
 builder.Services.AddScoped<Booking.Services.BedMasterService>();
