@@ -164,6 +164,7 @@ builder.Services.AddScoped<Booking.Services.ReportService>();
 builder.Services.AddScoped<Booking.Services.AppointmentPreBookingService>();
 builder.Services.AddScoped<Booking.Services.DoctorCurrentStatusService>();
 builder.Services.AddScoped<Booking.Services.OtService>();
+builder.Services.AddScoped<Booking.Services.RoleMasterService>();
 builder.Services.AddScoped<MedicoAi.Services.UserSessionState>();
 builder.Services.AddScoped<MedicoAi.Services.MedicoApiService>();
 builder.Services.AddScoped<MedicoAi.Services.VitalsSignalRService>();
