@@ -12,6 +12,8 @@ namespace Booking.Models
         public long? warehousecode { get; set; }
         public string? branchcode { get; set; }
         public string? locationcode { get; set; }
+        public decimal openingstrip { get; set; }     
+        public decimal openingloose { get; set; }
 
         public decimal openingstock { get; set; }
         public decimal purchasedqty { get; set; }

@@ -70,6 +70,8 @@
      public string? companycode { get; set; }
 
      public long? ordercode { get; set; }
+     public decimal? cntcode { get; set; } = 0;
+     public int? bh_code { get; set; }
  }
  public class sales_detail
  {

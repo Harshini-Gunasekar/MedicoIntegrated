@@ -604,7 +604,7 @@
         })();
     };
 
-    window.openPdfPreviewModal = function (base64String, title) {
+    window.openPdfPreviewModal = function (base64String, title, dotNetHelper) {
         try {
             if (!base64String) return false;
             if (base64String.startsWith('data:application/pdf;base64,')) {
@@ -674,6 +674,16 @@
             const printBtn = document.getElementById('pdfModalPrintBtn');
             if (printBtn) {
                 printBtn.onclick = async () => {
+                    if (dotNetHelper && typeof dotNetHelper.invokeMethodAsync === 'function') {
+                        try {
+                            await dotNetHelper.invokeMethodAsync('OnPdfModalPrintClicked');
+                        } catch (e) {
+                            console.error('dotNetHelper OnPdfModalPrintClicked error:', e);
+                        }
+                    }
+                    try {
+                        window.dispatchEvent(new CustomEvent('pdfPreviewModalPrintClicked', { detail: { title: title } }));
+                    } catch (e) { }
                     try {
                         await window.triggerIscanPrint(cleanBase64);
                     } catch (e) {
@@ -711,8 +721,8 @@
         }
     };
 
-    window.openPdfPreview = function (base64String, title) {
-        return window.openPdfPreviewModal(base64String, title);
+    window.openPdfPreview = function (base64String, title, dotNetHelper) {
+        return window.openPdfPreviewModal(base64String, title, dotNetHelper);
     };
 
     window.downloadPdfFile = function (base64String, fileName) {
@@ -739,6 +749,168 @@
             }, 500);
         } catch (err) {
             console.error('downloadPdfFile failed:', err);
+        }
+    };
+
+    window.downloadFileFromBase64 = function (base64String, fileName, mimeType) {
+        try {
+            if (!base64String) return;
+            let cleanBase64 = base64String.trim();
+            if (cleanBase64.includes(';base64,')) {
+                cleanBase64 = cleanBase64.substring(cleanBase64.indexOf(';base64,') + 8);
+            }
+            const byteCharacters = atob(cleanBase64);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: mimeType || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = fileName || 'Opening_Stock_Template.xlsx';
+            document.body.appendChild(link);
+            link.click();
+            setTimeout(function() {
+                if (document.body.contains(link)) document.body.removeChild(link);
+            }, 500);
+        } catch (err) {
+            console.error('downloadFileFromBase64 failed:', err);
+        }
+    };
+
+    window.parseSelectedOpeningStockExcel = function () {
+        try {
+            var input = document.getElementById('excelFileInput');
+            if (!input || !input.files || !input.files[0]) return;
+            var file = input.files[0];
+            var reader = new FileReader();
+            reader.onload = function (e) {
+                try {
+                    var data = new Uint8Array(e.target.result);
+                    var workbook = XLSX.read(data, { type: 'array', cellDates: true });
+                    if (workbook && workbook.SheetNames && workbook.SheetNames.length > 0) {
+                        var firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                        window.cachedOpeningStockSheetRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, dateNF: 'yyyy-mm-dd', defval: '' }) || [];
+                    }
+                } catch (err) {
+                    console.warn('Could not cache opening stock excel rows:', err);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        } catch (e) { }
+    };
+
+    window.downloadSkippedStocksExcel = function (data, fileName) {
+        try {
+            if (!data || !Array.isArray(data) || data.length === 0) {
+                alert('No skipped stocks data to export.');
+                return false;
+            }
+
+            var cachedRows = window.cachedOpeningStockSheetRows || [];
+            var colMap = { item: 0, batch: 1, expiry: 2, strip: 3, loose: 4 };
+
+            if (cachedRows.length > 0 && Array.isArray(cachedRows[0])) {
+                var headers = cachedRows[0];
+                for (var c = 0; c < headers.length; c++) {
+                    var h = String(headers[c] || '').toLowerCase().trim();
+                    if (h.includes('item')) colMap.item = c;
+                    else if (h.includes('batch')) colMap.batch = c;
+                    else if (h.includes('expir')) colMap.expiry = c;
+                    else if (h.includes('strip')) colMap.strip = c;
+                    else if (h.includes('loose')) colMap.loose = c;
+                }
+            }
+
+            var formattedRows = data.map(function (item) {
+                var rowNum = Number(item.Row_Number || item.rownumber || item.row_number || 0);
+                var rawRow = null;
+                if (rowNum > 1 && cachedRows.length >= rowNum) {
+                    rawRow = cachedRows[rowNum - 1]; // row 2 in Excel is index 1 in 0-indexed array
+                }
+
+                var getItemVal = function (propNames, colIdx, fallback) {
+                    if (rawRow && rawRow[colIdx] !== undefined && rawRow[colIdx] !== null && String(rawRow[colIdx]).trim() !== '') {
+                        return rawRow[colIdx];
+                    }
+                    for (var i = 0; i < propNames.length; i++) {
+                        var val = item[propNames[i]];
+                        if (val !== undefined && val !== null && String(val).trim() !== '') {
+                            return val;
+                        }
+                    }
+                    return fallback;
+                };
+
+                var itemName = getItemVal(['Item_Name', 'itemname', 'ItemName', 'item_name', 'item_Name'], colMap.item, '');
+                var batchNo = getItemVal(['Batch_No', 'batchno', 'BatchNo', 'batch_no', 'batch_No'], colMap.batch, 'NA');
+                var expiryDate = getItemVal(['Expiry_Date', 'expirydate', 'ExpiryDate', 'expiry_date', 'expiry_Date'], colMap.expiry, '');
+                var openingStrip = getItemVal(['Opening_Strip', 'openingstrip', 'OpeningStrip', 'opening_strip', 'opening_Strip'], colMap.strip, '');
+                var openingLoose = getItemVal(['Opening_Loose', 'openingloose', 'OpeningLoose', 'opening_loose', 'opening_Loose'], colMap.loose, '');
+                var rejectionReason = item.Rejection_Reason || item.rejectionreason || item.rejection_reason || item.rejection_Reason || item.Error_Reason || item.error_reason || item.error_Reason || item.message || item.Message || '';
+
+                return {
+                    "Item Name": itemName,
+                    "Batch No": batchNo,
+                    "Expiry date": expiryDate,
+                    "Opening strip": openingStrip,
+                    "Opening loose": openingLoose,
+                    "Rejection reason": rejectionReason
+                };
+            });
+
+            var targetFileName = (fileName || ('Skipped_Opening_Stocks_' + new Date().toISOString().slice(0, 10))) + '.xlsx';
+
+            if (window.XLSX) {
+                var ws = XLSX.utils.json_to_sheet(formattedRows);
+
+                ws['!cols'] = [
+                    { wch: 38 }, // Item Name
+                    { wch: 18 }, // Batch No
+                    { wch: 16 }, // Expiry date
+                    { wch: 16 }, // Opening strip
+                    { wch: 16 }, // Opening loose
+                    { wch: 55 }  // Rejection reason
+                ];
+
+                var wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Skipped Stocks");
+                XLSX.writeFile(wb, targetFileName);
+                return true;
+            } else {
+                // Fallback XML / CSV
+                var headers = ["Item Name", "Batch No", "Expiry date", "Opening strip", "Opening loose", "Rejection reason"];
+                var csvRows = [headers.join(',')];
+
+                formattedRows.forEach(function (r) {
+                    var escapeCsv = function (val) {
+                        var s = (val === null || val === undefined) ? '' : String(val);
+                        return '"' + s.replace(/"/g, '""') + '"';
+                    };
+                    csvRows.push([
+                        escapeCsv(r["Item Name"]),
+                        escapeCsv(r["Batch No"]),
+                        escapeCsv(r["Expiry date"]),
+                        escapeCsv(r["Opening strip"]),
+                        escapeCsv(r["Opening loose"]),
+                        escapeCsv(r["Rejection reason"])
+                    ].join(','));
+                });
+
+                var csvContent = "data:text/csv;charset=utf-8,\uFEFF" + encodeURIComponent(csvRows.join('\n'));
+                var downloadLink = document.createElement("a");
+                downloadLink.setAttribute("href", csvContent);
+                downloadLink.setAttribute("download", (fileName || 'Skipped_Opening_Stocks') + '.csv');
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                return true;
+            }
+        } catch (err) {
+            console.error('downloadSkippedStocksExcel failed:', err);
+            alert('Failed to download skipped stocks: ' + err.message);
+            return false;
         }
     };
 
@@ -776,14 +948,62 @@
 
     window.printIframePdf = function (iframeId, base64String) {
         try {
-            if (base64String) {
-                window.openBase64Pdf(base64String);
-                return;
+            // Trigger iScan desktop print protocol in background if available
+            if (base64String && typeof window.triggerIscanPrint === 'function') {
+                let cleanBase64 = base64String;
+                if (cleanBase64.startsWith('data:application/pdf;base64,')) {
+                    cleanBase64 = cleanBase64.substring('data:application/pdf;base64,'.length);
+                }
+                cleanBase64 = cleanBase64.trim().replace(/\s/g, '');
+                window.triggerIscanPrint(cleanBase64).catch(e => console.log(e));
             }
+
+            // Print the existing preview iframe directly
             const iframe = document.getElementById(iframeId);
             if (iframe && iframe.contentWindow) {
-                iframe.contentWindow.focus();
-                iframe.contentWindow.print();
+                try {
+                    iframe.contentWindow.focus();
+                    iframe.contentWindow.print();
+                    return;
+                } catch (e) {
+                    console.warn('iframe.contentWindow.print() direct attempt failed:', e);
+                }
+            }
+
+            // Fallback: use a hidden print iframe if direct focus fails
+            if (base64String) {
+                let cleanBase64 = base64String;
+                if (cleanBase64.startsWith('data:application/pdf;base64,')) {
+                    cleanBase64 = cleanBase64.substring('data:application/pdf;base64,'.length);
+                }
+                cleanBase64 = cleanBase64.trim().replace(/\s/g, '');
+                const byteCharacters = atob(cleanBase64);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], { type: 'application/pdf' });
+                const blobUrl = URL.createObjectURL(blob);
+
+                let hiddenFrame = document.getElementById('silentPdfPrintFrame');
+                if (!hiddenFrame) {
+                    hiddenFrame = document.createElement('iframe');
+                    hiddenFrame.id = 'silentPdfPrintFrame';
+                    hiddenFrame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:none;visibility:hidden;';
+                    document.body.appendChild(hiddenFrame);
+                }
+                hiddenFrame.src = blobUrl;
+                hiddenFrame.onload = function () {
+                    setTimeout(() => {
+                        try {
+                            hiddenFrame.contentWindow.focus();
+                            hiddenFrame.contentWindow.print();
+                        } catch (err) {
+                            console.error('hiddenFrame print error:', err);
+                        }
+                    }, 250);
+                };
             }
         } catch (err) {
             console.error('printIframePdf failed:', err);

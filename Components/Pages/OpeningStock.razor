@@ -1,0 +1,1109 @@
+@page "/openingstock"
+@page "/opening-stock"
+@using Booking.Models
+@using medico_backend.InventoryModel
+@using System.Net.Http.Json
+@using System.Text.Json
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Forms
+@inject IHttpClientFactory ClientFactory
+@inject IJSRuntime JS
+@inject Booking.Services.ToastService ToastService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject NavigationManager NavigationManager
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+
+<PageTitle>Opening Stock Import - Stock Master</PageTitle>
+
+<div class="opening-stock-page pt-0 pb-4">
+    <div class="items-shell">
+        <div class="items-content">
+            <!-- ─── Premium Header (matching Stock Master UI) ─── -->
+            <div class="premium-header-card mb-3">
+                <div class="header-card-left">
+                    <div class="header-card-icon">
+                        <i class="bi bi-file-earmark-spreadsheet"></i>
+                    </div>
+                    <div class="header-card-text">
+                        <h2 class="header-card-heading">
+                            Opening Stock Import
+                            @if (!string.IsNullOrEmpty(DefaultTenant))
+                            {
+                                <span class="badge tenant-code-badge">@DefaultTenant</span>
+                            }
+                        </h2>
+                        <div class="header-card-subheading">
+                            <span class="status-dot"></span> Manage opening inventory balances &bull; Total Stock Records: @StockList.Count
+                        </div>
+                    </div>
+                </div>
+
+                <div class="header-card-right">
+                    <button type="button" class="btn-header-action btn-header-template" @onclick="DownloadTemplate" disabled="@isDownloadingTemplate" title="Download Excel template for opening stock">
+                        @if (isDownloadingTemplate)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                            <span>Downloading...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-file-earmark-arrow-down-fill text-primary"></i>
+                            <span>Download Template</span>
+                        }
+                    </button>
+
+                    <a href="/stock" class="btn-header-action btn-header-nav" title="Navigate to Stock Master">
+                        <i class="bi bi-boxes"></i>
+                        <span>Stock Master</span>
+                    </a>
+                </div>
+            </div>
+
+            <!-- ─── Upload Configuration Panel ─── -->
+            <div class="glass-panel-card mb-4">
+                <div class="panel-header-strip">
+                    <h3 class="panel-header-title">
+                        <i class="bi bi-cloud-arrow-up-fill"></i>
+                        <span>Upload Opening Stock File (.xlsx)</span>
+                    </h3>
+                    <span class="panel-header-badge">
+                        <i class="bi bi-shield-check me-1"></i> Excel Import Engine
+                    </span>
+                </div>
+
+                <div class="panel-body-area">
+                    <div class="upload-form-wrapper">
+                        <!-- Left Column: Parameters & Configuration -->
+                        <div class="upload-params-col">
+                            <!-- Warehouse Dropdown -->
+                            <div class="form-group-custom">
+                                <label class="form-label-custom">
+                                    <i class="bi bi-shop text-primary"></i> Target Store / Warehouse <span class="req-star">*</span>
+                                    <span class="hint-badge">Required</span>
+                                </label>
+                                <select class="custom-select-input" @bind="selectedWarehouseCode">
+                                    <option value="0">-- Select Destination Warehouse --</option>
+                                    @foreach (var wh in WarehouseList)
+                                    {
+                                        <option value="@wh.warehousecode">@wh.warehousename (@wh.warehousecode)</option>
+                                    }
+                                </select>
+                            </div>
+
+                            <!-- Skip Errors Toggle -->
+                            <div class="custom-switch-card @(skipErrors ? "active" : "")" @onclick="ToggleSkipErrors">
+                                <div class="switch-text-wrap">
+                                    <div class="switch-title">
+                                        <i class="bi @(skipErrors ? "bi-check-circle-fill text-success" : "bi-shield-exclamation text-warning") me-1"></i>
+                                        Skip Rows with Errors (Safe Mode)
+                                    </div>
+                                    <div class="switch-desc">
+                                        @(skipErrors 
+                                            ? "Saves valid rows immediately and lists skipped/errored rows in reports." 
+                                            : "Strict Mode: If any row fails validation, nothing will be saved.")
+                                    </div>
+                                </div>
+                                <div class="form-check form-switch m-0 ms-2" @onclick:stopPropagation="true">
+                                    <input class="form-check-input" type="checkbox" @bind="skipErrors" id="skipErrorsSwitch" style="cursor: pointer; transform: scale(1.2);" />
+                                </div>
+                            </div>
+
+                            <!-- Helpful Information Card -->
+                            <div class="info-guidance-card">
+                                <div class="info-guidance-head">
+                                    <i class="bi bi-info-circle-fill"></i>
+                                    <span>Import Quick Tips</span>
+                                </div>
+                                <ul class="info-guidance-list">
+                                    <li>Download the standard template for exact column structure.</li>
+                                    <li>Ensure valid <strong>Item Code / Name</strong> and <strong>Opening Quantity</strong> exist on all rows.</li>
+                                    <li>Rows with batch and expiry details will automatically be tracked in stock inventory.</li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- Right Column: Drag & Drop Dropzone + File Selector -->
+                        <div class="upload-params-col">
+                            <div class="form-group-custom h-100 d-flex flex-column">
+                                <label class="form-label-custom">
+                                    <i class="bi bi-file-earmark-excel text-success"></i> Select Excel File (.xlsx) <span class="req-star">*</span>
+                                    <span class="hint-badge">Max 10 MB</span>
+                                </label>
+
+                                <label class="dropzone-container @(selectedFile != null ? "has-file" : "")" for="excelFileInput" style="cursor: pointer; margin-bottom: 0;">
+                                    <div class="dropzone-icon">
+                                        <i class="bi @(selectedFile != null ? "bi-file-earmark-check-fill text-success" : "bi-cloud-arrow-up-fill")"></i>
+                                    </div>
+
+                                    @if (selectedFile == null)
+                                    {
+                                        <div class="dropzone-text-main">Click here to browse Excel spreadsheet</div>
+                                        <div class="dropzone-text-sub">Supported format: <strong>.xlsx</strong> only (up to 10 MB)</div>
+                                        <span class="btn-browse-file"><i class="bi bi-folder2-open me-1"></i> Browse File</span>
+                                    }
+                                    else
+                                    {
+                                        <div class="file-selected-badge-box" @onclick:preventDefault="true" @onclick:stopPropagation="true">
+                                            <div class="file-info-left">
+                                                <i class="bi bi-file-earmark-spreadsheet-fill file-info-icon"></i>
+                                                <div class="file-info-meta">
+                                                    <div class="file-info-title" title="@selectedFile.Name">@selectedFile.Name</div>
+                                                    <div class="file-info-size">
+                                                        <span class="badge bg-light text-dark border">@FormatFileSize(selectedFile.Size)</span>
+                                                        <span class="text-success ms-1 fw-semibold">&bull; Ready to process</span>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <button type="button" class="btn-remove-file" title="Remove file" @onclick="ClearSelectedFile" @onclick:preventDefault="true" @onclick:stopPropagation="true">
+                                                <i class="bi bi-x-lg"></i>
+                                            </button>
+                                        </div>
+                                    }
+
+                                    <!-- Hidden Blazor InputFile -->
+                                    <InputFile id="excelFileInput" OnChange="OnFileSelected" accept=".xlsx" style="display: none;" />
+                                </label>
+
+                                <!-- Upload Button -->
+                                <button type="button" class="btn-upload-submit" disabled="@(isUploading || selectedFile == null || selectedWarehouseCode <= 0)" @onclick="UploadOpeningStock">
+                                    @if (isUploading)
+                                    {
+                                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                        <span>Uploading & Processing Excel...</span>
+                                    }
+                                    else
+                                    {
+                                        <i class="bi bi-cloud-arrow-up-fill" style="font-size: 1.1rem;"></i>
+                                        <span>Upload Opening Stock</span>
+                                    }
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ─── Response & Analysis Section ─── -->
+            @if (hasResult)
+            {
+                <div class="glass-panel-card mb-4" style="border-color: @(isLastUploadSuccess ? "#86efac" : "#fca5a5");">
+                    <div class="panel-header-strip" style="background: @(isLastUploadSuccess ? "linear-gradient(to right, #f0fdf4, #dcfce7)" : "linear-gradient(to right, #fef2f2, #fee2e2)");">
+                        <h3 class="panel-header-title" style="color: @(isLastUploadSuccess ? "#14532d" : "#7f1d1d");">
+                            <i class="bi @(isLastUploadSuccess ? "bi-check-circle-fill text-success" : "bi-x-circle-fill text-danger")"></i>
+                            <span>@(isLastUploadSuccess ? "Upload Result Summary" : "Upload Error Feedback")</span>
+                        </h3>
+                        <span class="panel-header-badge" style="background: #ffffff; color: @(isLastUploadSuccess ? "#15803d" : "#b91c1c");">
+                            @(isLastUploadSuccess ? "SUCCESS" : "FAILED")
+                        </span>
+                    </div>
+
+                    <div class="panel-body-area">
+                        <!-- Alert Banner -->
+                        @if (!string.IsNullOrEmpty(apiStatusMessage))
+                        {
+                            <div class="banner-alert-box @(isLastUploadSuccess ? "banner-alert-success" : "banner-alert-error")">
+                                <i class="bi @(isLastUploadSuccess ? "bi-check2-circle" : "bi-exclamation-octagon-fill") banner-icon"></i>
+                                <div class="banner-content">
+                                    <div class="banner-title">@(isLastUploadSuccess ? "Processed Successfully" : "Upload Request Alert")</div>
+                                    <p class="banner-text">@apiStatusMessage</p>
+                                </div>
+                            </div>
+                        }
+
+                        <!-- Statistics Metric Cards (when Data is available) -->
+                        @if (uploadResultData != null)
+                        {
+                            <div class="stat-summary-grid">
+                                <div class="stat-metric-card stat-card-total">
+                                    <div class="stat-icon-wrap">
+                                        <i class="bi bi-list-ol"></i>
+                                    </div>
+                                    <div class="stat-info-wrap">
+                                        <div class="stat-val">@uploadResultData.totalrows</div>
+                                        <div class="stat-lbl">Total Excel Rows</div>
+                                    </div>
+                                </div>
+
+                                <div class="stat-metric-card stat-card-inserted">
+                                    <div class="stat-icon-wrap">
+                                        <i class="bi bi-plus-circle-fill"></i>
+                                    </div>
+                                    <div class="stat-info-wrap">
+                                        <div class="stat-val">@uploadResultData.inserted</div>
+                                        <div class="stat-lbl">Rows Inserted</div>
+                                    </div>
+                                </div>
+
+                                <div class="stat-metric-card stat-card-updated">
+                                    <div class="stat-icon-wrap">
+                                        <i class="bi bi-arrow-repeat"></i>
+                                    </div>
+                                    <div class="stat-info-wrap">
+                                        <div class="stat-val">@uploadResultData.updated</div>
+                                        <div class="stat-lbl">Rows Updated</div>
+                                    </div>
+                                </div>
+
+                                <div class="stat-metric-card stat-card-skipped">
+                                    <div class="stat-icon-wrap">
+                                        <i class="bi bi-slash-circle-fill"></i>
+                                    </div>
+                                    <div class="stat-info-wrap">
+                                        <div class="stat-val">@uploadResultData.skipped</div>
+                                        <div class="stat-lbl">Rows Skipped</div>
+                                    </div>
+                                    @if (uploadResultData.errors != null && uploadResultData.errors.Any())
+                                    {
+                                        <button type="button" class="btn-stat-download-chip ms-auto" @onclick="DownloadSkippedStocksExcel" disabled="@isDownloadingSkipped" title="Download skipped stocks as Excel">
+                                            <i class="bi bi-file-earmark-arrow-down"></i> Excel
+                                        </button>
+                                    }
+                                </div>
+                            </div>
+
+                            <!-- Warnings List -->
+                            @if (uploadResultData.warnings != null && uploadResultData.warnings.Any())
+                            {
+                                <div class="banner-alert-box banner-alert-warning">
+                                    <i class="bi bi-exclamation-triangle-fill banner-icon"></i>
+                                    <div class="banner-content">
+                                        <div class="banner-title">Upload Warnings (@uploadResultData.warnings.Count)</div>
+                                        <ul class="warning-list">
+                                            @foreach (var w in uploadResultData.warnings)
+                                            {
+                                                <li>@w</li>
+                                            }
+                                        </ul>
+                                    </div>
+                                </div>
+                            }
+
+                            <!-- Errors / Skipped Rows Table -->
+                            @if (uploadResultData.errors != null && uploadResultData.errors.Any())
+                            {
+                                <div class="error-table-card">
+                                    <div class="error-table-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+                                        <div class="d-flex align-items-center gap-2">
+                                            <h4 class="error-table-title mb-0">
+                                                <i class="bi bi-exclamation-circle-fill"></i>
+                                                <span>Skipped / Errored Rows (@uploadResultData.errors.Count)</span>
+                                            </h4>
+                                            <span class="badge bg-danger" style="font-size: 0.72rem;">Action Required</span>
+                                        </div>
+                                        <button type="button" class="btn-download-skipped" @onclick="DownloadSkippedStocksExcel" disabled="@isDownloadingSkipped" title="Download rejected / skipped stocks as Excel spreadsheet">
+                                            @if (isDownloadingSkipped)
+                                            {
+                                                <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                                                <span>Downloading...</span>
+                                            }
+                                            else
+                                            {
+                                                <i class="bi bi-file-earmark-excel-fill text-success" style="font-size: 1rem;"></i>
+                                                <span>Download Skipped Stocks (.xlsx)</span>
+                                            }
+                                        </button>
+                                    </div>
+
+                                    <div class="table-responsive" style="max-height: 360px; overflow-y: auto;">
+                                        <table class="custom-table">
+                                            <thead>
+                                                <tr>
+                                                    <th style="width: 80px;">ROW #</th>
+                                                    <th>ITEM NAME</th>
+                                                    <th style="width: 130px;">BATCH NO</th>
+                                                    <th>ERROR / REASON</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                @foreach (var err in uploadResultData.errors)
+                                                {
+                                                    <tr>
+                                                        <td><span class="row-num-badge">#@err.rownumber</span></td>
+                                                        <td class="fw-bold text-dark">@(string.IsNullOrEmpty(err.itemname) ? "—" : err.itemname)</td>
+                                                        <td><span class="badge bg-light text-dark border">@(string.IsNullOrEmpty(err.batchno) ? "NA" : err.batchno)</span></td>
+                                                        <td class="text-danger fw-semibold">
+                                                            <i class="bi bi-x-circle me-1"></i> @err.message
+                                                        </td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+            }
+
+            <!-- ─── Live Stock Inventory Master Grid (Auto-Refreshed after Upload) ─── -->
+            <div class="stock-section-wrapper">
+                <!-- Toolbar & Filters -->
+                <div class="stock-filters-toolbar">
+                    <div class="toolbar-left-side">
+                        <div class="toolbar-title-wrap">
+                            <span class="toolbar-title-text">
+                                <i class="bi bi-boxes text-primary"></i> Current Stock Grid
+                            </span>
+                            <span class="stock-count-badge">
+                                @FilteredStocks.Count() items
+                            </span>
+                        </div>
+
+                        <!-- Store Filter -->
+                        <div class="filter-store-group">
+                            <span class="filter-store-label">
+                                <i class="bi bi-shop"></i> Store:
+                            </span>
+                            <select class="filter-store-select" @bind="gridFilterWarehouseCode" @bind:after="OnFilterChanged">
+                                <option value="0">All Stores</option>
+                                @foreach (var wh in WarehouseList)
+                                {
+                                    <option value="@wh.warehousecode">@wh.warehousename</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="toolbar-right-side">
+                        <!-- Search Input -->
+                        <div class="items-search-wrap">
+                            <i class="bi bi-search items-search-icon"></i>
+                            <input type="text" class="items-search" placeholder="Search item, batch, store..." @oninput="OnSearchInput" value="@searchQuery" />
+                            @if (!string.IsNullOrEmpty(searchQuery))
+                            {
+                                <button type="button" class="search-clear-btn" @onclick="() => { searchQuery = string.Empty; currentPage = 1; }" title="Clear search">
+                                    <i class="bi bi-x-circle-fill"></i>
+                                </button>
+                            }
+                        </div>
+
+                        <!-- Refresh Grid Button -->
+                        <button type="button" class="btn-refresh-grid" @onclick="LoadStocks" disabled="@isLoadingStocks" title="Refresh stock grid from server">
+                            <i class="bi bi-arrow-clockwise @(isLoadingStocks ? "spin" : "")"></i>
+                            <span>Refresh</span>
+                        </button>
+
+                        <!-- View Toggle (Table vs Grid) -->
+                        <div class="view-toggle" title="Switch view">
+                            <button type="button" class="@(isCardView ? string.Empty : "active")" @onclick="() => SetView(false)" title="Table View">
+                                <i class="bi bi-table"></i>
+                            </button>
+                            <button type="button" class="@(isCardView ? "active" : string.Empty)" @onclick="() => SetView(true)" title="Card View">
+                                <i class="bi bi-grid-3x3-gap"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Stock Records Content Area -->
+                @if (isLoadingStocks)
+                {
+                    <div class="stock-state-loading">
+                        <div class="spinner-border text-primary" role="status">
+                            <span class="visually-hidden">Loading stock records...</span>
+                        </div>
+                        <div class="mt-2 text-muted fw-semibold" style="font-size: 0.85rem;">Fetching live stock data...</div>
+                    </div>
+                }
+                else if (!FilteredStocks.Any())
+                {
+                    <div class="stock-state-empty">
+                        <i class="bi bi-box-seam fs-1 d-block mb-2 text-secondary" style="opacity: 0.4;"></i>
+                        <span class="fw-semibold text-dark">No stock records found matching your filters.</span>
+                        <p class="text-muted small mt-1 mb-0">Try clearing your search query or selecting a different store.</p>
+                    </div>
+                }
+                else if (!isCardView)
+                {
+                    <div class="table-responsive opening-stock-table-responsive">
+                        <table class="table table-hover align-middle mb-0 opening-stock-table">
+                            <thead>
+                                <tr>
+                                    <th class="th-sno text-center">S.NO</th>
+                                    <th class="th-code">STOCK CODE</th>
+                                    <th class="th-item">ITEM NAME</th>
+                                    <th class="th-store">STORE</th>
+                                    <th class="th-batch text-center">BATCH NO</th>
+                                    <th class="th-qty text-end">OPENING</th>
+                                    <th class="th-qty text-end">CLOSING</th>
+                                    <th class="th-cost text-end">UNIT COST</th>
+                                    <th class="th-val text-end">STOCK VALUE</th>
+                                    <th class="th-status text-center">STATUS</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var row in PagedStocks.Select((value, index) => new { value, index }))
+                                {
+                                    <tr>
+                                        <td class="td-sno text-center">@(((currentPage - 1) * itemsPerPage) + row.index + 1)</td>
+                                        <td class="td-code">
+                                            <span class="stock-code-badge">#@row.value.stockcode</span>
+                                        </td>
+                                        <td class="td-item">
+                                            <div class="item-name-wrap" title="@(ItemList.FirstOrDefault(i => i.itemcode == row.value.itemcode)?.itemname ?? $"Item {row.value.itemcode}")">
+                                                @(ItemList.FirstOrDefault(i => i.itemcode == row.value.itemcode)?.itemname ?? $"Item {row.value.itemcode}")
+                                            </div>
+                                        </td>
+                                        <td class="td-store">
+                                            <span class="store-text" title="@(WarehouseList.FirstOrDefault(w => w.warehousecode == row.value.warehousecode)?.warehousename ?? row.value.warehousecode?.ToString() ?? "N/A")">
+                                                <i class="bi bi-shop text-muted me-1"></i>
+                                                @(WarehouseList.FirstOrDefault(w => w.warehousecode == row.value.warehousecode)?.warehousename ?? row.value.warehousecode?.ToString() ?? "N/A")
+                                            </span>
+                                        </td>
+                                        <td class="td-batch text-center">
+                                            <span class="batch-no-pill @(string.IsNullOrWhiteSpace(row.value.batchno) || row.value.batchno == "NA" ? "batch-pill-muted" : "batch-pill-active")">
+                                                @(string.IsNullOrWhiteSpace(row.value.batchno) ? "NA" : row.value.batchno)
+                                            </span>
+                                        </td>
+                                        <td class="td-qty text-end fw-semibold text-secondary">@row.value.openingstock.ToString("N1")</td>
+                                        <td class="td-qty text-end fw-bold text-dark">@row.value.closingstock.ToString("N1")</td>
+                                        <td class="td-cost text-end">₹@row.value.unitcost.ToString("N2")</td>
+                                        <td class="td-val text-end fw-bold text-success">₹@row.value.stockvalue.ToString("N2")</td>
+                                        <td class="td-status text-center">
+                                            <span class="stock-status-tag @(GetStockStatusLabel(row.value) == "IN STOCK" ? "status-instock" : (GetStockStatusLabel(row.value) == "LOW STOCK" ? "status-lowstock" : "status-outofstock"))">
+                                                @GetStockStatusLabel(row.value)
+                                            </span>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+                else
+                {
+                    <div class="items-card-grid">
+                        @foreach (var stock in PagedStocks)
+                        {
+                            <div class="item-card">
+                                <div class="item-card-head">
+                                    <span class="card-item-code">#@stock.stockcode</span>
+                                    <span class="stock-status-tag @(GetStockStatusLabel(stock) == "IN STOCK" ? "status-instock" : (GetStockStatusLabel(stock) == "LOW STOCK" ? "status-lowstock" : "status-outofstock"))">
+                                        @GetStockStatusLabel(stock)
+                                    </span>
+                                </div>
+                                <div class="item-card-body">
+                                    <div class="detail-row"><span class="detail-label">Item</span><strong class="detail-value">@(ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode)?.itemname ?? $"Item {stock.itemcode}")</strong></div>
+                                    <div class="detail-row"><span class="detail-label">Store</span><strong class="detail-value">@(WarehouseList.FirstOrDefault(w => w.warehousecode == stock.warehousecode)?.warehousename ?? stock.warehousecode?.ToString() ?? "N/A")</strong></div>
+                                    <div class="detail-row"><span class="detail-label">Batch No</span><strong class="detail-value">@(string.IsNullOrWhiteSpace(stock.batchno) ? "NA" : stock.batchno)</strong></div>
+                                    <div class="detail-row"><span class="detail-label">Opening Stock</span><strong class="detail-value">@stock.openingstock.ToString("N1")</strong></div>
+                                    <div class="detail-row"><span class="detail-label">Closing Stock</span><strong class="detail-value text-primary">@stock.closingstock.ToString("N1")</strong></div>
+                                    <div class="detail-row"><span class="detail-label">Unit Cost</span><strong class="detail-value">₹@stock.unitcost.ToString("N2")</strong></div>
+                                    <div class="detail-row"><span class="detail-label">Stock Value</span><strong class="detail-value text-success">₹@stock.stockvalue.ToString("N2")</strong></div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+
+                <!-- Pagination Footer -->
+                <div class="pagination-controls-wrap">
+                    <div class="pagination-info-text">
+                        @if (FilteredStocks.Any())
+                        {
+                            <span>Showing <strong>@(((currentPage - 1) * itemsPerPage) + 1)</strong> to <strong>@(Math.Min(currentPage * itemsPerPage, FilteredStocks.Count()))</strong> of <strong>@FilteredStocks.Count()</strong> records</span>
+                        }
+                        else
+                        {
+                            <span>Showing <strong>0</strong> records</span>
+                        }
+                    </div>
+
+                    <div class="pagination-bar">
+                        <button class="page-btn" @onclick="() => ChangePage(currentPage - 1)" disabled="@(currentPage <= 1)" title="Previous">
+                            <i class="bi bi-chevron-left"></i>
+                        </button>
+                        @if (totalPages > 0)
+                        {
+                            @foreach (var pageNum in GetVisiblePageNumbers())
+                            {
+                                var p = pageNum;
+                                <button class="page-btn @(currentPage == p ? "active" : "")" @onclick="() => ChangePage(p)">
+                                    @p
+                                </button>
+                            }
+                        }
+                        else
+                        {
+                            <button class="page-btn active">1</button>
+                        }
+                        <button class="page-btn" @onclick="() => ChangePage(currentPage + 1)" disabled="@(currentPage >= totalPages)" title="Next">
+                            <i class="bi bi-chevron-right"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    // ─── Data Lists ───
+    private List<stock_master> StockList = new();
+    private List<inventory_item_master> ItemList = new();
+    private List<warehouse_master> WarehouseList = new();
+
+    // ─── Upload Form State ───
+    private IBrowserFile? selectedFile;
+    private long selectedWarehouseCode = 0;
+    private bool skipErrors = true;
+    private string defaultBatchNo = "NA";
+    private string branchCode = "BLR001";
+    private string companyCode = "CMP001";
+    private long userCode = 1;
+
+    // ─── Loading & UI Flags ───
+    private bool isLoadingStocks = true;
+    private bool isUploading = false;
+    private bool isDownloadingTemplate = false;
+    private bool isDownloadingSkipped = false;
+    private bool isCardView = false;
+    private bool hasResult = false;
+    private bool isLastUploadSuccess = false;
+    private string apiStatusMessage = "";
+    private opening_stock_upload_result? uploadResultData;
+
+    // ─── Grid Filter & Search State ───
+    private long gridFilterWarehouseCode = 0;
+    private string searchQuery = "";
+    private int currentPage = 1;
+    private int itemsPerPage => isCardView ? 6 : 12;
+
+    // ─── Authentication & Tenant ───
+    private string DefaultTenant = "";
+    private string AuthToken = "";
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+            DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+            try
+            {
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                if (!tokenResult.Success || string.IsNullOrEmpty(tokenResult.Value))
+                {
+                    tokenResult = await _sessionStorage.GetAsync<string>("auth_token");
+                }
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : (TenantState?.AuthToken ?? "");
+            }
+            catch { }
+
+            try
+            {
+                var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (userResult.Success && userResult.Value != null)
+                {
+                    if (userResult.Value.UserCode.HasValue && userResult.Value.UserCode.Value > 0)
+                    {
+                        userCode = userResult.Value.UserCode.Value;
+                    }
+                    if (userResult.Value.BranchCode.HasValue)
+                    {
+                        branchCode = userResult.Value.BranchCode.Value.ToString();
+                    }
+                }
+            }
+            catch { }
+
+            await Task.WhenAll(LoadWarehouses(), LoadItems(), LoadStocks());
+            StateHasChanged();
+        }
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("DoctorApi");
+        client.DefaultRequestHeaders.Remove("tenantcode");
+        client.DefaultRequestHeaders.Remove("tenant_code");
+        client.DefaultRequestHeaders.Remove("tenant-code");
+
+        if (!string.IsNullOrEmpty(DefaultTenant))
+        {
+            client.DefaultRequestHeaders.Add("tenantcode", DefaultTenant);
+            client.DefaultRequestHeaders.Add("tenant_code", DefaultTenant);
+            client.DefaultRequestHeaders.Add("tenant-code", DefaultTenant);
+        }
+
+        var effectiveToken = !string.IsNullOrEmpty(AuthToken) ? AuthToken : TenantState?.AuthToken;
+        if (!string.IsNullOrEmpty(effectiveToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+        }
+
+        return client;
+    }
+
+    // ─── Step 1: Load Warehouses ───
+    private async Task LoadWarehouses()
+    {
+        try
+        {
+            var client = CreateClient();
+            var responseString = await client.GetStringAsync("api/ItemMaster/getallwarehouse");
+            if (string.IsNullOrWhiteSpace(responseString)) return;
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            try
+            {
+                var direct = JsonSerializer.Deserialize<List<warehouse_master>>(responseString, options);
+                WarehouseList = (direct ?? new()).Where(w => !w.isdeleted).ToList();
+            }
+            catch
+            {
+                var wrapped = JsonSerializer.Deserialize<ServiceResponse<List<warehouse_master>>>(responseString, options);
+                WarehouseList = (wrapped?.data ?? new()).Where(w => !w.isdeleted).ToList();
+            }
+
+            if (selectedWarehouseCode <= 0 && WarehouseList.Any())
+            {
+                selectedWarehouseCode = WarehouseList.First().warehousecode ?? 0;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading warehouses: {ex.Message}");
+        }
+    }
+
+    // ─── Step 2: Load Items (for friendly item names) ───
+    private async Task LoadItems()
+    {
+        try
+        {
+            var client = CreateClient();
+            var response = await client.GetStringAsync("api/ItemMaster/getallitems");
+            if (string.IsNullOrWhiteSpace(response)) return;
+
+            var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            try
+            {
+                var direct = JsonSerializer.Deserialize<List<inventory_item_master>>(response, options);
+                ItemList = direct ?? new();
+            }
+            catch
+            {
+                var wrapped = JsonSerializer.Deserialize<ServiceResponse<List<inventory_item_master>>>(response, options);
+                ItemList = wrapped?.data ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading items: {ex.Message}");
+        }
+    }
+
+    // ─── Step 3: Load & Refresh Stocks ───
+    private async Task LoadStocks()
+    {
+        isLoadingStocks = true;
+        try
+        {
+            var client = CreateClient();
+            var response = await client.GetStringAsync("api/ItemMaster/getallstocks");
+
+            if (!string.IsNullOrWhiteSpace(response))
+            {
+                var directList = ParseStocksList(response);
+                StockList = directList ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load stock records: {ex.Message}");
+        }
+        finally
+        {
+            isLoadingStocks = false;
+        }
+    }
+
+    private List<stock_master>? ParseStocksList(string json)
+    {
+        var options = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true,
+            NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+        };
+
+        try
+        {
+            var direct = JsonSerializer.Deserialize<List<stock_master>>(json, options);
+            if (direct != null && direct.Any()) return direct.Where(x => !x.deleted).ToList();
+        }
+        catch { }
+
+        try
+        {
+            var wrapped = JsonSerializer.Deserialize<ServiceResponse<List<stock_master>>>(json, options);
+            if (wrapped?.data != null) return wrapped.data.Where(x => !x.deleted).ToList();
+        }
+        catch { }
+
+        return null;
+    }
+
+    // ─── Step 4: Download Template ───
+    private async Task DownloadTemplate()
+    {
+        try
+        {
+            isDownloadingTemplate = true;
+            StateHasChanged();
+
+            var client = CreateClient();
+            var response = await client.GetAsync("api/OpeningStock/download-template");
+
+            if (response.IsSuccessStatusCode)
+            {
+                var fileBytes = await response.Content.ReadAsByteArrayAsync();
+                var base64String = Convert.ToBase64String(fileBytes);
+                
+                await JS.InvokeVoidAsync("downloadFileFromBase64", 
+                    base64String, 
+                    "Opening_Stock_Template.xlsx", 
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+                ToastService.ShowSuccess("Excel template downloaded successfully.");
+            }
+            else
+            {
+                var errContent = await response.Content.ReadAsStringAsync();
+                ToastService.ShowError($"Failed to download template: {errContent}");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Template Download Error: {ex.Message}");
+        }
+        finally
+        {
+            isDownloadingTemplate = false;
+            StateHasChanged();
+        }
+    }
+
+    // ─── Step 4b: Download Skipped / Errored Stocks Excel ───
+    private async Task DownloadSkippedStocksExcel()
+    {
+        if (uploadResultData?.errors == null || !uploadResultData.errors.Any())
+        {
+            ToastService.ShowWarning("No skipped or errored rows found to download.");
+            return;
+        }
+
+        try
+        {
+            isDownloadingSkipped = true;
+            StateHasChanged();
+
+            var exportList = uploadResultData.errors.Select(e => new
+            {
+                Row_Number = e.rownumber,
+                rownumber = e.rownumber,
+                Item_Name = string.IsNullOrWhiteSpace(e.itemname) ? "" : e.itemname,
+                itemname = string.IsNullOrWhiteSpace(e.itemname) ? "" : e.itemname,
+                Batch_No = string.IsNullOrWhiteSpace(e.batchno) ? "NA" : e.batchno,
+                batchno = string.IsNullOrWhiteSpace(e.batchno) ? "NA" : e.batchno,
+                Expiry_Date = e.expirydate ?? e.expiry_date ?? "",
+                expirydate = e.expirydate ?? e.expiry_date ?? "",
+                Opening_Strip = e.openingstrip ?? e.opening_strip,
+                openingstrip = e.openingstrip ?? e.opening_strip,
+                Opening_Loose = e.openingloose ?? e.opening_loose,
+                openingloose = e.openingloose ?? e.opening_loose,
+                Rejection_Reason = !string.IsNullOrWhiteSpace(e.rejectionreason) ? e.rejectionreason : (!string.IsNullOrWhiteSpace(e.rejection_reason) ? e.rejection_reason : e.message),
+                rejectionreason = !string.IsNullOrWhiteSpace(e.rejectionreason) ? e.rejectionreason : (!string.IsNullOrWhiteSpace(e.rejection_reason) ? e.rejection_reason : e.message),
+                Error_Reason = e.message,
+                message = e.message
+            }).ToList();
+
+            var fileName = $"Skipped_Opening_Stocks_{DateTime.Now:yyyyMMdd_HHmmss}";
+            await JS.InvokeVoidAsync("downloadSkippedStocksExcel", exportList, fileName);
+            ToastService.ShowSuccess($"Downloaded {uploadResultData.errors.Count} skipped stock row(s) to Excel.");
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error exporting skipped stocks: {ex.Message}");
+        }
+        finally
+        {
+            isDownloadingSkipped = false;
+            StateHasChanged();
+        }
+    }
+
+    // ─── Step 5: File Selection & Dropzone Interactivity ───
+    private async Task TriggerFileInput()
+    {
+        await JS.InvokeVoidAsync("eval", "document.getElementById('excelFileInput').click()");
+    }
+
+    private async Task OnFileSelected(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file != null)
+        {
+            if (!file.Name.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
+            {
+                ToastService.ShowError("Invalid file format. Please choose an Excel .xlsx file.");
+                selectedFile = null;
+                return;
+            }
+
+            if (file.Size > 10 * 1024 * 1024)
+            {
+                ToastService.ShowError("File size exceeds 10 MB limit.");
+                selectedFile = null;
+                return;
+            }
+
+            selectedFile = file;
+            hasResult = false;
+            uploadResultData = null;
+            apiStatusMessage = "";
+
+            try
+            {
+                await JS.InvokeVoidAsync("parseSelectedOpeningStockExcel");
+            }
+            catch { }
+        }
+    }
+
+    private async Task ClearSelectedFile()
+    {
+        selectedFile = null;
+        try
+        {
+            await JS.InvokeVoidAsync("eval", "window.cachedOpeningStockSheetRows = null;");
+        }
+        catch { }
+    }
+
+    private void ToggleSkipErrors()
+    {
+        skipErrors = !skipErrors;
+    }
+
+    private string FormatFileSize(long bytes)
+    {
+        if (bytes >= 1024 * 1024)
+            return $"{(bytes / (1024.0 * 1024.0)):F2} MB";
+        if (bytes >= 1024)
+            return $"{(bytes / 1024.0):F1} KB";
+        return $"{bytes} B";
+    }
+
+    // ─── Step 6: Upload Opening Stock ───
+    private async Task UploadOpeningStock()
+    {
+        if (selectedWarehouseCode <= 0)
+        {
+            ToastService.ShowWarning("Please select a valid Destination Warehouse.");
+            return;
+        }
+
+        if (selectedFile == null)
+        {
+            ToastService.ShowWarning("Please select an Excel file (.xlsx) to upload.");
+            return;
+        }
+
+        try
+        {
+            isUploading = true;
+            hasResult = false;
+            uploadResultData = null;
+            apiStatusMessage = "";
+            StateHasChanged();
+
+            var client = CreateClient();
+
+            using var content = new MultipartFormDataContent();
+
+            // Stream file contents
+            var fileStream = selectedFile.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
+            var streamContent = new StreamContent(fileStream);
+            streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            content.Add(streamContent, "file", selectedFile.Name);
+
+            // Mandatory & optional form parameters
+            content.Add(new StringContent(selectedWarehouseCode.ToString()), "warehousecode");
+            content.Add(new StringContent(skipErrors.ToString().ToLower()), "skiperrors");
+
+            if (!string.IsNullOrWhiteSpace(defaultBatchNo))
+            {
+                content.Add(new StringContent(defaultBatchNo.Trim()), "defaultbatchno");
+            }
+            if (userCode > 0)
+            {
+                content.Add(new StringContent(userCode.ToString()), "usercode");
+            }
+            if (!string.IsNullOrWhiteSpace(branchCode))
+            {
+                content.Add(new StringContent(branchCode.Trim()), "branchcode");
+            }
+            if (!string.IsNullOrWhiteSpace(companyCode))
+            {
+                content.Add(new StringContent(companyCode.Trim()), "companycode");
+            }
+
+            var response = await client.PostAsync("api/OpeningStock/upload-opening-stock", content);
+            var rawBody = await response.Content.ReadAsStringAsync();
+
+            var jsonOptions = new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+            };
+
+            opening_stock_api_response? apiResponse = null;
+            try
+            {
+                apiResponse = JsonSerializer.Deserialize<opening_stock_api_response>(rawBody, jsonOptions);
+            }
+            catch { }
+
+            hasResult = true;
+
+            if (response.IsSuccessStatusCode)
+            {
+                isLastUploadSuccess = true;
+                apiStatusMessage = apiResponse?.Message ?? "Opening stock uploaded successfully.";
+                uploadResultData = apiResponse?.Data;
+
+                ToastService.ShowSuccess(apiStatusMessage);
+
+                // Auto-refresh the live stock grid
+                await LoadStocks();
+            }
+            else
+            {
+                isLastUploadSuccess = false;
+                apiStatusMessage = !string.IsNullOrEmpty(apiResponse?.Message) 
+                    ? apiResponse.Message 
+                    : $"Upload failed with status code {(int)response.StatusCode}";
+                uploadResultData = apiResponse?.Data;
+
+                if (uploadResultData != null && uploadResultData.errors.Any())
+                {
+                    ToastService.ShowError($"Validation errors found ({uploadResultData.errors.Count}). Nothing was saved.");
+                }
+                else
+                {
+                    ToastService.ShowError(apiStatusMessage);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            hasResult = true;
+            isLastUploadSuccess = false;
+            apiStatusMessage = $"Upload execution error: {ex.Message}";
+            ToastService.ShowError(apiStatusMessage);
+        }
+        finally
+        {
+            isUploading = false;
+            StateHasChanged();
+        }
+    }
+
+    // ─── Filter & Search Helpers ───
+    private IEnumerable<stock_master> FilteredStocks
+    {
+        get
+        {
+            var query = StockList.AsEnumerable();
+
+            if (gridFilterWarehouseCode > 0)
+            {
+                query = query.Where(s => s.warehousecode == gridFilterWarehouseCode);
+            }
+
+            if (!string.IsNullOrWhiteSpace(searchQuery))
+            {
+                query = query.Where(s =>
+                    (s.batchno?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (WarehouseList.FirstOrDefault(w => w.warehousecode == s.warehousecode)?.warehousename?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (s.stockcode.ToString().Contains(searchQuery)) ||
+                    (ItemList.FirstOrDefault(i => i.itemcode == s.itemcode)?.itemname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
+            }
+
+            return query;
+        }
+    }
+
+    private IEnumerable<stock_master> PagedStocks =>
+        FilteredStocks.Skip((currentPage - 1) * itemsPerPage).Take(itemsPerPage);
+
+    private int totalPages => (int)Math.Ceiling((double)FilteredStocks.Count() / itemsPerPage);
+
+    private void OnFilterChanged()
+    {
+        currentPage = 1;
+    }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        searchQuery = e.Value?.ToString() ?? "";
+        currentPage = 1;
+    }
+
+    private void SetView(bool card)
+    {
+        isCardView = card;
+        currentPage = 1;
+    }
+
+    private void ChangePage(int page)
+    {
+        if (page >= 1 && page <= Math.Max(1, totalPages))
+        {
+            currentPage = page;
+            StateHasChanged();
+        }
+    }
+
+    private IEnumerable<int> GetVisiblePageNumbers()
+    {
+        int total = totalPages;
+        int current = currentPage;
+
+        if (total <= 3)
+        {
+            return Enumerable.Range(1, Math.Max(1, total));
+        }
+
+        int start = current - 1;
+        if (current <= 1)
+        {
+            start = 1;
+        }
+        else if (current >= total)
+        {
+            start = total - 2;
+        }
+
+        start = Math.Max(1, Math.Min(start, total - 2));
+        return Enumerable.Range(start, 3);
+    }
+
+    private string GetStockStatusLabel(stock_master stock)
+    {
+        if (stock.closingstock <= 0) return "OUT OF STOCK";
+        var item = ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode);
+        decimal minStock = item?.minstock ?? 0;
+        if (minStock > 0 && stock.closingstock <= minStock) return "LOW STOCK";
+        return "IN STOCK";
+    }
+
+    public class ServiceResponse<T>
+    {
+        public T? data { get; set; }
+    }
+}

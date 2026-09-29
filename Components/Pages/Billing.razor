@@ -1300,6 +1300,10 @@
     private bool isVipPatient = false;
     private bool savingInProgress = false;
 
+    // Bill No Sequence Validation State
+    private bool isBillNoSequenceConfigured = true;
+    private List<BillNoConfig> billNoSequencesList = new();
+
     // New Patient Registration Modal State
     private bool showNewPatientModal = false;
 
@@ -1562,6 +1566,7 @@
                 await LoadPaymodesAsync();
                 await LoadTestMastersAsync();
                 await LoadUserPermissionsAsync();
+                await CheckBillNoSequenceAsync();
                 if (activeUserCode > 0) billModel.usercode = activeUserCode;
                 await CheckCounterShiftOpenAsync(showPrompt: true);
                 StateHasChanged();
@@ -1904,6 +1909,7 @@
         {
             billModel.cntcode = 0;
         }
+        await CheckBillNoSequenceAsync();
     }
 
     private async Task OnCounterSelectionChanged()
@@ -1921,6 +1927,7 @@
         {
             await CheckCounterShiftOpenAsync(showPrompt: true);
         }
+        await CheckBillNoSequenceAsync();
     }
 
     private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
@@ -2087,6 +2094,7 @@
     {
         await LoadBranchesAsync();
         await LoadCountersAsync();
+        await CheckBillNoSequenceAsync();
 
         try
         {
@@ -2168,6 +2176,47 @@
         if (bookingsCache == null) bookingsCache = new();
         if (doctorsCache == null) doctorsCache = new();
         if (allItems == null) allItems = new();
+    }
+
+    private async Task CheckBillNoSequenceAsync()
+    {
+        try
+        {
+            var res = await HmsBillingService.ListBillNoConfigsAsync(new BillNoListRequest { page = 1, pagesize = 100 });
+            var activeSeqs = res?.data?.Where(s => !s.deleted).ToList() ?? new();
+            billNoSequencesList = activeSeqs;
+
+            if (!activeSeqs.Any())
+            {
+                isBillNoSequenceConfigured = false;
+            }
+            else
+            {
+                int currentBh = billModel.enteredbhcode;
+                int currentCnt = billModel.cntcode;
+
+                bool hasMatchingSequence = activeSeqs.Any(s =>
+                    s.isdefault ||
+                    s.allbranch ||
+                    (s.bhcode.HasValue && s.bhcode.Value == currentBh && (s.allcounter || (s.cntcode.HasValue && s.cntcode.Value == currentCnt)))
+                );
+
+                isBillNoSequenceConfigured = hasMatchingSequence || activeSeqs.Any();
+            }
+
+            if (!isBillNoSequenceConfigured)
+            {
+                ToastService.ShowWarning("Warning: Bill No Sequence is not set! Please configure a sequence in Bill No Sequence Master.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error checking bill no sequence: {ex.Message}");
+        }
+        finally
+        {
+            StateHasChanged();
+        }
     }
 
     private async Task<SharedComponents.Rcl.Models.CustomerModel?> FetchCustomerByIdAsync(decimal custId)
@@ -3746,6 +3795,18 @@
             return;
         }
 
+        // Check if bill no sequence is configured before saving
+        if (!isBillNoSequenceConfigured)
+        {
+            await CheckBillNoSequenceAsync();
+            if (!isBillNoSequenceConfigured)
+            {
+                savingInProgress = false;
+                ToastService.ShowError("Cannot save bill: Bill No Sequence is not set! Please configure a sequence in Bill No Sequence Master.");
+                return;
+            }
+        }
+
         // Check counter shift status before saving
         bool isShiftOpen = await CheckCounterShiftOpenAsync(showPrompt: true);
         if (!isShiftOpen)
@@ -3896,6 +3957,17 @@
             billModel.paidamount = netPayable;
         }
 
+        if (!isBillNoSequenceConfigured)
+        {
+            await CheckBillNoSequenceAsync();
+            if (!isBillNoSequenceConfigured)
+            {
+                ToastService.ShowError("Cannot save bill: Bill No Sequence is not set! Please configure a bill number sequence in Bill No Sequence Master.");
+                savingInProgress = false;
+                return;
+            }
+        }
+
         try
         {
             string? originalOpId = billModel.op_id;
@@ -4010,7 +4082,18 @@
                                      msg.Contains("invalid", StringComparison.OrdinalIgnoreCase))
                             {
                                 isSuccess = false;
-                                displayMessage = msg;
+                                if (msg.Contains("sequence", StringComparison.OrdinalIgnoreCase) || 
+                                    msg.Contains("bill no", StringComparison.OrdinalIgnoreCase) ||
+                                    msg.Contains("bill number", StringComparison.OrdinalIgnoreCase) ||
+                                    msg.Contains("bncode", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    isBillNoSequenceConfigured = false;
+                                    displayMessage = "Bill number sequence is not set. Please configure a sequence in Bill No Sequence Master.";
+                                }
+                                else
+                                {
+                                    displayMessage = msg;
+                                }
                             }
                             else
                             {

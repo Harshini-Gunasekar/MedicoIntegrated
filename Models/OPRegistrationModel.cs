@@ -292,7 +292,8 @@ namespace Booking.Models
         public class ComboRegistrationItemRequest
         {
             public string item_type { get; set; } = "SERVICE"; // "SERVICE" | "DRESSING"
-            public int? service_id { get; set; }                // required when item_type = SERVICE
+            public int? service_id { get; set; }   
+            public double? amount { get; set; }             // required when item_type = SERVICE
         }
 
         public class ComboRegistrationRequest

@@ -1,11 +1,13 @@
 @page "/home"
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
 @using System.Globalization
+@using Newtonsoft.Json
 @using SharedComponents.Rcl.Models
 @using SharedComponents.Rcl.Services
 @inject TenantSessionState TenantState
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject NavigationManager NavigationManager
+@inject IHttpClientFactory HttpClientFactory
 @implements IDisposable
 
 <PageTitle>Welcome - Medico Portal</PageTitle>
@@ -50,7 +52,7 @@
                         <div class="identity-details">
                             <span class="identity-sub-label">HOSPITAL / FACILITY NAME</span>
                             <h1 class="hospital-title-text">
-                                @(string.IsNullOrWhiteSpace(hospitalName) ? "Medico Healthcare Portal" : hospitalName)
+                                @GetResolvedHospitalName()
                             </h1>
                             <div class="identity-tags">
                                 <span class="badge-tag tenant-tag">
@@ -295,11 +297,112 @@
                 if (bRes.Success && bRes.Value > 0)
                     branchCode = bRes.Value;
             }
+
+            // 3. Ensure hospitalName is NOT the logged-in user's name
+            if (string.IsNullOrWhiteSpace(hospitalName) || string.Equals(hospitalName.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
+            {
+                hospitalName = "";
+
+                // A. Check user's assigned branches in session
+                if (TenantState.UserData?.Branches != null && TenantState.UserData.Branches.Any())
+                {
+                    var matched = (branchCode.HasValue && branchCode.Value > 0)
+                        ? TenantState.UserData.Branches.FirstOrDefault(b => b.bh_code == branchCode.Value)
+                        : TenantState.UserData.Branches.FirstOrDefault(b => b.bh_code != 21 && !string.Equals(b.name?.Trim(), "SAMPLE BRANCH", StringComparison.OrdinalIgnoreCase));
+
+                    if (matched != null && !string.IsNullOrWhiteSpace(matched.name) && !string.Equals(matched.name.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
+                    {
+                        hospitalName = matched.name;
+                    }
+                }
+
+                if (string.IsNullOrEmpty(hospitalName))
+                {
+                    var ubRes = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.BranchModel>>("UserBranches");
+                    if (ubRes.Success && ubRes.Value != null && ubRes.Value.Any())
+                    {
+                        var matched = (branchCode.HasValue && branchCode.Value > 0)
+                            ? ubRes.Value.FirstOrDefault(b => b.bh_code == branchCode.Value)
+                            : ubRes.Value.FirstOrDefault(b => b.bh_code != 21 && !string.Equals(b.name?.Trim(), "SAMPLE BRANCH", StringComparison.OrdinalIgnoreCase));
+
+                        if (matched != null && !string.IsNullOrWhiteSpace(matched.name) && !string.Equals(matched.name.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
+                        {
+                            hospitalName = matched.name;
+                        }
+                    }
+                }
+
+                // B. Fetch branch list from API
+                if (string.IsNullOrEmpty(hospitalName))
+                {
+                    try
+                    {
+                        var client = HttpClientFactory.CreateClient("LabCareUrl");
+                        var effectiveTenant = !string.IsNullOrEmpty(tenantCode) ? tenantCode : TenantState?.TenantCode;
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            client.DefaultRequestHeaders.Remove("tenant_code");
+                            client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                            client.DefaultRequestHeaders.Remove("tenantcode");
+                            client.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                        }
+
+                        var effectiveToken = TenantState?.AuthToken;
+                        if (string.IsNullOrEmpty(effectiveToken))
+                        {
+                            var tokenRes = await _sessionStorage.GetAsync<string>("authToken");
+                            if (tokenRes.Success) effectiveToken = tokenRes.Value;
+                        }
+                        if (!string.IsNullOrEmpty(effectiveToken))
+                        {
+                            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+                        }
+
+                        var response = await client.GetAsync("api/Branch/get");
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var json = await response.Content.ReadAsStringAsync();
+                            var dbBranches = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                            var validBranches = dbBranches.Where(b => !b.deleted && b.bh_code != 21 && !string.Equals(b.name?.Trim(), "SAMPLE BRANCH", StringComparison.OrdinalIgnoreCase)).ToList();
+
+                            var matched = (branchCode.HasValue && branchCode.Value > 0)
+                                ? validBranches.FirstOrDefault(b => b.bh_code == branchCode.Value)
+                                : validBranches.FirstOrDefault(b => b.is_main_branch == true) ?? validBranches.FirstOrDefault();
+
+                            if (matched != null && !string.IsNullOrWhiteSpace(matched.name) && !string.Equals(matched.name.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
+                            {
+                                hospitalName = matched.name;
+                            }
+                        }
+                    }
+                    catch (Exception apiEx)
+                    {
+                        Console.WriteLine($"[HomeWelcome] Error resolving branch for hospital name: {apiEx.Message}");
+                    }
+                }
+
+                if (string.IsNullOrEmpty(hospitalName))
+                {
+                    hospitalName = "Medico Healthcare Hospital";
+                }
+
+                // Save sanitized hospital name back to session storage
+                await _sessionStorage.SetAsync("tenant_name", hospitalName);
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[HomeWelcome] Error loading session: {ex.Message}");
         }
+    }
+
+    private string GetResolvedHospitalName()
+    {
+        if (!string.IsNullOrWhiteSpace(hospitalName) && !string.Equals(hospitalName.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return hospitalName.Trim();
+        }
+        return "Medico Healthcare Hospital";
     }
 
     private async void HandleSessionChanged()

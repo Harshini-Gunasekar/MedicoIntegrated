@@ -2,6 +2,8 @@
 @using Booking.Models
 @using Booking.Services
 @using Booking.Helpers
+@using LabCare.Models
+@using LabCare.Services
 @using medico_backend.Model
 @using SharedComponents.Rcl.Models
 @using Medico_Backend.Model
@@ -23,6 +25,8 @@
 @inject Booking.Services.StateMasterService StateMasterService
 @inject Booking.Services.CountryMasterService CountryMasterService
 @inject Booking.Services.PrefixMasterService PrefixMasterService
+@inject Booking.Services.TestMasterService TestMasterService
+@inject LabCare.Services.TestService LabCareTestSvc
 @implements IDisposable
 @using Microsoft.JSInterop
 
@@ -483,7 +487,7 @@
                                                               <i class="bi bi-bandaid-fill"></i> Dressing
                                                           </span>
                                                       }
-                                                      else if (opData.paid_status == true)
+                                                      else if (opData.paid_status == true && opData.unbilled_status == true)
                                                       {
                                                           <span class="btn-bill-status paid">
                                                               <i class="bi bi-check-circle-fill"></i> Paid
@@ -821,10 +825,22 @@
                         </div>
                         <span>Include Dressing</span>
                     </div>
-                    <label class="combo-switch-container">
-                        <input type="checkbox" checked="@isAddServicesDressingIncluded" @onchange="ToggleAddServicesDressing" />
-                        <span class="combo-switch-slider"></span>
-                    </label>
+                    <div style="display: flex; align-items: center; gap: 0.75rem; margin-left: auto;">
+                        @if (isAddServicesDressingIncluded)
+                        {
+                            <div class="add-services-amount-wrapper">
+                                <span class="add-services-amount-curr">₹</span>
+                                <input type="number" step="any" class="add-services-amount-input" 
+                                       placeholder="Amount" 
+                                       value="@addServicesDressingAmount" 
+                                       @oninput="OnAddServicesDressingAmountInput" />
+                            </div>
+                        }
+                        <label class="combo-switch-container">
+                            <input type="checkbox" checked="@isAddServicesDressingIncluded" @onchange="ToggleAddServicesDressing" />
+                            <span class="combo-switch-slider"></span>
+                        </label>
+                    </div>
                 </div>
 
                 <!-- Additional Services Section -->
@@ -863,6 +879,13 @@
                                             <option value="@st.service_id">@st.service_name @(string.IsNullOrWhiteSpace(st.token_prefix) ? "" : $"({st.token_prefix})")</option>
                                         }
                                     </select>
+                                    <div class="add-services-amount-wrapper">
+                                        <span class="add-services-amount-curr">₹</span>
+                                        <input type="number" step="any" class="add-services-amount-input" 
+                                               placeholder="Amount" 
+                                               value="@item.amount" 
+                                               @oninput="(e) => OnAddServiceAmountInput(itemIndex, e)" />
+                                    </div>
                                     <button type="button" class="add-services-btn-del" @onclick="() => RemoveAddServiceRow(itemIndex)" title="Remove item">
                                         <i class="bi bi-trash3-fill"></i>
                                     </button>
@@ -1526,7 +1549,7 @@
                         <!-- Quick Toggle for Dressing if not primary -->
                         @if (walkinRegType != "DRESSING")
                         {
-                            <div class="combo-dressing-toggle-row">
+                            <div class="combo-dressing-toggle-row @(isComboDressingIncluded ? "active" : "")">
                                 <label class="combo-switch-container">
                                     <input type="checkbox" checked="@isComboDressingIncluded" @onchange="ToggleComboDressing" />
                                     <span class="combo-switch-slider"></span>
@@ -1534,6 +1557,16 @@
                                 <span class="combo-switch-text">
                                     <i class="bi bi-bandaid text-primary me-1"></i> Include Dressing
                                 </span>
+                                @if (isComboDressingIncluded)
+                                {
+                                    <div class="combo-service-amount-wrapper" style="margin-left: auto;">
+                                        <span class="combo-service-amount-curr">₹</span>
+                                        <input type="number" step="any" class="walkin-input combo-service-amount-input" 
+                                               placeholder="Amount" 
+                                               value="@comboDressingAmount" 
+                                               @oninput="OnComboDressingAmountInput" />
+                                    </div>
+                                }
                             </div>
                         }
 
@@ -1556,6 +1589,13 @@
                                                 <option value="@st.service_id">@st.service_name @(string.IsNullOrWhiteSpace(st.token_prefix) ? "" : $"({st.token_prefix})")</option>
                                             }
                                         </select>
+                                        <div class="combo-service-amount-wrapper">
+                                            <span class="combo-service-amount-curr">₹</span>
+                                            <input type="number" step="any" class="walkin-input combo-service-amount-input" 
+                                                   placeholder="Amount" 
+                                                   value="@item.amount" 
+                                                   @oninput="(e) => OnComboAmountInput(itemIndex, e)" />
+                                        </div>
                                         <button type="button" class="btn-combo-delete" @onclick="() => RemoveComboItem(itemIndex)" title="Remove item">
                                             <i class="bi bi-trash3-fill"></i>
                                         </button>
@@ -2111,15 +2151,188 @@
 
     // Combo Registration State
     private bool isComboDressingIncluded = false;
+    private double? comboDressingAmount = null;
     private List<OPRegistrationModel.ComboRegistrationItemRequest> comboServiceItems = new();
+    private List<test_master> allTestMasters = new();
+
+    private static string CleanKey(string? str)
+    {
+        if (string.IsNullOrWhiteSpace(str)) return string.Empty;
+        var sb = new System.Text.StringBuilder();
+        foreach (var c in str)
+        {
+            if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+        }
+        return sb.ToString();
+    }
+
+    private double? GetDefaultServiceAmount(int? serviceId)
+    {
+        if (!serviceId.HasValue || serviceId.Value <= 0) return null;
+        var svc = serviceTypesList.FirstOrDefault(s => s.service_id == serviceId.Value);
+        if (svc == null) return null;
+
+        return FindAmountFromTests(svc.service_name, svc.token_prefix, serviceId.Value);
+    }
+
+    private double? GetDressingAmount()
+    {
+        var dressingSvc = serviceTypesList.FirstOrDefault(s => s.service_name != null && s.service_name.Contains("Dressing", StringComparison.OrdinalIgnoreCase))
+                       ?? serviceTypesList.FirstOrDefault(s => s.token_prefix != null && s.token_prefix.Contains("DR", StringComparison.OrdinalIgnoreCase));
+        if (dressingSvc != null)
+        {
+            var amt = GetDefaultServiceAmount(dressingSvc.service_id);
+            if (amt.HasValue && amt.Value > 0) return amt;
+        }
+
+        return FindAmountFromTests("Dressing", "DR", null);
+    }
+
+    private double? FindAmountFromTests(string? serviceName, string? tokenPrefix, int? serviceId)
+    {
+        if (allTestMasters == null || !allTestMasters.Any()) return null;
+
+        var sName = serviceName?.Trim() ?? "";
+        var sPrefix = tokenPrefix?.Trim() ?? "";
+        var cleanSName = CleanKey(sName);
+        var cleanSPrefix = CleanKey(sPrefix);
+
+        var activeTests = allTestMasters.Where(t => t.deleted != true).ToList();
+
+        // 1. Exact Match on Name (case-insensitive)
+        if (!string.IsNullOrWhiteSpace(sName))
+        {
+            var match = activeTests.FirstOrDefault(t => string.Equals(t.name?.Trim(), sName, StringComparison.OrdinalIgnoreCase));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        // 2. Exact Match on Shortname / Token Prefix
+        if (!string.IsNullOrWhiteSpace(sPrefix))
+        {
+            var match = activeTests.FirstOrDefault(t => string.Equals(t.shortname?.Trim(), sPrefix, StringComparison.OrdinalIgnoreCase) ||
+                                                        string.Equals(t.name?.Trim(), sPrefix, StringComparison.OrdinalIgnoreCase));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+        if (!string.IsNullOrWhiteSpace(sName))
+        {
+            var match = activeTests.FirstOrDefault(t => string.Equals(t.shortname?.Trim(), sName, StringComparison.OrdinalIgnoreCase));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        // 3. Normalized alphanumeric Key Match (e.g. "Bp (BP)" -> "bpbp" or "bp" -> "bp")
+        if (!string.IsNullOrEmpty(cleanSName))
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.name) == cleanSName || CleanKey(t.shortname) == cleanSName);
+            if (match != null && match.amount > 0) return match.amount;
+        }
+        if (!string.IsNullOrEmpty(cleanSPrefix))
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.shortname) == cleanSPrefix || CleanKey(t.name) == cleanSPrefix);
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        // 4. Semantic / Medical Aliases for standard hospital OP services
+        bool isBp = cleanSName == "bp" || cleanSPrefix == "bp" || cleanSName.Contains("bloodpressure") || cleanSName.StartsWith("bp");
+        bool isEmg = cleanSName.Contains("emergency") || cleanSPrefix == "emg" || cleanSName == "emg" || cleanSName.Contains("casualty");
+        bool isIm = cleanSName == "im" || cleanSPrefix == "im" || cleanSName.Contains("iminjection") || cleanSName.Contains("injectionim") || (cleanSName.Contains("injection") && cleanSName.Contains("im"));
+        bool isInj = cleanSName.Contains("injection") || cleanSPrefix == "inj" || cleanSName == "inj" || cleanSName.Contains("iv");
+        bool isDressing = cleanSName.Contains("dressing") || cleanSPrefix == "dr" || cleanSName.Contains("wound");
+        bool isEcg = cleanSName.Contains("ecg") || cleanSPrefix == "ecg" || cleanSName.Contains("ekg");
+        bool isRbs = cleanSName.Contains("rbs") || cleanSPrefix == "rbs" || cleanSName.Contains("bloodsugar") || cleanSName.Contains("glucose");
+        bool isNeb = cleanSName.Contains("nebulization") || cleanSName.Contains("neb") || cleanSPrefix == "neb";
+
+        if (isBp)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.shortname) == "bp" || CleanKey(t.name) == "bp" || CleanKey(t.name).Contains("bloodpressure") || CleanKey(t.name).StartsWith("bp") || CleanKey(t.shortname).Contains("bp"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (isEmg)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.shortname) == "emg" || CleanKey(t.name) == "emergency" || CleanKey(t.name).Contains("emergency") || CleanKey(t.shortname).Contains("emg"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (isIm)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.shortname) == "im" || CleanKey(t.name) == "im" || CleanKey(t.name).Contains("iminjection") || CleanKey(t.name).Contains("injectionim") || CleanKey(t.name).Contains("im") || CleanKey(t.shortname).Contains("im"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (isInj)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.name).Contains("injection") || CleanKey(t.shortname) == "inj" || CleanKey(t.shortname).Contains("inj"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (isDressing)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.name).Contains("dressing") || CleanKey(t.shortname) == "dr" || CleanKey(t.shortname).Contains("dress"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (isEcg)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.name).Contains("ecg") || CleanKey(t.shortname) == "ecg" || CleanKey(t.name).Contains("ekg"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (isRbs)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.shortname) == "rbs" || CleanKey(t.name).Contains("rbs") || CleanKey(t.name).Contains("bloodsugar") || CleanKey(t.name).Contains("glucose"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (isNeb)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.name).Contains("nebulization") || CleanKey(t.shortname) == "neb" || CleanKey(t.name).Contains("neb"));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        // 5. Substring / contains match
+        if (!string.IsNullOrWhiteSpace(sName))
+        {
+            var match = activeTests.FirstOrDefault(t => (!string.IsNullOrWhiteSpace(t.name) && (t.name.Contains(sName, StringComparison.OrdinalIgnoreCase) || sName.Contains(t.name, StringComparison.OrdinalIgnoreCase))) ||
+                                                        (!string.IsNullOrWhiteSpace(t.shortname) && (t.shortname.Contains(sName, StringComparison.OrdinalIgnoreCase) || sName.Contains(t.shortname, StringComparison.OrdinalIgnoreCase))));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        if (!string.IsNullOrWhiteSpace(sPrefix))
+        {
+            var match = activeTests.FirstOrDefault(t => (!string.IsNullOrWhiteSpace(t.shortname) && (t.shortname.Contains(sPrefix, StringComparison.OrdinalIgnoreCase) || sPrefix.Contains(t.shortname, StringComparison.OrdinalIgnoreCase))) ||
+                                                        (!string.IsNullOrWhiteSpace(t.name) && (t.name.Contains(sPrefix, StringComparison.OrdinalIgnoreCase) || sPrefix.Contains(t.name, StringComparison.OrdinalIgnoreCase))));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        // 6. Partial clean key contains
+        if (!string.IsNullOrEmpty(cleanSName) && cleanSName.Length >= 2)
+        {
+            var match = activeTests.FirstOrDefault(t => CleanKey(t.name).Contains(cleanSName) || CleanKey(t.shortname).Contains(cleanSName) || cleanSName.Contains(CleanKey(t.name)));
+            if (match != null && match.amount > 0) return match.amount;
+        }
+
+        // 7. Last resort: match by ID / tcode only if nothing else matched
+        if (serviceId.HasValue && serviceId.Value > 0)
+        {
+            var byId = activeTests.FirstOrDefault(t => t.tcode == serviceId.Value);
+            if (byId != null && byId.amount > 0) return byId.amount;
+        }
+
+        // Fallback: any match even if amount is 0
+        var fallback = activeTests.FirstOrDefault(t => (!string.IsNullOrWhiteSpace(sName) && CleanKey(t.name) == cleanSName) ||
+                                                       (!string.IsNullOrWhiteSpace(sPrefix) && CleanKey(t.shortname) == cleanSPrefix));
+        return fallback?.amount;
+    }
 
     private void AddComboServiceItem()
     {
         int initialServiceId = serviceTypesList.FirstOrDefault()?.service_id ?? 0;
+        int? sId = initialServiceId > 0 ? initialServiceId : (int?)null;
         comboServiceItems.Add(new OPRegistrationModel.ComboRegistrationItemRequest
         {
             item_type = "SERVICE",
-            service_id = initialServiceId > 0 ? initialServiceId : (int?)null
+            service_id = sId,
+            amount = GetDefaultServiceAmount(sId)
         });
         _ = SaveDirectWalkinDraftAsync();
     }
@@ -2136,6 +2349,24 @@
     private void ToggleComboDressing(ChangeEventArgs e)
     {
         isComboDressingIncluded = e.Value is bool b ? b : false;
+        if (isComboDressingIncluded && (!comboDressingAmount.HasValue || comboDressingAmount.Value <= 0))
+        {
+            comboDressingAmount = GetDressingAmount();
+        }
+        _ = SaveDirectWalkinDraftAsync();
+    }
+
+    private void OnComboDressingAmountInput(ChangeEventArgs e)
+    {
+        var valStr = e.Value?.ToString();
+        if (double.TryParse(valStr, out double amt))
+        {
+            comboDressingAmount = amt;
+        }
+        else if (string.IsNullOrWhiteSpace(valStr))
+        {
+            comboDressingAmount = null;
+        }
         _ = SaveDirectWalkinDraftAsync();
     }
 
@@ -2143,7 +2374,26 @@
     {
         if (index >= 0 && index < comboServiceItems.Count && int.TryParse(e.Value?.ToString(), out int sId))
         {
-            comboServiceItems[index].service_id = sId > 0 ? sId : null;
+            var selectedId = sId > 0 ? sId : (int?)null;
+            comboServiceItems[index].service_id = selectedId;
+            comboServiceItems[index].amount = GetDefaultServiceAmount(selectedId);
+            _ = SaveDirectWalkinDraftAsync();
+        }
+    }
+
+    private void OnComboAmountInput(int index, ChangeEventArgs e)
+    {
+        if (index >= 0 && index < comboServiceItems.Count)
+        {
+            var valStr = e.Value?.ToString();
+            if (double.TryParse(valStr, out double amt))
+            {
+                comboServiceItems[index].amount = amt;
+            }
+            else if (string.IsNullOrWhiteSpace(valStr))
+            {
+                comboServiceItems[index].amount = null;
+            }
             _ = SaveDirectWalkinDraftAsync();
         }
     }
@@ -2673,6 +2923,7 @@
         }
         await LoadDoctorsAsync();
         await LoadServiceTypesAsync();
+        await LoadTestMastersAsync();
         await LoadDataAsync();
     }
 
@@ -2721,6 +2972,53 @@
         catch (Exception ex)
         {
             Console.WriteLine($"Error loading service types: {ex.Message}");
+        }
+    }
+
+    private async Task LoadTestMastersAsync()
+    {
+        try
+        {
+            allTestMasters = await LabCareTestSvc.GetAllTestsAsync() ?? new();
+            if (!allTestMasters.Any())
+            {
+                var fallback = await TestMasterService.GetTestMastersAsync() ?? new();
+                if (fallback.Any())
+                {
+                    allTestMasters = fallback.Select(f => new test_master
+                    {
+                        tcode = (long)f.tcode,
+                        name = f.name ?? "",
+                        shortname = f.shortname ?? "",
+                        amount = f.amount,
+                        deleted = f.deleted
+                    }).ToList();
+                }
+            }
+
+            if (allTestMasters.Any())
+            {
+                if (isComboDressingIncluded && (!comboDressingAmount.HasValue || comboDressingAmount.Value <= 0))
+                {
+                    comboDressingAmount = GetDressingAmount();
+                }
+                foreach (var item in comboServiceItems)
+                {
+                    if (item.service_id.HasValue)
+                    {
+                        var sAmt = GetDefaultServiceAmount(item.service_id);
+                        if (sAmt.HasValue && sAmt.Value > 0)
+                        {
+                            item.amount = sAmt.Value;
+                        }
+                    }
+                }
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading test masters: {ex.Message}");
         }
     }
 
@@ -3215,6 +3513,7 @@
                 WalkinNotes = directWalkinRequest.notes ?? "",
                 SelectedSlotDetailId = selectedDirectWalkinSlot?.slot_detail_id,
                 IsComboDressingIncluded = isComboDressingIncluded,
+                ComboDressingAmount = comboDressingAmount,
                 ComboServiceItems = comboServiceItems
             };
             var json = Newtonsoft.Json.JsonConvert.SerializeObject(model);
@@ -3239,6 +3538,7 @@
         public string WalkinNotes { get; set; } = "";
         public Guid? SelectedSlotDetailId { get; set; }
         public bool IsComboDressingIncluded { get; set; } = false;
+        public double? ComboDressingAmount { get; set; }
         public List<OPRegistrationModel.ComboRegistrationItemRequest> ComboServiceItems { get; set; } = new();
     }
 
@@ -3295,7 +3595,24 @@
                     selectedServiceId = model.SelectedServiceId;
                     directWalkinRequest.notes = model.WalkinNotes ?? "";
                     isComboDressingIncluded = model.IsComboDressingIncluded;
+                    comboDressingAmount = model.ComboDressingAmount;
                     comboServiceItems = model.ComboServiceItems ?? new();
+
+                    if (isComboDressingIncluded && (!comboDressingAmount.HasValue || comboDressingAmount.Value <= 0))
+                    {
+                        comboDressingAmount = GetDressingAmount();
+                    }
+                    foreach (var item in comboServiceItems)
+                    {
+                        if (item.service_id.HasValue)
+                        {
+                            var sAmt = GetDefaultServiceAmount(item.service_id);
+                            if (sAmt.HasValue && sAmt.Value > 0)
+                            {
+                                item.amount = sAmt.Value;
+                            }
+                        }
+                    }
 
                     int targetDcode = directWalkinSelectedDcode == -1 ? directWalkinDutyDcode : directWalkinSelectedDcode;
                     if (targetDcode > 0)
@@ -3379,6 +3696,7 @@
         selectedDirectWalkinSlot = null;
         directWalkinSlots.Clear();
         isComboDressingIncluded = false;
+        comboDressingAmount = null;
         comboServiceItems.Clear();
         showDirectWalkinModal = true;
         isDirectWalkinMinimized = false;
@@ -3653,7 +3971,8 @@
                 {
                     comboRequest.additional_items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
                     {
-                        item_type = "DRESSING"
+                        item_type = "DRESSING",
+                        amount = comboDressingAmount
                     });
                 }
 
@@ -3662,7 +3981,8 @@
                     comboRequest.additional_items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
                     {
                         item_type = "SERVICE",
-                        service_id = sItem.service_id.Value
+                        service_id = sItem.service_id.Value,
+                        amount = sItem.amount
                     });
                 }
 
@@ -4052,19 +4372,23 @@
     private bool savingAddServices = false;
     private OPRegistrationModel.OpRegistrationModel? selectedOpForServices;
     private bool isAddServicesDressingIncluded = false;
+    private double? addServicesDressingAmount = null;
     private List<OPRegistrationModel.ComboRegistrationItemRequest> addServicesList = new();
 
     private void OpenAddServicesModal(OPRegistrationModel.OpRegistrationModel opData)
     {
         selectedOpForServices = opData;
         isAddServicesDressingIncluded = false;
+        addServicesDressingAmount = null;
         addServicesList = new List<OPRegistrationModel.ComboRegistrationItemRequest>();
 
         int initialServiceId = serviceTypesList.FirstOrDefault()?.service_id ?? 0;
+        int? sId = initialServiceId > 0 ? initialServiceId : (int?)null;
         addServicesList.Add(new OPRegistrationModel.ComboRegistrationItemRequest
         {
             item_type = "SERVICE",
-            service_id = initialServiceId > 0 ? initialServiceId : (int?)null
+            service_id = sId,
+            amount = GetDefaultServiceAmount(sId)
         });
 
         showAddServicesModal = true;
@@ -4076,15 +4400,18 @@
         selectedOpForServices = null;
         addServicesList.Clear();
         isAddServicesDressingIncluded = false;
+        addServicesDressingAmount = null;
     }
 
     private void AddNewServiceRow()
     {
         int initialServiceId = serviceTypesList.FirstOrDefault()?.service_id ?? 0;
+        int? sId = initialServiceId > 0 ? initialServiceId : (int?)null;
         addServicesList.Add(new OPRegistrationModel.ComboRegistrationItemRequest
         {
             item_type = "SERVICE",
-            service_id = initialServiceId > 0 ? initialServiceId : (int?)null
+            service_id = sId,
+            amount = GetDefaultServiceAmount(sId)
         });
     }
 
@@ -4099,13 +4426,48 @@
     private void ToggleAddServicesDressing(ChangeEventArgs e)
     {
         isAddServicesDressingIncluded = e.Value is bool b && b;
+        if (isAddServicesDressingIncluded && (!addServicesDressingAmount.HasValue || addServicesDressingAmount.Value <= 0))
+        {
+            addServicesDressingAmount = GetDressingAmount();
+        }
+    }
+
+    private void OnAddServicesDressingAmountInput(ChangeEventArgs e)
+    {
+        var valStr = e.Value?.ToString();
+        if (double.TryParse(valStr, out double amt))
+        {
+            addServicesDressingAmount = amt;
+        }
+        else if (string.IsNullOrWhiteSpace(valStr))
+        {
+            addServicesDressingAmount = null;
+        }
     }
 
     private void OnAddServiceItemChanged(int index, ChangeEventArgs e)
     {
         if (index >= 0 && index < addServicesList.Count && int.TryParse(e.Value?.ToString(), out int sId))
         {
-            addServicesList[index].service_id = sId > 0 ? sId : null;
+            var selectedId = sId > 0 ? sId : (int?)null;
+            addServicesList[index].service_id = selectedId;
+            addServicesList[index].amount = GetDefaultServiceAmount(selectedId);
+        }
+    }
+
+    private void OnAddServiceAmountInput(int index, ChangeEventArgs e)
+    {
+        if (index >= 0 && index < addServicesList.Count)
+        {
+            var valStr = e.Value?.ToString();
+            if (double.TryParse(valStr, out double amt))
+            {
+                addServicesList[index].amount = amt;
+            }
+            else if (string.IsNullOrWhiteSpace(valStr))
+            {
+                addServicesList[index].amount = null;
+            }
         }
     }
 
@@ -4118,7 +4480,8 @@
         {
             items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
             {
-                item_type = "DRESSING"
+                item_type = "DRESSING",
+                amount = addServicesDressingAmount
             });
         }
         foreach (var s in addServicesList.Where(x => x.service_id.HasValue && x.service_id.Value > 0))
@@ -4126,7 +4489,8 @@
             items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
             {
                 item_type = "SERVICE",
-                service_id = s.service_id.Value
+                service_id = s.service_id.Value,
+                amount = s.amount
             });
         }
 
@@ -4151,7 +4515,8 @@
         {
             items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
             {
-                item_type = "DRESSING"
+                item_type = "DRESSING",
+                amount = addServicesDressingAmount
             });
         }
 
@@ -4160,7 +4525,8 @@
             items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
             {
                 item_type = "SERVICE",
-                service_id = sItem.service_id.Value
+                service_id = sItem.service_id.Value,
+                amount = sItem.amount
             });
         }
 
