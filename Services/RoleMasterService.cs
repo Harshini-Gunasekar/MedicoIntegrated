@@ -128,6 +128,20 @@ namespace Booking.Services
             }
         }
 
+        public async Task<List<long>> GetUserRolesAsync(long usercode)
+        {
+            try
+            {
+                var response = await _http.GetFromJsonAsync<List<long>>($"api/RoleMaster/get-user-roles?usercode={usercode}");
+                return response ?? new List<long>();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RoleMasterService] Error fetching user roles: {ex.Message}");
+                return new List<long>();
+            }
+        }
+
         public List<ModuleTreeNode> BuildHierarchy(List<RolePermissionItem> permissions, HashSet<long>? selectedRoleIds = null)
         {
             selectedRoleIds ??= new HashSet<long>();

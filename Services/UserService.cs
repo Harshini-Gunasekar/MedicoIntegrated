@@ -118,11 +118,14 @@ namespace LabCare.Services
             byte[]? userImageFile = null, 
             string? userImageFileName = null, 
             byte[]? signatureImageFile = null, 
-            string? signatureImageFileName = null)
+            string? signatureImageFileName = null,
+            IList<long>? roleIds = null,
+            string? roleTemplateName = null,
+            Guid? roleTemplateGuid = null)
         {
             ConfigureHeaders();
             LogPayloadToTerminal("Insert", model, branchModel, userImageFileName, signatureImageFileName);
-            using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
+            using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false, roleIds, roleTemplateName, roleTemplateGuid);
             return await _http.PostAsync("api/user/insert", content);
         }
 
@@ -134,12 +137,15 @@ namespace LabCare.Services
             string? userImageFileName = null, 
             byte[]? signatureImageFile = null, 
             string? signatureImageFileName = null,
-            bool isAnonymousRegister = false)
+            bool isAnonymousRegister = false,
+            IList<long>? roleIds = null,
+            string? roleTemplateName = null,
+            Guid? roleTemplateGuid = null)
         {
             if (isAnonymousRegister)
             {
                 LogPayloadToTerminal("Register", model, branchModel, userImageFileName, signatureImageFileName);
-                var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
+                var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false, roleIds, roleTemplateName, roleTemplateGuid);
                 
                 var request = new HttpRequestMessage(HttpMethod.Post, "api/user/register")
                 {
@@ -159,7 +165,7 @@ namespace LabCare.Services
             {
                 ConfigureHeaders();
                 LogPayloadToTerminal("Register", model, branchModel, userImageFileName, signatureImageFileName);
-                using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false);
+                using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false, roleIds, roleTemplateName, roleTemplateGuid);
                 return await _http.PostAsync("api/user/register", content);
             }
         }
@@ -171,11 +177,14 @@ namespace LabCare.Services
             byte[]? userImageFile = null, 
             string? userImageFileName = null, 
             byte[]? signatureImageFile = null, 
-            string? signatureImageFileName = null)
+            string? signatureImageFileName = null,
+            IList<long>? roleIds = null,
+            string? roleTemplateName = null,
+            Guid? roleTemplateGuid = null)
         {
             ConfigureHeaders();
             LogPayloadToTerminal("Update", user, branchModel, userImageFileName, signatureImageFileName);
-            using var content = BuildUserFormData(user, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: true);
+            using var content = BuildUserFormData(user, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: true, roleIds, roleTemplateName, roleTemplateGuid);
             return await _http.PostAsync("api/user/update", content);
         }
 
@@ -225,7 +234,10 @@ namespace LabCare.Services
             string? userImageName, 
             byte[]? signatureImageBytes, 
             string? signatureImageName,
-            bool isUpdate)
+            bool isUpdate,
+            IList<long>? roleIds = null,
+            string? roleTemplateName = null,
+            Guid? roleTemplateGuid = null)
         {
             var content = new MultipartFormDataContent();
 
@@ -264,6 +276,28 @@ namespace LabCare.Services
             if (!string.IsNullOrEmpty(user.signature_image))
             {
                 addField("signature_image", user.signature_image);
+            }
+
+            // Role IDs
+            if (roleIds != null && roleIds.Count > 0)
+            {
+                for (int i = 0; i < roleIds.Count; i++)
+                {
+                    content.Add(new StringContent(roleIds[i].ToString()), $"Profile.RoleIds[{i}]");
+                    content.Add(new StringContent(roleIds[i].ToString()), $"roleIds[{i}]");
+                }
+            }
+
+            // Role Template
+            if (!string.IsNullOrEmpty(roleTemplateName))
+            {
+                content.Add(new StringContent(roleTemplateName), "Profile.RoleTemplateName");
+                content.Add(new StringContent(roleTemplateName), "roleTemplateName");
+            }
+            if (roleTemplateGuid.HasValue)
+            {
+                content.Add(new StringContent(roleTemplateGuid.Value.ToString()), "Profile.RoleTemplateGuid");
+                content.Add(new StringContent(roleTemplateGuid.Value.ToString()), "roleTemplateGuid");
             }
 
             // Branches

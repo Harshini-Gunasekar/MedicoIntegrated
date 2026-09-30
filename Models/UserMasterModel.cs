@@ -198,6 +198,7 @@ namespace LIMS_Backend.Model
         public user_master user { get; set; }
         public IList<UserBranchMaster> branch { get; set; } = new List<UserBranchMaster>();
         public IList<UserDepartmentMaster> department { get; set; } = new List<UserDepartmentMaster>();
+        public IList<long> role_ids { get; set; } = new List<long>();
     }
 
     public class UserResponseWrapper
