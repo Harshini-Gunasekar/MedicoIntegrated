@@ -52,8 +52,7 @@ builder.Services.AddHttpClient("LabCareUrl", client =>
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("LabCareUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
 })
-.AddHttpMessageHandler<TenantHeaderHandler>()
-.AddHttpMessageHandler<UniIdentityRouteHandler>();
+.AddHttpMessageHandler<TenantHeaderHandler>();
 
 builder.Services.AddHttpClient("LabCareApi", client => 
 {
@@ -61,8 +60,7 @@ builder.Services.AddHttpClient("LabCareApi", client =>
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("LabCareUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
 })
-.AddHttpMessageHandler<TenantHeaderHandler>()
-.AddHttpMessageHandler<UniIdentityRouteHandler>();
+.AddHttpMessageHandler<TenantHeaderHandler>();
 
 builder.Services.AddHttpClient("RidoUrl", client => 
 {

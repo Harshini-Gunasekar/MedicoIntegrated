@@ -32,7 +32,11 @@ namespace Booking.Handlers
             // Match the specific endpoints called by UserRightsManagement & ProductFeatureManagement
             if (!string.IsNullOrEmpty(_uniIdentityBaseUrl) &&
                 (originalUrl.Contains("/Tenant/GetTenantProducts", StringComparison.OrdinalIgnoreCase) ||
-                 originalUrl.Contains("/User/", StringComparison.OrdinalIgnoreCase)))
+                 originalUrl.Contains("/User/GetProductFeatures", StringComparison.OrdinalIgnoreCase) ||
+                 originalUrl.Contains("/User/allstaff", StringComparison.OrdinalIgnoreCase) ||
+                 originalUrl.Contains("/User/GetRoleTemplates", StringComparison.OrdinalIgnoreCase) ||
+                 originalUrl.Contains("/User/GetPermissions", StringComparison.OrdinalIgnoreCase) ||
+                 originalUrl.Contains("/User/SavePermissions", StringComparison.OrdinalIgnoreCase)))
             {
                 string? relativePath = null;
                 if (!string.IsNullOrEmpty(_baseUrl) && originalUrl.StartsWith(_baseUrl, StringComparison.OrdinalIgnoreCase))
