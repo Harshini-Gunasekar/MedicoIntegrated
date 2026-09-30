@@ -11,11 +11,13 @@ namespace Booking.Services
     {
         private readonly TenantSessionState _session;
         private readonly ProtectedSessionStorage _sessionStorage;
+        private readonly Microsoft.Extensions.Configuration.IConfiguration _config;
 
-        public TenantHeaderHandler(TenantSessionState session, ProtectedSessionStorage sessionStorage)
+        public TenantHeaderHandler(TenantSessionState session, ProtectedSessionStorage sessionStorage, Microsoft.Extensions.Configuration.IConfiguration config)
         {
             _session = session;
             _sessionStorage = sessionStorage;
+            _config = config;
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -28,13 +30,28 @@ namespace Booking.Services
                     uriStr = uriStr.Replace("/api/api/", "/api/", StringComparison.OrdinalIgnoreCase);
                     request.RequestUri = new Uri(uriStr);
                 }
-                else if ((request.RequestUri.Host.Equals("medicoapi.iscansoft.com", StringComparison.OrdinalIgnoreCase) ||
-                         request.RequestUri.Host.Equals("medicotestapi.reachbs.com", StringComparison.OrdinalIgnoreCase)) &&
-                         !request.RequestUri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                else
                 {
-                    var builder = new UriBuilder(request.RequestUri);
-                    builder.Path = "/api" + (builder.Path.StartsWith("/") ? builder.Path : "/" + builder.Path);
-                    request.RequestUri = builder.Uri;
+                    var configuredApiBaseUrl = _config["ApiBaseUrl"];
+                    string? configuredHost = null;
+                    if (!string.IsNullOrEmpty(configuredApiBaseUrl) && Uri.TryCreate(configuredApiBaseUrl, UriKind.Absolute, out var baseUri))
+                    {
+                        configuredHost = baseUri.Host;
+                    }
+
+                    bool isApiHost = (configuredHost != null && request.RequestUri.Host.Equals(configuredHost, StringComparison.OrdinalIgnoreCase)) ||
+                                     request.RequestUri.Host.Equals("medicoapi.iscansoft.com", StringComparison.OrdinalIgnoreCase) ||
+                                     request.RequestUri.Host.Equals("medicoapitest.reachbs.com", StringComparison.OrdinalIgnoreCase) ||
+                                     request.RequestUri.Host.Equals("medicotestapi.reachbs.com", StringComparison.OrdinalIgnoreCase) ||
+                                     request.RequestUri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+                                     request.RequestUri.Host.Equals("127.0.0.1", StringComparison.OrdinalIgnoreCase);
+
+                    if (isApiHost && !request.RequestUri.AbsolutePath.StartsWith("/api/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var builder = new UriBuilder(request.RequestUri);
+                        builder.Path = "/api" + (builder.Path.StartsWith("/") ? builder.Path : "/" + builder.Path);
+                        request.RequestUri = builder.Uri;
+                    }
                 }
             }
 

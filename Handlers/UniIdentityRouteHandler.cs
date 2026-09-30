@@ -16,13 +16,13 @@ namespace Booking.Handlers
 
         public UniIdentityRouteHandler(IConfiguration config, TenantSessionState session)
         {
-            _baseUrl = config["ApiBaseUrl"] ?? "https://localhost:7234";
-            _uniIdentityBaseUrl = config["UserRightUrl"] ?? "https://ridoapi.iscansoft.com/api/";
+            _baseUrl = config["ApiBaseUrl"] ?? "";
+            _uniIdentityBaseUrl = config["UserRightUrl"] ?? "";
             _session = session;
             
             // Ensure trailing slashes
-            if (!_baseUrl.EndsWith("/")) _baseUrl += "/";
-            if (!_uniIdentityBaseUrl.EndsWith("/")) _uniIdentityBaseUrl += "/";
+            if (!string.IsNullOrEmpty(_baseUrl) && !_baseUrl.EndsWith("/")) _baseUrl += "/";
+            if (!string.IsNullOrEmpty(_uniIdentityBaseUrl) && !_uniIdentityBaseUrl.EndsWith("/")) _uniIdentityBaseUrl += "/";
         }
 
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
@@ -30,12 +30,26 @@ namespace Booking.Handlers
             var originalUrl = request.RequestUri?.ToString() ?? "";
             
             // Match the specific endpoints called by UserRightsManagement & ProductFeatureManagement
-            if (originalUrl.Contains("/Tenant/GetTenantProducts", StringComparison.OrdinalIgnoreCase) ||
-                originalUrl.Contains("/User/", StringComparison.OrdinalIgnoreCase))
+            if (!string.IsNullOrEmpty(_uniIdentityBaseUrl) &&
+                (originalUrl.Contains("/Tenant/GetTenantProducts", StringComparison.OrdinalIgnoreCase) ||
+                 originalUrl.Contains("/User/", StringComparison.OrdinalIgnoreCase)))
             {
-                if (originalUrl.StartsWith(_baseUrl, StringComparison.OrdinalIgnoreCase))
+                string? relativePath = null;
+                if (!string.IsNullOrEmpty(_baseUrl) && originalUrl.StartsWith(_baseUrl, StringComparison.OrdinalIgnoreCase))
                 {
-                    var relativePath = originalUrl.Substring(_baseUrl.Length);
+                    relativePath = originalUrl.Substring(_baseUrl.Length);
+                }
+                else if (request.RequestUri != null && request.RequestUri.IsAbsoluteUri)
+                {
+                    relativePath = request.RequestUri.PathAndQuery.TrimStart('/');
+                }
+                else
+                {
+                    relativePath = originalUrl.TrimStart('/');
+                }
+
+                if (!string.IsNullOrEmpty(relativePath))
+                {
                     var newUrl = (_uniIdentityBaseUrl + relativePath)
                         .Replace("/api/api/", "/api/")
                         .Replace("://", "##SCHEME##")

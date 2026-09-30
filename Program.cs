@@ -55,10 +55,26 @@ builder.Services.AddHttpClient("LabCareUrl", client =>
 .AddHttpMessageHandler<TenantHeaderHandler>()
 .AddHttpMessageHandler<UniIdentityRouteHandler>();
 
+builder.Services.AddHttpClient("LabCareApi", client => 
+{
+    var baseUrl = builder.Configuration["LabCareUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("LabCareUrl is not configured in appsettings.json");
+    client.BaseAddress = new Uri(baseUrl);
+})
+.AddHttpMessageHandler<TenantHeaderHandler>()
+.AddHttpMessageHandler<UniIdentityRouteHandler>();
+
 builder.Services.AddHttpClient("RidoUrl", client => 
 {
     var baseUrl = builder.Configuration["RidoUrl"];
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("RidoUrl is not configured in appsettings.json");
+    client.BaseAddress = new Uri(baseUrl);
+});
+
+builder.Services.AddHttpClient("UserRightUrl", client => 
+{
+    var baseUrl = builder.Configuration["UserRightUrl"];
+    if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("UserRightUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
 });
 
