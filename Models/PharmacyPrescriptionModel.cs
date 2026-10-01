@@ -17,6 +17,11 @@ public class PharmacyPrescriptionQueueRow
     public string? afternoon { get; set; }
     public string? evening { get; set; }
     public string? night { get; set; }
+    public string? morning_dose { get; set; }
+    public string? afternoon_dose { get; set; }
+    public string? evening_dose { get; set; }
+    public string? night_dose { get; set; }
+    public string? dose_unit { get; set; }   // mg / ml / tab / etc.
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
@@ -49,6 +54,11 @@ public class PrescriptionQueueItem
     public string? afternoon { get; set; }
     public string? evening { get; set; }
     public string? night { get; set; }
+    public string? morning_dose { get; set; }
+    public string? afternoon_dose { get; set; }
+    public string? evening_dose { get; set; }
+    public string? night_dose { get; set; }
+    public string? dose_unit { get; set; }   // mg / ml / tab / etc.
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }

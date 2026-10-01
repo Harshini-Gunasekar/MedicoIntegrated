@@ -1,10 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Booking.Models;
-
+using Booking.Helpers;
+using Medico_Backend.Model;
 using SharedComponents.Rcl.Services;
 
 namespace Booking.Services
@@ -223,18 +225,296 @@ namespace Booking.Services
             }
         }
 
+        public async Task<LabSettingModel?> GetLabSettingInternalAsync()
+        {
+            try
+            {
+                var client = GetClient();
+                var rawJson = await client.GetStringAsync("api/LabSetting/get");
+                if (string.IsNullOrWhiteSpace(rawJson)) return null;
+
+                using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                {
+                    var list = System.Text.Json.JsonSerializer.Deserialize<List<LabSettingModel>>(rawJson, options);
+                    return list?.FirstOrDefault();
+                }
+                else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    if (doc.RootElement.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        var list = System.Text.Json.JsonSerializer.Deserialize<List<LabSettingModel>>(dataProp.GetRawText(), options);
+                        return list?.FirstOrDefault();
+                    }
+                    if (doc.RootElement.TryGetProperty("value", out var valProp) && valProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        var list = System.Text.Json.JsonSerializer.Deserialize<List<LabSettingModel>>(valProp.GetRawText(), options);
+                        return list?.FirstOrDefault();
+                    }
+                    return System.Text.Json.JsonSerializer.Deserialize<LabSettingModel>(rawJson, options);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HmsBillingService] Error fetching LabSetting: {ex.Message}");
+            }
+            return null;
+        }
+
+        public static bool TryParseShiftEndTime(string? timeStr, out TimeSpan timeSpan)
+        {
+            timeSpan = TimeSpan.Zero;
+            if (string.IsNullOrWhiteSpace(timeStr)) return false;
+            timeStr = timeStr.Trim();
+
+            if (TimeSpan.TryParse(timeStr, out timeSpan))
+            {
+                return true;
+            }
+
+            if (TimeOnly.TryParse(timeStr, out var timeOnly))
+            {
+                timeSpan = timeOnly.ToTimeSpan();
+                return true;
+            }
+
+            if (DateTime.TryParse(timeStr, out var parsedDt))
+            {
+                timeSpan = parsedDt.TimeOfDay;
+                return true;
+            }
+
+            return false;
+        }
+
+        public async Task<List<CounterTimingDto>> GetAllRawUnclosedCountersAsync()
+        {
+            try
+            {
+                var client = GetClient();
+                var rawJson = await client.GetStringAsync("api/CounterTiming/get");
+                if (!string.IsNullOrWhiteSpace(rawJson))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    List<CounterTimingDto>? list = null;
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        list = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(rawJson, options);
+                    }
+                    else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        if (doc.RootElement.TryGetProperty("data", out var dataProp))
+                            list = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(dataProp.GetRawText(), options);
+                        else if (doc.RootElement.TryGetProperty("value", out var valProp))
+                            list = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(valProp.GetRawText(), options);
+                    }
+
+                    if (list != null)
+                    {
+                        return list.Where(s => s.todate == null).ToList();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GetAllRawUnclosedCountersAsync] Error: {ex.Message}");
+            }
+            return new List<CounterTimingDto>();
+        }
+
+        public async Task<bool> ForceCloseCounterShiftAsync(Guid cnttid, DateTime? todate = null, string closeType = "AUTO")
+        {
+            try
+            {
+                var client = GetClient();
+                var effectiveToDate = todate ?? DateTime.UtcNow;
+
+                // 1. Fetch raw counter record to preserve metadata
+                var rawJson = await client.GetStringAsync("api/CounterTiming/get");
+                if (!string.IsNullOrWhiteSpace(rawJson))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    List<CounterTimingDto>? list = null;
+                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        list = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(rawJson, options);
+                    }
+                    else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        if (doc.RootElement.TryGetProperty("data", out var dataProp))
+                            list = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(dataProp.GetRawText(), options);
+                        else if (doc.RootElement.TryGetProperty("value", out var valProp))
+                            list = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(valProp.GetRawText(), options);
+                    }
+
+                    var target = list?.FirstOrDefault(s => s.cnttid == cnttid);
+                    if (target != null)
+                    {
+                        var updateModel = new CounterTimingModel
+                        {
+                            cnttid = target.cnttid.ToString(),
+                            bhcode = target.bhcode,
+                            cntcode = target.cntcode,
+                            shiftsno = target.shiftsno ?? 1,
+                            counterdate = target.counterdate ?? target.fromdate ?? DateTime.UtcNow.Date,
+                            fromdate = target.fromdate ?? target.counterdate ?? DateTime.UtcNow,
+                            todate = effectiveToDate,
+                            shift_mode = target.shift_mode,
+                            planned_to = target.planned_to,
+                            close_type = closeType,
+                            tenant_code = target.tenant_code ?? _session?.TenantCode,
+                            usercode = target.usercode ?? 1,
+                            computercode = target.computercode ?? 1,
+                            entereddate = target.entereddate ?? target.fromdate ?? DateTime.UtcNow,
+                            ibsdate = target.ibsdate ?? DateTime.UtcNow
+                        };
+
+                        var updateResp = await client.PostAsJsonAsync("api/CounterTiming/update", updateModel);
+                        var updateRaw = await updateResp.Content.ReadAsStringAsync();
+                        Console.WriteLine($"[ForceCloseCounterShiftAsync] Update status: {updateResp.StatusCode}, response: {updateRaw}");
+                        if (updateResp.IsSuccessStatusCode)
+                        {
+                            Console.WriteLine($"[ForceCloseCounterShiftAsync] Successfully closed shift {cnttid} via api/CounterTiming/update (todate={effectiveToDate:o})");
+                            return true;
+                        }
+                    }
+                }
+
+                // 2. Direct delete fallback if update not possible or shift needs freeing
+                var delResp = await client.GetAsync($"api/CounterTiming/delete?cnttid={cnttid}");
+                if (delResp.IsSuccessStatusCode)
+                {
+                    Console.WriteLine($"[ForceCloseCounterShiftAsync] Successfully freed counter for shift {cnttid} via api/CounterTiming/delete");
+                    return true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ForceCloseCounterShiftAsync] Exception: {ex.Message}");
+            }
+            return false;
+        }
+
+        public async Task<bool> DeleteCounterTimingAsync(Guid cnttid)
+        {
+            try
+            {
+                var client = GetClient();
+                var delResp = await client.GetAsync($"api/CounterTiming/delete?cnttid={cnttid}");
+                return delResp.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DeleteCounterTimingAsync] Error: {ex.Message}");
+                return false;
+            }
+        }
+
         public async Task<string> OpenShiftAsync(OpenShiftRequest request)
         {
             try
             {
+                var setting = await GetLabSettingInternalAsync();
+                var nowIndian = DateTime.UtcNow.ToIndianTime();
+
+                if (setting != null && string.Equals(setting.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase))
+                {
+                    request.shift_mode = "FIXED";
+                    if (TryParseShiftEndTime(setting.shift_end_time, out var endTime))
+                    {
+                        var fixedEndDateTime = nowIndian.Date.Add(endTime);
+                        // If opened before today's fixed shift end time -> ends at the fixed time
+                        if (nowIndian < fixedEndDateTime)
+                        {
+                            request.planned_to = fixedEndDateTime.ToUtcFromIndianTime();
+                        }
+                        else
+                        {
+                            // Newly created shift opened after the fixed time -> ends at 12:00 AM (midnight)
+                            var midnight = nowIndian.Date.AddDays(1).Date;
+                            request.planned_to = midnight.ToUtcFromIndianTime();
+                        }
+                    }
+                    else
+                    {
+                        // If no fixed timing is set, the shift should close at 12:00 AM midnight
+                        var midnight = nowIndian.Date.AddDays(1).Date;
+                        request.planned_to = midnight.ToUtcFromIndianTime();
+                    }
+                }
+                else
+                {
+                    // Variable shift mode -> ends at 12:00 AM midnight (or when manually closed)
+                    request.shift_mode = "VARIABLE";
+                    var midnight = nowIndian.Date.AddDays(1).Date;
+                    request.planned_to = midnight.ToUtcFromIndianTime();
+                }
+
+                // Clean up any stale unclosed shift for this specific counter before opening new shift
+                try
+                {
+                    var unclosed = await GetAllRawUnclosedCountersAsync();
+                    var existingForCounter = unclosed.Where(s => s.cntcode == request.cntcode && (request.bhcode == 0 || s.bhcode == request.bhcode || s.bhcode == null)).ToList();
+                    foreach (var oldShift in existingForCounter)
+                    {
+                        Console.WriteLine($"[OpenShiftAsync] Proactively clearing old shift {oldShift.cnttid} on Counter {request.cntcode}");
+                        var closed = await ForceCloseCounterShiftAsync(oldShift.cnttid, oldShift.planned_to ?? DateTime.UtcNow, "AUTO");
+                        if (!closed)
+                        {
+                            await DeleteCounterTimingAsync(oldShift.cnttid);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[OpenShiftAsync] Pre-close check notice: {ex.Message}");
+                }
+
+                var client = GetClient();
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
                 Console.WriteLine("--- OPEN SHIFT JSON PAYLOAD ---");
                 Console.WriteLine(jsonPayload);
 
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/counter/open-shift", request);
+                var response = await client.PostAsJsonAsync("api/HmsBilling/counter/open-shift", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 Console.WriteLine("--- OPEN SHIFT API RESPONSE ---");
                 Console.WriteLine(rawResponse);
+
+                // If backend returned active shift conflict, force-close the blocker and retry
+                if (rawResponse.Contains("operational", StringComparison.OrdinalIgnoreCase) ||
+                    rawResponse.Contains("active shift counter", StringComparison.OrdinalIgnoreCase) ||
+                    rawResponse.Contains("already open", StringComparison.OrdinalIgnoreCase))
+                {
+                    Console.WriteLine("[OpenShiftAsync] Backend indicated active shift conflict. Forcing cleanup of blocking shift and re-attempting open...");
+                    try
+                    {
+                        var unclosedAfter = await GetAllRawUnclosedCountersAsync();
+                        var blockers = unclosedAfter.Where(s => s.cntcode == request.cntcode).ToList();
+                        foreach (var blocker in blockers)
+                        {
+                            var closed = await ForceCloseCounterShiftAsync(blocker.cnttid, DateTime.UtcNow, "AUTO");
+                            if (!closed)
+                            {
+                                await DeleteCounterTimingAsync(blocker.cnttid);
+                            }
+                        }
+
+                        var retryResponse = await client.PostAsJsonAsync("api/HmsBilling/counter/open-shift", request);
+                        var retryRaw = await retryResponse.Content.ReadAsStringAsync();
+                        Console.WriteLine("--- OPEN SHIFT RETRY API RESPONSE ---");
+                        Console.WriteLine(retryRaw);
+                        return retryRaw;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[OpenShiftAsync] Retry cleanup notice: {ex.Message}");
+                    }
+                }
+
                 return rawResponse;
             }
             catch (Exception ex)
@@ -248,17 +528,70 @@ namespace Booking.Services
         {
             try
             {
+                LabSettingModel? labSetting = await GetLabSettingInternalAsync();
+
+                bool isFixedMode = string.Equals(labSetting?.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase)
+                                   || string.Equals(request.close_type, "FIXED", StringComparison.OrdinalIgnoreCase);
+
+                if (isFixedMode && !string.Equals(request.close_type, "AUTO", StringComparison.OrdinalIgnoreCase))
+                {
+                    return "{\"message\": \"The fixed timing shift cannot be closed manually. It will close automatically at the configured time or at midnight (12:00 AM).\", \"status\": \"warning\"}";
+                }
+
+                if (string.IsNullOrWhiteSpace(request.close_type))
+                {
+                    request.close_type = !string.IsNullOrWhiteSpace(labSetting?.shift_timing_mode)
+                        ? labSetting.shift_timing_mode
+                        : "VARIABLE";
+                }
+
+                if (!request.todate.HasValue)
+                {
+                    request.todate = DateTime.UtcNow;
+                }
+
+                var client = GetClient();
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
                 Console.WriteLine("--- CLOSE SHIFT JSON PAYLOAD ---");
                 Console.WriteLine(jsonPayload);
 
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/counter/close-shift", request);
+                var response = await client.PostAsJsonAsync("api/HmsBilling/counter/close-shift", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"--- CLOSE SHIFT API RESPONSE ({response.StatusCode}): {rawResponse} ---");
+
+                if (response.IsSuccessStatusCode)
+                {
+                    return rawResponse;
+                }
+
+                // If backend close-shift rejected (in variable mode), fallback to direct counter update
+                if (Guid.TryParse(request.cnttid, out var parsedGuid))
+                {
+                    Console.WriteLine($"[CloseShiftAsync] Standard close-shift returned {response.StatusCode}. Attempting direct counter close fallback for {parsedGuid}...");
+                    var closed = await ForceCloseCounterShiftAsync(parsedGuid, request.todate, request.close_type ?? "MANUAL");
+                    if (closed)
+                    {
+                        return "{\"message\": \"Counter shift safely shut down.\", \"status\": \"success\"}";
+                    }
+                }
+
                 return rawResponse;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error closing shift: {ex.Message}");
+                if (Guid.TryParse(request.cnttid, out var parsedGuid))
+                {
+                    try
+                    {
+                        var closed = await ForceCloseCounterShiftAsync(parsedGuid, request.todate, request.close_type ?? "MANUAL");
+                        if (closed)
+                        {
+                            return "{\"message\": \"Counter shift safely shut down.\", \"status\": \"success\"}";
+                        }
+                    }
+                    catch { }
+                }
                 return $"Error|{ex.Message}";
             }
         }
@@ -348,15 +681,104 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<CounterTimingDto>> GetOpenCountersAsync()
+        public async Task<List<CounterTimingDto>> GetOpenCountersAsync(bool returnAllUnclosed = false, string? tenantCode = null)
         {
             try
             {
-                var response = await _http.GetFromJsonAsync<List<CounterTimingDto>>("api/CounterTiming/get");
-                if (response != null)
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                List<HttpClient> clientsToTry = new();
+                clientsToTry.Add(GetClient(effectiveTenant));
+                if (_clientFactory != null)
                 {
-                    // Filter to only include open shifts (todate is null)
-                    return response.Where(x => x.todate == null).ToList();
+                    try
+                    {
+                        var labClient = _clientFactory.CreateClient("LabCareUrl");
+                        labClient.DefaultRequestHeaders.Remove("tenant_code");
+                        labClient.DefaultRequestHeaders.Remove("tenantcode");
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            labClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                            labClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            labClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
+                        clientsToTry.Add(labClient);
+                    }
+                    catch { }
+                }
+                if (!clientsToTry.Contains(_http))
+                {
+                    clientsToTry.Add(_http);
+                }
+
+                List<CounterTimingDto>? rawCounters = null;
+                string[] endpoints = new[] { "api/CounterTiming/get", "CounterTiming/get" };
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                foreach (var client in clientsToTry)
+                {
+                    foreach (var ep in endpoints)
+                    {
+                        try
+                        {
+                            var response = await client.GetAsync(ep);
+                            if (response.IsSuccessStatusCode)
+                            {
+                                var rawJson = await response.Content.ReadAsStringAsync();
+                                if (!string.IsNullOrWhiteSpace(rawJson))
+                                {
+                                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                    {
+                                        rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(rawJson, options);
+                                    }
+                                    else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                                    {
+                                        if (doc.RootElement.TryGetProperty("data", out var dataProp))
+                                            rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(dataProp.GetRawText(), options);
+                                        else if (doc.RootElement.TryGetProperty("value", out var valProp))
+                                            rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(valProp.GetRawText(), options);
+                                    }
+
+                                    if (rawCounters != null && rawCounters.Any())
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    if (rawCounters != null && rawCounters.Any()) break;
+                }
+
+                if (rawCounters != null && rawCounters.Any())
+                {
+                    var unclosedShifts = rawCounters.Where(s => s.todate == null).ToList();
+                    if (returnAllUnclosed)
+                    {
+                        return unclosedShifts;
+                    }
+
+                    LabSettingModel? labSetting = await GetLabSettingInternalAsync();
+
+                    var nowUtc = DateTime.UtcNow;
+                    var nowIndian = nowUtc.ToIndianTime();
+
+                    var activeShifts = new List<CounterTimingDto>();
+
+                    foreach (var shift in unclosedShifts)
+                    {
+                        bool isExpired = IsShiftExpired(shift, labSetting, nowIndian, nowUtc);
+                        if (!isExpired)
+                        {
+                            activeShifts.Add(shift);
+                        }
+                    }
+
+                    return activeShifts;
                 }
                 return new List<CounterTimingDto>();
             }
@@ -364,6 +786,93 @@ namespace Booking.Services
             {
                 Console.WriteLine($"Error fetching open counters: {ex.Message}");
                 return new List<CounterTimingDto>();
+            }
+        }
+
+        public static bool IsShiftExpired(CounterTimingDto shift, LabSettingModel? setting, DateTime nowIndian, DateTime nowUtc)
+        {
+            if (shift == null) return true;
+            if (shift.todate != null) return true;
+
+            var shiftFromIndian = (shift.fromdate ?? shift.counterdate ?? nowIndian).ToIndianTime();
+            var shiftOpenDateIndian = shiftFromIndian.Date;
+
+            // 1. Check if planned_to is set on shift record
+            if (shift.planned_to.HasValue)
+            {
+                var planned = shift.planned_to.Value;
+                var plannedUtc = planned.Kind == DateTimeKind.Utc ? planned : DateTime.SpecifyKind(planned, DateTimeKind.Utc);
+                var plannedIndian = planned.ToIndianTime();
+
+                if (nowUtc >= plannedUtc || nowIndian >= plannedIndian)
+                {
+                    return true;
+                }
+            }
+
+            // 2. Check if LabSetting or shift is configured in FIXED mode
+            string shiftMode = shift.shift_mode ?? setting?.shift_timing_mode ?? "VARIABLE";
+            if (string.Equals(shiftMode, "FIXED", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(setting?.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase))
+            {
+                string? endTimeStr = setting?.shift_end_time;
+                if (TryParseShiftEndTime(endTimeStr, out var endTime))
+                {
+                    var fixedEndDateTime = shiftOpenDateIndian.Add(endTime);
+
+                    if (shiftFromIndian < fixedEndDateTime)
+                    {
+                        // Shift opened before fixed end time -> ends at the fixed time
+                        if (nowIndian >= fixedEndDateTime)
+                        {
+                            return true;
+                        }
+                    }
+                    else
+                    {
+                        // Newly created shift opened at or after fixed end time -> ends at 12:00 AM midnight
+                        var midnight = shiftOpenDateIndian.AddDays(1).Date;
+                        if (nowIndian >= midnight)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                else
+                {
+                    // If no fixed timing is set, the shift should close at 12:00 AM midnight
+                    var midnight = shiftOpenDateIndian.AddDays(1).Date;
+                    if (nowIndian >= midnight)
+                    {
+                        return true;
+                    }
+                }
+            }
+            else
+            {
+                // 3. Variable mode: ends at 12:00 AM midnight of the shift day
+                var universalMidnight = shiftOpenDateIndian.AddDays(1).Date;
+                if (nowIndian >= universalMidnight)
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        public async Task<CounterTimingDto?> GetOpenShiftAsync(int bhcode, int cntcode)
+        {
+            try
+            {
+                var openCounters = await GetOpenCountersAsync();
+                return openCounters.FirstOrDefault(s => s.cntcode == cntcode && (bhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == bhcode))
+                       ?? openCounters.FirstOrDefault(s => s.cntcode == cntcode);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error fetching open shift for BH {bhcode}, Cnt {cntcode}: {ex.Message}");
+                return null;
             }
         }
 

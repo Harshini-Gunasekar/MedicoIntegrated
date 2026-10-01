@@ -12,24 +12,33 @@
 @inject Booking.Services.CounterMasterService CounterService
 @inject IJSRuntime JSRuntime
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.LabSettingService LabSettingService
 @inject NavigationManager Nav
+@implements IDisposable
 
 <div class="cm-page">
     <!-- Header Card -->
     <div class="cm-header-card">
         <div class="cm-header-left">
-            <h1 class="cm-title">Counter Shift Management</h1>
-            <span class="cm-subtitle">Open or close billing counter shifts</span>
+            <div class="d-flex align-items-center gap-3">
+                <div class="cm-header-icon-box">
+                    <i class="bi bi-clock-history"></i>
+                </div>
+                <div>
+                    <h1 class="cm-title">Counter Shift Management</h1>
+                    <span class="cm-subtitle">Open, monitor, and manage active billing counter sessions</span>
+                </div>
+            </div>
         </div>
         <div class="cm-header-right">
             <div class="cm-search-box">
                 <i class="bi bi-search cm-search-icon"></i>
-                <input type="text" class="cm-search-input" placeholder="Quick find..." @bind="searchQuery" @bind:event="oninput" />
+                <input type="text" class="cm-search-input" placeholder="Quick find branch or counter..." @bind="searchQuery" @bind:event="oninput" />
             </div>
             @if (hasCreateRight)
             {
                 <button class="cm-btn-new" @onclick="OpenOpenModal">
-                    + Open New Shift
+                    <i class="bi bi-plus-circle-fill me-1"></i> Open New Shift
                 </button>
             }
         </div>
@@ -40,11 +49,12 @@
         <table class="cm-table">
             <thead>
                 <tr>
-                    <th style="width: 25%">BRANCH</th>
-                    <th style="width: 25%">COUNTER NAME</th>
-                    <th style="width: 15%">SHIFT NO</th>
-                    <th style="width: 15%">COUNTER DATE</th>
+                    <th style="width: 20%">BRANCH</th>
+                    <th style="width: 20%">COUNTER NAME</th>
+                    <th style="width: 12%">SHIFT NO</th>
+                    <th style="width: 13%">COUNTER DATE</th>
                     <th style="width: 15%">OPENED AT</th>
+                    <th style="width: 15%">SHIFT TIMING</th>
                     <th style="width: 5%; text-align: center;">ACTION</th>
                 </tr>
             </thead>
@@ -52,8 +62,8 @@
                 @if (isLoadingOpenCounters && !openCounters.Any())
                 {
                     <tr>
-                        <td colspan="6" class="cm-empty-row">
-                            <span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span>
+                        <td colspan="7" class="cm-empty-row">
+                            <span class="spinner-border spinner-border-sm me-2 text-primary" role="status" aria-hidden="true"></span>
                             <div>Loading active shifts...</div>
                         </td>
                     </tr>
@@ -61,8 +71,8 @@
                 else if (!FilteredShifts.Any())
                 {
                     <tr>
-                        <td colspan="6" class="cm-empty-row">
-                            <i class="bi bi-info-circle"></i>
+                        <td colspan="7" class="cm-empty-row">
+                            <i class="bi bi-inbox-fill"></i>
                             <div>No active / open counter shifts found</div>
                         </td>
                     </tr>
@@ -71,28 +81,50 @@
                 {
                     @foreach (var shift in FilteredShifts)
                     {
-                        var branchName = branches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name ?? $"Branch {shift.bhcode}";
+                        var branchName = allBranches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name 
+                                         ?? branches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name 
+                                         ?? $"Branch {shift.bhcode}";
                         var counterName = counters.FirstOrDefault(c => c.cntcode == shift.cntcode)?.name ?? $"Counter {shift.cntcode}";
                         <tr>
                             <td>
-                                <span class="branch-badge">@branchName</span>
+                                <span class="branch-badge">
+                                    <i class="bi bi-building me-1"></i>@branchName
+                                </span>
                             </td>
                             <td>
-                                <strong>@counterName</strong>
+                                <div class="d-flex align-items-center gap-2">
+                                    <i class="bi bi-display text-muted"></i>
+                                    <strong>@counterName</strong>
+                                </div>
                             </td>
                             <td>
-                                <span class="shift-no-badge">Shift @shift.shiftsno</span>
+                                <span class="shift-no-badge">Shift #@shift.shiftsno</span>
                             </td>
                             <td class="col-date">
-                                @(shift.counterdate.ToIndianTime()?.ToString("dd-MM-yyyy") ?? "N/A")
+                                <i class="bi bi-calendar3 me-1 text-muted"></i>@(shift.counterdate.ToIndianTime()?.ToString("dd-MM-yyyy") ?? "N/A")
                             </td>
                             <td class="col-date">
-                                @(shift.fromdate.ToIndianTime()?.ToString("dd-MM-yyyy hh:mm tt") ?? "N/A")
+                                <i class="bi bi-clock me-1 text-muted"></i>@(shift.fromdate.ToIndianTime()?.ToString("dd-MM-yyyy hh:mm tt") ?? "N/A")
+                            </td>
+                            <td>
+                                @if (string.Equals(shift.shift_mode, "FIXED", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    <span class="shift-timing-badge fixed">
+                                        <i class="bi bi-clock-fill me-1"></i>Fixed (@GetFormattedPlannedTime(shift))
+                                    </span>
+                                }
+                                else
+                                {
+                                    <span class="shift-timing-badge variable">
+                                        <i class="bi bi-moon-stars-fill me-1"></i>Variable (12:00 AM)
+                                    </span>
+                                }
                             </td>
                             <td style="text-align: center;">
-                                @if (hasDeleteRight) { <button class="cm-action-btn delete" title="Close Shift" @onclick="() => CloseShiftInPlace(shift)" disabled="@isClosingInPlace">
-                                    <i class="bi bi-x-circle"></i>
-                                </button>
+                                @if (hasDeleteRight) { 
+                                    <button class="cm-action-btn delete" title="Close Shift" @onclick="() => CloseShiftInPlace(shift)" disabled="@isClosingInPlace">
+                                        <i class="bi bi-x-circle-fill"></i>
+                                    </button>
                                 }
                             </td>
                         </tr>
@@ -107,11 +139,11 @@
 {
     var counterName = counters.FirstOrDefault(c => c.cntcode == pendingShiftToClose.cntcode)?.name ?? $"Counter {pendingShiftToClose.cntcode}";
     <div class="cm-backdrop" style="z-index: 1200; backdrop-filter: blur(4px);" @onclick="CancelCloseModal"></div>
-    <div class="cm-modal" style="max-width: 440px; z-index: 1201; border-radius: 16px; padding: 1.5rem;">
+    <div class="cm-modal" style="max-width: 460px; z-index: 1201; border-radius: 16px; padding: 1.5rem;">
         <div class="cm-modal-header" style="border-bottom: 1px solid #f1f5f9; padding-bottom: 0.75rem; display: flex; align-items: center; justify-content: space-between;">
             <div style="display: flex; align-items: center; gap: 0.75rem;">
-                <div style="width: 40px; height: 40px; border-radius: 10px; background: #fef2f2; color: #ef4444; display: flex; align-items: center; justify-content: center; font-size: 1.25rem;">
-                    <i class="bi bi-exclamation-triangle-fill"></i>
+                <div style="width: 42px; height: 42px; border-radius: 10px; background: #fef2f2; color: #ef4444; display: flex; align-items: center; justify-content: center; font-size: 1.35rem;">
+                    <i class="bi bi-exclamation-octagon-fill"></i>
                 </div>
                 <div>
                     <h2 class="cm-modal-title" style="margin: 0; font-size: 1.1rem; font-weight: 800;">Confirm Close Shift</h2>
@@ -123,17 +155,17 @@
             </button>
         </div>
 
-        <div class="cm-modal-body" style="padding: 1rem 0;">
-            <p style="margin: 0 0 0.85rem 0; font-size: 0.9rem; color: #334155; line-height: 1.5;">
+        <div class="cm-modal-body" style="padding: 1.25rem 0;">
+            <p style="margin: 0 0 0.85rem 0; font-size: 0.92rem; color: #334155; line-height: 1.5;">
                 Are you sure you want to close the active shift for counter <strong style="color: #0f172a;">'@counterName'</strong>?
             </p>
-            <div style="background: #fffbe6; border: 1px solid #ffe58f; border-radius: 8px; padding: 0.65rem 0.85rem; font-size: 0.78rem; color: #856404; display: flex; gap: 0.5rem; align-items: flex-start;">
-                <i class="bi bi-info-circle-fill" style="margin-top: 1px;"></i>
+            <div style="background: #fffbe6; border: 1px solid #ffe58f; border-radius: 8px; padding: 0.75rem 0.9rem; font-size: 0.78rem; color: #856404; display: flex; gap: 0.6rem; align-items: flex-start;">
+                <i class="bi bi-info-circle-fill flex-shrink-0" style="margin-top: 1px;"></i>
                 <span>Closing this counter shift will record the end time and prevent further billing until a new shift is opened.</span>
             </div>
         </div>
 
-        <div class="cm-modal-footer" style="padding-top: 0.75rem; border-top: 1px solid #f1f5f9; display: flex; justify-content: flex-end; align-items: center;">
+        <div class="cm-modal-footer" style="padding-top: 0.85rem; border-top: 1px solid #f1f5f9; display: flex; justify-content: flex-end; align-items: center;">
             <button class="cm-btn-cancel" style="margin-right: 0.5rem;" @onclick="CancelCloseModal">Cancel</button>
             <button class="cm-btn-save" style="background: linear-gradient(135deg, #ef4444, #dc2626); border: none;" @onclick="ConfirmCloseShiftAsync" disabled="@isClosingInPlace">
                 @if (isClosingInPlace)
@@ -149,9 +181,17 @@
 @if (showOpenModal)
 {
     <div class="cm-backdrop">
-        <div class="cm-modal" style="max-width: 500px;">
+        <div class="cm-modal" style="max-width: 520px;">
             <div class="cm-modal-header">
-                <h2 class="cm-modal-title">Open New Counter Shift</h2>
+                <div class="d-flex align-items-center gap-2">
+                    <div style="width: 36px; height: 36px; border-radius: 8px; background: #e0e7ff; color: #4338ca; display: flex; align-items: center; justify-content: center; font-size: 1.15rem;">
+                        <i class="bi bi-door-open-fill"></i>
+                    </div>
+                    <div>
+                        <h2 class="cm-modal-title">Open New Counter Shift</h2>
+                        <span style="font-size: 0.74rem; color: #64748b;">Start a new billing cashier session</span>
+                    </div>
+                </div>
                 <button class="cm-close-btn" @onclick="CloseOpenModal">
                     <i class="bi bi-x-lg"></i>
                 </button>
@@ -159,8 +199,8 @@
 
             <div class="cm-modal-body">
                 <div class="cm-field-group">
-                    <label class="cm-label">Associated Branch</label>
-                    <select class="cm-input cm-select" @bind="openRequest.bhcode" @bind:after="OnBranchChanged">
+                    <label class="cm-label"><i class="bi bi-building me-1 text-primary"></i> Associated Branch</label>
+                    <select class="cm-input cm-select fw-semibold" @bind="openRequest.bhcode" @bind:after="OnBranchChanged">
                         @if (branches.Any())
                         {
                             @foreach (var b in branches)
@@ -176,8 +216,8 @@
                 </div>
 
                 <div class="cm-field-group">
-                    <label class="cm-label">Counter Name</label>
-                    <select class="cm-input cm-select" @bind="openRequest.cntcode">
+                    <label class="cm-label"><i class="bi bi-display me-1 text-primary"></i> Counter Name</label>
+                    <select class="cm-input cm-select fw-semibold" @bind="openRequest.cntcode">
                         @if (filteredCounters.Any())
                         {
                             @foreach (var c in filteredCounters)
@@ -193,14 +233,20 @@
                 </div>
 
                 <div class="cm-field-group">
-                    <label class="cm-label">Counter Date</label>
-                    <input type="date" class="cm-input" @bind="openRequestDate" />
+                    <label class="cm-label"><i class="bi bi-calendar3 me-1 text-primary"></i> Counter Date</label>
+                    <input type="date" class="cm-input fw-semibold" @bind="openRequestDate" />
+                </div>
+
+                <div class="p-2 px-3 rounded-3 d-flex align-items-center gap-2" style="background: #f0fdf4; border: 1px solid #bbf7d0; font-size: 0.8rem; color: #166534;">
+                    <i class="bi bi-shield-check fs-5 text-success flex-shrink-0"></i>
+                    <div>
+                        <strong>Automatic Shift Policy:</strong> Counter shifts auto-close every night at <strong>12:00 AM Midnight</strong> (or scheduled fixed time).
+                    </div>
                 </div>
             </div>
 
             <div class="cm-modal-footer">
-                <div style="flex-grow: 1;"></div>
-                <button class="cm-btn-cancel" style="margin-right: 1rem;" @onclick="CloseOpenModal">Cancel</button>
+                <button class="cm-btn-cancel" @onclick="CloseOpenModal">Cancel</button>
                 <button class="cm-btn-save" @onclick="OpenShift" disabled="@isOpening">
                     @if (isOpening)
                     {
@@ -218,10 +264,10 @@
     {
         bhcode = 0,
         cntcode = 0,
-        counterdate = DateTime.Today
+        counterdate = DateTime.UtcNow.ToIndianTime().Date
     };
     
-    private DateOnly openRequestDate = DateOnly.FromDateTime(DateTime.Today);
+    private DateOnly openRequestDate = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime().Date);
 
     private Booking.Models.CloseShiftRequest closeRequest = new Booking.Models.CloseShiftRequest
     {
@@ -234,10 +280,12 @@
     private bool showOpenModal = false;
     private string searchQuery = "";
 
+    private List<Booking.Models.BranchModel> allBranches = new();
     private List<Booking.Models.BranchModel> branches = new();
     private List<CounterMasterModel> counters = new();
     private List<CounterMasterModel> filteredCounters = new();
     private List<Booking.Models.CounterTimingDto> openCounters = new();
+    private LabSettingModel? cachedLabSetting = null;
     private string TenantCode = "";
     private string AuthToken = "";
     private bool hasViewRight = true;
@@ -245,15 +293,15 @@
     private bool hasDeleteRight = false;
 
     private List<Booking.Models.CounterTimingDto> FilteredShifts => openCounters.Where(shift => 
-        (!branches.Any() || branches.Any(b => b.bh_code == shift.bhcode)) &&
-        (string.IsNullOrEmpty(searchQuery) ||
-         (branches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
-         (counters.FirstOrDefault(c => c.cntcode == shift.cntcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
-         (shift.shiftsno?.ToString() ?? "").Contains(searchQuery))
+        string.IsNullOrEmpty(searchQuery) ||
+        (allBranches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name ?? branches.FirstOrDefault(b => b.bh_code == shift.bhcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
+        (counters.FirstOrDefault(c => c.cntcode == shift.cntcode)?.name ?? "").Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ||
+        (shift.shiftsno?.ToString() ?? "").Contains(searchQuery)
     ).ToList();
 
     private void OpenOpenModal()
     {
+        openRequestDate = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime().Date);
         showOpenModal = true;
     }
 
@@ -358,6 +406,7 @@
                     UpdateFilteredCounters();
                 }
                 
+                StartAutoRefreshTimer();
                 StateHasChanged();
             }
             catch (Exception ex)
@@ -365,6 +414,33 @@
                 ToastService.ShowError($"Error initializing shift data: {ex.Message}");
             }
         }
+    }
+
+    private System.Threading.Timer? _refreshTimer;
+    private bool isDisposed = false;
+
+    private void StartAutoRefreshTimer()
+    {
+        _refreshTimer?.Dispose();
+        _refreshTimer = new System.Threading.Timer(async _ =>
+        {
+            if (isDisposed) return;
+            try
+            {
+                await InvokeAsync(async () =>
+                {
+                    if (isDisposed) return;
+                    await LoadOpenCountersAsync();
+                });
+            }
+            catch { }
+        }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+    }
+
+    public void Dispose()
+    {
+        isDisposed = true;
+        _refreshTimer?.Dispose();
     }
 
     private async Task LoadBranchesAsync()
@@ -386,8 +462,9 @@
             if (response.IsSuccessStatusCode)
             {
                 var json = await response.Content.ReadAsStringAsync();
-                branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
-                branches = branches.Where(b => !b.deleted).ToList();
+                allBranches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                allBranches = allBranches.Where(b => !b.deleted).ToList();
+                branches = new List<Booking.Models.BranchModel>(allBranches);
                 await FilterBranchesByUserAccessAsync();
             }
             else
@@ -506,6 +583,9 @@
         try
         {
             openRequest.counterdate = openRequestDate.ToDateTime(TimeOnly.MinValue);
+            openRequest.planned_to = null;
+            openRequest.shift_mode = null;
+
             var result = await HmsBillingService.OpenShiftAsync(openRequest);
             var parseResult = ParseApiResponse(result, "Shift opened successfully.");
             if (parseResult.Success)
@@ -535,7 +615,12 @@
         StateHasChanged();
         try
         {
-            openCounters = await HmsBillingService.GetOpenCountersAsync();
+            cachedLabSetting = await LabSettingService.GetLabSettingAsync();
+            openCounters = await HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true, tenantCode: TenantCode);
+            if (!openCounters.Any())
+            {
+                ToastService.ShowWarning("No active shifts open. Please open the shift.");
+            }
         }
         catch (Exception ex)
         {
@@ -553,6 +638,15 @@
 
     private void CloseShiftInPlace(Booking.Models.CounterTimingDto item)
     {
+        bool isFixed = string.Equals(cachedLabSetting?.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(item.shift_mode, "FIXED", StringComparison.OrdinalIgnoreCase);
+
+        if (isFixed)
+        {
+            ToastService.ShowWarning("The fixed timing shift cannot be closed manually. It will close automatically at the configured time or at midnight (12:00 AM).");
+            return;
+        }
+
         pendingShiftToClose = item;
         showCloseConfirmModal = true;
     }
@@ -569,6 +663,17 @@
         var item = pendingShiftToClose;
         var counterName = counters.FirstOrDefault(c => c.cntcode == item.cntcode)?.name ?? $"Counter {item.cntcode}";
 
+        bool isFixed = string.Equals(cachedLabSetting?.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase)
+                       || string.Equals(item.shift_mode, "FIXED", StringComparison.OrdinalIgnoreCase);
+
+        if (isFixed)
+        {
+            ToastService.ShowWarning("The fixed timing shift cannot be closed manually. It will close automatically at the configured time or at midnight (12:00 AM).");
+            showCloseConfirmModal = false;
+            pendingShiftToClose = null;
+            return;
+        }
+
         isClosingInPlace = true;
         StateHasChanged();
         try
@@ -576,19 +681,18 @@
             var req = new Booking.Models.CloseShiftRequest
             {
                 cnttid = item.cnttid.ToString(),
-                usercode = closeRequest.usercode
+                usercode = closeRequest.usercode,
+                close_type = cachedLabSetting?.shift_timing_mode ?? item.shift_mode ?? "VARIABLE"
             };
             var result = await HmsBillingService.CloseShiftAsync(req);
             var parseResult = ParseApiResponse(result, $"Shift for {counterName} closed successfully.");
             if (parseResult.Success)
             {
-                ToastService.ShowSuccess($"{parseResult.Message} Logging out...");
+                ToastService.ShowSuccess($"{parseResult.Message}");
                 await LoadOpenCountersAsync();
                 showCloseConfirmModal = false;
                 pendingShiftToClose = null;
                 StateHasChanged();
-                await Task.Delay(1000);
-                await PerformLogoutAsync();
             }
             else
             {
@@ -687,5 +791,28 @@
         }
 
         return (true, result);
+    }
+
+    private string GetFormattedPlannedTime(Booking.Models.CounterTimingDto shift)
+    {
+        if (shift.planned_to.HasValue)
+        {
+            var p = shift.planned_to.Value;
+            return p.ToIndianTime().ToString("hh:mm tt");
+        }
+        if (!string.IsNullOrWhiteSpace(cachedLabSetting?.shift_end_time))
+        {
+            if (HmsBillingService.TryParseShiftEndTime(cachedLabSetting.shift_end_time, out var timeSpan))
+            {
+                var shiftFrom = (shift.fromdate ?? shift.counterdate ?? DateTime.UtcNow).ToIndianTime();
+                var fixedEndTime = shiftFrom.Date.Add(timeSpan);
+                if (shiftFrom < fixedEndTime)
+                {
+                    return fixedEndTime.ToString("hh:mm tt");
+                }
+                return "12:00 AM";
+            }
+        }
+        return "12:00 AM";
     }
 }

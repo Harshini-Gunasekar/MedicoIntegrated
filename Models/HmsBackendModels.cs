@@ -133,13 +133,20 @@ namespace Booking.Models
     {
         public int bhcode { get; set; }
         public int cntcode { get; set; }
-        public DateTime counterdate { get; set; }
+        public DateTime? counterdate { get; set; }
+        public int? usercode { get; set; } = 1;
+        public int? computercode { get; set; } = 1;
+        public string? shift_mode { get; set; }
+        public DateTime? planned_to { get; set; }
     }
 
     public class CloseShiftRequest
     {
-        public string cnttid { get; set; }
-        public int usercode { get; set; }
+        public string cnttid { get; set; } = string.Empty;
+        public int usercode { get; set; } = 1;
+        public int computercode { get; set; } = 1;
+        public DateTime? todate { get; set; }
+        public string? close_type { get; set; }
     }
 
     public class BillNoConfig
@@ -196,9 +203,14 @@ namespace Booking.Models
         public DateTime? counterdate { get; set; }
         public DateTime? fromdate { get; set; }
         public DateTime? todate { get; set; }
+        public string? shift_mode { get; set; }
+        public DateTime? planned_to { get; set; }
+        public string? close_type { get; set; }
         public string? tenant_code { get; set; }
         public int? usercode { get; set; }
         public int? computercode { get; set; }
+        public DateTime? entereddate { get; set; }
+        public DateTime? ibsdate { get; set; }
     }
 
     public class HmsPaymentRequest

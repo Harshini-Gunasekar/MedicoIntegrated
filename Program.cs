@@ -44,7 +44,9 @@ builder.Services.AddHttpClient("DoctorApi", client =>
     var baseUrl = builder.Configuration["ApiBaseUrl"];
     if (string.IsNullOrEmpty(baseUrl)) throw new InvalidOperationException("ApiBaseUrl is not configured in appsettings.json");
     client.BaseAddress = new Uri(baseUrl);
-});
+})
+.AddHttpMessageHandler<TenantHeaderHandler>()
+.AddHttpMessageHandler<UniIdentityRouteHandler>();
 
 builder.Services.AddHttpClient("LabCareUrl", client => 
 {

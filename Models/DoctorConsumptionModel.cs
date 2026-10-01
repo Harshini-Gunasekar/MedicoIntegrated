@@ -6,7 +6,10 @@ public class consumption_master
 
     public long roomwarehousecode { get; set; }   // must be a warehouse_master row with isdoctor_room = true
     public string? departmentname { get; set; }
+    public int? dcode { get; set; }        // NEW – doctor code
+    public decimal? custid { get; set; }
     public string? doctorname { get; set; }
+    public string? customername { get; set; }
     public string? remarks { get; set; }
 
     public decimal totalitems { get; set; }
@@ -30,6 +33,11 @@ public class consumption_detail
     public long stockcode { get; set; }     // exact batch/stock row selected by the user
     public long itemcode { get; set; }
     public string? batchno { get; set; }
+
+    public int? dcode { get; set; }        // doctor code who suggested
+    public decimal? custid { get; set; }   // customer who consumed it
+    public string? doctorname { get; set; }
+    public string? customername { get; set; }
 
     public decimal availableqty { get; set; }   // system-filled, snapshot before deduction
     public decimal consumedqty { get; set; }    // user input

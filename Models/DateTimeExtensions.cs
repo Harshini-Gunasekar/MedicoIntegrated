@@ -89,7 +89,15 @@ namespace Booking.Helpers
                 return dt;
             }
 
-            return TimeZoneInfo.ConvertTimeToUtc(dt, IndianTimeZone);
+            try
+            {
+                var unspecified = DateTime.SpecifyKind(dt, DateTimeKind.Unspecified);
+                return TimeZoneInfo.ConvertTimeToUtc(unspecified, IndianTimeZone);
+            }
+            catch
+            {
+                return DateTime.SpecifyKind(dt.AddHours(-5.5), DateTimeKind.Utc);
+            }
         }
 
         public static DateTime? ToUtcFromIndianTime(this DateTime? dt)
