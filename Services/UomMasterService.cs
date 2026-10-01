@@ -21,8 +21,58 @@ namespace Booking.Services
             try
             {
                 var tc = _tenantState?.TenantCode;
+                var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-                // Try fetching using relative endpoints on _http
+                // 1. Prioritize InventoryApi named HttpClient (direct to /api/ItemMaster/getalluom)
+                try
+                {
+                    var invClient = _clientFactory.CreateClient("InventoryApi");
+                    if (!string.IsNullOrEmpty(tc))
+                    {
+                        invClient.DefaultRequestHeaders.Remove("tenantcode");
+                        invClient.DefaultRequestHeaders.Remove("tenant_code");
+                        invClient.DefaultRequestHeaders.Add("tenantcode", tc);
+                        invClient.DefaultRequestHeaders.Add("tenant_code", tc);
+                    }
+                    if (!string.IsNullOrEmpty(_tenantState?.AuthToken))
+                    {
+                        invClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _tenantState.AuthToken);
+                    }
+                    var json = await invClient.GetStringAsync("ItemMaster/getalluom");
+                    
+                    try
+                    {
+                        var direct = System.Text.Json.JsonSerializer.Deserialize<List<UomMasterModel>>(json, opts);
+                        if (direct != null && direct.Any())
+                            return direct.Where(u => !u.deleted && (!string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name)))
+                                .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
+                                .ThenBy(u => u.shortname ?? u.name).ToList();
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var valWrapped = System.Text.Json.JsonSerializer.Deserialize<ValueResponseWrapper>(json, opts);
+                        if (valWrapped?.Value != null && valWrapped.Value.Any())
+                            return valWrapped.Value.Where(u => !u.deleted && (!string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name)))
+                                .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
+                                .ThenBy(u => u.shortname ?? u.name).ToList();
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponseWrapper>(json, opts);
+                        if (wrapped?.data != null && wrapped.data.Any())
+                            return wrapped.data.Where(u => !u.deleted && (!string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name)))
+                                .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
+                                .ThenBy(u => u.shortname ?? u.name).ToList();
+                    }
+                    catch { }
+                }
+                catch { }
+
+                // 2. Try fetching using relative endpoints on _http
                 string[] endpoints = new[] { "api/ItemMaster/getalluom", "ItemMaster/getalluom" };
                 
                 foreach (var endpoint in endpoints)
@@ -44,45 +94,44 @@ namespace Booking.Services
                         if (response.IsSuccessStatusCode)
                         {
                             var json = await response.Content.ReadAsStringAsync();
-                            var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-                            // 1. Direct array deserialization (matches UomMaster.razor)
+                            // Direct array deserialization
                             try
                             {
                                 var direct = System.Text.Json.JsonSerializer.Deserialize<List<UomMasterModel>>(json, opts);
                                 if (direct != null && direct.Any())
                                     return direct
-                                        .Where(u => !u.deleted && !string.IsNullOrWhiteSpace(u.name))
+                                        .Where(u => !u.deleted && (!string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name)))
                                         .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
-                                        .ThenBy(u => u.name)
+                                        .ThenBy(u => u.shortname ?? u.name)
                                         .ToList();
                             }
                             catch { }
 
-                            // 2. ValueResponseWrapper ({ "value": [...] })
+                            // ValueResponseWrapper ({ "value": [...] })
                             try
                             {
                                 var valWrapped = System.Text.Json.JsonSerializer.Deserialize<ValueResponseWrapper>(json, opts);
                                 if (valWrapped?.Value != null && valWrapped.Value.Any())
                                 {
                                     return valWrapped.Value
-                                        .Where(u => !u.deleted && !string.IsNullOrWhiteSpace(u.name))
+                                        .Where(u => !u.deleted && (!string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name)))
                                         .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
-                                        .ThenBy(u => u.name)
+                                        .ThenBy(u => u.shortname ?? u.name)
                                         .ToList();
                                 }
                             }
                             catch { }
 
-                            // 3. ServiceResponseWrapper ({ "data": [...] })
+                            // ServiceResponseWrapper ({ "data": [...] })
                             try
                             {
                                 var wrapped = System.Text.Json.JsonSerializer.Deserialize<ServiceResponseWrapper>(json, opts);
                                 if (wrapped?.data != null && wrapped.data.Any())
                                     return wrapped.data
-                                        .Where(u => !u.deleted && !string.IsNullOrWhiteSpace(u.name))
+                                        .Where(u => !u.deleted && (!string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name)))
                                         .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
-                                        .ThenBy(u => u.name)
+                                        .ThenBy(u => u.shortname ?? u.name)
                                         .ToList();
                             }
                             catch { }
@@ -90,40 +139,6 @@ namespace Booking.Services
                     }
                     catch { }
                 }
-
-                // Fallback: Use InventoryApi named HttpClient (identical to UomMaster.razor)
-                try
-                {
-                    var invClient = _clientFactory.CreateClient("InventoryApi");
-                    if (!string.IsNullOrEmpty(tc))
-                    {
-                        invClient.DefaultRequestHeaders.Remove("tenantcode");
-                        invClient.DefaultRequestHeaders.Add("tenantcode", tc);
-                    }
-                    var json = await invClient.GetStringAsync("ItemMaster/getalluom");
-                    var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                    
-                    try
-                    {
-                        var direct = System.Text.Json.JsonSerializer.Deserialize<List<UomMasterModel>>(json, opts);
-                        if (direct != null && direct.Any())
-                            return direct.Where(u => !u.deleted && !string.IsNullOrWhiteSpace(u.name))
-                                .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
-                                .ThenBy(u => u.name).ToList();
-                    }
-                    catch { }
-
-                    try
-                    {
-                        var valWrapped = System.Text.Json.JsonSerializer.Deserialize<ValueResponseWrapper>(json, opts);
-                        if (valWrapped?.Value != null && valWrapped.Value.Any())
-                            return valWrapped.Value.Where(u => !u.deleted && !string.IsNullOrWhiteSpace(u.name))
-                                .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
-                                .ThenBy(u => u.name).ToList();
-                    }
-                    catch { }
-                }
-                catch { }
             }
             catch (Exception ex)
             {

@@ -67,8 +67,25 @@ namespace Booking.Services
                                requestPath.Contains("/Tenant/login", StringComparison.OrdinalIgnoreCase) ||
                                isAnonymousRegister;
 
-            bool isPrerendering = false;
-            if (string.IsNullOrEmpty(_session.TenantCode) && !isAnonymous)
+            string effectiveTenant = _session.TenantCode;
+
+            if (string.IsNullOrEmpty(effectiveTenant))
+            {
+                if (request.Headers.TryGetValues("tenantcode", out var tcVals) && tcVals.Any() && !string.IsNullOrWhiteSpace(tcVals.First()))
+                {
+                    effectiveTenant = tcVals.First();
+                }
+                else if (request.Headers.TryGetValues("tenant_code", out var tcVals2) && tcVals2.Any() && !string.IsNullOrWhiteSpace(tcVals2.First()))
+                {
+                    effectiveTenant = tcVals2.First();
+                }
+                else if (request.Headers.TryGetValues("tenant-code", out var tcVals3) && tcVals3.Any() && !string.IsNullOrWhiteSpace(tcVals3.First()))
+                {
+                    effectiveTenant = tcVals3.First();
+                }
+            }
+
+            if (string.IsNullOrEmpty(effectiveTenant) && !isAnonymous)
             {
                 try
                 {
@@ -81,26 +98,39 @@ namespace Booking.Services
                     var tenantNameResult = await _sessionStorage.GetAsync<string>("tenant_name");
                     var tenantName = tenantNameResult.Success ? tenantNameResult.Value ?? "" : "";
 
-                    if (!string.IsNullOrEmpty(tenantCode) && !string.IsNullOrEmpty(authToken))
+                    if (!string.IsNullOrEmpty(tenantCode))
                     {
-                        _session.SetSession(tenantCode, authToken, tenantName);
+                        effectiveTenant = tenantCode;
+                        if (!string.IsNullOrEmpty(authToken))
+                        {
+                            _session.SetSession(tenantCode, authToken, tenantName);
+                        }
                     }
                 }
                 catch (Exception)
                 {
-                    isPrerendering = true;
+                    // Session storage not accessible during prerendering or background invocation
                 }
             }
 
-            if (!string.IsNullOrEmpty(_session.TenantCode) && !isAnonymousRegister)
+            if (string.IsNullOrEmpty(effectiveTenant) && !isAnonymous)
+            {
+                effectiveTenant = "0010"; // standard default tenant code
+            }
+
+            if (!string.IsNullOrEmpty(effectiveTenant) && !isAnonymousRegister)
             {
                 if (request.Headers.Contains("tenant_code"))
                     request.Headers.Remove("tenant_code");
-                request.Headers.Add("tenant_code", _session.TenantCode);
-            }
-            else if (!isAnonymous && !isPrerendering)
-            {
-                throw new System.InvalidOperationException("Tenant context is not initialized. Please log in again.");
+                request.Headers.Add("tenant_code", effectiveTenant);
+
+                if (request.Headers.Contains("tenantcode"))
+                    request.Headers.Remove("tenantcode");
+                request.Headers.Add("tenantcode", effectiveTenant);
+
+                if (request.Headers.Contains("tenant-code"))
+                    request.Headers.Remove("tenant-code");
+                request.Headers.Add("tenant-code", effectiveTenant);
             }
 
             if (isAnonymousRegister)

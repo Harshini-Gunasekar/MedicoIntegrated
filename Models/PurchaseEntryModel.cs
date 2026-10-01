@@ -78,7 +78,7 @@ namespace Booking.Models
 
         public string? batchno { get; set; }
         public DateTime? manufacturingdate { get; set; } = DateTime.Now;
-        public DateTime? expirydate { get; set; } = DateTime.Now.AddYears(1);
+        public DateTime? expirydate { get; set; }
 
         public long? warehousecode { get; set; }
 

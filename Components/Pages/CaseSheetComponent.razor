@@ -1110,6 +1110,16 @@
                                                                     </div>
                                                                 </td>
                                                                 <td class="col-unit">
+                                                                    @{
+                                                                        if (string.IsNullOrWhiteSpace(item.dose_unit) && (!string.IsNullOrWhiteSpace(item.drug_name) || (item.drug_code.HasValue && item.drug_code.Value > 0)))
+                                                                        {
+                                                                            var autoUnit = GetItemUomMeasureByCodeOrName(item.drug_code, item.drug_name);
+                                                                            if (!string.IsNullOrWhiteSpace(autoUnit))
+                                                                            {
+                                                                                item.dose_unit = autoUnit;
+                                                                            }
+                                                                        }
+                                                                    }
                                                                     <input type="text" class="form-control-input table-input" placeholder="Unit"
                                                                            @bind="item.dose_unit" />
                                                                 </td>
@@ -1177,7 +1187,10 @@
                                                                     <span class="badge bg-light text-dark fw-bold">@(item.morning_dose ?? item.morning ?? "0") - @(item.afternoon_dose ?? item.afternoon ?? "0") - @(item.evening_dose ?? item.evening ?? "0") - @(item.night_dose ?? item.night ?? "0")</span>
                                                                 </td>
                                                                 <td class="col-unit">
-                                                                    <span class="badge bg-light text-secondary">@(string.IsNullOrWhiteSpace(item.dose_unit) ? "-" : item.dose_unit)</span>
+                                                                    @{
+                                                                        var roUnit = !string.IsNullOrWhiteSpace(item.dose_unit) ? item.dose_unit : GetItemUomMeasureByCodeOrName(item.drug_code, item.drug_name);
+                                                                    }
+                                                                    <span class="badge bg-light text-secondary">@(string.IsNullOrWhiteSpace(roUnit) ? "-" : roUnit)</span>
                                                                 </td>
                                                                 <td class="col-timing">
                                                                     @if (item.before_food) { <span class="badge bg-warning text-dark me-1">AC (Before)</span> }
@@ -3059,9 +3072,12 @@
                                                             </td>
                                                             <td style="padding: 0.25rem 0; text-align: center; font-family: monospace;">
                                                                 @(item.morning_dose ?? item.morning ?? "0")-@(item.afternoon_dose ?? item.afternoon ?? "0")-@(item.evening_dose ?? item.evening ?? "0")-@(item.night_dose ?? item.night ?? "0")
-                                                                @if (!string.IsNullOrWhiteSpace(item.dose_unit))
+                                                                @{
+                                                                    var previewUnit = !string.IsNullOrWhiteSpace(item.dose_unit) ? item.dose_unit : GetItemUomMeasureByCodeOrName(item.drug_code, item.drug_name);
+                                                                }
+                                                                @if (!string.IsNullOrWhiteSpace(previewUnit))
                                                                 {
-                                                                    <span style="font-size: 0.65rem; color: #475569; font-weight: 600;"> @item.dose_unit</span>
+                                                                    <span style="font-size: 0.65rem; color: #475569; font-weight: 600;"> @previewUnit</span>
                                                                 }
                                                                 <span style="display: block; font-size: 0.62rem; color: #94a3b8;">(@(item.before_food ? "AC" : "PC"), @item.days d)</span>
                                                             </td>
@@ -3807,6 +3823,18 @@
                     Console.WriteLine($"[CaseSheetComponent] Error loading UOM masters: {ex.Message}");
                 }
             }
+
+            if (currentRequest?.prescription?.items != null && currentRequest.prescription.items.Count > 0)
+            {
+                foreach (var pItem in currentRequest.prescription.items)
+                {
+                    var uom = GetItemUomMeasureByCodeOrName(pItem.drug_code, pItem.drug_name);
+                    if (!string.IsNullOrWhiteSpace(uom))
+                    {
+                        pItem.dose_unit = uom;
+                    }
+                }
+            }
         }
         if (Visible)
         {
@@ -3840,6 +3868,7 @@
         else if (tabName == "prescription")
         {
             _ = LoadPatientPharmacySalesAsync();
+            _ = EnsureItemsAndUomsLoadedAsync();
         }
         try
         {
@@ -4003,6 +4032,18 @@
                 if (existingSheet != null && !string.IsNullOrEmpty(existingSheet.sheet_id))
                 {
                     LoadFromViewModel(existingSheet);
+
+                    if (currentRequest?.prescription?.items != null && currentRequest.prescription.items.Count > 0)
+                    {
+                        foreach (var pItem in currentRequest.prescription.items)
+                        {
+                            var uom = GetItemUomMeasureByCodeOrName(pItem.drug_code, pItem.drug_name);
+                            if (!string.IsNullOrWhiteSpace(uom))
+                            {
+                                pItem.dose_unit = uom;
+                            }
+                        }
+                    }
                     
                     // Initialize remarks caches
                     if (existingSheet.prescription != null)
@@ -4181,10 +4222,10 @@
                 topremarks = vm.prescription.topremarks,
                 bottonremarks = vm.prescription.bottonremarks,
                 items = vm.prescription.items.Select((i, index) => {
-                    string? resolvedUnit = i.dose_unit;
+                    string? resolvedUnit = GetItemUomMeasureByCodeOrName(i.drug_code, i.drug_name);
                     if (string.IsNullOrWhiteSpace(resolvedUnit))
                     {
-                        resolvedUnit = GetItemUomMeasureByCodeOrName(i.drug_code, i.drug_name);
+                        resolvedUnit = i.dose_unit;
                     }
                     return new CaseSheetPrescriptionItem
                     {
@@ -4314,6 +4355,57 @@
         activeInlineDiagSno = 0;
     }
 
+    private async Task EnsureItemsAndUomsLoadedAsync()
+    {
+        if (allItems.Count == 0 || allStocks.Count == 0 || allUoms.Count == 0)
+        {
+            try
+            {
+                var tenant = await GetCurrentTenantCodeAsync();
+                if (allItems.Count == 0)
+                {
+                    allItems = await CaseSheetService.GetAllItemsAsync(tenant);
+                }
+                if (allStocks.Count == 0)
+                {
+                    allStocks = await CaseSheetService.GetAllStocksAsync(tenant);
+                }
+                if (allUoms.Count == 0)
+                {
+                    try
+                    {
+                        var uoms = await CaseSheetService.GetAllUomsAsync(tenant);
+                        if (uoms.Count > 0) allUoms = uoms;
+                        else allUoms = await UomMasterService.GetUomMastersAsync() ?? new();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CaseSheetComponent] Error loading UOM masters: {ex.Message}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading items in workspace: {ex.Message}");
+            }
+        }
+
+        if (currentRequest?.prescription?.items != null && currentRequest.prescription.items.Count > 0)
+        {
+            foreach (var pItem in currentRequest.prescription.items)
+            {
+                if (string.IsNullOrWhiteSpace(pItem.dose_unit))
+                {
+                    var uom = GetItemUomMeasureByCodeOrName(pItem.drug_code, pItem.drug_name);
+                    if (!string.IsNullOrWhiteSpace(uom))
+                    {
+                        pItem.dose_unit = uom;
+                    }
+                }
+            }
+        }
+    }
+
     private async Task SearchDrugInline(CaseSheetPrescriptionItem item, string query)
     {
         activeInlineDrugSno = item.sno;
@@ -4322,28 +4414,11 @@
         if (string.IsNullOrWhiteSpace(query) || query.Trim().Length < 1)
         {
             inlineDrugSearchResults.Clear();
+            item.drug_code = null;
             return;
         }
 
-        if (allItems.Count == 0 || allUoms.Count == 0)
-        {
-            var tenant = await GetCurrentTenantCodeAsync();
-            if (allItems.Count == 0)
-            {
-                allItems = await CaseSheetService.GetAllItemsAsync(tenant);
-                allStocks = await CaseSheetService.GetAllStocksAsync(tenant);
-            }
-            if (allUoms.Count == 0)
-            {
-                try
-                {
-                    var uoms = await CaseSheetService.GetAllUomsAsync(tenant);
-                    if (uoms.Count > 0) allUoms = uoms;
-                    else allUoms = await UomMasterService.GetUomMastersAsync() ?? new();
-                }
-                catch {}
-            }
-        }
+        await EnsureItemsAndUomsLoadedAsync();
 
         var lowerQuery = query.Trim().ToLower();
         inlineDrugSearchResults = allItems
@@ -4355,7 +4430,7 @@
             .Take(25)
             .ToList();
 
-        // Auto-resolve item unit and details immediately if there is an exact or best match
+        // Auto-resolve item details and unit from matched item master
         ResolveItemDetails(item);
     }
 
@@ -4364,34 +4439,45 @@
         if (item == null) return;
         
         item_master? master = null;
+
+        // 1. If drug_code is present, look up master
         if (item.drug_code.HasValue && item.drug_code.Value > 0)
         {
-            master = allItems.FirstOrDefault(x => x.itemcode == (int)item.drug_code.Value);
+            long codeLong = (long)item.drug_code.Value;
+            master = allItems.FirstOrDefault(x => x.itemcode == codeLong);
         }
         
+        // 2. Look up master by typed drug_name if not found
         if (master == null && !string.IsNullOrWhiteSpace(item.drug_name))
         {
             var clean = item.drug_name.Trim();
-            master = allItems.FirstOrDefault(x => 
-                (x.drugname != null && x.drugname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
-                (x.itemname != null && x.itemname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
-                (x.shortname != null && x.shortname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)));
+
+            // First: Exact match on drugname, itemname, or shortname
+            master = allItems.FirstOrDefault(x => !x.deleted && (
+                (!string.IsNullOrWhiteSpace(x.drugname) && x.drugname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(x.itemname) && x.itemname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(x.shortname) && x.shortname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase))));
             
-            // Fallback: starts-with / contains match if user typed full name or prefix
+            // Second: Starts-with match
             if (master == null)
             {
-                master = allItems.FirstOrDefault(x => 
-                    (x.drugname != null && (x.drugname.StartsWith(clean, StringComparison.OrdinalIgnoreCase) || clean.StartsWith(x.drugname.Trim(), StringComparison.OrdinalIgnoreCase))) ||
-                    (x.itemname != null && (x.itemname.StartsWith(clean, StringComparison.OrdinalIgnoreCase) || clean.StartsWith(x.itemname.Trim(), StringComparison.OrdinalIgnoreCase))));
+                master = allItems.FirstOrDefault(x => !x.deleted && (
+                    (!string.IsNullOrWhiteSpace(x.drugname) && x.drugname.Trim().StartsWith(clean, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(x.itemname) && x.itemname.Trim().StartsWith(clean, StringComparison.OrdinalIgnoreCase))));
+            }
+
+            // Third: Contains match (e.g. "Paracetamol" in "Paracetamol 500mg" or "Cough syrup" in "Cough Syrup 100ml")
+            if (master == null && clean.Length >= 3)
+            {
+                master = allItems.FirstOrDefault(x => !x.deleted && (
+                    (!string.IsNullOrWhiteSpace(x.drugname) && (x.drugname.Contains(clean, StringComparison.OrdinalIgnoreCase) || clean.Contains(x.drugname.Trim(), StringComparison.OrdinalIgnoreCase))) ||
+                    (!string.IsNullOrWhiteSpace(x.itemname) && (x.itemname.Contains(clean, StringComparison.OrdinalIgnoreCase) || clean.Contains(x.itemname.Trim(), StringComparison.OrdinalIgnoreCase)))));
             }
         }
 
         if (master != null)
         {
-            if (!item.drug_code.HasValue || item.drug_code.Value == 0)
-            {
-                item.drug_code = master.itemcode;
-            }
+            item.drug_code = master.itemcode;
             if (string.IsNullOrWhiteSpace(item.generic_name) && !string.IsNullOrWhiteSpace(master.description))
             {
                 item.generic_name = master.description;
@@ -4405,20 +4491,39 @@
                 var unitCost = CalculateItemUnitCost(master);
                 if (unitCost > 0) item.rate = unitCost;
             }
-            if (string.IsNullOrWhiteSpace(item.dose_unit) || forceUom)
+            
+            // Always update dose_unit from itemmaster uomcode if found
+            var uomMeasure = GetItemUomMeasure(master);
+            if (!string.IsNullOrWhiteSpace(uomMeasure))
             {
-                var uomMeasure = GetItemUomMeasure(master);
-                if (!string.IsNullOrWhiteSpace(uomMeasure))
+                item.dose_unit = uomMeasure;
+            }
+
+            if (master.subcategorycode == 50)
+            {
+                CalculateItemDrugQty(item);
+            }
+            else
+            {
+                if (!item.qty.HasValue || item.qty.Value <= 0)
                 {
-                    item.dose_unit = uomMeasure;
+                    item.qty = 1;
                 }
+            }
+        }
+        else if (forceUom && string.IsNullOrWhiteSpace(item.dose_unit))
+        {
+            var fallbackUom = GetItemUomMeasureByCodeOrName(item.drug_code, item.drug_name);
+            if (!string.IsNullOrWhiteSpace(fallbackUom))
+            {
+                item.dose_unit = fallbackUom;
             }
         }
     }
 
     private async Task OnDrugInputBlur(CaseSheetPrescriptionItem item)
     {
-        ResolveItemDetails(item);
+        ResolveItemDetails(item, forceUom: true);
         await Task.Delay(250);
         if (activeInlineDrugSno == item.sno)
         {
@@ -4428,17 +4533,98 @@
         }
     }
 
+    private static readonly Dictionary<int, string> FallbackUomMap = new()
+    {
+        { 59, "ml" },
+        { 1, "Nos" },
+        { 2, "Strip" },
+        { 3, "Box" },
+        { 4, "Bottle" },
+        { 5, "Vial" },
+        { 6, "Ampoule" },
+        { 7, "Tab" },
+        { 8, "Cap" },
+        { 9, "Pcs" },
+        { 10, "Tube" },
+        { 11, "Sachet" },
+        { 12, "Drops" },
+        { 13, "Syrup" },
+        { 14, "Suspension" },
+        { 15, "Ointment" },
+        { 16, "Cream" },
+        { 17, "Gel" },
+        { 18, "Lotion" },
+        { 19, "Inj" },
+        { 20, "Infusion" },
+        { 21, "Inhaler" },
+        { 22, "Spray" },
+        { 23, "Patch" },
+        { 24, "Powder" },
+        { 25, "Kit" },
+        { 26, "Pack" },
+        { 31, "gm" },
+        { 32, "kg" },
+        { 33, "ltr" }
+    };
+
     private string GetItemUomMeasure(item_master? item)
     {
-        if (item == null || item.uomcode <= 0) return "";
-        if (allUoms != null && allUoms.Count > 0)
+        if (item == null) return "";
+
+        // 1. PRIMARY: Lookup by uomcode in allUoms (from /api/ItemMaster/getalluom)
+        if (item.uomcode > 0 && allUoms != null && allUoms.Count > 0)
         {
-            var uom = allUoms.FirstOrDefault(u => (int)Math.Round(u.ucode) == item.uomcode || (int)u.ucode == item.uomcode);
+            var uom = allUoms.FirstOrDefault(u => 
+                u.ucode == item.uomcode || 
+                (long)u.ucode == (long)item.uomcode || 
+                (int)u.ucode == item.uomcode ||
+                u.uomcode == item.uomcode ||
+                u.unitcode == item.uomcode ||
+                (long)u.uomcode == (long)item.uomcode);
             if (uom != null)
             {
-                return !string.IsNullOrWhiteSpace(uom.shortname) ? uom.shortname.Trim() : (uom.name?.Trim() ?? "");
+                if (!string.IsNullOrWhiteSpace(uom.shortname))
+                    return uom.shortname.Trim();
+                if (!string.IsNullOrWhiteSpace(uom.name))
+                    return uom.name.Trim();
             }
         }
+
+        // 2. Direct textual unit if present on item_master
+        if (!string.IsNullOrWhiteSpace(item.uomshortname)) return item.uomshortname.Trim();
+        if (!string.IsNullOrWhiteSpace(item.uom)) return item.uom.Trim();
+        if (!string.IsNullOrWhiteSpace(item.unit)) return item.unit.Trim();
+        if (!string.IsNullOrWhiteSpace(item.uomname)) return item.uomname.Trim();
+
+        // 3. Fallback standard dictionary map
+        if (item.uomcode > 0 && FallbackUomMap.TryGetValue(item.uomcode, out var mappedUnit))
+        {
+            return mappedUnit;
+        }
+
+        // 4. Match packaging against allUoms
+        if (!string.IsNullOrWhiteSpace(item.packaging))
+        {
+            var cleanPack = item.packaging.Trim();
+            if (allUoms != null && allUoms.Count > 0)
+            {
+                var uom = allUoms.FirstOrDefault(u => 
+                    (!string.IsNullOrWhiteSpace(u.shortname) && u.shortname.Trim().Equals(cleanPack, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(u.name) && u.name.Trim().Equals(cleanPack, StringComparison.OrdinalIgnoreCase)));
+                if (uom != null)
+                {
+                    return !string.IsNullOrWhiteSpace(uom.shortname) ? uom.shortname.Trim() : (uom.name?.Trim() ?? "");
+                }
+            }
+            return cleanPack;
+        }
+
+        // 5. Tablet default
+        if (item.subcategorycode == 50)
+        {
+            return "Tab";
+        }
+
         return "";
     }
 
@@ -4446,7 +4632,8 @@
     {
         if (itemCode.HasValue && itemCode.Value > 0)
         {
-            var master = allItems.FirstOrDefault(x => x.itemcode == (int)itemCode.Value);
+            long codeLong = (long)itemCode.Value;
+            var master = allItems.FirstOrDefault(x => x.itemcode == codeLong);
             if (master != null)
             {
                 var measure = GetItemUomMeasure(master);
@@ -4456,10 +4643,22 @@
         if (!string.IsNullOrWhiteSpace(drugName))
         {
             var clean = drugName.Trim();
-            var master = allItems.FirstOrDefault(x => 
-                (x.drugname != null && x.drugname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
-                (x.itemname != null && x.itemname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
-                (x.shortname != null && x.shortname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)));
+            var master = allItems.FirstOrDefault(x => !x.deleted && (
+                (!string.IsNullOrWhiteSpace(x.drugname) && x.drugname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(x.itemname) && x.itemname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(x.shortname) && x.shortname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase))));
+            if (master == null)
+            {
+                master = allItems.FirstOrDefault(x => !x.deleted && (
+                    (!string.IsNullOrWhiteSpace(x.drugname) && x.drugname.Trim().StartsWith(clean, StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrWhiteSpace(x.itemname) && x.itemname.Trim().StartsWith(clean, StringComparison.OrdinalIgnoreCase))));
+            }
+            if (master == null && clean.Length >= 3)
+            {
+                master = allItems.FirstOrDefault(x => !x.deleted && (
+                    (!string.IsNullOrWhiteSpace(x.drugname) && (x.drugname.Contains(clean, StringComparison.OrdinalIgnoreCase) || clean.Contains(x.drugname.Trim(), StringComparison.OrdinalIgnoreCase))) ||
+                    (!string.IsNullOrWhiteSpace(x.itemname) && (x.itemname.Contains(clean, StringComparison.OrdinalIgnoreCase) || clean.Contains(x.itemname.Trim(), StringComparison.OrdinalIgnoreCase)))));
+            }
             if (master != null)
             {
                 var measure = GetItemUomMeasure(master);
@@ -4500,7 +4699,19 @@
         item.rate = unitCost;
         
         var uomMeasure = GetItemUomMeasure(res);
-        item.dose_unit = !string.IsNullOrWhiteSpace(uomMeasure) ? uomMeasure : "";
+        if (!string.IsNullOrWhiteSpace(uomMeasure))
+        {
+            item.dose_unit = uomMeasure;
+        }
+
+        if (res.subcategorycode == 50)
+        {
+            CalculateItemDrugQty(item);
+        }
+        else
+        {
+            item.qty = 1;
+        }
 
         inlineDrugSearchResults.Clear();
         activeInlineDrugSno = 0;
@@ -4704,10 +4915,55 @@
         }
     }
 
+    private item_master? GetItemMaster(CaseSheetPrescriptionItem? item)
+    {
+        if (item == null) return null;
+        if (item.drug_code.HasValue && item.drug_code.Value > 0)
+        {
+            long codeLong = (long)item.drug_code.Value;
+            var master = allItems.FirstOrDefault(x => x.itemcode == codeLong);
+            if (master != null) return master;
+        }
+        if (!string.IsNullOrWhiteSpace(item.drug_name))
+        {
+            var clean = item.drug_name.Trim();
+            var master = allItems.FirstOrDefault(x => !x.deleted && (
+                (!string.IsNullOrWhiteSpace(x.drugname) && x.drugname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(x.itemname) && x.itemname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(x.shortname) && x.shortname.Trim().Equals(clean, StringComparison.OrdinalIgnoreCase))));
+            if (master != null) return master;
+
+            master = allItems.FirstOrDefault(x => !x.deleted && (
+                (!string.IsNullOrWhiteSpace(x.drugname) && x.drugname.Trim().StartsWith(clean, StringComparison.OrdinalIgnoreCase)) ||
+                (!string.IsNullOrWhiteSpace(x.itemname) && x.itemname.Trim().StartsWith(clean, StringComparison.OrdinalIgnoreCase))));
+            if (master != null) return master;
+
+            if (clean.Length >= 3)
+            {
+                master = allItems.FirstOrDefault(x => !x.deleted && (
+                    (!string.IsNullOrWhiteSpace(x.drugname) && (x.drugname.Contains(clean, StringComparison.OrdinalIgnoreCase) || clean.Contains(x.drugname.Trim(), StringComparison.OrdinalIgnoreCase))) ||
+                    (!string.IsNullOrWhiteSpace(x.itemname) && (x.itemname.Contains(clean, StringComparison.OrdinalIgnoreCase) || clean.Contains(x.itemname.Trim(), StringComparison.OrdinalIgnoreCase)))));
+                if (master != null) return master;
+            }
+        }
+        return null;
+    }
+
+    private bool IsTabletItem(CaseSheetPrescriptionItem? item)
+    {
+        if (item == null) return false;
+        var master = GetItemMaster(item);
+        return master != null && master.subcategorycode == 50;
+    }
+
     private void CalculateItemDrugQty(CaseSheetPrescriptionItem item)
     {
-        if (item.days.HasValue)
+        if (item == null) return;
+
+        if (IsTabletItem(item))
         {
+            // subcategorycode == 50 (tablet):
+            // based on the count in M+A+E+N add the tablet and display in quantity
             decimal dailyCount = 0;
             if (decimal.TryParse(item.morning_dose, out decimal md)) dailyCount += md;
             else if (decimal.TryParse(item.morning, out decimal m)) dailyCount += m;
@@ -4723,7 +4979,21 @@
 
             if (dailyCount > 0)
             {
-                item.qty = Math.Ceiling(dailyCount * item.days.Value);
+                var days = (item.days.HasValue && item.days.Value > 0) ? item.days.Value : 1;
+                item.qty = Math.Ceiling(dailyCount * days);
+            }
+            else if (!item.qty.HasValue || item.qty.Value <= 0)
+            {
+                item.qty = 1;
+            }
+        }
+        else
+        {
+            // otherwise if subcategory code is 0 or other than 50:
+            // that qty keep as 1 and editable dont add M+A+E+N
+            if (!item.qty.HasValue || item.qty.Value <= 0)
+            {
+                item.qty = 1;
             }
         }
     }
@@ -4755,7 +5025,10 @@
             item.night_dose = isOn ? "0" : "1";
         }
 
-        CalculateItemDrugQty(item);
+        if (IsTabletItem(item))
+        {
+            CalculateItemDrugQty(item);
+        }
     }
 
     private void AddNewPrescriptionRow()
@@ -4779,8 +5052,8 @@
             dose_unit = "",
             before_food = false,
             after_food = true,
-            days = 5,
-            qty = 5
+            days = null,
+            qty = null
         };
         currentRequest.prescription.items.Add(newItem);
         try

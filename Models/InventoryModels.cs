@@ -33,13 +33,40 @@ namespace Booking.Models
 
     public class uom_master
     {
+        private long _ucode;
         [Key]
-        public long ucode { get; set; }
+        public long ucode { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+        public long uomcode { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+        public long uom_code { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+        public long unitcode { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+        public long unit_code { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+        public long uomid { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+        public long uom_id { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+        public long id { get => _ucode; set { if (value > 0 || _ucode == 0) _ucode = value; } }
+
         public int orderno { get; set; }
-        public string? name { get; set; }
-        public string? shortname { get; set; }
+        public int? order_no { get => orderno; set => orderno = value ?? 0; }
+
+        private string? _name;
+        public string? name { get => _name; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_name)) _name = value; } }
+        public string? uomname { get => _name; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_name)) _name = value; } }
+        public string? uom_name { get => _name; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_name)) _name = value; } }
+        public string? unitname { get => _name; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_name)) _name = value; } }
+        public string? unit_name { get => _name; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_name)) _name = value; } }
+
+        private string? _shortname;
+        public string? shortname { get => _shortname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_shortname)) _shortname = value; } }
+        public string? short_name { get => _shortname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_shortname)) _shortname = value; } }
+        public string? uomshortname { get => _shortname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_shortname)) _shortname = value; } }
+        public string? uom_shortname { get => _shortname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_shortname)) _shortname = value; } }
+        public string? unit { get => _shortname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_shortname)) _shortname = value; } }
+        public string? uom { get => _shortname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_shortname)) _shortname = value; } }
+
         public string? description { get; set; }
         public bool? deleted { get; set; } = false;
+        public bool? isdeleted { get => deleted; set => deleted = value; }
+        public bool? is_deleted { get => deleted; set => deleted = value; }
+
         public int? usercode { get; set; }
         public int? computercode { get; set; }
         public DateTime? entereddate { get; set; }
@@ -47,6 +74,7 @@ namespace Booking.Models
         public int? packsize { get; set; }
         public int? decimalplaces { get; set; }
         public string? tenant_code { get; set; }
+        public string? tenantcode { get => tenant_code; set => tenant_code = value; }
     }
 
     public class vendor_master
@@ -187,16 +215,42 @@ namespace Booking.Models
 
     public class item_master
     {
-        public int itemcode { get; set; }
-        public string? itemname { get; set; }
+        private int _itemcode;
+        public int itemcode { get => _itemcode; set { if (value > 0 || _itemcode == 0) _itemcode = value; } }
+        public int item_code { get => _itemcode; set { if (value > 0 || _itemcode == 0) _itemcode = value; } }
+        public int drugcode { get => _itemcode; set { if (value > 0 || _itemcode == 0) _itemcode = value; } }
+        public int drug_code { get => _itemcode; set { if (value > 0 || _itemcode == 0) _itemcode = value; } }
+        public int id { get => _itemcode; set { if (value > 0 || _itemcode == 0) _itemcode = value; } }
+
+        private string? _itemname;
+        public string? itemname { get => _itemname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_itemname)) _itemname = value; } }
+        public string? item_name { get => _itemname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_itemname)) _itemname = value; } }
+
         public string? shortname { get; set; }
+        public string? short_name { get => shortname; set => shortname = value; }
         public string? description { get; set; }
         public int categorycode { get; set; }
         public int subcategorycode { get; set; }
         public int hsnCode { get; set; }
         public string? itemtype { get; set; }
         public decimal gstpercentage { get; set; }
-        public int uomcode { get; set; }
+
+        private int _uomcode;
+        public int uomcode { get => _uomcode; set { if (value > 0 || _uomcode == 0) _uomcode = value; } }
+        public int uom_code { get => _uomcode; set { if (value > 0 || _uomcode == 0) _uomcode = value; } }
+        public int ucode { get => _uomcode; set { if (value > 0 || _uomcode == 0) _uomcode = value; } }
+        public int unitcode { get => _uomcode; set { if (value > 0 || _uomcode == 0) _uomcode = value; } }
+        public int unit_code { get => _uomcode; set { if (value > 0 || _uomcode == 0) _uomcode = value; } }
+        public int uomid { get => _uomcode; set { if (value > 0 || _uomcode == 0) _uomcode = value; } }
+        public int uom_id { get => _uomcode; set { if (value > 0 || _uomcode == 0) _uomcode = value; } }
+
+        public string? uom { get; set; }
+        public string? unit { get; set; }
+        public string? uomname { get; set; }
+        public string? uom_name { get; set; }
+        public string? uomshortname { get; set; }
+        public string? uom_shortname { get; set; }
+
         public decimal purchaserate { get; set; }
         public decimal salesrate { get; set; }
         public decimal mrp { get; set; }
@@ -215,7 +269,12 @@ namespace Booking.Models
         public string? manufacturername { get; set; }
         public string? manufacturer { get; set; }
         public int ledgergroupcode { get; set; }
-        public string? drugname { get; set; }
+
+        private string? _drugname;
+        public string? drugname { get => _drugname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_drugname)) _drugname = value; } }
+        public string? drug_name { get => _drugname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_drugname)) _drugname = value; } }
+        public string? medicine_name { get => _drugname; set { if (!string.IsNullOrWhiteSpace(value) || string.IsNullOrWhiteSpace(_drugname)) _drugname = value; } }
+
         public string? packaging { get; set; }
         public bool isactive { get; set; }
         public bool deleted { get; set; }

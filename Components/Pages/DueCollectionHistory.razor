@@ -5,6 +5,8 @@
 @using Booking.Models
 @inject HmsDueCollectionService DueCollectionService
 @inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.CounterMasterService CounterService
+@inject Booking.Services.PaymodeMasterService PaymodeService
 @inject Booking.Services.ReimbursementCompanyMasterService CompanyService
 @inject ToastService ToastService
 @inject NavigationManager Navigation
@@ -49,19 +51,19 @@
                     </div>
                     <div class="hist-fg">
                         <label>PERIOD PRESET</label>
-                        <select class="hist-select" value="@selectedPeriodPreset" @onchange='(e) => OnPeriodPresetChanged(e.Value?.ToString() ?? "Custom")'>
-                            <option value="This Month">This Month</option>
+                        <select class="hist-select" value="@selectedPeriodPreset" @onchange='(e) => OnPeriodPresetChanged(e.Value?.ToString() ?? "Today")'>
                             <option value="Today">Today</option>
                             <option value="Yesterday">Yesterday</option>
                             <option value="This Week">This Week</option>
+                            <option value="This Month">This Month</option>
                             <option value="Last Month">Last Month</option>
                             <option value="Custom">Custom</option>
                         </select>
                     </div>
                     <div class="hist-fg">
                         <label>BRANCH</label>
-                        <select class="hist-select" @bind="histBranchStr">
-                            <option value="">Select the Branch</option>
+                        <select class="hist-select" @bind="histFilter.bhcode">
+                            <option value="">Select Branch</option>
                             @foreach (var b in branchesList)
                             {
                                 <option value="@b.bh_code">@b.name</option>
@@ -70,8 +72,32 @@
                     </div>
                 </div>
 
-                <!-- Row 2: CUSTOMER / REIMBURSEMENT COMPANY (MONTHLY) -->
-                <div class="hist-filter-row-2-cols">
+                <!-- Row 2: COUNTER / PAYMODE / CUSTOMER / SEARCH -->
+                <div class="hist-filter-row-4">
+                    <div class="hist-fg">
+                        <label>COUNTER</label>
+                        <select class="hist-select" @bind="histFilter.cntcode">
+                            <option value="">Select Counter</option>
+                            @foreach (var c in FilteredCounters)
+                            {
+                                <option value="@((int)c.cntcode)">@c.name</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="hist-fg">
+                        <label>PAYMODE</label>
+                        <select class="hist-select" @bind="histFilter.collection_type">
+                            <option value="">All Paymodes</option>
+                            <option value="CASH">CASH</option>
+                            <option value="CARD">CARD</option>
+                            <option value="UPI">UPI</option>
+                            <option value="CHEQUE">CHEQUE</option>
+                            @foreach (var pm in paymodesList.Where(p => !string.IsNullOrEmpty(p.shortname) && !new[] { "CASH", "CARD", "UPI", "CHEQUE" }.Contains(p.shortname.ToUpper())))
+                            {
+                                <option value="@pm.shortname">@pm.name</option>
+                            }
+                        </select>
+                    </div>
                     <div class="hist-fg">
                         <label>CUSTOMER</label>
                         <div class="autocomplete-search-wrapper">
@@ -101,31 +127,9 @@
                         </div>
                     </div>
                     <div class="hist-fg">
-                        <label>REIMBURSEMENT COMPANY (MONTHLY)</label>
-                        <select class="hist-select" @bind="selectedCompanyName">
-                            <option value="">Select Company</option>
-                            @foreach (var comp in companiesList)
-                            {
-                                <option value="@comp.name">@comp.name</option>
-                            }
-                        </select>
-                    </div>
-                </div>
-
-                <!-- Row 3: DOCTOR / SELECT REPORT -->
-                <div class="hist-filter-row-2-cols">
-                    <div class="hist-fg">
-                        <label>DOCTOR</label>
-                        <input type="text" class="hist-input" placeholder="Search ID, Name, Mobile..."
-                               @bind="doctorSearchText" />
-                    </div>
-                    <div class="hist-fg">
-                        <label>SELECT REPORT</label>
-                        <select class="hist-select" @bind="selectedReportType">
-                            <option value="ALL">Select the Report</option>
-                            <option value="DUE">Due Collection</option>
-                            <option value="ADVANCE">Advance Receipt</option>
-                        </select>
+                        <label>SEARCH</label>
+                        <input type="text" class="hist-input" placeholder="Search bill, doctor, text..."
+                               @bind="histFilter.search" />
                     </div>
                 </div>
 
@@ -133,6 +137,9 @@
                 <div class="hist-filter-actions">
                     <button class="btn-hist-search" @onclick="SearchHistory">
                         <i class="bi bi-search"></i> Search
+                    </button>
+                    <button class="btn-hist-reset" @onclick="ResetHistoryFilter" style="background: #f1f5f9; color: #475569; border: 1px solid #cbd5e1; border-radius: 6px; padding: 0.5rem 1rem; font-weight: 600; cursor: pointer;">
+                        <i class="bi bi-arrow-counterclockwise"></i> Reset
                     </button>
                     <button class="btn-hist-print" @onclick="PrintHistory">
                         <i class="bi bi-printer-fill"></i> Print
@@ -183,27 +190,18 @@
                     @foreach (var row in historyReportRows)
                     {
                         <tr>
-                            <td class="font-sm text-muted">@(row.receipt_date.ToString("dd-MMM-yyyy"))</td>
+                            <td class="font-sm text-muted">@(row.receiptdate?.ToString("dd-MMM-yyyy") ?? "-")</td>
                             <td class="font-mono font-bold text-primary">@row.receipt_no</td>
-                            <td class="font-mono font-sm text-muted">@(row.patient_id?.ToString() ?? row.custid?.ToString() ?? "-")</td>
+                            <td class="font-mono font-sm text-muted">@(row.custid?.ToString() ?? "-")</td>
                             <td class="font-bold">@(string.IsNullOrWhiteSpace(row.patient_name) ? "-" : row.patient_name)</td>
                             <td class="text-muted font-sm">@(string.IsNullOrWhiteSpace(row.doctor_name) ? "-" : row.doctor_name)</td>
                             <td class="font-mono font-sm">@(string.IsNullOrWhiteSpace(row.bill_no) ? "-" : row.bill_no)</td>
                             <td class="text-end font-bold text-success">
-                                @if (row.amount_paid == 0 && row.advance_used > 0)
-                                {
-                                    @(row.advance_used.ToString("N2"))
-                                }
-                                else
-                                {
-                                    @(row.amount_paid.ToString("N2"))
-                                }
+                                @((row.amount ?? 0).ToString("N2"))
                             </td>
                             <td class="text-center">
                                 @{
-                                    bool isAdvance = (row.amount_paid == 0 && row.advance_used > 0) || 
-                                                     (row.receipt_type != null && row.receipt_type.Contains("ADVANCE", StringComparison.OrdinalIgnoreCase));
-                                    string displayPaymode = isAdvance ? "ADVANCE" : (row.collection_type ?? "");
+                                    string displayPaymode = string.IsNullOrWhiteSpace(row.collection_type) ? "DUE" : row.collection_type;
                                 }
                                 <span class="badge-paymode @(displayPaymode.ToLower())">
                                     @displayPaymode
@@ -302,30 +300,49 @@
     [Parameter] public bool IsEmbedded { get; set; } = false;
 
     private bool showHistoryFilter = false;
-    private HmsDueCollectionFilterRequest histFilter = new();
-    private string histBranchStr = "";
-    private List<HmsDueCollectionSummary> historyReportRows = new();
+    private HmsPaidHistoryFilterRequest histFilter = new();
+    private List<HmsPaidHistoryRow> historyReportRows = new();
     private int histCurrentPage = 1;
-    private int histPageSize = 15;
+    private int histPageSize = 20;
     private int histTotalCount = 0;
     private double grandTotalCollected = 0;
     private int HistTotalPages => (int)Math.Ceiling((double)histTotalCount / histPageSize);
     
     // Cancel-from-history
-    private string? histCancelReceiptGuid;
-    private string? histCancelReceiptNo;
     private bool showCancelModal = false;
-    private HmsDueCollectionSummary? receiptToCancel;
+    private HmsPaidHistoryRow? receiptToCancel;
     private int cancelUserCode = 10;
     private string cancelReason = string.Empty;
     private bool cancelling = false;
     private bool loadingHistory = false;
 
+    private string selectedPeriodPreset = "Today";
+    private List<DoctorMasterModel> doctorsList = new();
+    private List<Booking.Models.BranchModel> branchesList = new();
+    private List<CounterMasterModel> countersList = new();
+    private List<PaymodeMasterModel> paymodesList = new();
+
+    private IEnumerable<CounterMasterModel> FilteredCounters =>
+        histFilter.bhcode.HasValue && histFilter.bhcode.Value > 0
+            ? countersList.Where(c => c.bhcode == histFilter.bhcode.Value || c.bhcode == 0 || c.bhcode == null)
+            : countersList;
+
+    private string patientSearchQuery = string.Empty;
+    private List<Booking.Models.CustomerWithOpModel> searchedPatients = new();
+    private bool showPatientDropdown = false;
+    private int activePatientIndex = -1;
+    private System.Threading.CancellationTokenSource? _patientSearchCts;
+
     protected override async Task OnInitializedAsync()
     {
         var today = DateTime.Today;
-        histFilter.fromdate = new DateTime(today.Year, today.Month, 1);
+        histFilter.fromdate = today;
         histFilter.todate = today;
+        histFilter.receipt_type = "DUE";
+        histFilter.page = 1;
+        histFilter.pagesize = 20;
+        selectedPeriodPreset = "Today";
+
         await RunHistoryFilter();
     }
 
@@ -357,160 +374,42 @@
 
         try
         {
-            if (int.TryParse(histBranchStr, out var bh))
-                histFilter.bhcode = bh;
-            else
-                histFilter.bhcode = null;
-
-            string? customerSearch = null;
-            string? doctorSearch = null;
-            int? docCode = null;
-            string? isMonthly = null;
-            decimal? fetchCustId = null;
-
-            // 1. Customer autocomplete
-            if (!string.IsNullOrEmpty(patientSearchQuery))
+            var req = new HmsPaidHistoryFilterRequest
             {
-                customerSearch = patientSearchQuery.Trim();
-                if (decimal.TryParse(filterPatient, out var cId))
-                {
-                    fetchCustId = cId;
-                }
-            }
-
-            // 2. Monthly Reimbursement Company dropdown
-            if (!string.IsNullOrEmpty(selectedCompanyName))
-            {
-                isMonthly = "true";
-                customerSearch = selectedCompanyName;
-            }
-
-            // 3. Doctor free text search
-            if (!string.IsNullOrEmpty(doctorSearchText))
-            {
-                doctorSearch = doctorSearchText.Trim();
-            }
-
-            // We always fetch up to 5000 records for the date and branch filter range
-            // to allow reliable local filtering & stable page size (so 1st page is fully filled).
-            var fetchFilter = new HmsDueCollectionFilterRequest
-            {
-                bhcode    = histFilter.bhcode,
-                fromdate  = histFilter.fromdate,
-                todate    = histFilter.todate,
-                custid    = fetchCustId,
-                search    = null,
-                page      = 1,
-                pagesize  = 500,
-
-                customer_search = customerSearch,
-                doctor_search   = doctorSearch,
-                dcode           = docCode,
-                ismonthly       = isMonthly,
-                report_type     = selectedReportType
+                bhcode = histFilter.bhcode > 0 ? histFilter.bhcode : null,
+                cntcode = histFilter.cntcode > 0 ? histFilter.cntcode : null,
+                custid = histFilter.custid > 0 ? histFilter.custid : null,
+                fromdate = histFilter.fromdate,
+                todate = histFilter.todate,
+                receipt_type = "DUE", // strictly DUE alone
+                collection_type = string.IsNullOrWhiteSpace(histFilter.collection_type) || histFilter.collection_type == "ALL" ? null : histFilter.collection_type,
+                search = string.IsNullOrWhiteSpace(histFilter.search) ? null : histFilter.search.Trim(),
+                page = histCurrentPage,
+                pagesize = histPageSize
             };
 
-            List<HmsDueCollectionSummary> allRows = new();
-            var res = await DueCollectionService.GetDueHistoryResponseAsync(fetchFilter);
-            if (res?.data != null)
+            var res = await DueCollectionService.GetPaidHistoryAsync(req);
+            if (res != null && res.success)
             {
-                allRows = res.data;
-                int totalPages = (int)Math.Ceiling((double)res.totalCount / 500);
-                for (int p = 2; p <= totalPages && p <= 10; p++)
+                historyReportRows = res.data ?? new();
+                histTotalCount = res.totalCount;
+                if (res.summary != null)
                 {
-                    fetchFilter.page = p;
-                    var pageRes = await DueCollectionService.GetDueHistoryResponseAsync(fetchFilter);
-                    if (pageRes?.data != null)
-                        allRows.AddRange(pageRes.data);
+                    grandTotalCollected = res.summary.total_due_collected > 0
+                        ? res.summary.total_due_collected
+                        : (res.summary.net_collected > 0 ? res.summary.net_collected : historyReportRows.Sum(r => r.amount ?? 0));
+                }
+                else
+                {
+                    grandTotalCollected = historyReportRows.Sum(r => r.amount ?? 0);
                 }
             }
-
-            // Exclude pure advance deposits and refunds — only show bill payments
-            var filteredRows = allRows.Where(r =>
+            else
             {
-                bool hasBill = !string.IsNullOrWhiteSpace(r.bill_no);
-                if (hasBill) return true;
-
-                bool isPureAdvanceDeposit = r.receipt_type != null &&
-                    (r.receipt_type.Contains("DEPOSIT", StringComparison.OrdinalIgnoreCase) ||
-                     r.receipt_type.Contains("REFUND", StringComparison.OrdinalIgnoreCase) ||
-                     r.receipt_type.Equals("ADVANCE", StringComparison.OrdinalIgnoreCase));
-                return !isPureAdvanceDeposit;
-            }).ToList();
-
-            // Local filter by Patient/Customer
-            if (!string.IsNullOrEmpty(patientSearchQuery))
-            {
-                string searchValForLocal = patientSearchQuery;
-                int idx = patientSearchQuery.IndexOf(" (CUST-");
-                if (idx > 0)
-                {
-                    searchValForLocal = patientSearchQuery.Substring(0, idx);
-                }
-
-                filteredRows = filteredRows.Where(r => 
-                    (r.patient_name != null && r.patient_name.Contains(searchValForLocal, StringComparison.OrdinalIgnoreCase)) ||
-                    (r.receipt_no != null && r.receipt_no.Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase)) ||
-                    (r.bill_no != null && r.bill_no.Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase)) ||
-                    (r.patient_id != null && r.patient_id.Value.ToString().Contains(patientSearchQuery, StringComparison.OrdinalIgnoreCase))
-                ).ToList();
+                historyReportRows = new();
+                histTotalCount = 0;
+                grandTotalCollected = 0;
             }
-
-            // Local filter by Doctor
-            if (!string.IsNullOrEmpty(doctorSearchText))
-            {
-                filteredRows = filteredRows.Where(r =>
-                    r.doctor_name != null && r.doctor_name.Contains(doctorSearchText, StringComparison.OrdinalIgnoreCase)
-                ).ToList();
-            }
-
-            // Local filter by Company
-            if (!string.IsNullOrEmpty(selectedCompanyName))
-            {
-                filteredRows = filteredRows.Where(r =>
-                    r.patient_name != null && r.patient_name.Contains(selectedCompanyName, StringComparison.OrdinalIgnoreCase)
-                ).ToList();
-            }
-
-            // Local filter by Report Type
-            if (selectedReportType != "ALL")
-            {
-                filteredRows = filteredRows.Where(r =>
-                {
-                    bool isAdvance = r.receipt_type != null && r.receipt_type.Contains("ADVANCE", StringComparison.OrdinalIgnoreCase);
-                    if (selectedReportType == "DUE")
-                    {
-                        return !isAdvance;
-                    }
-                    else if (selectedReportType == "ADVANCE")
-                    {
-                        return isAdvance;
-                    }
-                    return true;
-                }).ToList();
-            }
-
-            histTotalCount = filteredRows.Count;
-
-            // Make sure current page is valid
-            if (histCurrentPage > HistTotalPages)
-            {
-                histCurrentPage = Math.Max(1, HistTotalPages);
-            }
-
-            // Slice the rows for the current page
-            historyReportRows = filteredRows
-                .Skip((histCurrentPage - 1) * histPageSize)
-                .Take(histPageSize)
-                .ToList();
-
-            // Grand total collected over all filtered records
-            grandTotalCollected = filteredRows.Sum(r =>
-            {
-                double val = r.amount_paid > 0 ? r.amount_paid : r.advance_used;
-                bool isRefund = r.receipt_type != null && r.receipt_type.Contains("REFUND", StringComparison.OrdinalIgnoreCase);
-                return isRefund ? -val : val;
-            });
         }
         catch (Exception ex)
         {
@@ -525,17 +424,19 @@
 
     private async Task ResetHistoryFilter()
     {
-        histFilter     = new HmsDueCollectionFilterRequest();
-        histBranchStr  = "";
-        selectedPeriodPreset = "This Month";
-        selectedReportType = "ALL";
-        doctorSearchText = "";
-        selectedDoctorCode = null;
-        selectedCompanyName = "";
+        var today = DateTime.Today;
+        histFilter = new HmsPaidHistoryFilterRequest
+        {
+            fromdate = today,
+            todate = today,
+            receipt_type = "DUE",
+            page = 1,
+            pagesize = 20
+        };
+        selectedPeriodPreset = "Today";
         patientSearchQuery = "";
-        filterPatient = "";
-        showPatientDropdown = false;
         searchedPatients.Clear();
+        showPatientDropdown = false;
         histCurrentPage = 1;
         await RunHistoryFilter();
     }
@@ -553,7 +454,6 @@
             
             using var client = ClientFactory.CreateClient("DoctorApi");
             
-            // Add tenant_code header
             if (!string.IsNullOrEmpty(TenantState.TenantCode))
             {
                 client.DefaultRequestHeaders.Remove("tenant_code");
@@ -561,11 +461,9 @@
                 Console.WriteLine($"[PrintReceipt] Header - tenant_code: {TenantState.TenantCode}");
             }
             
-            // Add Authorization token header
             if (!string.IsNullOrEmpty(TenantState.AuthToken))
             {
                 client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
-                Console.WriteLine($"[PrintReceipt] Header - Authorization: Bearer {(TenantState.AuthToken.Length > 10 ? TenantState.AuthToken.Substring(0, 10) : TenantState.AuthToken)}...");
             }
 
             var resp = await client.GetAsync(url);
@@ -581,26 +479,16 @@
                     return;
                 }
 
-                Console.WriteLine($"[PrintReceipt] Response Length: {bytes.Length} bytes");
-
                 string base64;
-                // Check if it is a raw PDF (starts with %PDF- / 0x25, 0x50, 0x44, 0x46, 0x2D)
                 if (bytes.Length >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
                 {
-                    Console.WriteLine("[PrintReceipt] Detected content format: RAW PDF binary");
                     base64 = Convert.ToBase64String(bytes);
                 }
                 else
                 {
-                    Console.WriteLine("[PrintReceipt] Detected content format: Base64 string");
-                    // It's a Base64 string returned as text/JSON
                     var raw = System.Text.Encoding.UTF8.GetString(bytes);
-                    Console.WriteLine($"[PrintReceipt] Raw Response Body: {raw}");
                     base64 = raw.Trim().Trim('"').Trim();
                 }
-
-                Console.WriteLine($"[PrintReceipt] Base64 String length: {base64.Length}");
-                Console.WriteLine($"[PrintReceipt] Base64 prefix (first 100 chars): {(base64.Length > 100 ? base64.Substring(0, 100) : base64)}");
 
                 await JS.InvokeVoidAsync("openBase64Pdf", base64);
             }
@@ -618,14 +506,14 @@
         }
     }
 
-    private async Task PrintPatientReceipt(HmsDueCollectionSummary row)
+    private async Task PrintPatientReceipt(HmsPaidHistoryRow row)
     {
-        if (string.IsNullOrEmpty(row.receipt_guid))
+        if (string.IsNullOrEmpty(row.receiptguid))
         {
             ToastService.ShowError("Receipt GUID is missing.");
             return;
         }
-        string url = $"api/report/getpatientreceipt?isletterhead=true&receiptguid={row.receipt_guid}";
+        string url = $"api/report/getpatientreceipt?isletterhead=true&receiptguid={row.receiptguid}";
         if (!string.IsNullOrEmpty(TenantState.TenantCode))
         {
             url += $"&tenant_code={TenantState.TenantCode}";
@@ -633,14 +521,14 @@
         await FetchAndPrintReceipt(url);
     }
 
-    private async Task PrintReferralReceipt(HmsDueCollectionSummary row)
+    private async Task PrintReferralReceipt(HmsPaidHistoryRow row)
     {
-        if (string.IsNullOrEmpty(row.receipt_guid))
+        if (string.IsNullOrEmpty(row.receiptguid))
         {
             ToastService.ShowError("Receipt GUID is missing.");
             return;
         }
-        string url = $"api/report/getreferralreceipt?isletterhead=true&receiptguid={row.receipt_guid}";
+        string url = $"api/report/getreferralreceipt?isletterhead=true&receiptguid={row.receiptguid}";
         if (!string.IsNullOrEmpty(TenantState.TenantCode))
         {
             url += $"&tenant_code={TenantState.TenantCode}";
@@ -648,10 +536,8 @@
         await FetchAndPrintReceipt(url);
     }
 
-    private void PromptCancelFromHistory(HmsDueCollectionSummary row)
+    private void PromptCancelFromHistory(HmsPaidHistoryRow row)
     {
-        histCancelReceiptGuid = row.receipt_guid;
-        histCancelReceiptNo   = row.receipt_no;
         receiptToCancel = row;
         cancelReason   = string.Empty;
         cancelUserCode = 10;
@@ -666,13 +552,13 @@
 
     private async Task SubmitCancelReceipt()
     {
-        if (receiptToCancel == null || string.IsNullOrWhiteSpace(receiptToCancel.receipt_guid)) return;
+        if (receiptToCancel == null || string.IsNullOrWhiteSpace(receiptToCancel.receiptguid)) return;
         cancelling = true;
         StateHasChanged();
 
         try
         {
-            var result = await DueCollectionService.CancelReceiptAsync(receiptToCancel.receipt_guid, cancelUserCode, cancelReason);
+            var result = await DueCollectionService.CancelReceiptAsync(receiptToCancel.receiptguid, cancelUserCode, cancelReason);
             if (result.Contains("success", StringComparison.OrdinalIgnoreCase) || result.Contains("cancelled", StringComparison.OrdinalIgnoreCase) || string.IsNullOrEmpty(result))
             {
                 ToastService.ShowSuccess($"Receipt {receiptToCancel.receipt_no} has been cancelled.");
@@ -695,27 +581,14 @@
         }
     }
 
-    private string selectedPeriodPreset = "This Month";
-    private string selectedReportType = "ALL";
-    private string doctorSearchText = "";
-    private int? selectedDoctorCode;
-    private string selectedCompanyName = "";
-    private List<DoctorMasterModel> doctorsList = new();
-    private List<ReimbursementCompanyMasterModel> companiesList = new();
-    private List<Booking.Models.BranchModel> branchesList = new();
-
-    private string patientSearchQuery = string.Empty;
-    private string filterPatient = "";
-    private List<Booking.Models.CustomerWithOpModel> searchedPatients = new();
-    private bool showPatientDropdown = false;
-
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
             await LoadBranchesAsync();
+            await LoadCountersAsync();
+            await LoadPaymodesAsync();
             await LoadDoctorsAsync();
-            await LoadCompaniesAsync();
             StateHasChanged();
         }
     }
@@ -775,6 +648,32 @@
         }
     }
 
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            countersList = await CounterService.GetCountersAsync() ?? new();
+            countersList = countersList.Where(c => !c.deleted).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading counters: {ex.Message}");
+        }
+    }
+
+    private async Task LoadPaymodesAsync()
+    {
+        try
+        {
+            paymodesList = await PaymodeService.GetPaymodeMastersAsync() ?? new();
+            paymodesList = paymodesList.Where(p => !p.deleted).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading paymodes: {ex.Message}");
+        }
+    }
+
     private async Task FilterBranchesByUserAccessAsync()
     {
         try
@@ -794,7 +693,7 @@
                     string.Equals(ud.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
                     string.Equals(ud.Role, "Owner", StringComparison.OrdinalIgnoreCase))
                 {
-                    return; // Admins/Owners see all branches
+                    return;
                 }
 
                 if (ud.Branches != null && ud.Branches.Any())
@@ -846,19 +745,6 @@
         }
     }
 
-    private async Task LoadCompaniesAsync()
-    {
-        try
-        {
-            companiesList = await CompanyService.GetReimbursementCompaniesAsync();
-            companiesList = companiesList.Where(c => !c.deleted).OrderBy(c => c.name).ToList();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error loading companies: {ex.Message}");
-        }
-    }
-
     private HttpClient CreateClient(bool isLabCare = false)
     {
         var clientName = isLabCare ? "LabCareUrl" : "DoctorApi";
@@ -875,10 +761,6 @@
         return client;
     }
 
-    private System.Threading.CancellationTokenSource? _patientSearchCts;
-
-    private int activePatientIndex = -1;
-
     private async Task OnPatientSearchInput(ChangeEventArgs e)
     {
         patientSearchQuery = e.Value?.ToString() ?? "";
@@ -893,7 +775,7 @@
             searchedPatients.Clear();
             showPatientDropdown = false;
             activePatientIndex = -1;
-            filterPatient = "";
+            histFilter.custid = null;
             await RunHistoryFilter();
             StateHasChanged();
             return;
@@ -931,7 +813,6 @@
         }
         catch (OperationCanceledException)
         {
-            // Cancelled due to newer user input
         }
         catch (Exception ex)
         {
@@ -990,14 +871,9 @@
         }
     }
 
-    private async Task OnPatientSearchKeyUp(KeyboardEventArgs e)
-    {
-        // Retained for backward compatibility
-    }
-
     private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
     {
-        filterPatient = pat.custid.ToString();
+        histFilter.custid = pat.custid;
         patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
         showPatientDropdown = false;
         activePatientIndex = -1;

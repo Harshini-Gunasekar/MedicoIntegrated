@@ -87,7 +87,9 @@ builder.Services.AddHttpClient("InventoryApi", client =>
         baseUrl += "/";
     }
     client.BaseAddress = new Uri(baseUrl + "api/");
-});
+})
+.AddHttpMessageHandler<TenantHeaderHandler>()
+.AddHttpMessageHandler<UniIdentityRouteHandler>();
 
 builder.Services.AddHttpClient("Medico", client => 
 {

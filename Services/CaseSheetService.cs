@@ -266,27 +266,56 @@ namespace Booking.Services
             try
             {
                 var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
-                var client = GetClient(effectiveTenant);
-                
-                string[] endpoints = new[] { "api/ItemMaster/getallitems", "ItemMaster/getallitems", "api/ItemMaster/getallitem", "Item/getallitems" };
-                string? rawJson = null;
-
-                foreach (var ep in endpoints)
+                List<HttpClient> clientsToTry = new();
+                if (_clientFactory != null)
                 {
                     try
                     {
-                        var response = await client.GetAsync(ep);
-                        if (response.IsSuccessStatusCode)
+                        var invClient = _clientFactory.CreateClient("InventoryApi");
+                        invClient.DefaultRequestHeaders.Remove("tenantcode");
+                        invClient.DefaultRequestHeaders.Remove("tenant_code");
+                        if (!string.IsNullOrEmpty(effectiveTenant))
                         {
-                            var text = await response.Content.ReadAsStringAsync();
-                            if (!string.IsNullOrWhiteSpace(text) && text.TrimStart().StartsWith("[") || text.TrimStart().StartsWith("{"))
-                            {
-                                rawJson = text;
-                                break;
-                            }
+                            invClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                            invClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
                         }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            invClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
+                        clientsToTry.Add(invClient);
                     }
                     catch { }
+                }
+                clientsToTry.Add(GetClient(effectiveTenant));
+                if (!clientsToTry.Contains(_http))
+                {
+                    clientsToTry.Add(_http);
+                }
+                
+                string[] endpoints = new[] { "ItemMaster/getallitems", "api/ItemMaster/getallitems", "api/ItemMaster/getallitem", "Item/getallitems" };
+                string? rawJson = null;
+
+                foreach (var client in clientsToTry)
+                {
+                    foreach (var ep in endpoints)
+                    {
+                        try
+                        {
+                            var response = await client.GetAsync(ep);
+                            if (response.IsSuccessStatusCode)
+                            {
+                                var text = await response.Content.ReadAsStringAsync();
+                                if (!string.IsNullOrWhiteSpace(text) && (text.TrimStart().StartsWith("[") || text.TrimStart().StartsWith("{")))
+                                {
+                                    rawJson = text;
+                                    break;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                    if (!string.IsNullOrWhiteSpace(rawJson)) break;
                 }
 
                 if (string.IsNullOrWhiteSpace(rawJson))
@@ -309,6 +338,10 @@ namespace Booking.Services
                     {
                         items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(dataProp.GetRawText(), options) ?? new();
                     }
+                    else if (root.TryGetProperty("value", out var valProp) && valProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    {
+                        items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(valProp.GetRawText(), options) ?? new();
+                    }
                     else
                     {
                         foreach (var prop in root.EnumerateObject())
@@ -316,7 +349,7 @@ namespace Booking.Services
                             if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
                             {
                                 items = System.Text.Json.JsonSerializer.Deserialize<List<item_master>>(prop.Value.GetRawText(), options) ?? new();
-                                break;
+                                if (items.Count > 0) break;
                             }
                         }
                     }
@@ -350,21 +383,43 @@ namespace Booking.Services
             {
                 var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
                 
-                // Try clients in priority order: InventoryApi, DoctorApi, _http
+                // Try named clients in priority order
                 List<HttpClient> clientsToTry = new();
                 if (_clientFactory != null)
                 {
                     try
                     {
                         var invClient = _clientFactory.CreateClient("InventoryApi");
-                        invClient.DefaultRequestHeaders.Remove("tenantcode");
-                        invClient.DefaultRequestHeaders.Remove("tenant_code");
                         if (!string.IsNullOrEmpty(effectiveTenant))
                         {
+                            invClient.DefaultRequestHeaders.Remove("tenantcode");
+                            invClient.DefaultRequestHeaders.Remove("tenant_code");
                             invClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
                             invClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
                         }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            invClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
                         clientsToTry.Add(invClient);
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var docClient = _clientFactory.CreateClient("DoctorApi");
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            docClient.DefaultRequestHeaders.Remove("tenantcode");
+                            docClient.DefaultRequestHeaders.Remove("tenant_code");
+                            docClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                            docClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            docClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
+                        clientsToTry.Add(docClient);
                     }
                     catch { }
                 }
@@ -374,7 +429,8 @@ namespace Booking.Services
                     clientsToTry.Add(_http);
                 }
 
-                string[] endpoints = new[] { "ItemMaster/getalluom", "api/ItemMaster/getalluom", "api/UomMaster/get", "UomMaster/getalluom" };
+                // Strictly call ItemMaster/getalluom or api/ItemMaster/getalluom
+                string[] endpoints = new[] { "ItemMaster/getalluom", "api/ItemMaster/getalluom", "getalluom" };
                 var options = new System.Text.Json.JsonSerializerOptions 
                 { 
                     PropertyNameCaseInsensitive = true,
@@ -413,7 +469,7 @@ namespace Booking.Services
                                         else
                                         {
                                             foreach (var prop in root.EnumerateObject())
-                                            {
+                                             {
                                                 if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
                                                 {
                                                     list = System.Text.Json.JsonSerializer.Deserialize<List<UomMasterModel>>(prop.Value.GetRawText(), options) ?? new();
@@ -429,7 +485,13 @@ namespace Booking.Services
 
                                     if (list != null && list.Count > 0)
                                     {
-                                        return list.Where(u => !u.deleted && !string.IsNullOrWhiteSpace(u.name)).ToList();
+                                        var valid = list.Where(u => !u.deleted && (!string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name))).ToList();
+                                        if (valid.Count > 0) return valid;
+
+                                        var anyValid = list.Where(u => !string.IsNullOrWhiteSpace(u.shortname) || !string.IsNullOrWhiteSpace(u.name)).ToList();
+                                        if (anyValid.Count > 0) return anyValid;
+
+                                        return list;
                                     }
                                 }
                             }
