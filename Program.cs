@@ -200,12 +200,6 @@ builder.Services.AddScoped<LabCare.Services.GroupService>(sp =>
     var session = sp.GetRequiredService<SharedComponents.Rcl.Services.TenantSessionState>();
     return new LabCare.Services.GroupService(client, session);
 });
-builder.Services.AddScoped<LabCare.Services.UserRightsService>(sp =>
-{
-    var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("LabCareUrl");
-    var session = sp.GetRequiredService<SharedComponents.Rcl.Services.TenantSessionState>();
-    return new LabCare.Services.UserRightsService(client, session);
-});
 builder.Services.AddScoped<LabCare.Services.UserService>(sp =>
 {
     var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("LabCareUrl");

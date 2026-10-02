@@ -11,6 +11,7 @@
 @inject Booking.Services.AppointmentBookingService AppointmentBookingService
 @inject Booking.Services.DoctorService DoctorService
 @inject IHttpClientFactory ClientFactory
+@inject Booking.Services.RoleMasterService RoleService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @using Booking.Models
 @using Newtonsoft.Json
@@ -850,31 +851,10 @@
             }
             else
             {
-                var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                var userRights = (rightsResult.Success && rightsResult.Value != null && rightsResult.Value.Count > 0)
-                    ? rightsResult.Value
-                    : (TenantState.UserRightsList ?? new List<SharedComponents.Rcl.Models.User_Rights>());
-
-                if (userRights.Count > 0)
-                {
-                    var pageRight = userRights.FirstOrDefault(r =>
-                        r.ModuleName != null && (
-                            r.ModuleName.Trim().Equals("Cash_Counter", StringComparison.OrdinalIgnoreCase) ||
-                            r.ModuleName.Trim().Equals("Cash Counter", StringComparison.OrdinalIgnoreCase) ||
-                            r.ModuleName.Trim().Equals("cash_counter", StringComparison.OrdinalIgnoreCase) ||
-                            r.ModuleName.Trim().Equals("cashcounter", StringComparison.OrdinalIgnoreCase) ||
-                            r.ModuleName.Replace("_", " ").Trim().Equals("Cash Counter", StringComparison.OrdinalIgnoreCase)
-                        ));
-                    if (pageRight != null)
-                    {
-                        hasViewRight = pageRight.ToView;
-                        hasCreateRight = pageRight.ToAdd;
-                        hasEditRight = pageRight.ToEdit;
-                        hasDeleteRight = pageRight.ToDelete;
-                    }
-                    else { hasViewRight = false; hasCreateRight = false; hasEditRight = false; hasDeleteRight = false; }
-                }
-                else { hasViewRight = false; hasCreateRight = false; hasEditRight = false; hasDeleteRight = false; }
+                hasViewRight = RoleService.HasRight("Billing Portal", "Cash Counter");
+                hasCreateRight = RoleService.HasAction("Billing Portal", "Cash Counter", "Create") || hasViewRight;
+                hasEditRight = RoleService.HasAction("Billing Portal", "Cash Counter", "Edit") || hasViewRight;
+                hasDeleteRight = RoleService.HasAction("Billing Portal", "Cash Counter", "Delete");
 
                 if (!hasViewRight)
                 {
@@ -2729,12 +2709,43 @@
                 var json = await response.Content.ReadAsStringAsync();
                 branches = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
                 branches = branches.Where(b => !b.deleted).ToList();
+
+                if (!IsAdminUser())
+                {
+                    var allowed = GetAuthorizedBranchCodes();
+                    if (allowed.Any())
+                    {
+                        branches = branches.Where(b => allowed.Contains(b.bh_code)).ToList();
+                    }
+                }
             }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error loading branches: {ex.Message}");
         }
+    }
+
+    private bool IsAdminUser()
+    {
+        var role = TenantState.UserData?.Role;
+        return TenantState.UserCode == 1 ||
+               string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Owner", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private List<int> GetAuthorizedBranchCodes()
+    {
+        if (TenantState.UserData?.Branches != null && TenantState.UserData.Branches.Any())
+        {
+            return TenantState.UserData.Branches
+                .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                .Where(c => c > 0 && c != 21)
+                .Distinct()
+                .ToList();
+        }
+        return new List<int>();
     }
 
     private async Task LoadCountersAsync()

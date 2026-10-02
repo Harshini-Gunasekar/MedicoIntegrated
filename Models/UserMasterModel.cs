@@ -158,6 +158,20 @@ namespace LIMS_Backend.Model
         public string? role { get; set; }
     }
 
+    public class App_User_Rights
+    {
+        public int UserModuleID { get; set; }
+        public int Sno { get; set; }
+        public string? ModuleName { get; set; }
+        public string? Department { get; set; }
+        public int UserModuleRightsID { get; set; }
+        public int UserCode { get; set; }
+        public bool ToAdd { get; set; }
+        public bool ToView { get; set; }
+        public bool ToEdit { get; set; }
+        public bool ToDelete { get; set; }
+    }
+
     public class LoginResponse
     {
         public string token { get; set; } = "";

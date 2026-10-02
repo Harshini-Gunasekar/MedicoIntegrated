@@ -14,6 +14,7 @@
 @inject IJSRuntime JSRuntime
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <div class="login-page-container">
     <!-- Top Right Theme Switcher Button -->
@@ -386,7 +387,7 @@
                         }
                     }
                 }
-                var resolvedUserRights = ConvertPermissionsToUserRights(userRightsRaw);
+                var resolvedUserRights = new List<SharedComponents.Rcl.Models.User_Rights>();
 
                 int? bhCodeVal = userDetailsJson?["bhcode"]?.ToObject<int?>() ?? userDetailsJson?["bh_code"]?.ToObject<int?>();
                 int? counterCodeVal = userDetailsJson?["cntcode"]?.ToObject<int?>() ?? userDetailsJson?["cnt_code"]?.ToObject<int?>();
@@ -410,21 +411,20 @@
                     }
                 }
 
-                bool finalIsAdmin = isUserAdmin || 
-                                   string.Equals(userRoleName, "Admin", StringComparison.OrdinalIgnoreCase) || 
-                                   string.Equals(userRoleName, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Admin", StringComparison.OrdinalIgnoreCase);
-
                 bool isPowerUser = userDetailsJson?["power_user"]?.ToObject<bool>() == true || 
                                    userDetailsJson?["is_power_user"]?.ToObject<bool>() == true || 
                                    userDetailsJson?["poweruser"]?.ToObject<bool>() == true;
 
+                bool finalIsAdmin = isUserAdmin || 
+                                   isPowerUser ||
+                                   string.Equals(userRoleName, "Admin", StringComparison.OrdinalIgnoreCase) || 
+                                   string.Equals(userRoleName, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(userRoleName, "Power User", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Admin", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Power User", StringComparison.OrdinalIgnoreCase);
+
                 string finalRole = finalIsAdmin ? "Administrator" : (!string.IsNullOrEmpty(userRoleName) ? userRoleName : (userDetailsJson?["role"]?.ToString() ?? "0"));
-                if (isPowerUser && !finalRole.Contains("Power", StringComparison.OrdinalIgnoreCase) && !finalRole.Contains("Admin", StringComparison.OrdinalIgnoreCase))
-                {
-                    finalRole = "Power User";
-                }
 
                 string? extractedTenantName = json["tenant_name"]?.ToString() 
                     ?? json["tenantName"]?.ToString() 
@@ -447,6 +447,8 @@
                     ? extractedTenantName 
                     : (userBranches.FirstOrDefault(b => b.bh_code != 21 && !string.Equals(b.name?.Trim(), "SAMPLE BRANCH", StringComparison.OrdinalIgnoreCase))?.name ?? "");
 
+                int? defaultBhCode = bhCodeVal > 0 ? bhCodeVal : (userBranches.Count == 1 ? userBranches[0].bh_code : null);
+
                 var userDetails = new SharedComponents.Rcl.Models.UserDetailsModel
                 {
                     UserName = name,
@@ -455,7 +457,7 @@
                     TenantName = resolvedTenantName,
                     AuthToken = safeToken,
                     UserCode = resolvedUserCode,
-                    BranchCode = null,
+                    BranchCode = defaultBhCode,
                     CounterCode = counterCodeVal,
                     Branches = userBranches,
                     Claim = null
@@ -465,14 +467,58 @@
                 await _sessionStorage.SetAsync("tenant_code", tenantCode);
                 await _sessionStorage.SetAsync("tenant_name", resolvedTenantName);
                 await _sessionStorage.SetAsync("IsTenantAdmin", finalIsAdmin);
-                await _sessionStorage.DeleteAsync("bhcode");
+                if (defaultBhCode.HasValue && defaultBhCode.Value > 0)
+                {
+                    await _sessionStorage.SetAsync("bhcode", defaultBhCode.Value.ToString());
+                }
+                else
+                {
+                    await _sessionStorage.DeleteAsync("bhcode");
+                }
                 if (counterCodeVal.HasValue) await _sessionStorage.SetAsync("cntcode", counterCodeVal.Value.ToString());
                 await _sessionStorage.SetAsync("UserDetails", userDetails);
-                await _sessionStorage.SetAsync("UserRights", resolvedUserRights);
                 await _sessionStorage.SetAsync("UserBranches", userBranches);
                 var userBranchCodes = userBranches.Select(b => b.bh_code).Distinct().ToList();
                 await _sessionStorage.SetAsync("UserBranchCodes", userBranchCodes);
                 
+                // Initialize session early so DelegatingHandlers have tenantCode
+                TenantState.SetSession(tenantCode, safeToken, resolvedTenantName, resolvedUserCode, defaultBhCode, counterCodeVal, userDetails, resolvedUserRights);
+
+                List<Booking.Models.RolePermissionItem> effectivePerms = new();
+                if (resolvedUserCode > 0)
+                {
+                    try
+                    {
+                        effectivePerms = await RoleService.GetUserEffectivePermissionsAsync(resolvedUserCode);
+                        if (finalIsAdmin && (!effectivePerms.Any()))
+                        {
+                            effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
+                        }
+                    }
+                    catch (Exception permEx)
+                    {
+                        Console.WriteLine($"[UserLogin] Error fetching user role permissions: {permEx.Message}");
+                        if (finalIsAdmin && (!effectivePerms.Any()))
+                        {
+                            effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
+                        }
+                    }
+                }
+                else if (finalIsAdmin)
+                {
+                    effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
+                }
+
+                if (finalIsAdmin && (!effectivePerms.Any()))
+                {
+                    effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
+                }
+
+                RoleService.SetUserPermissions(effectivePerms);
+                await _sessionStorage.SetAsync("UserRolePermissions", effectivePerms);
+
+                resolvedUserRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(effectivePerms, resolvedUserCode);
+                await _sessionStorage.SetAsync("UserRights", resolvedUserRights);
                 TenantState.SetSession(tenantCode, safeToken, resolvedTenantName, resolvedUserCode, null, counterCodeVal, userDetails, resolvedUserRights);
                 
                 Toast.ShowSuccess($"Login successful! Tenant: {tenantCode}");
@@ -527,7 +573,10 @@
             string safeToken = "staff_token_" + Guid.NewGuid().ToString("N");
             string tenantCode = "LAB01";
 
-            var defaultRights = new List<SharedComponents.Rcl.Models.User_Rights>();
+            var defaultPerms = RoleCatalogDefaults.GetDefaultPermissions();
+            RoleService.SetUserPermissions(defaultPerms);
+            await _sessionStorage.SetAsync("UserRolePermissions", defaultPerms);
+            var defaultRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(defaultPerms, 1);
 
             var userDetails = new SharedComponents.Rcl.Models.UserDetailsModel
             {
@@ -618,15 +667,20 @@
                         Claim = null
                     };
 
+                    var adminPerms = RoleCatalogDefaults.GetDefaultPermissions();
+                    RoleService.SetUserPermissions(adminPerms);
+                    await _sessionStorage.SetAsync("UserRolePermissions", adminPerms);
+                    var adminRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(adminPerms, 0);
+
                     await _sessionStorage.SetAsync("authToken", safeToken);
                     await _sessionStorage.SetAsync("tenant_code", tenantCodeVal);
                     await _sessionStorage.SetAsync("tenant_name", tenantNameVal ?? "");
                     await _sessionStorage.SetAsync("IsTenantAdmin", true);
                     await _sessionStorage.DeleteAsync("bhcode");
                     await _sessionStorage.SetAsync("UserDetails", userDetails);
-                    await _sessionStorage.SetAsync("UserRights", new List<SharedComponents.Rcl.Models.User_Rights>());
+                    await _sessionStorage.SetAsync("UserRights", adminRights);
                     
-                    TenantState.SetSession(tenantCodeVal, safeToken, tenantNameVal ?? "", 0, null, null, userDetails, new List<SharedComponents.Rcl.Models.User_Rights>());
+                    TenantState.SetSession(tenantCodeVal, safeToken, tenantNameVal ?? "", 0, null, null, userDetails, adminRights);
                     
                     Toast.ShowSuccess($"Admin login successful!");
                     await Task.Delay(1000);
@@ -665,599 +719,6 @@
             }
         }
         return string.Empty;
-    }
-
-    private List<SharedComponents.Rcl.Models.User_Rights> ConvertPermissionsToUserRights(List<UserRight>? permissions)
-    {
-        var list = new List<SharedComponents.Rcl.Models.User_Rights>();
-        if (permissions == null) return list;
-
-        foreach (var p in permissions)
-        {
-            if (string.IsNullOrEmpty(p.RightsJson)) continue;
-
-            try
-            {
-                var jObj = Newtonsoft.Json.Linq.JObject.Parse(p.RightsJson);
-                var features = jObj["Features"] as Newtonsoft.Json.Linq.JObject;
-                if (features == null) continue;
-
-                foreach (var prop in features.Properties())
-                {
-                    var featureKey = prop.Name;
-                    var access = prop.Value as Newtonsoft.Json.Linq.JObject;
-                    if (access == null) continue;
-
-                    bool view = access["View"]?.ToObject<bool>() ?? false;
-                    bool create = access["Create"]?.ToObject<bool>() ?? false;
-                    bool edit = access["Edit"]?.ToObject<bool>() ?? false;
-                    bool delete = access["Delete"]?.ToObject<bool>() ?? false;
-                    bool export = access["Export"]?.ToObject<bool>() ?? false;
-
-                    string normKey = featureKey.Trim().ToLower().Replace("-", "_").Replace(" ", "_");
-                    string dept = "Configuration";
-                    string canonicalModule = featureKey;
-
-                    // Pharmacy
-                    if (normKey.Contains("pharmacy_billing") || normKey == "salesmaster")
-                    {
-                        dept = "Pharmacy";
-                        canonicalModule = "Pharmacy_Billing";
-                    }
-                    else if (normKey.Contains("sales_return") || normKey == "salesreturn")
-                    {
-                        dept = "Pharmacy";
-                        canonicalModule = "Sales_Return";
-                    }
-                    else if (normKey.Contains("pharmacy_reports") || normKey == "pharmacyreports")
-                    {
-                        dept = "Pharmacy";
-                        canonicalModule = "Pharmacy_Reports";
-                    }
-                    else if (normKey.Contains("pharmacy_dashboard"))
-                    {
-                        dept = "Pharmacy";
-                        canonicalModule = "Pharmacy_Dashboard";
-                    }
-
-                    // Inventory
-                    else if (normKey.Contains("purchase_order") || normKey == "purchaseorder" || normKey == "purchase-order" || normKey == "po")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Purchase_Order";
-                    }
-                    else if (normKey.Contains("purchase_purchase") || normKey == "purchasemaster" || normKey == "purchase")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Purchase_Purchase";
-                    }
-                    else if (normKey.Contains("purchase_return") || normKey == "purchasereturn")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Purchase_Return";
-                    }
-                    else if (normKey.Contains("purchase_payment") || normKey == "purchasefilter")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Purchase_Payment";
-                    }
-                    else if (normKey.Contains("indent_request") || normKey == "indentrequest")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Indent_Request";
-                    }
-                    else if (normKey.Contains("indent_approval") || normKey == "indentapproval")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Indent_Approval";
-                    }
-                    else if (normKey.Contains("stock_stock") || normKey == "stock")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Stock_Stock";
-                    }
-                    else if (normKey.Contains("stock_adjustment") || normKey == "stockadjustment")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Stock_Adjustment";
-                    }
-                    else if (normKey.Contains("store_transfer") || normKey == "storetransfer")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Store_Transfer";
-                    }
-                    else if (normKey.Contains("issue_stock") || normKey == "issuestock")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Issue_Stock";
-                    }
-                    else if (normKey.Contains("receive_stock") || normKey == "receivestock")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Receive_Stock";
-                    }
-                    else if (normKey.Contains("doctor_consumption") || normKey == "doctorconsumption")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Doctor_Consumption";
-                    }
-                    else if (normKey.Contains("item_master") || normKey == "itemmaster")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Item_Master";
-                    }
-                    else if (normKey.Contains("category_master") || normKey == "parentcategorymaster")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Category_Master";
-                    }
-                    else if (normKey.Contains("sub_category_master") || normKey == "categorymaster")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Sub_Category_Master";
-                    }
-                    else if (normKey.Contains("vendor_master") || normKey == "vendormaster")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Vendor_Master";
-                    }
-                    else if (normKey.Contains("unit_master") || normKey == "unitmaster")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Unit_Master";
-                    }
-                    else if (normKey.Contains("store_master") || normKey == "warehousemaster")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Store_Master";
-                    }
-                    else if (normKey.Contains("manufacturer_master") || normKey == "manufacturermaster")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Manufacturer_Master";
-                    }
-                    else if (normKey.Contains("ledger_group") || normKey == "ledgergroup")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Ledger_Group";
-                    }
-                    else if (normKey.Contains("ledger_type") || normKey == "ledgertype")
-                    {
-                        dept = "Inventory";
-                        canonicalModule = "Ledger_Type";
-                    }
-
-                    // IP Portal
-                    else if (normKey.Contains("ip_registration") || normKey == "ipregistration")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Ip_Registration";
-                    }
-                    else if (normKey.Contains("available_beds") || normKey.Contains("available_bed") || normKey == "availablebeds")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Available_Beds";
-                    }
-                    else if (normKey.Contains("bed_transfer") || normKey == "bedtransfer")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Bed_Transfer";
-                    }
-                    else if (normKey.Contains("discharge_summery") || normKey.Contains("discharge_summary") || normKey == "dischargesummary")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Discharge_Summary";
-                    }
-                    else if (normKey.Contains("nurse_notes") || normKey == "nursenotes")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Nurse_Notes";
-                    }
-                    else if (normKey.Contains("bed_master") || normKey == "bedmaster")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Bed_Master";
-                    }
-                    else if (normKey.Contains("ward_master") || normKey == "wardmaster")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Ward_Master";
-                    }
-                    else if (normKey.Contains("room_type_master") || normKey == "roomtypemaster")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Room_Type_Master";
-                    }
-                    else if (normKey.Contains("floor_master") || normKey == "floormaster")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Floor_Master";
-                    }
-                    else if (normKey.Contains("block_master") || normKey == "blockmaster")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Block_Master";
-                    }
-                    else if (normKey.Contains("nurse_master") || normKey == "nursemaster")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Nurse_Master";
-                    }
-                    else if (normKey.Contains("io_particulars") || normKey.Contains("io_particulars_master"))
-                    {
-                        dept = "IP";
-                        canonicalModule = "IO_Particulars_Master";
-                    }
-                    else if (normKey.Contains("service_name_master") || normKey.Contains("servicenamemaster"))
-                    {
-                        dept = "IP";
-                        canonicalModule = "Service_Name_Master";
-                    }
-                    else if (normKey.Contains("schedule_type_master") || normKey.Contains("scheduletypemaster"))
-                    {
-                        dept = "IP";
-                        canonicalModule = "Schedule_Type_Master";
-                    }
-                    else if (normKey.Contains("summery_templates") || normKey.Contains("summary_templates") || normKey == "summarytemplates")
-                    {
-                        dept = "IP";
-                        canonicalModule = "Summary_Templates";
-                    }
-
-                    // Operation Theater (OT Portal)
-                    else if (normKey.Contains("ot_console") || normKey == "otconsole")
-                    {
-                        dept = "OT";
-                        canonicalModule = "OT_Console";
-                    }
-                    else if (normKey.Contains("ot_schedule") || normKey == "otschedule")
-                    {
-                        dept = "OT";
-                        canonicalModule = "OT_Schedule";
-                    }
-                    else if (normKey.Contains("available_theaters") || normKey.Contains("ot_availability") || normKey == "availabletheaters")
-                    {
-                        dept = "OT";
-                        canonicalModule = "Available_Theaters";
-                    }
-                    else if (normKey.Contains("ot_team") || normKey == "otteam")
-                    {
-                        dept = "OT";
-                        canonicalModule = "OT_Team";
-                    }
-                    else if (normKey.Contains("ot_staff_note") || normKey == "otstaffnote")
-                    {
-                        dept = "OT";
-                        canonicalModule = "OT_Staff_Note";
-                    }
-                    else if (normKey.Contains("create_surgery_request") || normKey.Contains("surgery_requests") || normKey == "surgeryrequests")
-                    {
-                        dept = "OT";
-                        canonicalModule = "Surgery_Requests";
-                    }
-                    else if (normKey.Contains("ot_master") || normKey == "otmaster")
-                    {
-                        dept = "OT";
-                        canonicalModule = "OT_Master";
-                    }
-                    else if (normKey.Contains("ot_fee_category") || normKey.Contains("fee_categories") || normKey == "feecategories")
-                    {
-                        dept = "OT";
-                        canonicalModule = "Fee_Categories";
-                    }
-
-                    // Billing Portal
-                    else if (normKey.Contains("cash_counter") || normKey == "cashcounter")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Cash_Counter";
-                    }
-                    else if (normKey.Contains("counter_shift") || normKey == "countershift")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Counter_Shift";
-                    }
-                    else if (normKey.Contains("billing_portal") || normKey == "billing")
-                    {
-                        dept = "Reception";
-                        canonicalModule = "Billing_Portal";
-                    }
-                    else if (normKey.Contains("due_collection") || normKey == "duecollection")
-                    {
-                        dept = "Reception";
-                        canonicalModule = "Due_Collection";
-                    }
-                    else if (normKey.Contains("patient_advance") || normKey == "patientadvance")
-                    {
-                        dept = "Reception";
-                        canonicalModule = "Patient_Advance";
-                    }
-                    else if (normKey.Contains("bill_list") || normKey.Contains("bills") || normKey.Contains("labresult_print"))
-                    {
-                        dept = "Lab";
-                        canonicalModule = "LabResult_Print";
-                    }
-                    else if (normKey.Contains("bill_no_sequence") || normKey == "billnosequence")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Bill_No_Sequence";
-                    }
-                    else if (normKey.Contains("fee_type_master") || normKey == "feetypemaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Fee_Type_Master";
-                    }
-                    else if (normKey.Contains("counter_master") || normKey == "countermaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Counter Master";
-                    }
-                    else if (normKey.Contains("paymode_master") || normKey == "paymodemaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Paymode_Master";
-                    }
-                    else if (normKey.Contains("reimbursementcompanymaster") || normKey.Contains("reimbursement_co") || normKey == "reimbursements")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Reimbursement_Co";
-                    }
-
-                    // Reception & OP Portal
-                    else if (normKey.Contains("patient_check_in") || normKey.Contains("patient_checkin") || normKey.Contains("reception_portal") || normKey == "reception")
-                    {
-                        dept = "Reception";
-                        canonicalModule = "Reception_Portal";
-                    }
-                    else if (normKey.Contains("customer_history") || normKey == "customerhistory" || normKey == "customer")
-                    {
-                        dept = "Reception";
-                        canonicalModule = "Customer_History";
-                    }
-                    else if (normKey.Contains("outpatient_visiting") || normKey == "outpatientvisiting" || normKey == "outpatient")
-                    {
-                        dept = "Reception";
-                        canonicalModule = "Outpatient_Visiting";
-                    }
-                    else if (normKey.Contains("patient_master") || normKey == "patientmaster" || normKey == "patient")
-                    {
-                        dept = "OP";
-                        canonicalModule = "Patient_master";
-                    }
-
-                    // Doctor Portal
-                    else if (normKey.Contains("doctor_patient_list") || normKey == "doctorpatientlist" || normKey == "doctor")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Doctor_Patient_List";
-                    }
-                    else if (normKey.Contains("doctor_status") || normKey == "doctorstatus")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Doctor_Status";
-                    }
-                    else if (normKey.Contains("slot_master") || normKey == "slotmaster" || normKey == "slots")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Slot_Master";
-                    }
-                    else if (normKey.Contains("slot_type_master") || normKey == "slottypemaster" || normKey == "slot_types")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Slot_Type_Master";
-                    }
-                    else if (normKey.Contains("doctors_master") || normKey == "doctorsmaster" || normKey == "doctors")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Doctors_Master";
-                    }
-                    else if (normKey.Contains("doctor_types") || normKey == "doctortypes")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Doctor_Types";
-                    }
-                    else if (normKey.Contains("doctor_specialties") || normKey == "doctorspecialties")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Doctor_Specialties";
-                    }
-                    else if (normKey.Contains("doctor_group_master") || normKey == "doctorgroups")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Doctor_Groups";
-                    }
-
-                    // Laboratory & Diagnostics
-                    else if (normKey.Contains("lab_result_search") || normKey.Contains("result_search") || normKey == "resultsearch")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Result_Search";
-                    }
-                    else if (normKey.Contains("lab_result_entry") || normKey.Contains("result_entry") || normKey == "resultentry")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Result_Entry";
-                    }
-                    else if (normKey.Contains("vital_dashboard") || normKey == "vitalsdashboard")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Vital_Dashboard";
-                    }
-                    else if (normKey.Contains("vital_entry") || normKey == "vitals")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Vital_Entry";
-                    }
-                    else if (normKey.Contains("lab_testentry") || normKey == "labtestentry")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Lab_TestEntry";
-                    }
-                    else if (normKey.Contains("scan_resultenrty") || normKey == "scanresultentry")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Scan_ResultEnrty";
-                    }
-                    else if (normKey.Contains("token_display") || normKey == "tokendisplay")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Token_Display";
-                    }
-                    else if (normKey.Contains("op_token_display") || normKey == "optokendisplay")
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Op_Token_Display";
-                    }
-                    else if (normKey.Contains("appointment_prebooking") || normKey.Contains("prebooking"))
-                    {
-                        dept = "Lab";
-                        canonicalModule = "Appointment_PreBooking";
-                    }
-
-                    // Lab Masters & Config
-                    else if (normKey.Contains("test_master") || normKey == "testmaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Test_Master";
-                    }
-                    else if (normKey.Contains("bill_items") || normKey == "billitems")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Bill_Items";
-                    }
-                    else if (normKey.Contains("test_fee_master") || normKey == "testfeemaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Test_Fee_Master";
-                    }
-                    else if (normKey.Contains("test_type_master") || normKey == "testtypemaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Test_Type_Master";
-                    }
-                    else if (normKey.Contains("group_master") || normKey == "groupmaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Group Master";
-                    }
-                    else if (normKey.Contains("report_methods") || normKey.Contains("reportmethodmaster"))
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Report_Methods";
-                    }
-                    else if (normKey.Contains("specimen_master") || normKey.Contains("sample_master") || normKey == "samplemaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Specimen_Master";
-                    }
-                    else if (normKey.Contains("uom_master") || normKey.Contains("uommaster"))
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Uom_Master";
-                    }
-                    else if (normKey.Contains("machine_master") || normKey.Contains("machinemaster"))
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Machine_Master";
-                    }
-
-                    // Admin Portal Masters
-                    else if (normKey.Contains("user_master") || normKey == "usermaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "User_Master";
-                    }
-                    else if (normKey.Contains("user_rights") || normKey == "userrights")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "User_Rights";
-                    }
-                    else if (normKey.Contains("product_features") || normKey == "productfeatures")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Product_Features";
-                    }
-                    else if (normKey.Contains("branch_master") || normKey == "branchmaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Branch_Master";
-                    }
-                    else if (normKey.Contains("report_settings") || normKey == "lab_settings" || normKey == "settings")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Report_Settings";
-                    }
-                    else if (normKey.Contains("country_master") || normKey == "countrymaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Country_Master";
-                    }
-                    else if (normKey.Contains("state_master") || normKey == "statemaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "State_Master";
-                    }
-                    else if (normKey.Contains("city_master") || normKey == "citymaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "City_Master";
-                    }
-                    else if (normKey.Contains("area_master") || normKey == "areamaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Area_Master";
-                    }
-                    else if (normKey.Contains("service_type_master") || normKey == "servicetypemaster")
-                    {
-                        dept = "Configuration";
-                        canonicalModule = "Service_Type_Master";
-                    }
-
-                    // Add primary canonical right
-                    AddOrUpdateRight(list, dept, canonicalModule, view, create, edit, delete, export);
-
-                    // Add raw featureKey right to ensure direct key lookups match
-                    if (!string.Equals(canonicalModule, featureKey, StringComparison.OrdinalIgnoreCase))
-                    {
-                        AddOrUpdateRight(list, dept, featureKey, view, create, edit, delete, export);
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error parsing rights_json JObject: {ex.Message}");
-            }
-        }
-
-        return list;
-    }
-
-    private void AddOrUpdateRight(List<SharedComponents.Rcl.Models.User_Rights> list, string dept, string module, bool view, bool create, bool edit, bool delete, bool export)
-    {
-        if (string.IsNullOrEmpty(module)) return;
-        var existing = list.FirstOrDefault(x => string.Equals(x.Department, dept, StringComparison.OrdinalIgnoreCase) && 
-                                                string.Equals(x.ModuleName, module, StringComparison.OrdinalIgnoreCase));
-        if (existing != null)
-        {
-            existing.ToView = existing.ToView || view;
-            existing.ToAdd = existing.ToAdd || create;
-            existing.ToEdit = existing.ToEdit || edit;
-            existing.ToDelete = existing.ToDelete || delete;
-            existing.ToExport = existing.ToExport || export;
-        }
-        else
-        {
-            list.Add(new SharedComponents.Rcl.Models.User_Rights
-            {
-                Department = dept,
-                ModuleName = module,
-                ToView = view,
-                ToAdd = create,
-                ToEdit = edit,
-                ToDelete = delete,
-                ToExport = export
-            });
-        }
     }
 
     public class UserLoginModel
