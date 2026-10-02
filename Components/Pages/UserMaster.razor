@@ -16,7 +16,6 @@
 @inject ProtectedSessionStorage _sessionStorage
 @inject TenantSessionState TenantState
 @inject ToastService Toast
-@inject LabCare.Services.UserRightsService UserRightsService
 @inject LabCare.Services.UserService UserService
 @inject Booking.Services.RoleMasterService RoleService
 
@@ -1384,36 +1383,11 @@ else
     private List<GroupModel> authorizedGroups = new();
     private long selectedGroupCodeToAuthorize = 0;
 
-    // Module rights fields
-    private List<UserFormRightsModel.usermodules> allModules = new();
-    private int selectedModuleId = 0;
-
     // RCL template fields
     private List<ProductList> rclProducts = new();
     private List<RoleTemplate> rclRoleTemplates = new();
     private string selectedProductId = "";
     private string selectedRoleTemplateName = "";
-
-    private int SelectedModuleId
-    {
-        get => selectedModuleId;
-        set
-        {
-            selectedModuleId = value;
-            var selectedModule = allModules.FirstOrDefault(m => m.usermoduleid == selectedModuleId);
-            if (selectedModule != null)
-            {
-                current.module = selectedModule.modulename;
-                current.role = (selectedModule.modulename ?? "").Trim().ToLower() switch
-                {
-                    "result entry" or "result_entry" => "0",
-                    "auth1" => "1",
-                    "auth2" => "2",
-                    _ => "0"
-                };
-            }
-        }
-    }
 
     // ── Filtering ─────────────────────────────────────────────────────────────
     private IEnumerable<user_master> FilteredUsers =>
@@ -1460,7 +1434,6 @@ else
                 {
                     TenantState.SetSession(TenantCode, AuthToken, TenantName);
                     await LoadBranches();
-                    await LoadModules();
                     await LoadUsers();
                     await LoadGroups();
                     await LoadRclProducts();
@@ -1564,7 +1537,6 @@ else
         authorizedGroups.Clear();
         selectedGroupCodeToAuthorize = 0;
         selectedBranchCodes.Clear();
-        selectedModuleId = allModules.FirstOrDefault(m => (m.modulename ?? "").Contains("auth2", StringComparison.OrdinalIgnoreCase))?.usermoduleid ?? 0;
         
         userSelectedRoleIds.Clear();
         selectedTemplateGuid = null;
@@ -1620,33 +1592,15 @@ else
                         .ToList()!;
                 }
                 
-                if (!string.IsNullOrEmpty(current.module))
+                if (!string.IsNullOrEmpty(current.module) && string.IsNullOrEmpty(current.role))
                 {
-                    // Sync the dropdown ID
-                    var matchingModule = allModules.FirstOrDefault(m => string.Equals(m.modulename, current.module.Trim(), StringComparison.OrdinalIgnoreCase));
-                    if (matchingModule != null)
+                    current.role = current.module.Trim().ToLower() switch
                     {
-                        selectedModuleId = matchingModule.usermoduleid;
-                    }
-                    else
-                    {
-                        selectedModuleId = 0;
-                    }
-                    
-                    if (string.IsNullOrEmpty(current.role))
-                    {
-                        current.role = current.module.Trim().ToLower() switch
-                        {
-                            "result entry" or "result_entry" => "0",
-                            "auth1" => "1",
-                            "auth2" => "2",
-                            _ => "0"
-                        };
-                    }
-                }
-                else
-                {
-                    selectedModuleId = 0;
+                        "result entry" or "result_entry" => "0",
+                        "auth1" => "1",
+                        "auth2" => "2",
+                        _ => "0"
+                    };
                 }
                 if (!string.IsNullOrEmpty(current.user_image) && !IsBase64String(current.user_image))
                 {
@@ -1690,9 +1644,6 @@ else
 
         isEditMode = true;
         showForm = true;
-        
-        // Remove await LoadAuthorizedGroups() since we parse it directly from GetUser
-        await LoadUserModuleRights(u.user_code);
         StateHasChanged();
     }
 
@@ -1864,6 +1815,18 @@ else
 
             if (response.IsSuccessStatusCode)
             {
+                if (isEditMode && current.user_code > 0)
+                {
+                    try
+                    {
+                        await RoleService.SaveUserRolesAsync(current.user_code, userSelectedRoleIds.ToList());
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[UserMaster] RoleService.SaveUserRolesAsync: {ex.Message}");
+                    }
+                }
+
                 Toast.Success(isEditMode ? "User updated successfully." : "User created successfully.");
                 if (isEditMode)
                 {
@@ -1904,7 +1867,6 @@ else
         previewSignatureImageBase64 = "";
         authorizedGroups.Clear();
         selectedGroupCodeToAuthorize = 0;
-        selectedModuleId = 0;
         selectedProductId = rclProducts.FirstOrDefault()?.ProductId ?? "MEDICO_APP";
         selectedRoleTemplateName = "";
         userSelectedRoleIds.Clear();
@@ -2394,100 +2356,6 @@ else
         [Newtonsoft.Json.JsonProperty("tenantCode")]
         [System.Text.Json.Serialization.JsonPropertyName("tenantCode")]
         public string? tenantCode { get => tenant_code; set => tenant_code = value; }
-    }
-
-    private async Task LoadModules()
-    {
-        try
-        {
-            allModules = await UserRightsService.GetModulesAsync();
-        }
-        catch (Exception ex)
-        {
-            /* Console.WriteLine($"Error loading modules: {ex.Message}") */;
-        }
-    }
-
-    private async Task LoadUserModuleRights(int usercode)
-    {
-        try
-        {
-            var rightsList = await UserRightsService.GetModuleRightsAsync(usercode);
-            
-            // Only attempt to guess the module from rights if we don't already have one selected
-            if (selectedModuleId <= 0)
-            {
-                var activeRight = rightsList.FirstOrDefault(r => r.toadd || r.toview || r.toedit || r.todelete);
-                if (activeRight != null)
-                {
-                    selectedModuleId = activeRight.usermoduleid;
-                }
-                else
-                {
-                    selectedModuleId = current.role switch
-                    {
-                        "0" => allModules.FirstOrDefault(m => (m.modulename ?? "").Contains("result", StringComparison.OrdinalIgnoreCase))?.usermoduleid ?? 0,
-                        "1" => allModules.FirstOrDefault(m => (m.modulename ?? "").Contains("auth1", StringComparison.OrdinalIgnoreCase))?.usermoduleid ?? 0,
-                        "2" => allModules.FirstOrDefault(m => (m.modulename ?? "").Contains("auth2", StringComparison.OrdinalIgnoreCase))?.usermoduleid ?? 0,
-                        _ => 0
-                    };
-                    
-                    if (selectedModuleId == 0 && !string.IsNullOrEmpty(current.module))
-                    {
-                        selectedModuleId = allModules.FirstOrDefault(m => (m.modulename ?? "").Equals(current.module, StringComparison.OrdinalIgnoreCase))?.usermoduleid ?? 0;
-                    }
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            /* Console.WriteLine($"Error loading user module rights: {ex.Message}") */;
-            selectedModuleId = 0;
-        }
-    }
-
-    private async Task SaveUserModuleRights(int usercode)
-    {
-        if (selectedModuleId <= 0) return;
-        
-        try
-        {
-            var rawRights = await UserRightsService.GetModuleRightsAsync(usercode);
-            var existing = rawRights.FirstOrDefault(r => r.usermoduleid == selectedModuleId);
-            
-            var targetTenantCode = string.IsNullOrEmpty(TenantCode) ? TenantState.TenantCode : TenantCode;
-            
-            var rights = new List<UserFormRightsModel.usermodulerights>
-            {
-                new UserFormRightsModel.usermodulerights
-                {
-                    usermodulesrightsid = existing?.usermodulesrightsid ?? 0,
-                    usercode = usercode,
-                    usermoduleid = selectedModuleId,
-                    toadd = true,
-                    toview = true,
-                    toedit = false,
-                    todelete = false,
-                    tenant_code = targetTenantCode
-                }
-            };
-            
-            var request = new UserFormRightsModel.ModuleRightsUpsertRequest
-            {
-                usercode = usercode,
-                rights = rights
-            };
-            
-            var success = await UserRightsService.SaveModuleRightsAsync(request);
-            if (!success)
-            {
-                Toast.Error("Failed to save user module permissions. Please configure them in User Rights Management.");
-            }
-        }
-        catch (Exception ex)
-        {
-            Toast.Error($"Error persisting module rights: {ex.Message}");
-        }
     }
 
     private async Task LoadRclProducts()

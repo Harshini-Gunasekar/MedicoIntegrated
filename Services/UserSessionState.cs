@@ -47,6 +47,7 @@ namespace MedicoAi.Services
         {
         }
 
-        public void NotifyStateChanged() => _tenantState.SetSession(_tenantState.TenantCode, _tenantState.AuthToken, _tenantState.TenantName, _tenantState.UserCode, _tenantState.BranchCode, _tenantState.CounterCode, _tenantState.UserData, _tenantState.UserRightsList);
+        public void NotifyStateChanged() => _tenantState.SetSession(_tenantState.TenantCode, _tenantState.AuthToken, _tenantState.TenantName, _tenantState.UserCode, _tenantState.BranchCode, _tenantState.CounterCode, _tenantState.UserData, new List<SharedComponents.Rcl.Models.User_Rights>());
     }
 }
+
