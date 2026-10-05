@@ -336,4 +336,20 @@ window.focusLastDiagnosisInput = function (containerSelector) {
     }, 150);
 };
 
+window.focusLastInvestigationTestInput = function (containerSelector) {
+    setTimeout(function () {
+        const container = document.querySelector(containerSelector || '.investigations-tab-form, .casesheet-modal');
+        if (!container) return;
+        const testInputs = Array.from(container.querySelectorAll('.col-inv-name input, td.col-inv-name input, input[placeholder*="Test Name"]'));
+        if (testInputs.length > 0) {
+            const lastInput = testInputs[testInputs.length - 1];
+            lastInput.focus();
+            if (typeof lastInput.select === 'function') {
+                try { lastInput.select(); } catch (ex) { }
+            }
+        }
+    }, 150);
+};
+
+
 

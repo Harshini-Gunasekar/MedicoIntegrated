@@ -25,11 +25,19 @@ public class PharmacyPrescriptionQueueRow
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public int? no_of_days { get; set; }
+    public int? prescribed_days { get; set; }
+    public int? prescribeddays { get; set; }
+    public int? feed_days { get; set; }
     public string? duration { get; set; }
     public string? route { get; set; }
     public string? notes { get; set; }
 
     public string status { get; set; } = "PENDING";
+    public bool billed_status { get; set; } = false;
+    public string? billno { get; set; }
+    public long? salescode { get; set; }
+    public DateTime? billed_date { get; set; }
     public string? tenant_code { get; set; }
     public DateTime created_at { get; set; } = DateTime.UtcNow;
     public DateTime updated_at { get; set; } = DateTime.UtcNow;
@@ -62,6 +70,10 @@ public class PrescriptionQueueItem
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public int? no_of_days { get; set; }
+    public int? prescribed_days { get; set; }
+    public int? prescribeddays { get; set; }
+    public int? feed_days { get; set; }
     public string? duration { get; set; }
     public string? route { get; set; }
     public string? notes { get; set; }
@@ -83,6 +95,8 @@ public class PharmacyQueueGroup
     public Guid? sheet_id { get; set; }
     public Guid? op_id { get; set; }
     public Guid? ip_id { get; set; }
+    public bool all_billed { get; set; } = false;
+    public int unbilled_count { get; set; } = 0;
     public List<PharmacyPrescriptionQueueRow> items { get; set; } = new();
 }
 
@@ -90,4 +104,23 @@ public class UpdateQueueStatusRequest
 {
     public Guid queue_id { get; set; }
     public string status { get; set; } = string.Empty;   // PENDING / MATCHED / DISPENSED / CANCELLED
+}
+
+public class MarkBilledQueueRequest
+{
+    public List<Guid> queue_ids { get; set; } = new();
+    public long? salescode { get; set; }
+    public string? billno { get; set; }
+}
+
+public class MarkQueueBilledRequest
+{
+    public List<Guid> queue_ids { get; set; } = new();
+    public long? salescode { get; set; }
+    public string? billno { get; set; }
+}
+
+public class UnbillQueueRequest
+{
+    public List<Guid> queue_ids { get; set; } = new();
 }

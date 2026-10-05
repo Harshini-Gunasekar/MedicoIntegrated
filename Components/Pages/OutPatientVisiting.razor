@@ -464,12 +464,26 @@
                                           @if (isRegistered && opData != null)
                                           {
                                                <div class="bill-paid-status-container d-flex flex-row justify-content-between align-items-center w-100" style="display: flex !important; flex-direction: row !important; justify-content: space-between !important; align-items: center !important; gap: 4px !important; width: 100% !important; min-width: 155px !important; white-space: nowrap !important;">
-                                                  @* --- BILLED / UNBILLED BADGE (LEFT) --- *@
+                                                  @{
+                                                      var opId = opData.op_id;
+                                                      var hasUnbilled = visitUnbilledCharges.TryGetValue(opId, out var charges) && charges != null && charges.Any(c => c.billedstatus != true);
+                                                      var hasBill = opData.unbilled_status == true;
+                                                      var isPartiallyBilled = hasBill && hasUnbilled;
+                                                      var isBilled = hasBill && !hasUnbilled;
+                                                      var isUnbilled = !hasBill;
+                                                  }
+                                                  @* --- BILLED / PARTIALLY BILLED / UNBILLED BADGE (LEFT) --- *@
                                                   <div class="status-left">
-                                                      @if (opData.unbilled_status != true)
+                                                      @if (isUnbilled)
                                                       {
-                                                          <span class="status-badge-pill unbilled" title="Unbilled Status">
+                                                          <span class="status-badge-pill unbilled" title="Bill has not been generated">
                                                               <i class="bi bi-file-earmark-text-fill"></i> Unbilled
+                                                          </span>
+                                                      }
+                                                      else if (isPartiallyBilled)
+                                                      {
+                                                          <span class="status-badge-pill partially-billed" title="Some items billed, some items unbilled">
+                                                              <i class="bi bi-file-earmark-minus-fill"></i> Partially Billed
                                                           </span>
                                                       }
                                                       else
@@ -482,46 +496,32 @@
 
                                                   @* --- PAID / UNPAID BADGE (RIGHT) --- *@
                                                   <div class="status-right">
-                                                      @if (opData.is_dressing)
-                                                      {
-                                                          <span class="btn-bill-status paid" style="background: #e0f2fe; color: #0369a1; border-color: #bae6fd;">
-                                                              <i class="bi bi-bandaid-fill"></i> Dressing
-                                                          </span>
-                                                      }
-                                                      else if (opData.paid_status == true && opData.unbilled_status == true)
+                                                      @if (isBilled && opData.paid_status == true)
                                                       {
                                                           <span class="btn-bill-status paid">
                                                               <i class="bi bi-check-circle-fill"></i> Paid
                                                           </span>
                                                       }
-                                                      else if (opData.paid_status == false)
+                                                      else if (opData.paid_status == true && hasUnbilled)
                                                       {
-                                                          <span class="btn-bill-status unpaid">
-                                                              <i class="bi bi-exclamation-circle-fill"></i> Unpaid
+                                                          <span class="btn-bill-status partially-paid" title="Partially paid, unbilled charges pending">
+                                                              <i class="bi bi-dash-circle-fill"></i> Partially Paid
                                                           </span>
                                                       }
                                                       else
                                                       {
-                                                          var opId = opData.op_id;
                                                           var patName = string.IsNullOrWhiteSpace(booking.patient_name) ? $"CUST-{booking.custid}" : booking.patient_name;
-                                                          if (visitUnbilledCharges.TryGetValue(opId, out var charges))
+                                                          if (hasUnbilled && charges != null)
                                                           {
-                                                              var unpaidConsultation = charges.Where(c => c.billedstatus != true && (c.entrytype == null || c.entrytype.Equals("CONSULTATION", StringComparison.OrdinalIgnoreCase))).ToList();
-                                                              var unpaid = charges.Where(c => c.billedstatus != true).ToList();
-                                                              if (unpaidConsultation.Count == 0)
-                                                              {
-                                                                  <span class="btn-bill-status paid"><i class="bi bi-check-circle-fill"></i> Paid</span>
-                                                              }
-                                                              else
-                                                              {
-                                                                  <button type="button" @onclick="() => ShowUnpaidDetails(unpaid, patName)" class="btn-bill-status unpaid">
-                                                                      <i class="bi bi-exclamation-circle-fill"></i> Unpaid
-                                                                  </button>
-                                                              }
+                                                              <button type="button" @onclick="() => ShowUnpaidDetails(charges, patName)" class="btn-bill-status unpaid" title="Click to view unbilled details">
+                                                                  <i class="bi bi-exclamation-circle-fill"></i> Unpaid
+                                                              </button>
                                                           }
                                                           else
                                                           {
-                                                              <span class="btn-bill-status unpaid"><i class="bi bi-exclamation-circle-fill"></i> Unpaid</span>
+                                                              <span class="btn-bill-status unpaid">
+                                                                  <i class="bi bi-exclamation-circle-fill"></i> Unpaid
+                                                              </span>
                                                           }
                                                       }
                                                   </div>
@@ -3028,8 +3028,45 @@
         loading = true;
         try
         {
-            // Fetch ONLY OP registrations from api/OpRegistration/all
-            var regs = await BookingService.GetAllOpRegistrationsAsync();
+            // Fetch OP registrations and unbilled charges in parallel
+            var regsTask = BookingService.GetAllOpRegistrationsAsync();
+            var unbilledTask = HmsBillingService.GetAllUnbilledChargesAsync();
+
+            await Task.WhenAll(regsTask, unbilledTask);
+            var regs = (await regsTask) ?? new();
+            var unbilledChargesList = (await unbilledTask) ?? new();
+
+            visitUnbilledCharges.Clear();
+            foreach (var uc in unbilledChargesList)
+            {
+                if (uc.billedstatus == true) continue;
+
+                if (!string.IsNullOrEmpty(uc.opvisitid) && Guid.TryParse(uc.opvisitid, out var opGuid))
+                {
+                    if (!visitUnbilledCharges.ContainsKey(opGuid))
+                        visitUnbilledCharges[opGuid] = new List<UnbilledChargeSummary>();
+                    visitUnbilledCharges[opGuid].Add(uc);
+                }
+                else if (!string.IsNullOrEmpty(uc.entryid) && Guid.TryParse(uc.entryid, out var entryGuid))
+                {
+                    if (!visitUnbilledCharges.ContainsKey(entryGuid))
+                        visitUnbilledCharges[entryGuid] = new List<UnbilledChargeSummary>();
+                    if (!visitUnbilledCharges[entryGuid].Contains(uc))
+                        visitUnbilledCharges[entryGuid].Add(uc);
+                }
+
+                if (!string.IsNullOrEmpty(uc.opvisitid))
+                {
+                    var matchReg = regs.FirstOrDefault(r => string.Equals(r.op_no, uc.opvisitid, StringComparison.OrdinalIgnoreCase));
+                    if (matchReg != null)
+                    {
+                        if (!visitUnbilledCharges.ContainsKey(matchReg.op_id))
+                            visitUnbilledCharges[matchReg.op_id] = new List<UnbilledChargeSummary>();
+                        if (!visitUnbilledCharges[matchReg.op_id].Contains(uc))
+                            visitUnbilledCharges[matchReg.op_id].Add(uc);
+                    }
+                }
+            }
             opRegistrations = new Dictionary<Guid, OPRegistrationModel.OpRegistrationModel>();
             allBookings = new List<AppointmentBookingModel>();
 

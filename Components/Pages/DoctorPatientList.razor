@@ -2194,14 +2194,17 @@
         }
         catch { }
 
-        await LoadDoctorsAsync();
-        await LoadTodayBookingsAsync();
-        await LoadIpDataAsync();
-        await LoadCustomersAsync();
-        await LoadOtDataAsync();
+        // Parallelize primary OP view data loading so patient list appears immediately
+        await Task.WhenAll(
+            LoadDoctorsAsync(),
+            LoadTodayBookingsAsync()
+        );
+
+        // Background non-blocking pre-fetches for auxiliary data
+        _ = LoadCustomersAsync();
         if (showUnbilledCharges)
         {
-            await LoadObservationUnbilledChargesAsync();
+            _ = LoadObservationUnbilledChargesAsync();
         }
 
         autoRefreshTimer = new System.Threading.Timer(async _ =>
@@ -2229,7 +2232,14 @@
         showStatsPopover = false;
         if (tab == "IP")
         {
-            ApplyFilters();
+            if (!admissionsList.Any())
+            {
+                await LoadIpDataAsync();
+            }
+            else
+            {
+                ApplyFilters();
+            }
         }
         else if (tab == "OT" && !otRequestsList.Any())
         {
@@ -2368,8 +2378,14 @@
         {
             var dateOnly = DateOnly.FromDateTime(selectedDate);
             
-            // 1. Fetch all registrations from the backend API
-            var regs = await BookingService.GetAllOpRegistrationsAsync();
+            // 1. Fetch registrations and general bookings in parallel
+            var regsTask = BookingService.GetAllOpRegistrationsAsync();
+            var generalBookingsTask = BookingService.GetBookingsByDateAsync(dateOnly);
+
+            await Task.WhenAll(regsTask, generalBookingsTask);
+
+            var regs = await regsTask ?? new();
+            var generalBookings = await generalBookingsTask ?? new();
             
             // 2. Filter registrations for the selected date and non-deleted
             var filteredRegs = regs
@@ -2385,38 +2401,47 @@
                     .ToList();
             }
 
-            // 4. Fetch general bookings to match slots/times/types
-            var generalBookings = await BookingService.GetBookingsByDateAsync(dateOnly) ?? new();
+            // 4. Match slots/times/types
             var bookingMap = generalBookings
                 .Where(gb => gb.booking_id != Guid.Empty)
                 .GroupBy(gb => gb.booking_id)
                 .ToDictionary(g => g.Key, g => g.First());
 
-            // 5. Pre-fetch slots for walk-in registrations (similar to OutPatientVisiting.razor)
+            // 5. Pre-fetch slots for walk-in registrations in parallel
             var walkinRegsToFetch = filteredRegs
                 .Where(r => (!r.booking_id.HasValue || r.booking_id.Value == Guid.Empty) && r.slot_detail_id.HasValue)
                 .GroupBy(r => new { r.dcode })
                 .ToList();
 
             var slotCache = new Dictionary<Guid, AvailableSlotModel>();
-            foreach (var group in walkinRegsToFetch)
+            if (walkinRegsToFetch.Any())
             {
-                try
+                var slotTasks = walkinRegsToFetch.Select(async group =>
                 {
-                    var slots = await BookingService.GetAvailableSlotsAsync(group.Key.dcode, dateOnly);
+                    try
+                    {
+                        var slots = await BookingService.GetAvailableSlotsAsync(group.Key.dcode, dateOnly);
+                        return slots;
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error pre-fetching slots for doctor {group.Key.dcode}: {ex.Message}");
+                        return new List<AvailableSlotModel>();
+                    }
+                }).ToList();
+
+                var slotResults = await Task.WhenAll(slotTasks);
+                foreach (var slots in slotResults)
+                {
                     foreach (var s in slots)
                     {
                         slotCache[s.slot_detail_id] = s;
                     }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error pre-fetching slots for doctor {group.Key.dcode}: {ex.Message}");
-                }
             }
 
             // 6. Map registrations to DoctorBookingListModel
-            todayBookings = new List<DoctorBookingListModel>();
+            var mappedBookings = new List<DoctorBookingListModel>(filteredRegs.Count);
             foreach (var r in filteredRegs)
             {
                 var slotStartTime = default(TimeOnly);
@@ -2465,11 +2490,11 @@
                     display_token_no = !string.IsNullOrWhiteSpace(r.token_no) ? r.token_no : (parsedTokenNo > 0 ? parsedTokenNo.ToString() : "-")
                 };
 
-                todayBookings.Add(model);
+                mappedBookings.Add(model);
             }
 
             // Sort by start time then token number
-            todayBookings = todayBookings.OrderBy(b => b.slot_start_time).ThenBy(b => b.token_no).ToList();
+            todayBookings = mappedBookings.OrderBy(b => b.slot_start_time).ThenBy(b => b.token_no).ToList();
         }
         catch (Exception ex)
         {

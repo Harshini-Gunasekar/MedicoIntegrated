@@ -507,6 +507,128 @@ namespace Booking.Services
             return new List<UomMasterModel>();
         }
 
+        public async Task<List<category_master>> GetAllCategoriesAsync(string? tenantCode = null)
+        {
+            try
+            {
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                
+                List<HttpClient> clientsToTry = new();
+                if (_clientFactory != null)
+                {
+                    try
+                    {
+                        var invClient = _clientFactory.CreateClient("InventoryApi");
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            invClient.DefaultRequestHeaders.Remove("tenantcode");
+                            invClient.DefaultRequestHeaders.Remove("tenant_code");
+                            invClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                            invClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            invClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
+                        clientsToTry.Add(invClient);
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var docClient = _clientFactory.CreateClient("DoctorApi");
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            docClient.DefaultRequestHeaders.Remove("tenantcode");
+                            docClient.DefaultRequestHeaders.Remove("tenant_code");
+                            docClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                            docClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            docClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
+                        clientsToTry.Add(docClient);
+                    }
+                    catch { }
+                }
+                clientsToTry.Add(GetClient(effectiveTenant));
+                if (!clientsToTry.Contains(_http))
+                {
+                    clientsToTry.Add(_http);
+                }
+
+                string[] endpoints = new[] { "ItemMaster/getcategory", "api/ItemMaster/getcategory", "getcategory" };
+                var options = new System.Text.Json.JsonSerializerOptions 
+                { 
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                };
+
+                foreach (var client in clientsToTry)
+                {
+                    foreach (var ep in endpoints)
+                    {
+                        try
+                        {
+                            var response = await client.GetAsync(ep);
+                            if (response.IsSuccessStatusCode)
+                            {
+                                var rawJson = await response.Content.ReadAsStringAsync();
+                                if (!string.IsNullOrWhiteSpace(rawJson) && (rawJson.TrimStart().StartsWith("[") || rawJson.TrimStart().StartsWith("{")))
+                                {
+                                    List<category_master> list = new();
+                                    if (rawJson.TrimStart().StartsWith("{"))
+                                    {
+                                        using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                                        var root = doc.RootElement;
+                                        if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                        {
+                                            list = System.Text.Json.JsonSerializer.Deserialize<List<category_master>>(dataProp.GetRawText(), options) ?? new();
+                                        }
+                                        else if (root.TryGetProperty("value", out var valProp) && valProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                        {
+                                            list = System.Text.Json.JsonSerializer.Deserialize<List<category_master>>(valProp.GetRawText(), options) ?? new();
+                                        }
+                                        else if (root.TryGetProperty("Value", out var valCapProp) && valCapProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                        {
+                                            list = System.Text.Json.JsonSerializer.Deserialize<List<category_master>>(valCapProp.GetRawText(), options) ?? new();
+                                        }
+                                        else
+                                        {
+                                            foreach (var prop in root.EnumerateObject())
+                                            {
+                                                if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                                {
+                                                    list = System.Text.Json.JsonSerializer.Deserialize<List<category_master>>(prop.Value.GetRawText(), options) ?? new();
+                                                    if (list.Count > 0) break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        list = System.Text.Json.JsonSerializer.Deserialize<List<category_master>>(rawJson, options) ?? new();
+                                    }
+
+                                    if (list != null && list.Count > 0)
+                                    {
+                                        return list.Where(c => !c.deleted).ToList();
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting all categories: {ex.Message}");
+            }
+            return new List<category_master>();
+        }
+
         public async Task<List<stock_master>> GetAllStocksAsync(string? tenantCode = null)
         {
             try
@@ -616,19 +738,46 @@ namespace Booking.Services
             }
         }
 
-        public async Task<bool> DeleteInvestigationAsync(Guid invId)
+        public async Task<bool> DeleteInvestigationAsync(Guid invId, string? tenantCode = null)
         {
             try
             {
-                // Try GET first as the URL format includes a query parameter
-                var response = await _http.GetAsync($"api/CaseSheet/investigation/delete?inv_id={invId}");
-                if (!response.IsSuccessStatusCode)
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                var clients = new List<HttpClient>();
+                clients.Add(GetClient(effectiveTenant));
+                if (!clients.Contains(_http))
                 {
-                    // Fallback to DELETE verb
-                    var request = new HttpRequestMessage(HttpMethod.Delete, $"api/CaseSheet/investigation/delete?inv_id={invId}");
-                    response = await _http.SendAsync(request);
+                    clients.Add(_http);
                 }
-                return response.IsSuccessStatusCode;
+
+                var candidates = new List<string>
+                {
+                    $"api/CaseSheet/investigation/delete?inv_id={invId}",
+                    $"api/CaseSheet/investigation?inv_id={invId}",
+                    $"api/CaseSheet/investigation/delete?id={invId}",
+                    $"api/OpInvestigation/delete?inv_id={invId}"
+                };
+
+                foreach (var client in clients)
+                {
+                    foreach (var url in candidates)
+                    {
+                        try
+                        {
+                            var getResp = await client.GetAsync(url);
+                            if (getResp.IsSuccessStatusCode) return true;
+
+                            var delReq = new HttpRequestMessage(HttpMethod.Delete, url);
+                            var delResp = await client.SendAsync(delReq);
+                            if (delResp.IsSuccessStatusCode) return true;
+
+                            var postResp = await client.PostAsync(url, null);
+                            if (postResp.IsSuccessStatusCode) return true;
+                        }
+                        catch { }
+                    }
+                }
+                return false;
             }
             catch (Exception ex)
             {
@@ -637,19 +786,75 @@ namespace Booking.Services
             }
         }
 
-        public async Task<bool> DeletePrescriptionAsync(string prCode)
+        public async Task<bool> DeletePrescriptionAsync(string prCode, Guid? opId = null, Guid? ipId = null, string? tenantCode = null)
         {
             try
             {
-                // Try GET first
-                var response = await _http.GetAsync($"api/CaseSheet/prescription/delete?pr_code={Uri.EscapeDataString(prCode)}");
-                if (!response.IsSuccessStatusCode)
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                var clients = new List<HttpClient>();
+                clients.Add(GetClient(effectiveTenant));
+                if (!clients.Contains(_http))
                 {
-                    // Fallback to DELETE verb
-                    var request = new HttpRequestMessage(HttpMethod.Delete, $"api/CaseSheet/prescription/delete?pr_code={Uri.EscapeDataString(prCode)}");
-                    response = await _http.SendAsync(request);
+                    clients.Add(_http);
                 }
-                return response.IsSuccessStatusCode;
+
+                var cleanCode = Uri.EscapeDataString(prCode.Trim());
+                var candidates = new List<string>
+                {
+                    $"api/CaseSheet/prescription/delete?pr_code={cleanCode}",
+                    $"api/CaseSheet/prescription/delete?prcode={cleanCode}",
+                    $"api/CaseSheet/prescription?pr_code={cleanCode}",
+                    $"api/CaseSheet/prescription?prcode={cleanCode}",
+                    $"api/CaseSheet/prescription/delete?id={cleanCode}",
+                    $"api/OpPrescription/delete?pr_code={cleanCode}",
+                    $"api/OpPrescription/delete?prcode={cleanCode}",
+                    $"api/Prescription/delete?pr_code={cleanCode}"
+                };
+
+                if (opId.HasValue && opId.Value != Guid.Empty)
+                {
+                    candidates.Add($"api/CaseSheet/prescription/delete?op_id={opId.Value}");
+                    candidates.Add($"api/CaseSheet/prescription?op_id={opId.Value}");
+                }
+                if (ipId.HasValue && ipId.Value != Guid.Empty)
+                {
+                    candidates.Add($"api/CaseSheet/prescription/delete?ip_id={ipId.Value}");
+                    candidates.Add($"api/CaseSheet/prescription?ip_id={ipId.Value}");
+                }
+
+                foreach (var client in clients)
+                {
+                    foreach (var url in candidates)
+                    {
+                        try
+                        {
+                            var getResp = await client.GetAsync(url);
+                            if (getResp.IsSuccessStatusCode)
+                            {
+                                Console.WriteLine($"[DeletePrescriptionAsync] Success with GET on {url}");
+                                return true;
+                            }
+
+                            var delReq = new HttpRequestMessage(HttpMethod.Delete, url);
+                            var delResp = await client.SendAsync(delReq);
+                            if (delResp.IsSuccessStatusCode)
+                            {
+                                Console.WriteLine($"[DeletePrescriptionAsync] Success with DELETE on {url}");
+                                return true;
+                            }
+
+                            var postResp = await client.PostAsync(url, null);
+                            if (postResp.IsSuccessStatusCode)
+                            {
+                                Console.WriteLine($"[DeletePrescriptionAsync] Success with POST on {url}");
+                                return true;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                return false;
             }
             catch (Exception ex)
             {

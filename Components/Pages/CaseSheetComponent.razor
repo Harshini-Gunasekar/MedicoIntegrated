@@ -3463,7 +3463,7 @@
     [Parameter] public bool HideSaveAndFinalize { get; set; } = false;
 
     private string activeTab = "notes";
-    private bool loadingData = false;
+    private bool loadingData = true;
     private bool savingData = false;
     private bool isConsulted = false;
     private bool isReadOnly => currentRequest.sheet_status == "FINAL";
@@ -3471,6 +3471,71 @@
 
     // Data forms
     private SaveCaseSheetRequest currentRequest = new();
+    private string lastLoadedVisitKey = "";
+    private bool wasVisible = false;
+
+    private void ResetWorkspaceState()
+    {
+        currentRequest = new SaveCaseSheetRequest
+        {
+            op_id = OpId != Guid.Empty ? OpId.ToString() : null,
+            ip_id = (IpId.HasValue && IpId.Value != Guid.Empty) ? IpId.Value.ToString() : null,
+            custid = CustId,
+            dcode = Dcode,
+            sheet_status = "DRAFT",
+            referred_to_visiting_doctor = false,
+            referred_to_operation = false,
+            visiting_doctor_list = new(),
+            prescription = new CaseSheetPrescriptionRequest(),
+            diagnosis_list = new(),
+            investigation = new CaseSheetInvestigationRequest(),
+            symptom_list = new()
+        };
+        activeVitals = new();
+        vitalsList = new();
+        loadingVitals = false;
+        rawLoadedSheet = null;
+        isConsulted = false;
+
+        tempVisitingDocName = "";
+        tempVisitingDocDcode = null;
+        tempVisitingDocNotes = "";
+
+        prescriptionRemarks = new();
+        investigationNotes = string.Empty;
+        investigationMasterUrgent = false;
+
+        selectedHistoryOpId = null;
+        selectedPastVisitCaseSheet = null;
+        selectedPastVisitVitals = null;
+        patientHistory.Clear();
+        past3Visits.Clear();
+
+        unbilledChargesList.Clear();
+        editingUnbilledId = "";
+        currentEditUnbilled = new();
+
+        hasLabResultsEntered = false;
+        labReportRequestGuid = "";
+        cachedLabReportBase64 = "";
+
+        hasPaidPharmacyBill = false;
+        pharmacyBillNo = "";
+        pharmacySalesCode = 0;
+        cachedPharmacyReportBase64 = "";
+        patientAllPharmacySales.Clear();
+        currentVisitPharmacySales.Clear();
+        pastVisitPharmacySales.Clear();
+
+        nurseTempList.Clear();
+        nurseVitalsList.Clear();
+        nurseIoList.Clear();
+        nurseMedicineList.Clear();
+        nurseServiceList.Clear();
+        nurseOtherList.Clear();
+        nurseVisitingDoctorList.Clear();
+        nurseScheduleList.Clear();
+    }
 
     private void OnVisitingDoctorCheckboxChanged(ChangeEventArgs e)
     {
@@ -3682,6 +3747,7 @@
     private List<item_master> allItems = new();
     private List<stock_master> allStocks = new();
     private List<UomMasterModel> allUoms = new();
+    private List<category_master> allCategories = new();
     private int activeInlineDrugSno = 0;
 
     // Test Master inline search
@@ -3770,81 +3836,33 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        if (allIcdItems.Count == 0)
-        {
-            allIcdItems = await CaseSheetService.GetAllIcd10Async();
-        }
-        if (allTestMasters.Count == 0)
-        {
-            allTestMasters = await LabCareTestService.GetAllTestsAsync();
-        }
-        if (consultantDoctorsList.Count == 0)
-        {
-            try
-            {
-                var rawDocs = await DoctorService.GetDoctorsAsync();
-                consultantDoctorsList = (rawDocs ?? new List<DoctorMasterModel>())
-                    .Where(d => d.isconsultant == true && !d.deleted)
-                    .ToList();
-
-                var specs = await SpecialtyService.GetDoctorSpecialtiesAsync();
-                doctorSpecialtiesList = specs ?? new();
-                doctorSpecialtiesMap = doctorSpecialtiesList
-                    .Where(s => s.spcode > 0 && !string.IsNullOrWhiteSpace(s.name))
-                    .GroupBy(s => s.spcode)
-                    .ToDictionary(g => g.Key, g => g.First().name.Trim());
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[CaseSheetComponent] Error loading consultant doctors: {ex.Message}");
-            }
-        }
-        if (allItems.Count == 0 || allStocks.Count == 0 || allUoms.Count == 0)
-        {
-            var tenant = await GetCurrentTenantCodeAsync();
-            if (allItems.Count == 0)
-            {
-                allItems = await CaseSheetService.GetAllItemsAsync(tenant);
-            }
-            if (allStocks.Count == 0)
-            {
-                allStocks = await CaseSheetService.GetAllStocksAsync(tenant);
-            }
-            if (allUoms.Count == 0)
-            {
-                try
-                {
-                    var uoms = await CaseSheetService.GetAllUomsAsync(tenant);
-                    if (uoms.Count > 0) allUoms = uoms;
-                    else allUoms = await UomMasterService.GetUomMastersAsync() ?? new();
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[CaseSheetComponent] Error loading UOM masters: {ex.Message}");
-                }
-            }
-
-            if (currentRequest?.prescription?.items != null && currentRequest.prescription.items.Count > 0)
-            {
-                foreach (var pItem in currentRequest.prescription.items)
-                {
-                    var uom = GetItemUomMeasureByCodeOrName(pItem.drug_code, pItem.drug_name);
-                    if (!string.IsNullOrWhiteSpace(uom))
-                    {
-                        pItem.dose_unit = uom;
-                    }
-                }
-            }
-        }
         if (Visible)
         {
-            if ((OpId != Guid.Empty && currentRequest.op_id != OpId.ToString()) || (IpId.HasValue && IpId.Value != Guid.Empty && currentRequest.ip_id != IpId.Value.ToString()))
+            var currentKey = $"OP:{OpId}_IP:{IpId}_Cust:{CustId}_OpNo:{OpNo}_IpNo:{IpNo}";
+            bool isNewVisit = (currentKey != lastLoadedVisitKey) || !wasVisible;
+            wasVisible = true;
+
+            if (isNewVisit)
             {
+                lastLoadedVisitKey = currentKey;
+                loadingData = true;
+                ResetWorkspaceState();
+                StateHasChanged();
                 await LoadClinicalWorkspaceAsync();
             }
             else
             {
                 _ = LoadPatientPharmacySalesAsync();
+            }
+        }
+        else
+        {
+            if (wasVisible)
+            {
+                wasVisible = false;
+                lastLoadedVisitKey = "";
+                loadingData = true;
+                ResetWorkspaceState();
             }
         }
     }
@@ -3883,13 +3901,16 @@
         Visible = false;
         Navigation.NavigateTo("/ot-console");
     }
-       private async Task LoadClinicalWorkspaceAsync()
+
+    private async Task LoadClinicalWorkspaceAsync()
     {
         loadingData = true;
-        activeTab = "notes";
+        activeTab = !string.IsNullOrWhiteSpace(InitialTab) ? InitialTab : "notes";
         
         inlineIcdSearchResults.Clear();
         activeInlineDiagSno = 0;
+        ResetWorkspaceState();
+        StateHasChanged();
 
         try
         {
@@ -3985,43 +4006,78 @@
 
             selectedHistoryOpId = null;
             selectedPastVisitCaseSheet = null;
-            // Pre-load reference master data if needed
+            // Pre-load reference master data in parallel if needed
+            var masterTasks = new List<Task>();
             if (allIcdItems.Count == 0)
             {
-                try { allIcdItems = await CaseSheetService.GetAllIcd10Async(); } catch { }
+                masterTasks.Add(Task.Run(async () => {
+                    try { allIcdItems = await CaseSheetService.GetAllIcd10Async(); } catch { }
+                }));
             }
             if (allTestMasters.Count == 0)
             {
-                try { allTestMasters = await LabCareTestService.GetAllTestsAsync(); } catch { }
+                masterTasks.Add(Task.Run(async () => {
+                    try { allTestMasters = await LabCareTestService.GetAllTestsAsync(); } catch { }
+                }));
             }
-            if (allItems.Count == 0 || allStocks.Count == 0 || allUoms.Count == 0)
+            if (consultantDoctorsList.Count == 0)
             {
-                try
-                {
-                    var tenant = await GetCurrentTenantCodeAsync();
-                    if (allItems.Count == 0)
+                masterTasks.Add(Task.Run(async () => {
+                    try
                     {
-                        allItems = await CaseSheetService.GetAllItemsAsync(tenant);
+                        var rawDocs = await DoctorService.GetDoctorsAsync();
+                        consultantDoctorsList = (rawDocs ?? new List<DoctorMasterModel>())
+                            .Where(d => d.isconsultant == true && !d.deleted)
+                            .ToList();
+
+                        var specs = await SpecialtyService.GetDoctorSpecialtiesAsync();
+                        doctorSpecialtiesList = specs ?? new();
+                        doctorSpecialtiesMap = doctorSpecialtiesList
+                            .Where(s => s.spcode > 0 && !string.IsNullOrWhiteSpace(s.name))
+                            .GroupBy(s => s.spcode)
+                            .ToDictionary(g => g.Key, g => g.First().name.Trim());
                     }
-                    if (allStocks.Count == 0)
+                    catch (Exception ex)
                     {
-                        allStocks = await CaseSheetService.GetAllStocksAsync(tenant);
+                        Console.WriteLine($"[CaseSheetComponent] Error loading consultant doctors: {ex.Message}");
                     }
-                    if (allUoms.Count == 0)
+                }));
+            }
+            if (allItems.Count == 0 || allStocks.Count == 0 || allUoms.Count == 0 || allCategories.Count == 0)
+            {
+                masterTasks.Add(Task.Run(async () => {
+                    try
                     {
-                        try
+                        var tenant = await GetCurrentTenantCodeAsync();
+                        var itemTask = allItems.Count == 0 ? CaseSheetService.GetAllItemsAsync(tenant) : Task.FromResult(allItems);
+                        var stockTask = allStocks.Count == 0 ? CaseSheetService.GetAllStocksAsync(tenant) : Task.FromResult(allStocks);
+                        var catTask = allCategories.Count == 0 ? CaseSheetService.GetAllCategoriesAsync(tenant) : Task.FromResult(allCategories);
+                        
+                        await Task.WhenAll(itemTask, stockTask, catTask);
+                        allItems = await itemTask;
+                        allStocks = await stockTask;
+                        allCategories = await catTask;
+
+                        if (allUoms.Count == 0)
                         {
-                            var uoms = await CaseSheetService.GetAllUomsAsync(tenant);
-                            if (uoms.Count > 0) allUoms = uoms;
-                            else allUoms = await UomMasterService.GetUomMastersAsync() ?? new();
+                            try
+                            {
+                                var uoms = await CaseSheetService.GetAllUomsAsync(tenant);
+                                if (uoms.Count > 0) allUoms = uoms;
+                                else allUoms = await UomMasterService.GetUomMastersAsync() ?? new();
+                            }
+                            catch { }
                         }
-                        catch { }
                     }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error loading items in workspace: {ex.Message}");
-                }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Error loading items in workspace: {ex.Message}");
+                    }
+                }));
+            }
+            if (masterTasks.Count > 0)
+            {
+                await Task.WhenAll(masterTasks);
             }
 
             // 1. Load existing case sheet (if any)
@@ -4214,14 +4270,17 @@
             status = d.status ?? "ACTIVE"
         }).ToList();
 
-        if (vm.prescription != null)
+        if (vm.prescription != null && vm.prescription.items != null && vm.prescription.items.Any(i => !string.IsNullOrWhiteSpace(i.drug_name)))
         {
+            prescriptionRemarks.topremarks = vm.prescription.topremarks;
+            prescriptionRemarks.bottonremarks = vm.prescription.bottonremarks;
+            prescriptionRemarks.pr_code = vm.prescription.pr_code;
             currentRequest.prescription = new CaseSheetPrescriptionRequest
             {
                 pr_code = vm.prescription.pr_code,
                 topremarks = vm.prescription.topremarks,
                 bottonremarks = vm.prescription.bottonremarks,
-                items = vm.prescription.items.Select((i, index) => {
+                items = vm.prescription.items.Where(i => !string.IsNullOrWhiteSpace(i.drug_name)).Select((i, index) => {
                     string? resolvedUnit = GetItemUomMeasureByCodeOrName(i.drug_code, i.drug_name);
                     if (string.IsNullOrWhiteSpace(resolvedUnit))
                     {
@@ -4259,6 +4318,7 @@
         else
         {
             currentRequest.prescription = new CaseSheetPrescriptionRequest();
+            prescriptionRemarks = new CaseSheetPrescriptionRequest();
         }
 
         if (vm.investigation != null)
@@ -4320,15 +4380,24 @@
     }
 
     // --- Structured Diagnosis List ---
-    private void SearchIcdInline(CaseSheetDiagnosisItem diag, string query)
+    private async Task SearchIcdInline(CaseSheetDiagnosisItem diag, string query)
     {
         activeInlineDiagSno = diag.sno;
         diag.icd_description = query; // bind user input temporarily to description for display
         diag.icd_code = ""; // clear code until a proper selection is made
         
-        if (query.Length >= 2)
+        if (allIcdItems.Count == 0)
         {
-            var lowerQuery = query.ToLower();
+            try
+            {
+                allIcdItems = await CaseSheetService.GetAllIcd10Async();
+            }
+            catch { }
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var lowerQuery = query.Trim().ToLower();
             inlineIcdSearchResults = allIcdItems
                 .Where(x => (x.icd_code != null && x.icd_code.ToLower().Contains(lowerQuery)) ||
                             (x.icd_description != null && x.icd_description.ToLower().Contains(lowerQuery)))
@@ -4357,7 +4426,7 @@
 
     private async Task EnsureItemsAndUomsLoadedAsync()
     {
-        if (allItems.Count == 0 || allStocks.Count == 0 || allUoms.Count == 0)
+        if (allItems.Count == 0 || allStocks.Count == 0 || allUoms.Count == 0 || allCategories.Count == 0)
         {
             try
             {
@@ -4381,6 +4450,17 @@
                     catch (Exception ex)
                     {
                         Console.WriteLine($"[CaseSheetComponent] Error loading UOM masters: {ex.Message}");
+                    }
+                }
+                if (allCategories.Count == 0)
+                {
+                    try
+                    {
+                        allCategories = await CaseSheetService.GetAllCategoriesAsync(tenant);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CaseSheetComponent] Error loading category masters: {ex.Message}");
                     }
                 }
             }
@@ -4492,14 +4572,14 @@
                 if (unitCost > 0) item.rate = unitCost;
             }
             
-            // Always update dose_unit from itemmaster uomcode if found
+            // Always update dose_unit from itemmaster / category / uomcode if found
             var uomMeasure = GetItemUomMeasure(master);
             if (!string.IsNullOrWhiteSpace(uomMeasure))
             {
                 item.dose_unit = uomMeasure;
             }
 
-            if (master.subcategorycode == 50)
+            if (IsTabletOrCapsuleMaster(master))
             {
                 CalculateItemDrugQty(item);
             }
@@ -4533,45 +4613,108 @@
         }
     }
 
-    private static readonly Dictionary<int, string> FallbackUomMap = new()
+    private category_master? GetItemCategory(item_master? item)
     {
-        { 59, "ml" },
-        { 1, "Nos" },
-        { 2, "Strip" },
-        { 3, "Box" },
-        { 4, "Bottle" },
-        { 5, "Vial" },
-        { 6, "Ampoule" },
-        { 7, "Tab" },
-        { 8, "Cap" },
-        { 9, "Pcs" },
-        { 10, "Tube" },
-        { 11, "Sachet" },
-        { 12, "Drops" },
-        { 13, "Syrup" },
-        { 14, "Suspension" },
-        { 15, "Ointment" },
-        { 16, "Cream" },
-        { 17, "Gel" },
-        { 18, "Lotion" },
-        { 19, "Inj" },
-        { 20, "Infusion" },
-        { 21, "Inhaler" },
-        { 22, "Spray" },
-        { 23, "Patch" },
-        { 24, "Powder" },
-        { 25, "Kit" },
-        { 26, "Pack" },
-        { 31, "gm" },
-        { 32, "kg" },
-        { 33, "ltr" }
-    };
+        if (item == null) return null;
+        if (allCategories != null && allCategories.Count > 0)
+        {
+            if (item.subcategorycode > 0)
+            {
+                var cat = allCategories.FirstOrDefault(c => c.categorycode == item.subcategorycode);
+                if (cat != null) return cat;
+            }
+            if (item.categorycode > 0)
+            {
+                var cat = allCategories.FirstOrDefault(c => c.categorycode == item.categorycode);
+                if (cat != null) return cat;
+            }
+        }
+        return null;
+    }
+
+    private bool IsTabletCategory(category_master? cat)
+    {
+        if (cat == null) return false;
+        if (!string.IsNullOrWhiteSpace(cat.categoryname))
+        {
+            var name = cat.categoryname.Trim();
+            if (name.Equals("Tablet", StringComparison.OrdinalIgnoreCase) ||
+                name.IndexOf("Tablet", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.Equals("Tab", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        if (!string.IsNullOrWhiteSpace(cat.shortname))
+        {
+            var sn = cat.shortname.Trim();
+            if (sn.Equals("TAB", StringComparison.OrdinalIgnoreCase) ||
+                sn.Equals("Tablet", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private bool IsCapsuleCategory(category_master? cat)
+    {
+        if (cat == null) return false;
+        if (!string.IsNullOrWhiteSpace(cat.categoryname))
+        {
+            var name = cat.categoryname.Trim();
+            if (name.Equals("Capsule", StringComparison.OrdinalIgnoreCase) ||
+                name.IndexOf("Capsule", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                name.Equals("Cap", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        if (!string.IsNullOrWhiteSpace(cat.shortname))
+        {
+            var sn = cat.shortname.Trim();
+            if (sn.Equals("CAP", StringComparison.OrdinalIgnoreCase) ||
+                sn.Equals("Capsule", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    private bool IsTabletOrCapsuleMaster(item_master? master)
+    {
+        if (master == null) return false;
+        var cat = GetItemCategory(master);
+        if (cat != null)
+        {
+            return IsTabletCategory(cat) || IsCapsuleCategory(cat);
+        }
+        return false;
+    }
+
+    private bool IsTabletOrCapsuleItem(CaseSheetPrescriptionItem? item)
+    {
+        if (item == null) return false;
+        var master = GetItemMaster(item);
+        if (master != null)
+        {
+            return IsTabletOrCapsuleMaster(master);
+        }
+        return false;
+    }
 
     private string GetItemUomMeasure(item_master? item)
     {
         if (item == null) return "";
 
-        // 1. PRIMARY: Lookup by uomcode in allUoms (from /api/ItemMaster/getalluom)
+        // 1. PRIMARY: Match category from /api/ItemMaster/getcategory
+        var cat = GetItemCategory(item);
+        if (cat != null)
+        {
+            if (IsTabletCategory(cat))
+            {
+                return !string.IsNullOrWhiteSpace(cat.shortname) ? cat.shortname.Trim() : "TAB";
+            }
+            if (IsCapsuleCategory(cat))
+            {
+                return !string.IsNullOrWhiteSpace(cat.shortname) ? cat.shortname.Trim() : "CAP";
+            }
+        }
+
+        // 2. Lookup by uomcode in allUoms (from /api/ItemMaster/getalluom, e.g. ucode 59 -> "ml")
         if (item.uomcode > 0 && allUoms != null && allUoms.Count > 0)
         {
             var uom = allUoms.FirstOrDefault(u => 
@@ -4590,19 +4733,19 @@
             }
         }
 
-        // 2. Direct textual unit if present on item_master
+        // 3. If category has a shortname (e.g. SYR, INJ, etc.)
+        if (cat != null && !string.IsNullOrWhiteSpace(cat.shortname))
+        {
+            return cat.shortname.Trim();
+        }
+
+        // 4. Direct textual unit if present on item_master
         if (!string.IsNullOrWhiteSpace(item.uomshortname)) return item.uomshortname.Trim();
         if (!string.IsNullOrWhiteSpace(item.uom)) return item.uom.Trim();
         if (!string.IsNullOrWhiteSpace(item.unit)) return item.unit.Trim();
         if (!string.IsNullOrWhiteSpace(item.uomname)) return item.uomname.Trim();
 
-        // 3. Fallback standard dictionary map
-        if (item.uomcode > 0 && FallbackUomMap.TryGetValue(item.uomcode, out var mappedUnit))
-        {
-            return mappedUnit;
-        }
-
-        // 4. Match packaging against allUoms
+        // 5. Match packaging against allUoms
         if (!string.IsNullOrWhiteSpace(item.packaging))
         {
             var cleanPack = item.packaging.Trim();
@@ -4619,10 +4762,10 @@
             return cleanPack;
         }
 
-        // 5. Tablet default
-        if (item.subcategorycode == 50)
+        // 6. Fallback for common uomcode 59 -> "ml"
+        if (item.uomcode == 59)
         {
-            return "Tab";
+            return "ml";
         }
 
         return "";
@@ -4704,7 +4847,7 @@
             item.dose_unit = uomMeasure;
         }
 
-        if (res.subcategorycode == 50)
+        if (IsTabletOrCapsuleMaster(res))
         {
             CalculateItemDrugQty(item);
         }
@@ -4819,14 +4962,24 @@
         });
     }
 
-    private void SearchTestInline(CaseSheetInvestigationItem item, string query)
+    private async Task SearchTestInline(CaseSheetInvestigationItem item, string query)
     {
         activeInlineTestSno = item.sno;
         item.test_name = query; // bind user input temporarily to test_name
         
-        if (query.Length >= 2)
+        if (allTestMasters.Count == 0)
         {
-            var lowerQuery = query.ToLower();
+            try
+            {
+                var tests = await LabCareTestService.GetAllTestsAsync();
+                allTestMasters = tests.Where(t => !string.IsNullOrWhiteSpace(t.name)).ToList();
+            }
+            catch { }
+        }
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            var lowerQuery = query.Trim().ToLower();
             inlineTestSearchResults = allTestMasters
                 .Where(x => x.name != null && x.name.ToLower().Contains(lowerQuery))
                 .Take(15)
@@ -4949,21 +5102,14 @@
         return null;
     }
 
-    private bool IsTabletItem(CaseSheetPrescriptionItem? item)
-    {
-        if (item == null) return false;
-        var master = GetItemMaster(item);
-        return master != null && master.subcategorycode == 50;
-    }
-
     private void CalculateItemDrugQty(CaseSheetPrescriptionItem item)
     {
         if (item == null) return;
 
-        if (IsTabletItem(item))
+        if (IsTabletOrCapsuleItem(item))
         {
-            // subcategorycode == 50 (tablet):
-            // based on the count in M+A+E+N add the tablet and display in quantity
+            // If the category name is Tablet/tablet or Capsule/capsule:
+            // at that time alone based on the count in M+A+E+N add the tablet and display in quantity
             decimal dailyCount = 0;
             if (decimal.TryParse(item.morning_dose, out decimal md)) dailyCount += md;
             else if (decimal.TryParse(item.morning, out decimal m)) dailyCount += m;
@@ -4989,7 +5135,7 @@
         }
         else
         {
-            // otherwise if subcategory code is 0 or other than 50:
+            // otherwise if subcategory code is 0 or other than tablet,capsule:
             // that qty keep as 1 and editable dont add M+A+E+N
             if (!item.qty.HasValue || item.qty.Value <= 0)
             {
@@ -5025,7 +5171,7 @@
             item.night_dose = isOn ? "0" : "1";
         }
 
-        if (IsTabletItem(item))
+        if (IsTabletOrCapsuleItem(item))
         {
             CalculateItemDrugQty(item);
         }
@@ -5072,6 +5218,7 @@
             {
                 currentRequest.prescription.items[i].sno = i + 1;
             }
+            StateHasChanged();
         }
     }
 
@@ -5089,20 +5236,51 @@
             if (confirm)
             {
                 savingData = true;
-                var deleted = await CaseSheetService.DeletePrescriptionAsync(currentRequest.prescription.pr_code);
-                savingData = false;
+                var prCodeToDelete = currentRequest.prescription.pr_code;
+                var deleted = await CaseSheetService.DeletePrescriptionAsync(
+                    prCodeToDelete, 
+                    OpId != Guid.Empty ? OpId : null, 
+                    IpId.HasValue && IpId.Value != Guid.Empty ? IpId.Value : null
+                );
 
                 if (deleted)
                 {
-                    ToastService.ShowSuccess("Prescription deleted successfully.");
                     currentRequest.prescription = new CaseSheetPrescriptionRequest();
                     prescriptionRemarks = new CaseSheetPrescriptionRequest();
+                    if (rawLoadedSheet != null)
+                    {
+                        rawLoadedSheet.prescription = null;
+                    }
+                    hasPaidPharmacyBill = false;
+                    pharmacyBillNo = "";
+                    pharmacySalesCode = 0;
+
+                    // Automatically save draft to synchronize case sheet record
+                    await SaveDraftAsyncInternal();
+                    savingData = false;
+                    ToastService.ShowSuccess("Prescription deleted successfully.");
+                    StateHasChanged();
                 }
                 else
                 {
+                    savingData = false;
                     ToastService.ShowError("Failed to delete prescription.");
                 }
             }
+        }
+        else if (currentRequest.prescription != null)
+        {
+            currentRequest.prescription = new CaseSheetPrescriptionRequest();
+            prescriptionRemarks = new CaseSheetPrescriptionRequest();
+            if (rawLoadedSheet != null)
+            {
+                rawLoadedSheet.prescription = null;
+            }
+            hasPaidPharmacyBill = false;
+            pharmacyBillNo = "";
+            pharmacySalesCode = 0;
+            ToastService.ShowSuccess("Prescription cleared successfully.");
+            StateHasChanged();
         }
     }
 
@@ -5122,6 +5300,11 @@
             amount = 0
         };
         currentRequest.investigation.tests.Add(newItem);
+        try
+        {
+            _ = JSRuntime.InvokeVoidAsync("focusLastInvestigationTestInput", ".investigations-tab-form");
+        }
+        catch { }
     }
 
     private void RemoveInvestigationItem(CaseSheetInvestigationItem item)
@@ -5133,6 +5316,7 @@
             {
                 currentRequest.investigation.tests[i].sno = i + 1;
             }
+            StateHasChanged();
         }
     }
 
@@ -5150,21 +5334,43 @@
             if (confirm)
             {
                 savingData = true;
-                var deleted = await CaseSheetService.DeleteInvestigationAsync(Guid.Parse(currentRequest.investigation.inv_id));
-                savingData = false;
+                var invIdStr = currentRequest.investigation.inv_id;
+                var deleted = Guid.TryParse(invIdStr, out var invGuid) 
+                    ? await CaseSheetService.DeleteInvestigationAsync(invGuid)
+                    : false;
 
                 if (deleted)
                 {
-                    ToastService.ShowSuccess("Investigation order deleted successfully.");
                     currentRequest.investigation = new CaseSheetInvestigationRequest();
                     investigationNotes = string.Empty;
                     investigationMasterUrgent = false;
+                    if (rawLoadedSheet != null)
+                    {
+                        rawLoadedSheet.investigation = null;
+                    }
+                    await SaveDraftAsyncInternal();
+                    savingData = false;
+                    ToastService.ShowSuccess("Investigation order deleted successfully.");
+                    StateHasChanged();
                 }
                 else
                 {
+                    savingData = false;
                     ToastService.ShowError("Failed to delete investigation order.");
                 }
             }
+        }
+        else if (currentRequest.investigation != null)
+        {
+            currentRequest.investigation = new CaseSheetInvestigationRequest();
+            investigationNotes = string.Empty;
+            investigationMasterUrgent = false;
+            if (rawLoadedSheet != null)
+            {
+                rawLoadedSheet.investigation = null;
+            }
+            ToastService.ShowSuccess("Investigation cleared successfully.");
+            StateHasChanged();
         }
     }
 
@@ -5690,6 +5896,71 @@
             }
         }
 
+        // If prescription items were completely cleared but an existing prescription pr_code exists, delete it from backend database
+        if (currentRequest.prescription != null && 
+            (currentRequest.prescription.items == null || !currentRequest.prescription.items.Any(i => !string.IsNullOrWhiteSpace(i.drug_name))) &&
+            !string.IsNullOrEmpty(currentRequest.prescription.pr_code))
+        {
+            var prCodeToDelete = currentRequest.prescription.pr_code;
+            try
+            {
+                await CaseSheetService.DeletePrescriptionAsync(
+                    prCodeToDelete, 
+                    OpId != Guid.Empty ? OpId : null, 
+                    IpId.HasValue && IpId.Value != Guid.Empty ? IpId.Value : null
+                );
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SaveDraftAsyncInternal] Error deleting empty prescription {prCodeToDelete}: {ex.Message}");
+            }
+            currentRequest.prescription.pr_code = null;
+            if (rawLoadedSheet != null)
+            {
+                rawLoadedSheet.prescription = null;
+            }
+            hasPaidPharmacyBill = false;
+            pharmacyBillNo = "";
+            pharmacySalesCode = 0;
+        }
+
+        // If prescription has no items and no remarks, nullify it in payload so backend does not retain/recreate empty prescription
+        if (currentRequest.prescription != null && 
+            (currentRequest.prescription.items == null || !currentRequest.prescription.items.Any(i => !string.IsNullOrWhiteSpace(i.drug_name))) &&
+            string.IsNullOrWhiteSpace(currentRequest.prescription.topremarks) && 
+            string.IsNullOrWhiteSpace(currentRequest.prescription.bottonremarks))
+        {
+            currentRequest.prescription = null;
+        }
+
+        // If investigation tests were completely cleared but an existing inv_id exists, delete it from backend database
+        if (currentRequest.investigation != null &&
+            (currentRequest.investigation.tests == null || !currentRequest.investigation.tests.Any(t => !string.IsNullOrWhiteSpace(t.test_name))) &&
+            !string.IsNullOrEmpty(currentRequest.investigation.inv_id) &&
+            Guid.TryParse(currentRequest.investigation.inv_id, out var invGuidToDelete))
+        {
+            try
+            {
+                await CaseSheetService.DeleteInvestigationAsync(invGuidToDelete);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[SaveDraftAsyncInternal] Error deleting empty investigation {invGuidToDelete}: {ex.Message}");
+            }
+            currentRequest.investigation.inv_id = null;
+            if (rawLoadedSheet != null)
+            {
+                rawLoadedSheet.investigation = null;
+            }
+        }
+
+        if (currentRequest.investigation != null &&
+            (currentRequest.investigation.tests == null || !currentRequest.investigation.tests.Any(t => !string.IsNullOrWhiteSpace(t.test_name))) &&
+            string.IsNullOrWhiteSpace(currentRequest.investigation.notes))
+        {
+            currentRequest.investigation = null;
+        }
+
         var response = await CaseSheetService.SaveCaseSheetAsync(currentRequest);
 
         if (response.StartsWith("Error"))
@@ -5705,6 +5976,17 @@
         if (finalReload != null)
         {
             LoadFromViewModel(finalReload);
+        }
+        else
+        {
+            if (currentRequest.prescription == null)
+            {
+                currentRequest.prescription = new CaseSheetPrescriptionRequest();
+            }
+            if (currentRequest.investigation == null)
+            {
+                currentRequest.investigation = new CaseSheetInvestigationRequest();
+            }
         }
 
         try
@@ -6157,6 +6439,10 @@
         }
 
         Visible = false;
+        wasVisible = false;
+        lastLoadedVisitKey = "";
+        loadingData = true;
+        ResetWorkspaceState();
         await VisibleChanged.InvokeAsync(false);
     }
 
@@ -7296,12 +7582,12 @@
             .Where(i => !string.IsNullOrWhiteSpace(i.drug_name))
             .ToList() ?? new();
 
-        // Current visit sales: match against OP No, PR code, IP No, Visit Date, or prescribed drugs
+        // Current visit sales: match strictly against current PR code, OP No, IP No, or current visit date with prescribed drugs
         currentVisitPharmacySales = patientAllPharmacySales.Where(s =>
         {
             if (s.master == null) return false;
 
-            // Direct match on PR code
+            // 1. Direct match on PR code
             if (!string.IsNullOrEmpty(prCode))
             {
                 if (!string.IsNullOrWhiteSpace(s.master.remarks) && s.master.remarks.Contains(prCode, StringComparison.OrdinalIgnoreCase)) return true;
@@ -7309,40 +7595,30 @@
                 if (!string.IsNullOrWhiteSpace(s.master.billno) && s.master.billno.Contains(prCode, StringComparison.OrdinalIgnoreCase)) return true;
             }
 
-            // Direct match on OP No
+            // 2. Direct match on OP No with visit date match
             if (!string.IsNullOrEmpty(opNoStr))
             {
-                if (!string.IsNullOrWhiteSpace(s.master.patientid) && (string.Equals(s.master.patientid.Trim(), opNoStr, StringComparison.OrdinalIgnoreCase) || s.master.patientid.Contains(opNoStr, StringComparison.OrdinalIgnoreCase)))
-                    return true;
-                if (!string.IsNullOrWhiteSpace(s.master.remarks) && s.master.remarks.Contains(opNoStr, StringComparison.OrdinalIgnoreCase))
-                    return true;
-                if (!string.IsNullOrWhiteSpace(s.master.invoiceno) && s.master.invoiceno.Contains(opNoStr, StringComparison.OrdinalIgnoreCase))
-                    return true;
-                if (!string.IsNullOrWhiteSpace(s.master.billno) && s.master.billno.Contains(opNoStr, StringComparison.OrdinalIgnoreCase))
-                    return true;
+                bool opMatched = (!string.IsNullOrWhiteSpace(s.master.patientid) && string.Equals(s.master.patientid.Trim(), opNoStr, StringComparison.OrdinalIgnoreCase))
+                              || (!string.IsNullOrWhiteSpace(s.master.remarks) && s.master.remarks.Contains(opNoStr, StringComparison.OrdinalIgnoreCase))
+                              || (!string.IsNullOrWhiteSpace(s.master.invoiceno) && s.master.invoiceno.Contains(opNoStr, StringComparison.OrdinalIgnoreCase))
+                              || (!string.IsNullOrWhiteSpace(s.master.billno) && s.master.billno.Contains(opNoStr, StringComparison.OrdinalIgnoreCase));
+                
+                if (opMatched && s.master.billdate.Date == visitDate) return true;
             }
 
-            // Direct match on IP No
+            // 3. Direct match on IP No with visit date match
             if (!string.IsNullOrEmpty(ipNoStr))
             {
-                if (!string.IsNullOrWhiteSpace(s.master.patientid) && (string.Equals(s.master.patientid.Trim(), ipNoStr, StringComparison.OrdinalIgnoreCase) || s.master.patientid.Contains(ipNoStr, StringComparison.OrdinalIgnoreCase)))
-                    return true;
-                if (!string.IsNullOrWhiteSpace(s.master.remarks) && s.master.remarks.Contains(ipNoStr, StringComparison.OrdinalIgnoreCase))
-                    return true;
-                if (!string.IsNullOrWhiteSpace(s.master.invoiceno) && s.master.invoiceno.Contains(ipNoStr, StringComparison.OrdinalIgnoreCase))
-                    return true;
-                if (!string.IsNullOrWhiteSpace(s.master.billno) && s.master.billno.Contains(ipNoStr, StringComparison.OrdinalIgnoreCase))
-                    return true;
+                bool ipMatched = (!string.IsNullOrWhiteSpace(s.master.patientid) && string.Equals(s.master.patientid.Trim(), ipNoStr, StringComparison.OrdinalIgnoreCase))
+                              || (!string.IsNullOrWhiteSpace(s.master.remarks) && s.master.remarks.Contains(ipNoStr, StringComparison.OrdinalIgnoreCase))
+                              || (!string.IsNullOrWhiteSpace(s.master.invoiceno) && s.master.invoiceno.Contains(ipNoStr, StringComparison.OrdinalIgnoreCase))
+                              || (!string.IsNullOrWhiteSpace(s.master.billno) && s.master.billno.Contains(ipNoStr, StringComparison.OrdinalIgnoreCase));
+                
+                if (ipMatched && s.master.billdate.Date == visitDate) return true;
             }
 
-            // Match by visit date
-            if (s.master.billdate.Date == visitDate)
-            {
-                return true;
-            }
-
-            // Prescribed items matching detail line items on/near visit date
-            if (currentPrescItems.Any() && s.details != null && s.details.Any())
+            // 4. Prescribed items matching detail line items on the current visit date
+            if (s.master.billdate.Date == visitDate && currentPrescItems.Any() && s.details != null && s.details.Any())
             {
                 var hasMatchingDrug = s.details.Any(d => currentPrescItems.Any(p =>
                     (p.drug_code.HasValue && p.drug_code.Value > 0 && d.itemcode == (long)p.drug_code.Value) ||
@@ -7360,15 +7636,12 @@
         .ThenByDescending(s => s.master?.salescode)
         .ToList();
 
-        // If no sales matched current visit strictly, but only 1 sale exists in patient history, associate it
-        if (!currentVisitPharmacySales.Any() && patientAllPharmacySales.Count == 1 && (patientHistory == null || !patientHistory.Any()))
-        {
-            currentVisitPharmacySales = new List<sales_request>(patientAllPharmacySales);
-        }
-
         // Update paid status & bill identifier for Preview Bill Report button
-        var activeBilled = currentVisitPharmacySales.FirstOrDefault(s => s.master != null && (!string.IsNullOrWhiteSpace(s.master.billno) || s.master.salescode > 0))
-            ?? patientAllPharmacySales.FirstOrDefault(s => s.master != null && (!string.IsNullOrWhiteSpace(s.master.billno) || s.master.salescode > 0));
+        var activeBilled = currentVisitPharmacySales.FirstOrDefault(s => s.master != null && (!string.IsNullOrWhiteSpace(s.master.billno) || s.master.salescode > 0));
+        if (activeBilled == null && selectedPastVisitCaseSheet != null && pastVisitPharmacySales != null)
+        {
+            activeBilled = pastVisitPharmacySales.FirstOrDefault(s => s.master != null && (!string.IsNullOrWhiteSpace(s.master.billno) || s.master.salescode > 0));
+        }
 
         if (activeBilled != null && activeBilled.master != null)
         {

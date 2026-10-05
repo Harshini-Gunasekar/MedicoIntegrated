@@ -33,6 +33,10 @@
     
     public int? converteddays { get; set; }
 
+    public int? days { get; set; }
+
+    public string? duration { get; set; }
+
      public decimal grossamount { get; set; }
 
      public decimal discountpercentage { get; set; }
@@ -72,6 +76,7 @@
      public long? ordercode { get; set; }
      public decimal? cntcode { get; set; } = 0;
      public int? bh_code { get; set; }
+     public string? cnttid { get; set; }   // counter shift session id
  }
  public class sales_detail
  {
@@ -84,6 +89,12 @@
     public string? itemname { get; set; }
 
      public int? days { get; set; }
+
+     public int? prescribeddays { get; set; }
+
+     public int? no_of_days { get; set; }
+
+     public string? duration { get; set; }
 
      public decimal quantity { get; set; }
 
@@ -122,9 +133,24 @@
      public string? tenantcode { get; set; }
 
      public Guid? queue_id { get; set; }
+     public Guid? pr_det_id { get; set; }
+
+    // Dosage (M, A, E, N)
+    public string? dosage { get; set; }
+    public string? morning { get; set; }
+    public string? afternoon { get; set; }
+    public string? evening { get; set; }
+    public string? night { get; set; }
+    public string? morning_dose { get; set; }
+    public string? afternoon_dose { get; set; }
+    public string? evening_dose { get; set; }
+    public string? night_dose { get; set; }
+    public int? bh_code { get; set; }
+    public decimal? cntcode { get; set; }
  }
     public class sales_request
     {
-        public sales_master master { get; set; }
-        public List<sales_detail> details { get; set; }
+        public sales_master master { get; set; } = new();
+        public List<sales_detail> details { get; set; } = new();
+        public List<Guid>? queue_ids { get; set; }   // pharmacy queue rows being billed in this sale
     }

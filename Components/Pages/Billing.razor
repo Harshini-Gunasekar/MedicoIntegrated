@@ -341,9 +341,13 @@
                             </button>
                             @if (unbilledCharges.Count > 0)
                             {
-                                <button type="button" class="btn-save" style="font-size: 0.85rem; font-weight: 600; padding: 0.4rem 1rem; background: linear-gradient(135deg, #4f46e5, #4338ca); color: white; border: none; border-radius: 6px;" @onclick="AddAllUnbilledCharges">
-                                    Add All (@unbilledCharges.Count)
-                                </button>
+                                var unaddedCount = unbilledCharges.Count(uc => !IsItemAddedToGrid(uc));
+                                @if (unaddedCount > 0)
+                                {
+                                    <button type="button" class="btn-save" style="font-size: 0.85rem; font-weight: 600; padding: 0.4rem 1rem; background: linear-gradient(135deg, #4f46e5, #4338ca); color: white; border: none; border-radius: 6px;" @onclick="AddAllUnbilledCharges">
+                                        Add All (@unaddedCount)
+                                    </button>
+                                }
                             }
                         </div>
 
@@ -376,10 +380,7 @@
                             <div style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 350px; overflow-y: auto;">
                                 @foreach (var uc in unbilledCharges)
                                 {
-                                    var isAdded = billModel.items.Any(i => 
-                                        (!string.IsNullOrEmpty(i.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(i.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
-                                        (!string.IsNullOrEmpty(i.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(i.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
-                                    );
+                                    var isAdded = IsItemAddedToGrid(uc);
                                     var chargeDate = GetUnbilledChargeDate(uc);
                                     var isOtProcedure = string.Equals(uc.entrytype, "OT_PROCEDURE", StringComparison.OrdinalIgnoreCase);
                                     var isRoomRent = string.Equals(uc.entrytype, "ROOMRENT", StringComparison.OrdinalIgnoreCase) || 
@@ -697,7 +698,7 @@
                         @if (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null || billModel.custid > 0)
                         {
                             <button type="button" class="btn-save" style="font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 0.5rem; padding: 0 1rem; color: white; background: linear-gradient(135deg, #4f46e5, #4338ca); border: none; border-radius: 6px; height: 38px; box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);" @onclick="OpenUnbilledModal">
-                                <i class="bi bi-clock-history"></i> Unbilled Charges (@unbilledCharges.Count)
+                                <i class="bi bi-clock-history"></i> Unbilled Charges (@unbilledCharges.Count(uc => !IsItemAddedToGrid(uc)))
                             </button>
                         }
                     </div>
@@ -1467,6 +1468,11 @@
 
         await Task.WhenAll(tasks);
 
+        if (unbilledCharges.Count > 0 && billModel.items.Count == 0)
+        {
+            showUnbilledModal = true;
+        }
+
         RecalculateTotals();
         SaveStateToService();
         StateHasChanged();
@@ -2072,6 +2078,7 @@
 
     private bool _isLookupDataLoaded = false;
     private string? _loadedOpIdStr = "__INITIAL__";
+    private Booking.Models.LabSettingModel labSetting = new();
 
     protected override async Task OnInitializedAsync()
     {
@@ -2113,6 +2120,16 @@
         await LoadBranchesAsync();
         await LoadCountersAsync();
         await CheckBillNoSequenceAsync();
+
+        try
+        {
+            labSetting = await LabSettingService.GetLabSettingAsync() ?? new Booking.Models.LabSettingModel();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading lab setting: {ex.Message}");
+            labSetting = new();
+        }
 
         try
         {
@@ -2730,6 +2747,14 @@
                 await CheckPatientAdvanceAsync((decimal)billModel.custid);
             }
             await LoadUnbilledChargesAsync();
+
+            if (string.IsNullOrEmpty(billModel.requestguid))
+            {
+                if (billModel.items.Count == 0 && unbilledCharges.Count > 0)
+                {
+                    showUnbilledModal = true;
+                }
+            }
         }
         catch (Exception ex)
         {
@@ -2774,14 +2799,8 @@
                 }
             }
 
-            // 3. Filter out charges that are already added to the billing grid (casing-independent matching by unbilledid OR stable entryid/item_ref_id)
-            unbilledCharges = visitCharges.Where(uc => 
-                uc.billedstatus != true &&
-                !billModel.items.Any(i => 
-                    (!string.IsNullOrEmpty(i.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(i.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
-                    (!string.IsNullOrEmpty(i.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(i.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
-                )
-            ).ToList();
+            // 3. Keep all active unbilled charges for modal tracking
+            unbilledCharges = visitCharges.Where(uc => uc.billedstatus != true).ToList();
         }
         catch (Exception ex)
         {
@@ -2791,6 +2810,15 @@
         {
             loadingUnbilled = false;
         }
+    }
+
+    private bool IsItemAddedToGrid(UnbilledChargeSummary uc)
+    {
+        if (uc == null || billModel?.items == null) return false;
+        return billModel.items.Any(i => 
+            (!string.IsNullOrEmpty(i.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(i.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+            (string.IsNullOrEmpty(i.requestdetailsid) && string.Equals(i.item_name?.Trim(), (uc.particulars ?? uc.item_name)?.Trim(), StringComparison.OrdinalIgnoreCase) && i.amount == (decimal)(uc.amount ?? 0))
+        );
     }
 
     private DateTime? GetUnbilledChargeDate(UnbilledChargeSummary uc)
@@ -2867,15 +2895,15 @@
         return displayItemName;
     }
 
-    private async Task AddUnbilledChargeItem(UnbilledChargeSummary uc)
+    private void AddUnbilledChargeItem(UnbilledChargeSummary uc)
     {
-        if (billModel.items.Any(i => i.requestdetailsid == uc.unbilledid))
+        if (IsItemAddedToGrid(uc))
         {
             ToastService.ShowError("This charge is already added to the billing grid.");
             return;
         }
 
-        var rate = (decimal)(uc.rate ?? 0);
+        var rate = (decimal)(uc.rate ?? uc.amount ?? 0);
         var qty = (decimal)(uc.quantity ?? 1);
         var amt = (decimal)(uc.amount ?? 0);
 
@@ -2887,7 +2915,7 @@
             charge_type = uc.entrytype ?? "INVESTIGATION",
             item_name = displayItemName,
             tcode = uc.tcode.HasValue ? (decimal)uc.tcode.Value : 0m,
-            item_ref_id = uc.entryid ?? "UNBILLED",
+            item_ref_id = !string.IsNullOrEmpty(uc.unbilledid) ? uc.unbilledid : (uc.entryid ?? "UNBILLED"),
             unit_rate = rate,
             qty = qty,
             discount = 0,
@@ -2897,18 +2925,17 @@
         });
 
         RecalculateTotals();
-        await LoadUnbilledChargesAsync();
         ToastService.ShowSuccess($"Added: {displayItemName}");
     }
 
-    private async Task AddAllUnbilledCharges()
+    private void AddAllUnbilledCharges()
     {
         int addedCount = 0;
         foreach (var uc in unbilledCharges)
         {
-            if (!billModel.items.Any(i => i.requestdetailsid == uc.unbilledid))
+            if (!IsItemAddedToGrid(uc))
             {
-                var rate = (decimal)(uc.rate ?? 0);
+                var rate = (decimal)(uc.rate ?? uc.amount ?? 0);
                 var qty = (decimal)(uc.quantity ?? 1);
                 var amt = (decimal)(uc.amount ?? 0);
 
@@ -2920,7 +2947,7 @@
                     charge_type = uc.entrytype ?? "INVESTIGATION",
                     item_name = displayItemName,
                     tcode = uc.tcode.HasValue ? (decimal)uc.tcode.Value : 0m,
-                    item_ref_id = uc.entryid ?? "UNBILLED",
+                    item_ref_id = !string.IsNullOrEmpty(uc.unbilledid) ? uc.unbilledid : (uc.entryid ?? "UNBILLED"),
                     unit_rate = rate,
                     qty = qty,
                     discount = 0,
@@ -2934,8 +2961,7 @@
         if (addedCount > 0)
         {
             RecalculateTotals();
-            await LoadUnbilledChargesAsync();
-            ToastService.ShowSuccess($"Added {addedCount} unbilled charges to grid.");
+            ToastService.ShowSuccess($"Added {addedCount} unbilled charge(s) to grid.");
         }
     }
 
@@ -4016,23 +4042,26 @@
             var unbilledIdsToPass = new List<string>();
             foreach (var item in billModel.items)
             {
+                if (!string.IsNullOrEmpty(item.requestdetailsid))
+                {
+                    unbilledIdsToPass.Add(item.requestdetailsid);
+                }
+
                 // Try to find the matching unbilled charge from the latest API response
                 var match = latestUnbilled.FirstOrDefault(uc =>
                     (!string.IsNullOrEmpty(item.requestdetailsid) && !string.IsNullOrEmpty(uc.unbilledid) && string.Equals(item.requestdetailsid.Trim(), uc.unbilledid.Trim(), StringComparison.OrdinalIgnoreCase)) ||
-                    (!string.IsNullOrEmpty(item.item_ref_id) && !string.IsNullOrEmpty(uc.entryid) && string.Equals(item.item_ref_id.Trim(), uc.entryid.Trim(), StringComparison.OrdinalIgnoreCase))
+                    (!string.IsNullOrEmpty(item.item_name) && !string.IsNullOrEmpty(uc.particulars) && string.Equals(item.item_name.Trim(), uc.particulars.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                    (!string.IsNullOrEmpty(item.item_name) && !string.IsNullOrEmpty(uc.item_name) && string.Equals(item.item_name.Trim(), uc.item_name.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                    (item.tcode > 0 && uc.tcode.HasValue && item.tcode == (decimal)uc.tcode.Value)
                 );
 
                 if (match != null && !string.IsNullOrEmpty(match.unbilledid))
                 {
                     unbilledIdsToPass.Add(match.unbilledid);
                 }
-                else if (!string.IsNullOrEmpty(item.requestdetailsid))
-                {
-                    unbilledIdsToPass.Add(item.requestdetailsid);
-                }
             }
 
-            // Also include any unbilled consultation/registration charges for this OP visit or customer
+            // Also include any unbilled consultation/dressing/registration charges for this OP visit or customer if zero-amount
             foreach (var uc in latestUnbilled)
             {
                 if (uc.billedstatus == true) continue;
@@ -4043,7 +4072,7 @@
                                    (billModel.ip_id.HasValue && billModel.ip_id.Value != Guid.Empty && uc.ip_id == billModel.ip_id) ||
                                    (billModel.custid > 0 && uc.custid == billModel.custid);
 
-                    if (matchOp && (string.Equals(uc.entrytype, "CONSULTATION", StringComparison.OrdinalIgnoreCase) || (uc.amount ?? 0) <= 0))
+                    if (matchOp && (uc.amount ?? 0) <= 0)
                     {
                         unbilledIdsToPass.Add(uc.unbilledid);
                     }

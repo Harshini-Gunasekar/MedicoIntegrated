@@ -914,6 +914,137 @@
         }
     };
 
+    window.downloadItemExcelTemplate = function (fileName) {
+        try {
+            var targetFileName = (fileName || 'Item_Master_Upload_Template') + '.xlsx';
+            var headers = [
+                "itemname", "shortname", "description", "itemtype", "manufacturername", "drugname", "packaging", "schedule",
+                "categorycode", "subcategorycode", "hsncode", "uomcode", "brandcode", "manufacturercode", "taxcode", "naturetype",
+                "ledgergroupcode", "expiryalertdays", "gstpercentage", "purchaserate", "salesrate", "mrp", "currentstock",
+                "minstock", "reorderlevel", "packsize", "isexpiry", "batchrequired", "expiryrequired", "serialrequired",
+                "isnarcoticdrug", "isactive", "deleted"
+            ];
+
+            var sampleRow = {
+                "itemname": "Paracetamol 500mg",
+                "shortname": "PCM 500",
+                "description": "Paracetamol Tablets IP 500mg",
+                "itemtype": "Tablet",
+                "manufacturername": "Cipla Ltd",
+                "drugname": "Paracetamol",
+                "packaging": "Strip of 10",
+                "schedule": "H",
+                "categorycode": 1,
+                "subcategorycode": 1,
+                "hsncode": 30049099,
+                "uomcode": 1,
+                "brandcode": 1,
+                "manufacturercode": 1,
+                "taxcode": 1,
+                "naturetype": 1,
+                "ledgergroupcode": 1,
+                "expiryalertdays": 60,
+                "gstpercentage": 12,
+                "purchaserate": 15.00,
+                "salesrate": 20.00,
+                "mrp": 22.00,
+                "currentstock": 100,
+                "minstock": 10,
+                "reorderlevel": 20,
+                "packsize": 10,
+                "isexpiry": "yes",
+                "batchrequired": "yes",
+                "expiryrequired": "yes",
+                "serialrequired": "no",
+                "isnarcoticdrug": "no",
+                "isactive": "yes",
+                "deleted": "no"
+            };
+
+            if (window.XLSX) {
+                var ws = XLSX.utils.json_to_sheet([sampleRow], { header: headers });
+                ws['!cols'] = [
+                    { wch: 28 }, { wch: 14 }, { wch: 32 }, { wch: 14 }, { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 12 },
+                    { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 12 }, { wch: 12 },
+                    { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
+                    { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
+                    { wch: 16 }, { wch: 12 }, { wch: 12 }
+                ];
+                var wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Item Master Template");
+                XLSX.writeFile(wb, targetFileName);
+                return true;
+            } else {
+                var csvRows = [headers.join(',')];
+                var sampleValues = headers.map(function (h) { return '"' + (sampleRow[h] !== undefined ? sampleRow[h] : '') + '"'; });
+                csvRows.push(sampleValues.join(','));
+                var csvContent = "data:text/csv;charset=utf-8,\uFEFF" + encodeURIComponent(csvRows.join('\n'));
+                var downloadLink = document.createElement("a");
+                downloadLink.setAttribute("href", csvContent);
+                downloadLink.setAttribute("download", (fileName || 'Item_Master_Upload_Template') + '.csv');
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                return true;
+            }
+        } catch (err) {
+            console.error('downloadItemExcelTemplate failed:', err);
+            alert('Failed to download item template: ' + err.message);
+            return false;
+        }
+    };
+
+    window.downloadSkippedItemsExcel = function (errorsList, fileName) {
+        try {
+            var formattedRows = (errorsList || []).map(function (e) {
+                return {
+                    "Row #": e.row || e.Row || e.rownumber || 0,
+                    "Error / Rejection Reason": e.message || e.Message || e.error || ''
+                };
+            });
+
+            var targetFileName = (fileName || ('Skipped_Items_' + new Date().toISOString().slice(0, 10))) + '.xlsx';
+
+            if (window.XLSX) {
+                var ws = XLSX.utils.json_to_sheet(formattedRows);
+                ws['!cols'] = [
+                    { wch: 12 },
+                    { wch: 70 }
+                ];
+                var wb = XLSX.utils.book_new();
+                XLSX.utils.book_append_sheet(wb, ws, "Skipped Items");
+                XLSX.writeFile(wb, targetFileName);
+                return true;
+            } else {
+                var headers = ["Row #", "Error / Rejection Reason"];
+                var csvRows = [headers.join(',')];
+                formattedRows.forEach(function (r) {
+                    var escapeCsv = function (val) {
+                        var s = (val === null || val === undefined) ? '' : String(val);
+                        return '"' + s.replace(/"/g, '""') + '"';
+                    };
+                    csvRows.push([
+                        escapeCsv(r["Row #"]),
+                        escapeCsv(r["Error / Rejection Reason"])
+                    ].join(','));
+                });
+
+                var csvContent = "data:text/csv;charset=utf-8,\uFEFF" + encodeURIComponent(csvRows.join('\n'));
+                var downloadLink = document.createElement("a");
+                downloadLink.setAttribute("href", csvContent);
+                downloadLink.setAttribute("download", (fileName || 'Skipped_Items') + '.csv');
+                document.body.appendChild(downloadLink);
+                downloadLink.click();
+                document.body.removeChild(downloadLink);
+                return true;
+            }
+        } catch (err) {
+            console.error('downloadSkippedItemsExcel failed:', err);
+            alert('Failed to download skipped items: ' + err.message);
+            return false;
+        }
+    };
+
     window.setIframePdfBase64 = function (iframeId, base64String) {
         try {
             const iframe = document.getElementById(iframeId);

@@ -288,5 +288,28 @@ namespace Booking.Models
     public class inventory_item_master : item_master
     {
     }
+
+    public class ItemExcelUploadResult
+    {
+        public int total_rows { get; set; }
+        public int inserted { get; set; }
+        public int skipped_blank { get; set; }
+        public int skipped_duplicate { get; set; }
+        public List<string> ignored_columns { get; set; } = new();
+        public List<ItemExcelRowError> errors { get; set; } = new();
+    }
+
+    public class ItemExcelRowError
+    {
+        public int row { get; set; }
+        public string message { get; set; } = string.Empty;
+    }
+
+    public class ItemExcelUploadApiResponse
+    {
+        public string? Status { get; set; }
+        public string? Message { get; set; }
+        public ItemExcelUploadResult? Data { get; set; }
+    }
 }
 
