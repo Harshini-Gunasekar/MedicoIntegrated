@@ -866,8 +866,7 @@ namespace Booking.Services
             try
             {
                 var openCounters = await GetOpenCountersAsync();
-                return openCounters.FirstOrDefault(s => s.cntcode == cntcode && (bhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == bhcode))
-                       ?? openCounters.FirstOrDefault(s => s.cntcode == cntcode);
+                return openCounters.FirstOrDefault(s => s.cntcode == cntcode && (bhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == bhcode));
             }
             catch (Exception ex)
             {

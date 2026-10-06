@@ -36,14 +36,28 @@ namespace Booking.Services
                 var list = await _http.GetFromJsonAsync<List<LabSettingModel>>(url);
                 var setting = list?.FirstOrDefault() ?? new LabSettingModel();
                 
-                if (!setting.show_all_customers.HasValue) setting.show_all_customers = true;
-                if (!setting.is_slot_required.HasValue) setting.is_slot_required = true;
+                if (ShowAllCustomersCache.HasValue) setting.show_all_customers = ShowAllCustomersCache.Value;
+                else if (!setting.show_all_customers.HasValue) setting.show_all_customers = true;
+
+                if (IsSlotRequiredCache.HasValue) setting.is_slot_required = IsSlotRequiredCache.Value;
+                else if (!setting.is_slot_required.HasValue) setting.is_slot_required = true;
+
                 if (!setting.op_age_wise_split.HasValue) setting.op_age_wise_split = false;
-                if (!setting.critical_value_indication.HasValue) setting.critical_value_indication = false;
-                if (!setting.show_physical_bill.HasValue) setting.show_physical_bill = true;
-                if (!setting.payment_required_online_reg.HasValue) setting.payment_required_online_reg = false;
-                if (!setting.enable_combo_registration.HasValue) setting.enable_combo_registration = false;
-                if (!setting.auto_route_billing_after_register.HasValue) setting.auto_route_billing_after_register = false;
+
+                if (CriticalValueIndicationCache.HasValue) setting.critical_value_indication = CriticalValueIndicationCache.Value;
+                else if (!setting.critical_value_indication.HasValue) setting.critical_value_indication = false;
+
+                if (ShowPhysicalBillCache.HasValue) setting.show_physical_bill = ShowPhysicalBillCache.Value;
+                else if (!setting.show_physical_bill.HasValue) setting.show_physical_bill = true;
+
+                if (PaymentRequiredOnlineRegCache.HasValue) setting.payment_required_online_reg = PaymentRequiredOnlineRegCache.Value;
+                else if (!setting.payment_required_online_reg.HasValue) setting.payment_required_online_reg = false;
+
+                if (EnableComboRegistrationCache.HasValue) setting.enable_combo_registration = EnableComboRegistrationCache.Value;
+                else if (!setting.enable_combo_registration.HasValue) setting.enable_combo_registration = false;
+
+                if (AutoRouteBillingAfterRegisterCache.HasValue) setting.auto_route_billing_after_register = AutoRouteBillingAfterRegisterCache.Value;
+                else if (!setting.auto_route_billing_after_register.HasValue) setting.auto_route_billing_after_register = false;
 
                 return setting;
             }
@@ -52,14 +66,14 @@ namespace Booking.Services
                 Console.WriteLine($"Error fetching LabSetting: {ex.Message}");
                 return new LabSettingModel
                 {
-                    show_all_customers = true,
-                    is_slot_required = true,
+                    show_all_customers = ShowAllCustomersCache ?? true,
+                    is_slot_required = IsSlotRequiredCache ?? true,
                     op_age_wise_split = false,
-                    critical_value_indication = false,
-                    show_physical_bill = true,
-                    payment_required_online_reg = false,
-                    enable_combo_registration = false,
-                    auto_route_billing_after_register = false
+                    critical_value_indication = CriticalValueIndicationCache ?? false,
+                    show_physical_bill = ShowPhysicalBillCache ?? true,
+                    payment_required_online_reg = PaymentRequiredOnlineRegCache ?? false,
+                    enable_combo_registration = EnableComboRegistrationCache ?? false,
+                    auto_route_billing_after_register = AutoRouteBillingAfterRegisterCache ?? false
                 };
             }
         }
