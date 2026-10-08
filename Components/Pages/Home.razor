@@ -246,17 +246,52 @@
     protected override void OnInitialized()
     {
         TenantState.OnSessionChanged += HandleSessionChanged;
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        SyncFromTenantState();
+        if (TenantState.IsAuthenticated && (IsAdmin() || RoleService.IsPermissionsLoaded))
+        {
+            isLoading = false;
+        }
+    }
+
+    private void SyncFromTenantState()
+    {
+        if (!string.IsNullOrEmpty(TenantState.TenantName))
+        {
+            hospitalName = TenantState.TenantName;
+        }
+        if (TenantState.UserData != null)
+        {
+            if (!string.IsNullOrEmpty(TenantState.UserData.UserName))
+                userName = TenantState.UserData.UserName;
+            if (!string.IsNullOrEmpty(TenantState.UserData.Role))
+                userRole = TenantState.UserData.Role;
+        }
+        if (!string.IsNullOrEmpty(TenantState.TenantCode))
+        {
+            tenantCode = TenantState.TenantCode;
+        }
+        if (TenantState.BranchCode.HasValue)
+        {
+            branchCode = TenantState.BranchCode;
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
-            await Task.Delay(100);
-            await LoadSessionDetailsAsync();
-            isLoading = false;
-            StateHasChanged();
-            await CheckActiveShiftAsync();
+            try
+            {
+                await LoadSessionDetailsAsync();
+            }
+            catch { }
+            finally
+            {
+                isLoading = false;
+                await InvokeAsync(StateHasChanged);
+            }
+            _ = CheckActiveShiftAsync();
         }
     }
 
@@ -265,27 +300,28 @@
         try
         {
             // 1. Try reading from TenantState first
-            if (!string.IsNullOrEmpty(TenantState.TenantName))
-            {
-                hospitalName = TenantState.TenantName;
-            }
-            if (TenantState.UserData != null)
-            {
-                if (!string.IsNullOrEmpty(TenantState.UserData.UserName))
-                    userName = TenantState.UserData.UserName;
-                if (!string.IsNullOrEmpty(TenantState.UserData.Role))
-                    userRole = TenantState.UserData.Role;
-            }
-            if (!string.IsNullOrEmpty(TenantState.TenantCode))
-            {
-                tenantCode = TenantState.TenantCode;
-            }
-            if (TenantState.BranchCode.HasValue)
-            {
-                branchCode = TenantState.BranchCode;
-            }
+            SyncFromTenantState();
 
-            // 2. Fallbacks from ProtectedSessionStorage if empty
+            // 2. Fast single-pass localStorage session read (0ms)
+            try
+            {
+                var localSessionJson = await JSRuntime.InvokeAsync<string>("medicoSessionHelper.getSession");
+                if (!string.IsNullOrWhiteSpace(localSessionJson))
+                {
+                    var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
+                    if (string.IsNullOrEmpty(userName)) userName = jObj["user_name"]?.ToString() ?? jObj["login_input"]?.ToString() ?? "";
+                    if (string.IsNullOrEmpty(userRole)) userRole = jObj["user_role"]?.ToString() ?? "";
+                    if (string.IsNullOrEmpty(tenantCode)) tenantCode = jObj["tenant_code"]?.ToString() ?? "";
+                    if (string.IsNullOrEmpty(hospitalName)) hospitalName = jObj["tenant_name"]?.ToString() ?? "";
+                    if (!branchCode.HasValue) branchCode = jObj["bhcode"]?.ToObject<int?>();
+                    var isAdm = jObj["isAdmin"]?.ToObject<bool>() == true;
+                    if (isAdm && string.IsNullOrEmpty(userRole))
+                        userRole = "Administrator";
+                }
+            }
+            catch { }
+
+            // 3. Fallbacks from ProtectedSessionStorage if empty
             if (string.IsNullOrEmpty(hospitalName))
             {
                 var hRes = await _sessionStorage.GetAsync<string>("tenant_name");
@@ -347,26 +383,7 @@
                 catch { }
             }
 
-            // Multi-tab fallback to localStorage if still empty
-            if (string.IsNullOrEmpty(userName) || string.IsNullOrEmpty(userRole))
-            {
-                try
-                {
-                    var localSessionJson = await JSRuntime.InvokeAsync<string>("medicoSessionHelper.getSession");
-                    if (!string.IsNullOrWhiteSpace(localSessionJson))
-                    {
-                        var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
-                        if (string.IsNullOrEmpty(userName)) userName = jObj["user_name"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(userRole)) userRole = jObj["user_role"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(tenantCode)) tenantCode = jObj["tenant_code"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(hospitalName)) hospitalName = jObj["tenant_name"]?.ToString() ?? "";
-                        if (!branchCode.HasValue) branchCode = jObj["bhcode"]?.ToObject<int?>();
-                    }
-                }
-                catch { }
-            }
-
-            // 3. Ensure hospitalName is NOT the logged-in user's name
+            // 4. Ensure hospitalName is NOT the logged-in user's name
             if (string.IsNullOrWhiteSpace(hospitalName) || string.Equals(hospitalName.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
             {
                 hospitalName = "";
@@ -400,70 +417,30 @@
                     }
                 }
 
-                // B. Fetch branch list from API
-                if (string.IsNullOrEmpty(hospitalName))
-                {
-                    try
-                    {
-                        var client = HttpClientFactory.CreateClient("LabCareUrl");
-                        var effectiveTenant = !string.IsNullOrEmpty(tenantCode) ? tenantCode : TenantState?.TenantCode;
-                        if (!string.IsNullOrEmpty(effectiveTenant))
-                        {
-                            client.DefaultRequestHeaders.Remove("tenant_code");
-                            client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
-                            client.DefaultRequestHeaders.Remove("tenantcode");
-                            client.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
-                        }
-
-                        var effectiveToken = TenantState?.AuthToken;
-                        if (string.IsNullOrEmpty(effectiveToken))
-                        {
-                            var tokenRes = await _sessionStorage.GetAsync<string>("authToken");
-                            if (tokenRes.Success) effectiveToken = tokenRes.Value;
-                        }
-                        if (!string.IsNullOrEmpty(effectiveToken))
-                        {
-                            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
-                        }
-
-                        var response = await client.GetAsync("api/Branch/get");
-                        if (response.IsSuccessStatusCode)
-                        {
-                            var json = await response.Content.ReadAsStringAsync();
-                            var dbBranches = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
-                            var validBranches = dbBranches.Where(b => !b.deleted && (string.IsNullOrWhiteSpace(b.name) || (!b.name.Contains("sample", StringComparison.OrdinalIgnoreCase) && !b.name.Contains("smpl", StringComparison.OrdinalIgnoreCase) && !b.name.Contains("dummy", StringComparison.OrdinalIgnoreCase)))).ToList();
-
-                            var matched = (branchCode.HasValue && branchCode.Value > 0)
-                                ? validBranches.FirstOrDefault(b => b.bh_code == branchCode.Value)
-                                : validBranches.FirstOrDefault(b => b.is_main_branch == true) ?? validBranches.FirstOrDefault();
-
-                            if (matched != null && !string.IsNullOrWhiteSpace(matched.name) && !string.Equals(matched.name.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
-                            {
-                                hospitalName = matched.name;
-                            }
-                        }
-                    }
-                    catch (Exception apiEx)
-                    {
-                        Console.WriteLine($"[HomeWelcome] Error resolving branch for hospital name: {apiEx.Message}");
-                    }
-                }
-
                 if (string.IsNullOrEmpty(hospitalName))
                 {
                     hospitalName = "Medico Healthcare Hospital";
                 }
 
-                // Save sanitized hospital name back to session storage
-                await _sessionStorage.SetAsync("tenant_name", hospitalName);
+                try
+                {
+                    await _sessionStorage.SetAsync("tenant_name", hospitalName);
+                }
+                catch { }
             }
 
-            // Synchronize with TenantState if empty so MainLayout and other components stay in sync
+            // 5. Admin role catalog initialization if needed
+            if (IsAdmin() && (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any()))
+            {
+                RoleService.SetUserPermissions(RoleCatalogDefaults.GetDefaultPermissions());
+            }
+
+            // 6. Synchronize with TenantState if empty so other components stay in sync
             if (!string.IsNullOrEmpty(userName) && (TenantState.UserData == null || string.IsNullOrWhiteSpace(TenantState.UserData.UserName)))
             {
                 var ud = TenantState.UserData ?? new UserDetailsModel();
                 ud.UserName = userName;
-                ud.Role = string.IsNullOrEmpty(userRole) ? (ud.Role ?? "Administrator") : userRole;
+                ud.Role = string.IsNullOrEmpty(userRole) ? (IsAdmin() ? "Administrator" : (ud.Role ?? "User")) : userRole;
                 ud.TenantCode = string.IsNullOrEmpty(tenantCode) ? (ud.TenantCode ?? "") : tenantCode;
                 ud.TenantName = hospitalName;
                 ud.BranchCode = branchCode;
@@ -480,7 +457,7 @@
                     }
                     catch { }
                 }
-                TenantState.SetSession(ud.TenantCode, TenantState.AuthToken ?? "", hospitalName, ud.UserCode ?? 0, branchCode, ud.CounterCode, ud, currentRights ?? new());
+                TenantState.SetSession(ud.TenantCode, TenantState.AuthToken ?? "", hospitalName, ud.UserCode ?? (IsAdmin() ? 0 : 0), branchCode, ud.CounterCode, ud, currentRights ?? new());
             }
         }
         catch (OperationCanceledException) { return; }
@@ -502,8 +479,23 @@
 
     private async void HandleSessionChanged()
     {
-        await LoadSessionDetailsAsync();
+        SyncFromTenantState();
+        if (IsAdmin() && (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any()))
+        {
+            RoleService.SetUserPermissions(RoleCatalogDefaults.GetDefaultPermissions());
+        }
+        isLoading = false;
         await InvokeAsync(StateHasChanged);
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        if (IsAdmin() && (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any()))
+        {
+            RoleService.SetUserPermissions(RoleCatalogDefaults.GetDefaultPermissions());
+        }
+        isLoading = false;
+        _ = InvokeAsync(StateHasChanged);
     }
 
     private void NavigateTo(string url)
@@ -543,10 +535,8 @@
         }
     }
 
-    private bool IsAdmin()
+    private static bool IsAdminRole(string? role)
     {
-        var role = userRole;
-        if (string.IsNullOrEmpty(role)) role = TenantState.UserData?.Role;
         if (string.IsNullOrEmpty(role)) return false;
         return string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
                string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
@@ -557,10 +547,23 @@
                string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase);
     }
 
+    private bool IsAdmin()
+    {
+        var role = userRole;
+        if (string.IsNullOrEmpty(role)) role = TenantState.UserData?.Role;
+        var uName = userName;
+        if (string.IsNullOrEmpty(uName)) uName = TenantState.UserData?.UserName;
+        if (string.Equals(uName, "admin", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uName, "administrator", StringComparison.OrdinalIgnoreCase)) return true;
+
+        return IsAdminRole(role);
+    }
+
     private bool HasMainModule(string module) => IsAdmin() || RoleService.HasMainModule(module);
 
     public void Dispose()
     {
         TenantState.OnSessionChanged -= HandleSessionChanged;
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
     }
 }

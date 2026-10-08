@@ -59,6 +59,7 @@
     <div class="sidebar-menu">
         @if (!string.IsNullOrWhiteSpace(menuSearchQuery))
         {
+            <!-- search results block unchanged -->
             <div class="sidebar-search-results">
                 @{
                     var matches = GetFilteredMenuItems().ToList();
@@ -88,6 +89,19 @@
                     }
                 }
             </div>
+        }
+        else if (!_menuReady)
+        {
+            @* Skeleton loader shown while session is being restored after a page reload *@
+            <div class="sidebar-skeleton" style="padding: 0.5rem 0.75rem; display: flex; flex-direction: column; gap: 0.6rem;">
+                @for (int i = 0; i < 7; i++)
+                {
+                    <div style="height: 36px; border-radius: 8px; background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite;"></div>
+                }
+            </div>
+            <style>
+                @@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+            </style>
         }
         else
         {
@@ -1282,137 +1296,33 @@
     private int navPromptBhCode = 1;
     private int navPromptCntCode = 1;
 
+    private bool _menuReady = false;    // true once session has been restored (shows skeleton until then)
+    private bool _isAdminSession = false; // sticky: once latched never re-evaluates
+
     protected override void OnInitialized()
     {
         NavigationManager.LocationChanged += OnLocationChanged;
         TenantState.OnSessionChanged += HandleSessionChanged;
         RoleService.OnPermissionsChanged += HandlePermissionsChanged;
         ExpandSubmenuForCurrentUri();
+        // Only sync from TenantState if it is already populated (e.g. same-tab navigation)
         SyncUserProfile();
         if (IsAdmin() && (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any()))
         {
             RoleService.SetUserPermissions(RoleCatalogDefaults.GetDefaultPermissions());
         }
+        // If TenantState is already authenticated at this point (e.g. second render, tab
+        // reuse), mark the menu as ready immediately so no skeleton is shown.
+        if (TenantState.IsAuthenticated && (IsAdmin() || RoleService.IsPermissionsLoaded))
+            _menuReady = true;
     }
 
-    protected override async Task OnInitializedAsync()
-    {
-        // Eagerly load from ProtectedSessionStorage BEFORE first render
-        // so sidebar shows correct username & permissions immediately on reload
-        try
-        {
-            // 1. Sync from TenantState if already present
-            SyncUserProfile();
-
-            // 2. If username or role is still empty, restore from ProtectedSessionStorage
-            if (string.IsNullOrWhiteSpace(displayUserName))
-            {
-                try
-                {
-                    var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userDetailsResult.Success && userDetailsResult.Value != null)
-                    {
-                        var ud = userDetailsResult.Value;
-                        if (!string.IsNullOrWhiteSpace(ud.UserName))
-                            displayUserName = ud.UserName;
-                        if (!string.IsNullOrWhiteSpace(ud.Role))
-                            displayUserRole = ud.Role;
-                    }
-                }
-                catch { }
-
-                if (string.IsNullOrWhiteSpace(displayUserName))
-                {
-                    try
-                    {
-                        var unRes = await _sessionStorage.GetAsync<string>("user_name");
-                        if (unRes.Success && !string.IsNullOrWhiteSpace(unRes.Value))
-                            displayUserName = unRes.Value;
-                    }
-                    catch { }
-                }
-
-                if (string.IsNullOrWhiteSpace(displayUserRole))
-                {
-                    try
-                    {
-                        var urRes = await _sessionStorage.GetAsync<string>("user_role");
-                        if (urRes.Success && !string.IsNullOrWhiteSpace(urRes.Value))
-                            displayUserRole = urRes.Value;
-                    }
-                    catch { }
-                }
-            }
-
-            // 3. Restore permissions from session before first render
-            if (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any())
-            {
-                // Try RolePermissionItem cache first (fastest)
-                try
-                {
-                    var rolePermsResult = await _sessionStorage.GetAsync<List<Booking.Models.RolePermissionItem>>("UserRolePermissions");
-                    if (rolePermsResult.Success && rolePermsResult.Value != null && rolePermsResult.Value.Any())
-                    {
-                        RoleService.SetUserPermissions(rolePermsResult.Value);
-                    }
-                }
-                catch { }
-
-                // Fallback: try UserRights from session
-                if (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any())
-                {
-                    try
-                    {
-                        if (TenantState.UserRightsList != null && TenantState.UserRightsList.Any())
-                        {
-                            var perms = RoleMasterService.ConvertUserRightsToPermissions(TenantState.UserRightsList);
-                            if (perms.Any()) RoleService.SetUserPermissions(perms);
-                        }
-                        else
-                        {
-                            var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                            if (rightsResult.Success && rightsResult.Value != null && rightsResult.Value.Any())
-                            {
-                                var perms = RoleMasterService.ConvertUserRightsToPermissions(rightsResult.Value);
-                                if (perms.Any()) RoleService.SetUserPermissions(perms);
-                            }
-                        }
-                    }
-                    catch { }
-                }
-            }
-
-            if (IsAdmin() && (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any()))
-            {
-                RoleService.SetUserPermissions(RoleCatalogDefaults.GetDefaultPermissions());
-            }
-
-            if (TenantState.UserData != null)
-            {
-                if (string.IsNullOrWhiteSpace(TenantState.UserData.UserName) && !string.IsNullOrWhiteSpace(displayUserName))
-                    TenantState.UserData.UserName = displayUserName;
-                if (string.IsNullOrWhiteSpace(TenantState.UserData.Role) && !string.IsNullOrWhiteSpace(displayUserRole))
-                    TenantState.UserData.Role = displayUserRole;
-            }
-            else if (!string.IsNullOrWhiteSpace(displayUserName))
-            {
-                var tempUser = new SharedComponents.Rcl.Models.UserDetailsModel
-                {
-                    UserName = displayUserName,
-                    Role = !string.IsNullOrWhiteSpace(displayUserRole) ? displayUserRole : "Administrator"
-                };
-                TenantState.SetSession(TenantState.TenantCode ?? "", TenantState.AuthToken ?? "", TenantState.TenantName ?? "", TenantState.UserCode > 0 ? TenantState.UserCode : 1, TenantState.BranchCode, TenantState.CounterCode, tempUser, (TenantState.UserRightsList as List<SharedComponents.Rcl.Models.User_Rights>) ?? new List<SharedComponents.Rcl.Models.User_Rights>());
-            }
-
-            ExpandSubmenuForCurrentUri();
-        }
-        catch (OperationCanceledException) { return; }
-        catch (Microsoft.JSInterop.JSDisconnectedException) { return; }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"[NavMenu] OnInitializedAsync error: {ex.Message}");
-        }
-    }
+    // OnInitializedAsync is intentionally minimal.
+    // ProtectedSessionStorage requires JS interop which is NOT available during
+    // Blazor Server pre-rendering / first static render; calling it here throws
+    // and gets silently swallowed, leaving displayUserName/Role empty anyway.
+    // All session restoration is done in OnAfterRenderAsync where JS is available.
+    protected override Task OnInitializedAsync() => Task.CompletedTask;
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -1421,6 +1331,9 @@
             StartShiftMonitorTimer();
 
             await RestoreNavSessionAsync();
+
+            // Mark menu as ready AFTER session is restored
+            _menuReady = true;
 
             try
             {
@@ -1452,7 +1365,7 @@
             int? localCntCode = null;
             bool localIsAdmin = false;
 
-            // 2. Read fast multi-tab session from localStorage
+            // 2. Read fast multi-tab session from localStorage (0ms)
             try
             {
                 var sessionJson = await JS.InvokeAsync<string>("medicoSessionHelper.getSession");
@@ -1469,16 +1382,16 @@
                     localCntCode = jObj["cntcode"]?.ToObject<int?>();
                     localIsAdmin = jObj["isAdmin"]?.ToObject<bool>() == true;
 
-                    if (!string.IsNullOrWhiteSpace(localName) && string.IsNullOrWhiteSpace(displayUserName))
+                    if (!string.IsNullOrWhiteSpace(localName) && (string.IsNullOrWhiteSpace(displayUserName) || displayUserName == "User"))
                         displayUserName = localName;
-                    if (!string.IsNullOrWhiteSpace(localRole) && string.IsNullOrWhiteSpace(displayUserRole))
+                    if (!string.IsNullOrWhiteSpace(localRole) && (string.IsNullOrWhiteSpace(displayUserRole) || displayUserRole == "User"))
                         displayUserRole = localRole;
                 }
             }
             catch { }
 
             // 3. Fallback to ProtectedSessionStorage for UserDetails
-            if (string.IsNullOrWhiteSpace(displayUserName) || string.IsNullOrWhiteSpace(displayUserRole))
+            if (string.IsNullOrWhiteSpace(displayUserName) || displayUserName == "User" || string.IsNullOrWhiteSpace(displayUserRole) || displayUserRole == "User")
             {
                 try
                 {
@@ -1496,7 +1409,7 @@
                 }
                 catch { }
 
-                if (string.IsNullOrWhiteSpace(displayUserName))
+                if (string.IsNullOrWhiteSpace(displayUserName) || displayUserName == "User")
                 {
                     try
                     {
@@ -1507,7 +1420,7 @@
                     catch { }
                 }
 
-                if (string.IsNullOrWhiteSpace(displayUserRole))
+                if (string.IsNullOrWhiteSpace(displayUserRole) || displayUserRole == "User")
                 {
                     try
                     {
@@ -1520,47 +1433,43 @@
             }
 
             // 4. Admin Detection
-            bool isTenantAdmin = localIsAdmin;
-            if (!isTenantAdmin)
-            {
-                try
-                {
-                    var ita = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
-                    if (ita.Success && ita.Value) isTenantAdmin = true;
-                }
-                catch { }
-            }
+            bool isExplicitNonAdmin = (!string.IsNullOrWhiteSpace(displayUserRole) && !IsAdminRole(displayUserRole)) ||
+                                      (TenantState.UserData != null && !string.IsNullOrWhiteSpace(TenantState.UserData.Role) && !IsAdminRole(TenantState.UserData.Role));
 
-            bool isAdminDetected = isTenantAdmin ||
-                                  string.Equals(displayUserRole, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(displayUserRole, "Admin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(displayUserRole, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(displayUserRole, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(displayUserRole, "Power User", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(displayUserRole, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(displayUserRole, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+            bool isAdminDetected = false;
+            if (!isExplicitNonAdmin)
+            {
+                isAdminDetected = IsAdminRole(displayUserRole) ||
                                   string.Equals(displayUserName, "admin", StringComparison.OrdinalIgnoreCase) ||
-                                  (TenantState.UserData != null && (string.Equals(TenantState.UserData.Role, "Administrator", StringComparison.OrdinalIgnoreCase) || TenantState.UserData.UserCode == 0));
+                                  (TenantState.UserData != null && IsAdminRole(TenantState.UserData.Role)) ||
+                                  (localIsAdmin && string.IsNullOrWhiteSpace(displayUserRole));
+            }
 
             if (isAdminDetected)
             {
-                isTenantAdmin = true;
+                _isAdminSession = true;
                 displayUserRole = "Administrator";
-                if (string.IsNullOrWhiteSpace(displayUserName)) displayUserName = "Administrator";
+                if (string.IsNullOrWhiteSpace(displayUserName) || displayUserName == "User") displayUserName = "Administrator";
+            }
+            else
+            {
+                _isAdminSession = false;
             }
 
             // 5. Ensure permissions loaded into RoleService and UserRights into TenantState
             List<Booking.Models.RolePermissionItem>? loadedPerms = null;
             List<SharedComponents.Rcl.Models.User_Rights>? loadedRights = null;
 
-            if (isAdminDetected || isTenantAdmin || IsAdmin())
+            if (isAdminDetected)
             {
+                _isAdminSession = true;
                 loadedPerms = RoleCatalogDefaults.GetDefaultPermissions();
                 RoleService.SetUserPermissions(loadedPerms);
                 loadedRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(loadedPerms, localUserCode);
             }
             else
             {
+                _isAdminSession = false;
                 if (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any())
                 {
                     try
@@ -1610,70 +1519,18 @@
                 }
             }
 
-            // 6. Ensure TenantState has UserData & Session
-            string effectiveTenant = !string.IsNullOrEmpty(TenantState.TenantCode) ? TenantState.TenantCode : localTenant;
-            string effectiveToken = !string.IsNullOrEmpty(TenantState.AuthToken) ? TenantState.AuthToken : localToken;
-            string effectiveTenantName = !string.IsNullOrEmpty(TenantState.TenantName) ? TenantState.TenantName : (!string.IsNullOrEmpty(localTenantName) ? localTenantName : "Medico Healthcare Hospital");
-            int effectiveUserCode = TenantState.UserCode > 0 ? TenantState.UserCode : (localUserCode > 0 ? localUserCode : (isAdminDetected ? 0 : 1));
-            int? effectiveBranch = TenantState.BranchCode.HasValue && TenantState.BranchCode.Value > 0 ? TenantState.BranchCode : localBhCode;
-            int? effectiveCounter = TenantState.CounterCode.HasValue && TenantState.CounterCode.Value > 0 ? TenantState.CounterCode : localCntCode;
-
-            if (string.IsNullOrEmpty(effectiveTenant))
-            {
-                try
-                {
-                    var tc = await _sessionStorage.GetAsync<string>("tenant_code");
-                    if (tc.Success && !string.IsNullOrWhiteSpace(tc.Value)) effectiveTenant = tc.Value;
-                }
-                catch { }
-            }
-            if (string.IsNullOrEmpty(effectiveToken))
-            {
-                try
-                {
-                    var at = await _sessionStorage.GetAsync<string>("authToken");
-                    if (at.Success && !string.IsNullOrWhiteSpace(at.Value)) effectiveToken = at.Value;
-                }
-                catch { }
-            }
-            if (string.IsNullOrEmpty(effectiveTenantName))
-            {
-                try
-                {
-                    var tn = await _sessionStorage.GetAsync<string>("tenant_name");
-                    if (tn.Success && !string.IsNullOrWhiteSpace(tn.Value)) effectiveTenantName = tn.Value;
-                }
-                catch { }
-            }
-
-            var finalRights = loadedRights ?? (TenantState.UserRightsList as List<SharedComponents.Rcl.Models.User_Rights>) ?? new List<SharedComponents.Rcl.Models.User_Rights>();
-
+            // 6. Set user display fields if TenantState.UserData is already populated
             if (TenantState.UserData != null)
             {
                 if (string.IsNullOrWhiteSpace(TenantState.UserData.UserName) && !string.IsNullOrWhiteSpace(displayUserName))
                     TenantState.UserData.UserName = displayUserName;
-                if ((string.IsNullOrWhiteSpace(TenantState.UserData.Role) || string.Equals(TenantState.UserData.Role, "User", StringComparison.OrdinalIgnoreCase)) && (isAdminDetected || isTenantAdmin || !string.IsNullOrWhiteSpace(displayUserRole)))
-                    TenantState.UserData.Role = (isAdminDetected || isTenantAdmin || IsAdmin()) ? "Administrator" : displayUserRole;
-            }
-            else if (!string.IsNullOrWhiteSpace(displayUserName) || isTenantAdmin || isAdminDetected || !string.IsNullOrEmpty(effectiveToken))
-            {
-                var finalRole = (isAdminDetected || IsAdmin() || isTenantAdmin) ? "Administrator" : (!string.IsNullOrWhiteSpace(displayUserRole) ? displayUserRole : "User");
-                var finalName = !string.IsNullOrWhiteSpace(displayUserName) ? displayUserName : "Administrator";
-                var tempUser = new SharedComponents.Rcl.Models.UserDetailsModel
-                {
-                    UserName = finalName,
-                    Role = finalRole,
-                    TenantCode = effectiveTenant,
-                    TenantName = effectiveTenantName,
-                    AuthToken = effectiveToken,
-                    UserCode = effectiveUserCode,
-                    BranchCode = effectiveBranch,
-                    CounterCode = effectiveCounter
-                };
-
-                TenantState.SetSession(effectiveTenant, effectiveToken, effectiveTenantName, effectiveUserCode, effectiveBranch, effectiveCounter, tempUser, finalRights);
+                if (isAdminDetected)
+                    TenantState.UserData.Role = "Administrator";
+                else if (!string.IsNullOrWhiteSpace(displayUserRole))
+                    TenantState.UserData.Role = displayUserRole;
             }
 
+            _menuReady = true;
             ExpandSubmenuForCurrentUri();
             await InvokeAsync(StateHasChanged);
         }
@@ -1689,18 +1546,24 @@
     {
         _ = InvokeAsync(() =>
         {
-            if (isDisposed) return;
+            if (isDisposed) return Task.CompletedTask;
             SyncUserProfile();
             if (IsAdmin())
             {
+                _isAdminSession = true;
+                _menuReady = true;
                 if (!RoleService.IsPermissionsLoaded || !RoleService.CurrentUserPermissions.Any())
                 {
                     RoleService.SetUserPermissions(RoleCatalogDefaults.GetDefaultPermissions());
                 }
             }
+            else if (RoleService.IsPermissionsLoaded || (TenantState.UserRightsList != null && TenantState.UserRightsList.Any()))
+            {
+                _menuReady = true;
+            }
             ExpandSubmenuForCurrentUri();
             _ = RefreshActiveShiftStatusAsync();
-            StateHasChanged();
+            return InvokeAsync(StateHasChanged);
         });
     }
 
@@ -1711,7 +1574,10 @@
             if (!string.IsNullOrWhiteSpace(TenantState.UserData.UserName))
                 displayUserName = TenantState.UserData.UserName;
             if (!string.IsNullOrWhiteSpace(TenantState.UserData.Role))
+            {
                 displayUserRole = TenantState.UserData.Role;
+                _isAdminSession = IsAdminRole(displayUserRole);
+            }
         }
     }
 
@@ -2359,15 +2225,49 @@
                path == "token-display";
     }
 
+    private static bool IsAdminRole(string? role)
+    {
+        if (string.IsNullOrEmpty(role)) return false;
+        return string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase);
+    }
+
     private bool IsAdmin()
     {
         var role = TenantState.UserData?.Role;
-        if (string.IsNullOrEmpty(role))
+        if (!string.IsNullOrEmpty(role))
         {
-            role = displayUserRole;
+            bool isAdm = IsAdminRole(role);
+            _isAdminSession = isAdm;
+            return isAdm;
         }
+
+        if (!string.IsNullOrEmpty(displayUserRole))
+        {
+            bool isAdm = IsAdminRole(displayUserRole);
+            _isAdminSession = isAdm;
+            return isAdm;
+        }
+
+        var name = TenantState.UserData?.UserName;
+        if (string.IsNullOrEmpty(name))
+            name = displayUserName;
+
+        if (string.Equals(name, "admin", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(name, "administrator", StringComparison.OrdinalIgnoreCase))
+        {
+            _isAdminSession = true;
+            return true;
+        }
+
         if (string.IsNullOrEmpty(role))
         {
+            // Fallback: decode from JWT claim
             var token = TenantState.AuthToken;
             if (!string.IsNullOrEmpty(token))
             {
@@ -2387,10 +2287,9 @@
                         if (claimsDict != null)
                         {
                             object? rVal = null;
-                            if (claimsDict.TryGetValue("role", out rVal) || claimsDict.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
-                            {
+                            if (claimsDict.TryGetValue("role", out rVal) ||
+                                claimsDict.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
                                 role = rVal?.ToString();
-                            }
                         }
                     }
                 }
@@ -2398,24 +2297,9 @@
             }
         }
 
-        if (string.IsNullOrEmpty(role) || string.Equals(role, "User", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.Equals(displayUserName, "admin", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(TenantState.UserData?.UserName, "admin", StringComparison.OrdinalIgnoreCase) ||
-                (TenantState.UserData != null && TenantState.UserData.UserCode == 0))
-            {
-                return true;
-            }
-        }
-
-        if (string.IsNullOrEmpty(role)) return false;
-        return string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Power User", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase);
+        bool result = IsAdminRole(role);
+        _isAdminSession = result;
+        return result;
     }
 
     private static string NormalizeRightsKey(string? s)
@@ -2424,106 +2308,127 @@
         return s.Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
     }
 
+    // Central alias maps (same as MainLayout so both components agree on synonyms)
+    private static readonly Dictionary<string, string[]> _deptAliases =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["opportal"]         = new[] { "opportal", "op", "reception", "outpatient", "opd" },
+            ["ipportal"]         = new[] { "ipportal", "ip", "ipd", "inpatient", "bed", "ward" },
+            ["operationtheatre"] = new[] { "operationtheatre", "operationtheater", "ot", "surgery" },
+            ["billingportal"]    = new[] { "billingportal", "billing", "cash", "accounts" },
+            ["laboratory"]       = new[] { "laboratory", "lab", "diagnostics" },
+            ["pharmacy"]         = new[] { "pharmacy", "pharma" },
+            ["inventory"]        = new[] { "inventory", "store", "stock", "purchase" },
+            ["doctorportal"]     = new[] { "doctorportal", "doctor", "doctors", "clinical" },
+            ["vitals"]           = new[] { "vitals", "vital", "vitalpage" },
+            ["adminportal"]      = new[] { "adminportal", "admin", "administration", "configuration", "master" },
+        };
+
+    private static readonly Dictionary<string, string[]> _moduleAliases =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["opdashboard"]             = new[] { "opdashboard", "dashboard", "general" },
+            ["patientcheckin"]          = new[] { "patientcheckin", "walkin", "patientcheck_in", "reception", "refferalcasecollection", "refferalcase&collection" },
+            ["outpatientvisiting"]      = new[] { "outpatientvisiting", "outpatient", "opdconsultation", "casesheet", "viewcasesheet" },
+            ["patientmaster"]           = new[] { "patientmaster", "patientregistrationop", "patientregistration", "patient_registration_op" },
+            ["countrymaster"]           = new[] { "countrymaster", "country" },
+            ["statemaster"]             = new[] { "statemaster", "state" },
+            ["citymaster"]              = new[] { "citymaster", "city" },
+            ["areamaster"]              = new[] { "areamaster", "area" },
+            ["servicetypemaster"]       = new[] { "servicetypemaster", "servicetype" },
+            ["slotmaster"]              = new[] { "slotmaster", "slots" },
+            ["optokendisplay"]          = new[] { "optokendisplay", "tokendisplayscreen", "tokendisplay" },
+            ["ipregistration"]          = new[] { "ipregistration", "admissionip", "admission_ip" },
+            ["availablebeds"]           = new[] { "availablebeds", "available_beds" },
+            ["bedtransfer"]             = new[] { "bedtransfer", "bed_transfer" },
+            ["dischargesummary"]        = new[] { "dischargesummary", "dischargesummery", "discharge_summary" },
+            ["nursenotes"]              = new[] { "nursenotes", "nurse_notes" },
+            ["dischargetemplatemaster"] = new[] { "dischargetemplatemaster", "summarytemplates", "summerytemplates" },
+            ["otconsole"]               = new[] { "otconsole", "ot_console" },
+            ["availabletheatre"]        = new[] { "availabletheatre", "availabletheaters", "availabletheater" },
+            ["addot"]                   = new[] { "addot", "otmaster", "add_ot" },
+            ["feecategories"]           = new[] { "feecategories", "otfeecategory", "fee_categories" },
+            ["billingportal"]           = new[] { "billingportal", "billing" },
+            ["duecollection"]           = new[] { "duecollection", "due_collection" },
+            ["patientadvance"]          = new[] { "patientadvance", "advance", "patientadvancecollection" },
+            ["billlist"]                = new[] { "billlist", "billslist", "bills" },
+            ["billingsummary"]          = new[] { "billingsummary", "billsummary" },
+            ["billingreports"]          = new[] { "billingreports", "reports" },
+            ["cashcounter"]             = new[] { "cashcounter", "cash_counter" },
+            ["countershift"]            = new[] { "countershift", "counter_shift" },
+            ["reimbursementco"]         = new[] { "reimbursementco", "reimbursementcompany", "reimbursementcompanymaster" },
+            ["resultsearch"]            = new[] { "resultsearch", "result_search" },
+            ["resultentry"]             = new[] { "resultentry", "result_entry", "labresultentry", "printlabresult" },
+            ["pharmacybilling"]         = new[] { "pharmacybilling", "salesmaster" },
+            ["salesreturn"]             = new[] { "salesreturn", "sales_return" },
+            ["pharmacyreports"]         = new[] { "pharmacyreports", "pharmacy_reports" },
+            ["purchase"]                = new[] { "purchase", "purchasemaster" },
+            ["purchasereturn"]          = new[] { "purchasereturn", "purchase_return" },
+            ["purchasepayments"]        = new[] { "purchasepayments", "purchasepayment", "purchasefilter" },
+            ["transferregister"]        = new[] { "transferregister", "storetransfer" },
+            ["doctorpatientlist"]       = new[] { "doctorpatientlist", "doctor_patient_list", "patientlist" },
+            ["doctorstatus"]            = new[] { "doctorstatus", "doctor_status" },
+            ["doctorsmaster"]           = new[] { "doctorsmaster", "doctors" },
+            ["doctorspecialitymaster"]  = new[] { "doctorspecialitymaster", "doctorspecialtymaster", "doctorspecialties" },
+            ["usermaster"]              = new[] { "usermaster", "user_master" },
+            ["userrights"]              = new[] { "userrights", "userrightstemplate", "user_rights" },
+            ["branchmaster"]            = new[] { "branchmaster", "branch_master" },
+            ["productfeatureregistry"]  = new[] { "productfeatureregistry", "productfeatures" },
+            ["settings"]                = new[] { "settings", "labsettings" },
+        };
+
+    private static HashSet<string> BuildAliasSet(string normalized, Dictionary<string, string[]> map)
+    {
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { normalized };
+        foreach (var (_, aliases) in map)
+        {
+            if (aliases.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                foreach (var a in aliases) set.Add(a);
+                break;
+            }
+        }
+        return set;
+    }
+
     private bool CheckUserRightsForMainModule(string mainModule)
     {
         if (TenantState.UserRightsList == null || !TenantState.UserRightsList.Any()) return false;
-        var normMain = NormalizeRightsKey(mainModule);
+        var norm = NormalizeRightsKey(mainModule);
+        var set  = BuildAliasSet(norm, _deptAliases);
+        set.Add(mainModule);
 
-        var matchingDepts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { mainModule, normMain };
-        if (normMain == "opportal" || normMain == "op") { matchingDepts.Add("op"); matchingDepts.Add("reception"); matchingDepts.Add("outpatient"); matchingDepts.Add("opd"); matchingDepts.Add("opportal"); }
-        if (normMain == "ipportal" || normMain == "ip") { matchingDepts.Add("ip"); matchingDepts.Add("ipd"); matchingDepts.Add("inpatient"); matchingDepts.Add("bed"); matchingDepts.Add("ward"); matchingDepts.Add("ipportal"); }
-        if (normMain == "operationtheatre" || normMain == "ot" || normMain == "operationtheater") { matchingDepts.Add("ot"); matchingDepts.Add("operationtheatre"); matchingDepts.Add("operationtheater"); matchingDepts.Add("surgery"); }
-        if (normMain == "billingportal" || normMain == "billing") { matchingDepts.Add("billing"); matchingDepts.Add("billingportal"); matchingDepts.Add("cash"); matchingDepts.Add("accounts"); }
-        if (normMain == "laboratory" || normMain == "lab") { matchingDepts.Add("lab"); matchingDepts.Add("laboratory"); matchingDepts.Add("diagnostics"); }
-        if (normMain == "pharmacy" || normMain == "pharma") { matchingDepts.Add("pharmacy"); matchingDepts.Add("pharma"); }
-        if (normMain == "inventory" || normMain == "store") { matchingDepts.Add("inventory"); matchingDepts.Add("store"); matchingDepts.Add("stock"); matchingDepts.Add("purchase"); }
-        if (normMain == "doctorportal" || normMain == "doctor") { matchingDepts.Add("doctor"); matchingDepts.Add("doctors"); matchingDepts.Add("doctorportal"); matchingDepts.Add("clinical"); }
-        if (normMain == "vitals" || normMain == "vital") { matchingDepts.Add("vital"); matchingDepts.Add("vitals"); matchingDepts.Add("vitalpage"); }
-        if (normMain == "adminportal" || normMain == "admin") { matchingDepts.Add("admin"); matchingDepts.Add("administration"); matchingDepts.Add("adminportal"); matchingDepts.Add("configuration"); matchingDepts.Add("master"); }
-
-        return TenantState.UserRightsList.Any(r => 
+        bool found = TenantState.UserRightsList.Any(r =>
             (r.ToView || r.ToAdd || r.ToEdit || r.ToDelete || r.ToExport) &&
-            (matchingDepts.Contains(r.Department ?? "") || matchingDepts.Contains(NormalizeRightsKey(r.Department)))
-        );
+            (set.Contains(r.Department ?? "") || set.Contains(NormalizeRightsKey(r.Department))));
+#if DEBUG
+        if (!found && TenantState.UserRightsList.Any())
+            Console.WriteLine($"[NavMenu/Dept MISS] '{mainModule}' → DB depts: " +
+                string.Join(", ", TenantState.UserRightsList.Select(r => r.Department ?? "null").Distinct().OrderBy(x => x)));
+#endif
+        return found;
     }
 
     private bool CheckUserRightsForSubModule(string mainModule, string subModule)
     {
         if (TenantState.UserRightsList == null || !TenantState.UserRightsList.Any()) return false;
-        
         if (!string.IsNullOrWhiteSpace(mainModule) && !HasMainModule(mainModule)) return false;
 
-        var normSub = NormalizeRightsKey(subModule);
+        var norm = NormalizeRightsKey(subModule);
+        var set  = BuildAliasSet(norm, _moduleAliases);
+        set.Add(subModule);
+        set.Add(subModule.Replace(" ", "_"));
+        set.Add(subModule.Replace(" ", ""));
 
-        var matchingSubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { subModule, normSub, subModule.Replace(" ", "_"), subModule.Replace(" ", "") };
-        if (normSub == "opdashboard" || normSub == "dashboard") { matchingSubs.Add("opdashboard"); matchingSubs.Add("dashboard"); matchingSubs.Add("general"); }
-        if (normSub == "patientcheckin") { matchingSubs.Add("patientcheckin"); matchingSubs.Add("walkin"); matchingSubs.Add("patientcheck_in"); matchingSubs.Add("reception"); matchingSubs.Add("refferalcasecollection"); matchingSubs.Add("refferalcase&collection"); }
-        if (normSub == "outpatientvisiting") { matchingSubs.Add("outpatientvisiting"); matchingSubs.Add("outpatient"); matchingSubs.Add("opdconsultation"); matchingSubs.Add("casesheet"); matchingSubs.Add("viewcasesheet"); }
-        if (normSub == "patientmaster") { matchingSubs.Add("patientmaster"); matchingSubs.Add("patientregistrationop"); matchingSubs.Add("patientregistration"); matchingSubs.Add("patient_registration_op"); }
-        if (normSub == "countrymaster") { matchingSubs.Add("countrymaster"); matchingSubs.Add("country"); }
-        if (normSub == "statemaster") { matchingSubs.Add("statemaster"); matchingSubs.Add("state"); }
-        if (normSub == "citymaster") { matchingSubs.Add("citymaster"); matchingSubs.Add("city"); }
-        if (normSub == "areamaster") { matchingSubs.Add("areamaster"); matchingSubs.Add("area"); }
-        if (normSub == "servicetypemaster") { matchingSubs.Add("servicetypemaster"); matchingSubs.Add("servicetype"); }
-        if (normSub == "slotmaster") { matchingSubs.Add("slotmaster"); matchingSubs.Add("slots"); }
-        if (normSub == "optokendisplay" || normSub == "tokendisplayscreen" || normSub == "tokendisplay") { matchingSubs.Add("optokendisplay"); matchingSubs.Add("tokendisplayscreen"); matchingSubs.Add("tokendisplay"); }
-
-        // IP synonyms
-        if (normSub == "ipregistration") { matchingSubs.Add("ipregistration"); matchingSubs.Add("admissionip"); matchingSubs.Add("admission_ip"); }
-        if (normSub == "availablebeds") { matchingSubs.Add("availablebeds"); matchingSubs.Add("available_beds"); }
-        if (normSub == "bedtransfer") { matchingSubs.Add("bedtransfer"); matchingSubs.Add("bed_transfer"); }
-        if (normSub == "dischargesummary") { matchingSubs.Add("dischargesummary"); matchingSubs.Add("dischargesummery"); matchingSubs.Add("discharge_summary"); }
-        if (normSub == "nursenotes") { matchingSubs.Add("nursenotes"); matchingSubs.Add("nurse_notes"); }
-        if (normSub == "summarytemplates" || normSub == "dischargetemplatemaster" || normSub == "summerytemplates") { matchingSubs.Add("summarytemplates"); matchingSubs.Add("dischargetemplatemaster"); matchingSubs.Add("summerytemplates"); }
-
-        // OT synonyms
-        if (normSub == "otconsole") { matchingSubs.Add("otconsole"); matchingSubs.Add("ot_console"); }
-        if (normSub == "availabletheaters" || normSub == "availabletheatre") { matchingSubs.Add("availabletheaters"); matchingSubs.Add("availabletheatre"); matchingSubs.Add("availabletheater"); }
-        if (normSub == "addot" || normSub == "otmaster") { matchingSubs.Add("addot"); matchingSubs.Add("otmaster"); matchingSubs.Add("add_ot"); }
-        if (normSub == "feecategories" || normSub == "otfeecategory") { matchingSubs.Add("feecategories"); matchingSubs.Add("otfeecategory"); matchingSubs.Add("fee_categories"); }
-
-        // Billing synonyms
-        if (normSub == "billingportal" || normSub == "billing") { matchingSubs.Add("billingportal"); matchingSubs.Add("billing"); }
-        if (normSub == "duecollection") { matchingSubs.Add("duecollection"); matchingSubs.Add("due_collection"); }
-        if (normSub == "patientadvance") { matchingSubs.Add("patientadvance"); matchingSubs.Add("advance"); matchingSubs.Add("patientadvancecollection"); }
-        if (normSub == "billlist" || normSub == "billslist" || normSub == "bills") { matchingSubs.Add("billlist"); matchingSubs.Add("billslist"); matchingSubs.Add("bills"); }
-        if (normSub == "billingsummary" || normSub == "billsummary") { matchingSubs.Add("billingsummary"); matchingSubs.Add("billsummary"); }
-        if (normSub == "reports" || normSub == "billingreports") { matchingSubs.Add("reports"); matchingSubs.Add("billingreports"); }
-        if (normSub == "cashcounter") { matchingSubs.Add("cashcounter"); matchingSubs.Add("cash_counter"); }
-        if (normSub == "countershift") { matchingSubs.Add("countershift"); matchingSubs.Add("counter_shift"); }
-        if (normSub == "reimbursementco" || normSub == "reimbursementcompany") { matchingSubs.Add("reimbursementco"); matchingSubs.Add("reimbursementcompany"); matchingSubs.Add("reimbursementcompanymaster"); }
-
-        // Lab synonyms
-        if (normSub == "resultsearch") { matchingSubs.Add("resultsearch"); matchingSubs.Add("result_search"); }
-        if (normSub == "resultentry") { matchingSubs.Add("resultentry"); matchingSubs.Add("result_entry"); matchingSubs.Add("labresultentry"); matchingSubs.Add("printlabresult"); }
-
-        // Pharmacy & Inventory
-        if (normSub == "pharmacybilling" || normSub == "salesmaster") { matchingSubs.Add("pharmacybilling"); matchingSubs.Add("salesmaster"); }
-        if (normSub == "salesreturn") { matchingSubs.Add("salesreturn"); matchingSubs.Add("sales_return"); }
-        if (normSub == "pharmacyreports") { matchingSubs.Add("pharmacyreports"); matchingSubs.Add("pharmacy_reports"); }
-        if (normSub == "purchase" || normSub == "purchasemaster") { matchingSubs.Add("purchase"); matchingSubs.Add("purchasemaster"); }
-        if (normSub == "purchaseorder") { matchingSubs.Add("purchaseorder"); matchingSubs.Add("purchase_order"); }
-        if (normSub == "purchasereturn") { matchingSubs.Add("purchasereturn"); matchingSubs.Add("purchase_return"); }
-        if (normSub == "purchasepayment" || normSub == "purchasepayments" || normSub == "purchasefilter") { matchingSubs.Add("purchasepayment"); matchingSubs.Add("purchasepayments"); matchingSubs.Add("purchasefilter"); }
-        if (normSub == "transferregister" || normSub == "storetransfer") { matchingSubs.Add("transferregister"); matchingSubs.Add("storetransfer"); }
-
-        // Doctor Portal synonyms
-        if (normSub == "doctorpatientlist") { matchingSubs.Add("doctorpatientlist"); matchingSubs.Add("doctor_patient_list"); matchingSubs.Add("patientlist"); }
-        if (normSub == "doctorstatus") { matchingSubs.Add("doctorstatus"); matchingSubs.Add("doctor_status"); }
-        if (normSub == "doctorsmaster" || normSub == "doctors") { matchingSubs.Add("doctorsmaster"); matchingSubs.Add("doctors"); }
-        if (normSub == "doctorspecialties" || normSub == "doctorspecialitymaster" || normSub == "doctorspecialtymaster") { matchingSubs.Add("doctorspecialties"); matchingSubs.Add("doctorspecialitymaster"); matchingSubs.Add("doctorspecialtymaster"); }
-
-        // Admin Portal synonyms
-        if (normSub == "usermaster") { matchingSubs.Add("usermaster"); matchingSubs.Add("user_master"); }
-        if (normSub == "userrights" || normSub == "userrightstemplate") { matchingSubs.Add("userrights"); matchingSubs.Add("userrightstemplate"); matchingSubs.Add("user_rights"); }
-        if (normSub == "branchmaster") { matchingSubs.Add("branchmaster"); matchingSubs.Add("branch_master"); }
-        if (normSub == "productfeatureregistry" || normSub == "productfeatures") { matchingSubs.Add("productfeatureregistry"); matchingSubs.Add("productfeatures"); }
-        if (normSub == "settings" || normSub == "labsettings") { matchingSubs.Add("settings"); matchingSubs.Add("labsettings"); }
-
-        return TenantState.UserRightsList.Any(r =>
+        bool found = TenantState.UserRightsList.Any(r =>
             (r.ToView || r.ToAdd || r.ToEdit || r.ToDelete || r.ToExport) &&
-            (matchingSubs.Contains(r.ModuleName ?? "") || matchingSubs.Contains(NormalizeRightsKey(r.ModuleName)))
-        );
+            (set.Contains(r.ModuleName ?? "") || set.Contains(NormalizeRightsKey(r.ModuleName))));
+#if DEBUG
+        if (!found && TenantState.UserRightsList.Any(r => r.ToView || r.ToAdd || r.ToEdit || r.ToDelete || r.ToExport))
+            Console.WriteLine($"[NavMenu/Mod MISS] '{mainModule}' > '{subModule}' → DB pairs: " +
+                string.Join(", ", TenantState.UserRightsList.Select(r => $"{r.Department}|{r.ModuleName}").Distinct().OrderBy(x => x)));
+#endif
+        return found;
     }
 
     private bool CheckUserRightsForAction(string mainModule, string subModule, string action)

@@ -499,6 +499,7 @@
     private bool isDisposed = false;
     private bool _hasSessionValidated = false;
     private bool _isCircuitAborted = false;
+    private bool _isAdminSession = false;   // sticky: once true stays true for the lifetime of this circuit
     private NavMenu? _navMenuRef;
     private bool isSidebarVisible = false;
     private int sessionRenderVersion = 0;
@@ -1043,49 +1044,86 @@
         }
     }
 
+    /// <summary>
+    /// Returns true when the current circuit has been confirmed as an administrator session.
+    /// Uses a sticky flag (_isAdminSession) so the check is cheap after the first resolution.
+    /// Admin is determined ONLY from trusted sources: the stored Role string, or the JWT role
+    /// claim. A failed/missing user_code read never grants admin.
+    /// </summary>
     private bool IsAdmin()
     {
         var role = TenantState.UserData?.Role;
-        if (string.IsNullOrEmpty(role))
+        if (!string.IsNullOrEmpty(role))
         {
-            var token = TenantState.AuthToken;
-            if (!string.IsNullOrEmpty(token))
+            bool result = IsAdminRole(role);
+            _isAdminSession = result;
+            return result;
+        }
+
+        if (_isAdminSession) return true;
+
+        // 2. Fallback: decode role from JWT claim if role string is missing
+        var token = TenantState.AuthToken;
+        if (!string.IsNullOrEmpty(token))
+        {
+            try
             {
-                try
+                var segments = token.Split('.');
+                if (segments.Length >= 2)
                 {
-                    var segments = token.Split('.');
-                    if (segments.Length >= 2)
+                    var payload = segments[1];
+                    switch (payload.Length % 4)
                     {
-                        var payload = segments[1];
-                        switch (payload.Length % 4)
+                        case 2: payload += "=="; break;
+                        case 3: payload += "="; break;
+                    }
+                    var jsonBytes = Convert.FromBase64String(payload);
+                    var claimsDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
+                    if (claimsDict != null)
+                    {
+                        object? rVal = null;
+                        if (claimsDict.TryGetValue("role", out rVal) ||
+                            claimsDict.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
                         {
-                            case 2: payload += "=="; break;
-                            case 3: payload += "="; break;
-                        }
-                        var jsonBytes = Convert.FromBase64String(payload);
-                        var claimsDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
-                        if (claimsDict != null)
-                        {
-                            object? rVal = null;
-                            if (claimsDict.TryGetValue("role", out rVal) || claimsDict.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
-                            {
-                                role = rVal?.ToString();
-                            }
+                            role = rVal?.ToString();
                         }
                     }
                 }
-                catch { }
             }
+            catch { }
         }
 
         if (string.IsNullOrEmpty(role)) return false;
-        return string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Power User", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase);
+
+        bool isAdm = IsAdminRole(role);
+        _isAdminSession = isAdm;
+        return isAdm;
+    }
+
+    /// <summary>
+    /// Reads a value from ProtectedSessionStorage with up to <paramref name="maxAttempts"/> retries
+    /// on transient failures. JSDisconnectedException / OperationCanceledException bubble up
+    /// immediately so the caller can abort the circuit.
+    /// </summary>
+    private async Task<Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedBrowserStorageResult<T>>
+        ReadSessionAsync<T>(string key, int maxAttempts = 2)
+    {
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            try
+            {
+                return await _sessionStorage.GetAsync<T>(key);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Microsoft.JSInterop.JSDisconnectedException) { throw; }
+            catch
+            {
+                if (attempt == maxAttempts)
+                    return default;   // return empty result after last attempt
+                await Task.Delay(80 * attempt);
+            }
+        }
+        return default;
     }
 
     private static string NormalizeRightsKey(string? s)
@@ -1094,106 +1132,158 @@
         return s.Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
     }
 
+    // ── Central rights-mapping dictionary ──────────────────────────────────────
+    // Key  = the normalized canonical name used in code (HasRight / HasMainModule calls).
+    // Value = all normalized aliases that may appear in the DB Department / ModuleName column.
+    // Add new aliases here instead of scattering if-blocks throughout the code.
+    // ──────────────────────────────────────────────────────────────────────────
+    private static readonly Dictionary<string, string[]> _deptAliases =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["opportal"]          = new[] { "opportal", "op", "reception", "outpatient", "opd" },
+            ["ipportal"]          = new[] { "ipportal", "ip", "ipd", "inpatient", "bed", "ward" },
+            ["operationtheatre"]  = new[] { "operationtheatre", "operationtheater", "ot", "surgery" },
+            ["billingportal"]     = new[] { "billingportal", "billing", "cash", "accounts" },
+            ["laboratory"]        = new[] { "laboratory", "lab", "diagnostics" },
+            ["pharmacy"]          = new[] { "pharmacy", "pharma" },
+            ["inventory"]         = new[] { "inventory", "store", "stock", "purchase" },
+            ["doctorportal"]      = new[] { "doctorportal", "doctor", "doctors", "clinical" },
+            ["vitals"]            = new[] { "vitals", "vital", "vitalpage" },
+            ["adminportal"]       = new[] { "adminportal", "admin", "administration", "configuration", "master" },
+        };
+
+    private static readonly Dictionary<string, string[]> _moduleAliases =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            // OP Portal
+            ["opdashboard"]               = new[] { "opdashboard", "dashboard", "general" },
+            ["patientcheckin"]            = new[] { "patientcheckin", "walkin", "patientcheck_in", "reception", "refferalcasecollection", "refferalcase&collection" },
+            ["outpatientvisiting"]        = new[] { "outpatientvisiting", "outpatient", "opdconsultation", "casesheet", "viewcasesheet" },
+            ["patientmaster"]             = new[] { "patientmaster", "patientregistrationop", "patientregistration", "patient_registration_op" },
+            ["countrymaster"]             = new[] { "countrymaster", "country" },
+            ["statemaster"]               = new[] { "statemaster", "state" },
+            ["citymaster"]                = new[] { "citymaster", "city" },
+            ["areamaster"]                = new[] { "areamaster", "area" },
+            ["servicetypemaster"]         = new[] { "servicetypemaster", "servicetype" },
+            ["slotmaster"]                = new[] { "slotmaster", "slots" },
+            ["optokendisplay"]            = new[] { "optokendisplay", "tokendisplayscreen", "tokendisplay" },
+            // IP Portal
+            ["ipregistration"]            = new[] { "ipregistration", "admissionip", "admission_ip" },
+            ["availablebeds"]             = new[] { "availablebeds", "available_beds" },
+            ["bedtransfer"]               = new[] { "bedtransfer", "bed_transfer" },
+            ["dischargesummary"]          = new[] { "dischargesummary", "dischargesummery", "discharge_summary" },
+            ["nursenotes"]                = new[] { "nursenotes", "nurse_notes" },
+            ["dischargetemplatemaster"]   = new[] { "dischargetemplatemaster", "summarytemplates", "summerytemplates" },
+            // OT
+            ["otconsole"]                 = new[] { "otconsole", "ot_console" },
+            ["availabletheatre"]          = new[] { "availabletheatre", "availabletheaters", "availabletheater" },
+            ["addot"]                     = new[] { "addot", "otmaster", "add_ot" },
+            ["feecategories"]             = new[] { "feecategories", "otfeecategory", "fee_categories" },
+            // Billing
+            ["billingportal"]             = new[] { "billingportal", "billing" },
+            ["duecollection"]             = new[] { "duecollection", "due_collection" },
+            ["patientadvance"]            = new[] { "patientadvance", "advance", "patientadvancecollection" },
+            ["billlist"]                  = new[] { "billlist", "billslist", "bills" },
+            ["billingsummary"]            = new[] { "billingsummary", "billsummary" },
+            ["billingreports"]            = new[] { "billingreports", "reports" },
+            ["cashcounter"]               = new[] { "cashcounter", "cash_counter" },
+            ["countershift"]              = new[] { "countershift", "counter_shift" },
+            ["reimbursementco"]           = new[] { "reimbursementco", "reimbursementcompany", "reimbursementcompanymaster" },
+            // Lab
+            ["resultsearch"]              = new[] { "resultsearch", "result_search" },
+            ["resultentry"]               = new[] { "resultentry", "result_entry", "labresultentry", "printlabresult" },
+            // Pharmacy & Inventory
+            ["pharmacybilling"]           = new[] { "pharmacybilling", "salesmaster" },
+            ["salesreturn"]               = new[] { "salesreturn", "sales_return" },
+            ["pharmacyreports"]           = new[] { "pharmacyreports", "pharmacy_reports" },
+            ["purchase"]                  = new[] { "purchase", "purchasemaster" },
+            ["purchasereturn"]            = new[] { "purchasereturn", "purchase_return" },
+            ["purchasepayments"]          = new[] { "purchasepayments", "purchasepayment", "purchasefilter" },
+            ["transferregister"]          = new[] { "transferregister", "storetransfer" },
+            // Doctor Portal
+            ["doctorpatientlist"]         = new[] { "doctorpatientlist", "doctor_patient_list", "patientlist" },
+            ["doctorstatus"]              = new[] { "doctorstatus", "doctor_status" },
+            ["doctorsmaster"]             = new[] { "doctorsmaster", "doctors" },
+            ["doctorspecialitymaster"]    = new[] { "doctorspecialitymaster", "doctorspecialtymaster", "doctorspecialties" },
+            // Admin Portal
+            ["usermaster"]                = new[] { "usermaster", "user_master" },
+            ["userrights"]                = new[] { "userrights", "userrightstemplate", "user_rights" },
+            ["branchmaster"]              = new[] { "branchmaster", "branch_master" },
+            ["productfeatureregistry"]    = new[] { "productfeatureregistry", "productfeatures" },
+            ["settings"]                  = new[] { "settings", "labsettings" },
+        };
+
+    private static HashSet<string> BuildAliasSet(string normalized,
+        Dictionary<string, string[]> aliasMap)
+    {
+        // Start with the original (normalized) key
+        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { normalized };
+        foreach (var (canonical, aliases) in aliasMap)
+        {
+            if (aliases.Contains(normalized, StringComparer.OrdinalIgnoreCase))
+            {
+                foreach (var a in aliases) set.Add(a);
+                break;
+            }
+        }
+        return set;
+    }
+
     private bool CheckUserRightsForMainModule(string mainModule)
     {
         if (TenantState.UserRightsList == null || !TenantState.UserRightsList.Any()) return false;
         var normMain = NormalizeRightsKey(mainModule);
+        var matchingDepts = BuildAliasSet(normMain, _deptAliases);
+        // Always include the raw value from the caller in case it is not in our map
+        matchingDepts.Add(mainModule);
 
-        var matchingDepts = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { mainModule, normMain };
-        if (normMain == "opportal" || normMain == "op") { matchingDepts.Add("op"); matchingDepts.Add("reception"); matchingDepts.Add("outpatient"); matchingDepts.Add("opd"); matchingDepts.Add("opportal"); }
-        if (normMain == "ipportal" || normMain == "ip") { matchingDepts.Add("ip"); matchingDepts.Add("ipd"); matchingDepts.Add("inpatient"); matchingDepts.Add("bed"); matchingDepts.Add("ward"); matchingDepts.Add("ipportal"); }
-        if (normMain == "operationtheatre" || normMain == "ot" || normMain == "operationtheater") { matchingDepts.Add("ot"); matchingDepts.Add("operationtheatre"); matchingDepts.Add("operationtheater"); matchingDepts.Add("surgery"); }
-        if (normMain == "billingportal" || normMain == "billing") { matchingDepts.Add("billing"); matchingDepts.Add("billingportal"); matchingDepts.Add("cash"); matchingDepts.Add("accounts"); }
-        if (normMain == "laboratory" || normMain == "lab") { matchingDepts.Add("lab"); matchingDepts.Add("laboratory"); matchingDepts.Add("diagnostics"); }
-        if (normMain == "pharmacy" || normMain == "pharma") { matchingDepts.Add("pharmacy"); matchingDepts.Add("pharma"); }
-        if (normMain == "inventory" || normMain == "store") { matchingDepts.Add("inventory"); matchingDepts.Add("store"); matchingDepts.Add("stock"); matchingDepts.Add("purchase"); }
-        if (normMain == "doctorportal" || normMain == "doctor") { matchingDepts.Add("doctor"); matchingDepts.Add("doctors"); matchingDepts.Add("doctorportal"); matchingDepts.Add("clinical"); }
-        if (normMain == "vitals" || normMain == "vital") { matchingDepts.Add("vital"); matchingDepts.Add("vitals"); matchingDepts.Add("vitalpage"); }
-        if (normMain == "adminportal" || normMain == "admin") { matchingDepts.Add("admin"); matchingDepts.Add("administration"); matchingDepts.Add("adminportal"); matchingDepts.Add("configuration"); matchingDepts.Add("master"); }
-
-        return TenantState.UserRightsList.Any(r => 
+        bool found = TenantState.UserRightsList.Any(r =>
             (r.ToView || r.ToAdd || r.ToEdit || r.ToDelete || r.ToExport) &&
-            (matchingDepts.Contains(r.Department ?? "") || matchingDepts.Contains(NormalizeRightsKey(r.Department)))
-        );
+            (matchingDepts.Contains(r.Department ?? "") ||
+             matchingDepts.Contains(NormalizeRightsKey(r.Department))));
+
+#if DEBUG
+        if (!found && TenantState.UserRightsList.Any())
+        {
+            var actualDepts = TenantState.UserRightsList
+                .Select(r => r.Department ?? "(null)")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x);
+            Console.WriteLine($"[Rights/Dept MISS] '{mainModule}' not matched. DB depts: {string.Join(", ", actualDepts)}");
+        }
+#endif
+        return found;
     }
 
     private bool CheckUserRightsForSubModule(string mainModule, string subModule)
     {
         if (TenantState.UserRightsList == null || !TenantState.UserRightsList.Any()) return false;
-        
         if (!string.IsNullOrWhiteSpace(mainModule) && !HasMainModule(mainModule)) return false;
 
         var normSub = NormalizeRightsKey(subModule);
+        var matchingSubs = BuildAliasSet(normSub, _moduleAliases);
+        // Always include the raw value and common transforms
+        matchingSubs.Add(subModule);
+        matchingSubs.Add(subModule.Replace(" ", "_"));
+        matchingSubs.Add(subModule.Replace(" ", ""));
 
-        var matchingSubs = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { subModule, normSub, subModule.Replace(" ", "_"), subModule.Replace(" ", "") };
-        if (normSub == "opdashboard" || normSub == "dashboard") { matchingSubs.Add("opdashboard"); matchingSubs.Add("dashboard"); matchingSubs.Add("general"); }
-        if (normSub == "patientcheckin") { matchingSubs.Add("patientcheckin"); matchingSubs.Add("walkin"); matchingSubs.Add("patientcheck_in"); matchingSubs.Add("reception"); matchingSubs.Add("refferalcasecollection"); matchingSubs.Add("refferalcase&collection"); }
-        if (normSub == "outpatientvisiting") { matchingSubs.Add("outpatientvisiting"); matchingSubs.Add("outpatient"); matchingSubs.Add("opdconsultation"); matchingSubs.Add("casesheet"); matchingSubs.Add("viewcasesheet"); }
-        if (normSub == "patientmaster") { matchingSubs.Add("patientmaster"); matchingSubs.Add("patientregistrationop"); matchingSubs.Add("patientregistration"); matchingSubs.Add("patient_registration_op"); }
-        if (normSub == "countrymaster") { matchingSubs.Add("countrymaster"); matchingSubs.Add("country"); }
-        if (normSub == "statemaster") { matchingSubs.Add("statemaster"); matchingSubs.Add("state"); }
-        if (normSub == "citymaster") { matchingSubs.Add("citymaster"); matchingSubs.Add("city"); }
-        if (normSub == "areamaster") { matchingSubs.Add("areamaster"); matchingSubs.Add("area"); }
-        if (normSub == "servicetypemaster") { matchingSubs.Add("servicetypemaster"); matchingSubs.Add("servicetype"); }
-        if (normSub == "slotmaster") { matchingSubs.Add("slotmaster"); matchingSubs.Add("slots"); }
-        if (normSub == "optokendisplay" || normSub == "tokendisplayscreen" || normSub == "tokendisplay") { matchingSubs.Add("optokendisplay"); matchingSubs.Add("tokendisplayscreen"); matchingSubs.Add("tokendisplay"); }
-
-        // IP synonyms
-        if (normSub == "ipregistration") { matchingSubs.Add("ipregistration"); matchingSubs.Add("admissionip"); matchingSubs.Add("admission_ip"); }
-        if (normSub == "availablebeds") { matchingSubs.Add("availablebeds"); matchingSubs.Add("available_beds"); }
-        if (normSub == "bedtransfer") { matchingSubs.Add("bedtransfer"); matchingSubs.Add("bed_transfer"); }
-        if (normSub == "dischargesummary") { matchingSubs.Add("dischargesummary"); matchingSubs.Add("dischargesummery"); matchingSubs.Add("discharge_summary"); }
-        if (normSub == "nursenotes") { matchingSubs.Add("nursenotes"); matchingSubs.Add("nurse_notes"); }
-        if (normSub == "summarytemplates" || normSub == "dischargetemplatemaster" || normSub == "summerytemplates") { matchingSubs.Add("summarytemplates"); matchingSubs.Add("dischargetemplatemaster"); matchingSubs.Add("summerytemplates"); }
-
-        // OT synonyms
-        if (normSub == "otconsole") { matchingSubs.Add("otconsole"); matchingSubs.Add("ot_console"); }
-        if (normSub == "availabletheaters" || normSub == "availabletheatre") { matchingSubs.Add("availabletheaters"); matchingSubs.Add("availabletheatre"); matchingSubs.Add("availabletheater"); }
-        if (normSub == "addot" || normSub == "otmaster") { matchingSubs.Add("addot"); matchingSubs.Add("otmaster"); matchingSubs.Add("add_ot"); }
-        if (normSub == "feecategories" || normSub == "otfeecategory") { matchingSubs.Add("feecategories"); matchingSubs.Add("otfeecategory"); matchingSubs.Add("fee_categories"); }
-
-        // Billing synonyms
-        if (normSub == "billingportal" || normSub == "billing") { matchingSubs.Add("billingportal"); matchingSubs.Add("billing"); }
-        if (normSub == "duecollection") { matchingSubs.Add("duecollection"); matchingSubs.Add("due_collection"); }
-        if (normSub == "patientadvance") { matchingSubs.Add("patientadvance"); matchingSubs.Add("advance"); matchingSubs.Add("patientadvancecollection"); }
-        if (normSub == "billlist" || normSub == "billslist" || normSub == "bills") { matchingSubs.Add("billlist"); matchingSubs.Add("billslist"); matchingSubs.Add("bills"); }
-        if (normSub == "billingsummary" || normSub == "billsummary") { matchingSubs.Add("billingsummary"); matchingSubs.Add("billsummary"); }
-        if (normSub == "reports" || normSub == "billingreports") { matchingSubs.Add("reports"); matchingSubs.Add("billingreports"); }
-        if (normSub == "cashcounter") { matchingSubs.Add("cashcounter"); matchingSubs.Add("cash_counter"); }
-        if (normSub == "countershift") { matchingSubs.Add("countershift"); matchingSubs.Add("counter_shift"); }
-        if (normSub == "reimbursementco" || normSub == "reimbursementcompany") { matchingSubs.Add("reimbursementco"); matchingSubs.Add("reimbursementcompany"); matchingSubs.Add("reimbursementcompanymaster"); }
-
-        // Lab synonyms
-        if (normSub == "resultsearch") { matchingSubs.Add("resultsearch"); matchingSubs.Add("result_search"); }
-        if (normSub == "resultentry") { matchingSubs.Add("resultentry"); matchingSubs.Add("result_entry"); matchingSubs.Add("labresultentry"); matchingSubs.Add("printlabresult"); }
-
-        // Pharmacy & Inventory
-        if (normSub == "pharmacybilling" || normSub == "salesmaster") { matchingSubs.Add("pharmacybilling"); matchingSubs.Add("salesmaster"); }
-        if (normSub == "salesreturn") { matchingSubs.Add("salesreturn"); matchingSubs.Add("sales_return"); }
-        if (normSub == "pharmacyreports") { matchingSubs.Add("pharmacyreports"); matchingSubs.Add("pharmacy_reports"); }
-        if (normSub == "purchase" || normSub == "purchasemaster") { matchingSubs.Add("purchase"); matchingSubs.Add("purchasemaster"); }
-        if (normSub == "purchaseorder") { matchingSubs.Add("purchaseorder"); matchingSubs.Add("purchase_order"); }
-        if (normSub == "purchasereturn") { matchingSubs.Add("purchasereturn"); matchingSubs.Add("purchase_return"); }
-        if (normSub == "purchasepayment" || normSub == "purchasepayments" || normSub == "purchasefilter") { matchingSubs.Add("purchasepayment"); matchingSubs.Add("purchasepayments"); matchingSubs.Add("purchasefilter"); }
-        if (normSub == "transferregister" || normSub == "storetransfer") { matchingSubs.Add("transferregister"); matchingSubs.Add("storetransfer"); }
-
-        // Doctor Portal synonyms
-        if (normSub == "doctorpatientlist") { matchingSubs.Add("doctorpatientlist"); matchingSubs.Add("doctor_patient_list"); matchingSubs.Add("patientlist"); }
-        if (normSub == "doctorstatus") { matchingSubs.Add("doctorstatus"); matchingSubs.Add("doctor_status"); }
-        if (normSub == "doctorsmaster" || normSub == "doctors") { matchingSubs.Add("doctorsmaster"); matchingSubs.Add("doctors"); }
-        if (normSub == "doctorspecialties" || normSub == "doctorspecialitymaster" || normSub == "doctorspecialtymaster") { matchingSubs.Add("doctorspecialties"); matchingSubs.Add("doctorspecialitymaster"); matchingSubs.Add("doctorspecialtymaster"); }
-
-        // Admin Portal synonyms
-        if (normSub == "usermaster") { matchingSubs.Add("usermaster"); matchingSubs.Add("user_master"); }
-        if (normSub == "userrights" || normSub == "userrightstemplate") { matchingSubs.Add("userrights"); matchingSubs.Add("userrightstemplate"); matchingSubs.Add("user_rights"); }
-        if (normSub == "branchmaster") { matchingSubs.Add("branchmaster"); matchingSubs.Add("branch_master"); }
-        if (normSub == "productfeatureregistry" || normSub == "productfeatures") { matchingSubs.Add("productfeatureregistry"); matchingSubs.Add("productfeatures"); }
-        if (normSub == "settings" || normSub == "labsettings") { matchingSubs.Add("settings"); matchingSubs.Add("labsettings"); }
-
-        return TenantState.UserRightsList.Any(r =>
+        bool found = TenantState.UserRightsList.Any(r =>
             (r.ToView || r.ToAdd || r.ToEdit || r.ToDelete || r.ToExport) &&
-            (matchingSubs.Contains(r.ModuleName ?? "") || matchingSubs.Contains(NormalizeRightsKey(r.ModuleName)))
-        );
+            (matchingSubs.Contains(r.ModuleName ?? "") ||
+             matchingSubs.Contains(NormalizeRightsKey(r.ModuleName))));
+
+#if DEBUG
+        if (!found && TenantState.UserRightsList.Any(r =>
+            (r.ToView || r.ToAdd || r.ToEdit || r.ToDelete || r.ToExport)))
+        {
+            var actualMods = TenantState.UserRightsList
+                .Select(r => $"{r.Department}|{r.ModuleName}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(x => x);
+            Console.WriteLine($"[Rights/Module MISS] '{mainModule}' > '{subModule}' not matched. DB pairs: {string.Join(", ", actualMods)}");
+        }
+#endif
+        return found;
     }
 
     private bool CheckUserRightsForAction(string mainModule, string subModule, string action)
@@ -1461,13 +1551,53 @@
             List<SharedComponents.Rcl.Models.User_Rights> rights = new();
             List<Booking.Models.RolePermissionItem>? effectivePerms = null;
 
-            // 1. Read UserDetails from Session Storage (immediate, no loops, no delay)
+            string directUserName = "";
+            string directUserRole = "";
+            string loginInput = "";
+            int directUserCode = 0;
+            string tenantCode = "";
+            string authToken = "";
+            string tenantName = "";
+            bool isTenantAdminSession = false;
+            bool isBranchConfirmed = false;
+            int? localBhCode = null;
+            int? localCntCode = null;
+
+            // 1. Fast Single-Pass Multi-Tab Session Read (0ms LocalStorage via JS)
+            try
+            {
+                var localSessionJson = await JS.InvokeAsync<string>("medicoSessionHelper.getSession");
+                if (!string.IsNullOrWhiteSpace(localSessionJson))
+                {
+                    var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
+                    authToken = jObj["authToken"]?.ToString() ?? "";
+                    tenantCode = jObj["tenant_code"]?.ToString() ?? "";
+                    tenantName = jObj["tenant_name"]?.ToString() ?? "";
+                    directUserName = jObj["user_name"]?.ToString() ?? "";
+                    loginInput = jObj["login_input"]?.ToString() ?? "";
+                    directUserRole = jObj["user_role"]?.ToString() ?? "";
+                    directUserCode = jObj["user_code"]?.ToObject<int>() ?? 0;
+                    isTenantAdminSession = jObj["isAdmin"]?.ToObject<bool>() == true;
+                    isBranchConfirmed = jObj["session_branch_confirmed"]?.ToObject<bool>() == true;
+                    localBhCode = jObj["bhcode"]?.ToObject<int?>();
+                    localCntCode = jObj["cntcode"]?.ToObject<int?>();
+                }
+            }
+            catch { }
+
+            // 2. Read UserDetails from Session Storage as supplementary
             try
             {
                 var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
                 if (userResult.Success && userResult.Value != null)
                 {
                     user = userResult.Value;
+                    if (string.IsNullOrEmpty(directUserName) && !string.IsNullOrWhiteSpace(user.UserName)) directUserName = user.UserName;
+                    if (string.IsNullOrEmpty(directUserRole) && !string.IsNullOrWhiteSpace(user.Role)) directUserRole = user.Role;
+                    if (string.IsNullOrEmpty(tenantCode) && !string.IsNullOrWhiteSpace(user.TenantCode)) tenantCode = user.TenantCode;
+                    if (string.IsNullOrEmpty(authToken) && !string.IsNullOrWhiteSpace(user.AuthToken)) authToken = user.AuthToken;
+                    if (string.IsNullOrEmpty(tenantName) && !string.IsNullOrWhiteSpace(user.TenantName)) tenantName = user.TenantName;
+                    if (directUserCode == 0 && user.UserCode.HasValue) directUserCode = user.UserCode.Value;
                 }
             }
             catch (OperationCanceledException)
@@ -1485,167 +1615,171 @@
                 Console.WriteLine($"[MainLayout] Error reading UserDetails: {ex.Message}");
             }
 
-            // 2. Read direct string/int keys as resilience fallbacks
-            string directUserName = "";
-            string directUserRole = "";
-            string loginInput = "";
-            int directUserCode = 0;
-            string tenantCode = "";
-            string authToken = "";
-            string tenantName = "";
-
-            try
-            {
-                var unRes = await _sessionStorage.GetAsync<string>("user_name");
-                if (unRes.Success && !string.IsNullOrWhiteSpace(unRes.Value)) 
-                    directUserName = unRes.Value;
-            }
-            catch { }
-
-            try
-            {
-                var liRes = await _sessionStorage.GetAsync<string>("login_input");
-                if (liRes.Success && !string.IsNullOrWhiteSpace(liRes.Value))
-                    loginInput = liRes.Value;
-            }
-            catch { }
-
-            try
-            {
-                var urRes = await _sessionStorage.GetAsync<string>("user_role");
-                if (urRes.Success && !string.IsNullOrWhiteSpace(urRes.Value)) directUserRole = urRes.Value;
-            }
-            catch { }
-
-            bool isTenantAdminSession = false;
-            try
-            {
-                var itaRes = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
-                if (itaRes.Success && itaRes.Value) isTenantAdminSession = true;
-            }
-            catch { }
-
-            try
-            {
-                var ucRes = await _sessionStorage.GetAsync<int>("user_code");
-                if (ucRes.Success) directUserCode = ucRes.Value;
-            }
-            catch { }
-
-            try
-            {
-                var tcRes = await _sessionStorage.GetAsync<string>("tenant_code");
-                if (tcRes.Success && !string.IsNullOrWhiteSpace(tcRes.Value)) tenantCode = tcRes.Value;
-            }
-            catch { }
-
-            try
-            {
-                var atRes = await _sessionStorage.GetAsync<string>("authToken");
-                if (atRes.Success && !string.IsNullOrWhiteSpace(atRes.Value)) authToken = atRes.Value;
-            }
-            catch { }
-
-            try
-            {
-                var tnRes = await _sessionStorage.GetAsync<string>("tenant_name");
-                if (tnRes.Success && !string.IsNullOrWhiteSpace(tnRes.Value)) tenantName = tnRes.Value;
-            }
-            catch { }
-
-            bool isBranchConfirmed = false;
-            try
-            {
-                var confRes = await _sessionStorage.GetAsync<bool>("session_branch_confirmed");
-                isBranchConfirmed = confRes.Success && confRes.Value;
-            }
-            catch { }
-
-            // 3. Multi-Tab Resilience: If session storage is empty, check localStorage
-            if (string.IsNullOrEmpty(authToken) || string.IsNullOrEmpty(tenantCode) || (user == null && directUserCode == 0 && !isTenantAdminSession))
+            // 3. Fallbacks from direct session keys if still missing
+            if (!isTenantAdminSession)
             {
                 try
                 {
-                    var localSessionJson = await JS.InvokeAsync<string>("medicoSessionHelper.getSession");
-                    if (!string.IsNullOrWhiteSpace(localSessionJson))
-                    {
-                        var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
-                        if (string.IsNullOrEmpty(authToken)) authToken = jObj["authToken"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(tenantCode)) tenantCode = jObj["tenant_code"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(tenantName)) tenantName = jObj["tenant_name"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(directUserName)) directUserName = jObj["user_name"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(loginInput)) loginInput = jObj["login_input"]?.ToString() ?? "";
-                        if (string.IsNullOrEmpty(directUserRole)) directUserRole = jObj["user_role"]?.ToString() ?? "";
-                        if (directUserCode == 0) directUserCode = jObj["user_code"]?.ToObject<int>() ?? 0;
-                        if (!isTenantAdminSession) isTenantAdminSession = jObj["isAdmin"]?.ToObject<bool>() == true;
-                        if (!isBranchConfirmed) isBranchConfirmed = jObj["session_branch_confirmed"]?.ToObject<bool>() == true;
-                    }
+                    var itaRes = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+                    if (itaRes.Success && itaRes.Value) isTenantAdminSession = true;
                 }
                 catch { }
             }
 
-            bool isAdminDetected = isTenantAdminSession ||
-                                  (directUserCode == 0 && (!string.IsNullOrEmpty(authToken) || !string.IsNullOrEmpty(tenantCode))) ||
-                                  string.Equals(directUserRole, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(directUserRole, "Admin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(directUserRole, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(directUserRole, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(directUserRole, "Power User", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(directUserRole, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(directUserRole, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+            if (string.IsNullOrWhiteSpace(directUserName))
+            {
+                try
+                {
+                    var unRes = await _sessionStorage.GetAsync<string>("user_name");
+                    if (unRes.Success && !string.IsNullOrWhiteSpace(unRes.Value)) directUserName = unRes.Value;
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(loginInput))
+            {
+                try
+                {
+                    var liRes = await _sessionStorage.GetAsync<string>("login_input");
+                    if (liRes.Success && !string.IsNullOrWhiteSpace(liRes.Value)) loginInput = liRes.Value;
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(directUserRole))
+            {
+                try
+                {
+                    var urRes = await _sessionStorage.GetAsync<string>("user_role");
+                    if (urRes.Success && !string.IsNullOrWhiteSpace(urRes.Value)) directUserRole = urRes.Value;
+                }
+                catch { }
+            }
+
+            if (directUserCode == 0)
+            {
+                try
+                {
+                    var ucRes = await _sessionStorage.GetAsync<int>("user_code");
+                    if (ucRes.Success) directUserCode = ucRes.Value;
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(tenantCode))
+            {
+                try
+                {
+                    var tcRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                    if (tcRes.Success && !string.IsNullOrWhiteSpace(tcRes.Value)) tenantCode = tcRes.Value;
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(authToken))
+            {
+                try
+                {
+                    var atRes = await _sessionStorage.GetAsync<string>("authToken");
+                    if (atRes.Success && !string.IsNullOrWhiteSpace(atRes.Value)) authToken = atRes.Value;
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(tenantName))
+            {
+                try
+                {
+                    var tnRes = await _sessionStorage.GetAsync<string>("tenant_name");
+                    if (tnRes.Success && !string.IsNullOrWhiteSpace(tnRes.Value)) tenantName = tnRes.Value;
+                }
+                catch { }
+            }
+
+            if (!isBranchConfirmed)
+            {
+                try
+                {
+                    var confRes = await _sessionStorage.GetAsync<bool>("session_branch_confirmed");
+                    if (confRes.Success) isBranchConfirmed = confRes.Value;
+                }
+                catch { }
+            }
+
+            // 4. Robust Admin detection
+            // 4. Robust Admin detection
+            bool isExplicitNonAdminRole = (!string.IsNullOrWhiteSpace(directUserRole) && !IsAdminRole(directUserRole)) ||
+                                          (!string.IsNullOrWhiteSpace(user?.Role) && !IsAdminRole(user?.Role));
+
+            bool isAdminDetected = false;
+            if (!isExplicitNonAdminRole)
+            {
+                isAdminDetected = IsAdminRole(directUserRole) ||
+                                  IsAdminRole(user?.Role) ||
                                   string.Equals(directUserName, "admin", StringComparison.OrdinalIgnoreCase) ||
                                   string.Equals(loginInput, "admin", StringComparison.OrdinalIgnoreCase) ||
-                                  (user != null && (string.Equals(user.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                                    string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
-                                                    string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-                                                    string.Equals(user.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-                                                    string.Equals(user.Role, "Power User", StringComparison.OrdinalIgnoreCase) ||
-                                                    string.Equals(user.Role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-                                                    string.Equals(user.Role, "Tenant", StringComparison.OrdinalIgnoreCase) ||
-                                                    user.UserCode == 0));
+                                  (loginInput != null && loginInput.StartsWith("admin@", StringComparison.OrdinalIgnoreCase)) ||
+                                  IsAdminRoleFromJwt(authToken) ||
+                                  IsAdminRoleFromJwt(user?.AuthToken) ||
+                                  (isTenantAdminSession && string.IsNullOrWhiteSpace(directUserRole) && string.IsNullOrWhiteSpace(user?.Role));
+            }
 
             if (isAdminDetected)
             {
                 isTenantAdminSession = true;
+                _isAdminSession = true;
                 directUserRole = "Administrator";
                 if (string.IsNullOrWhiteSpace(directUserName))
                     directUserName = !string.IsNullOrWhiteSpace(loginInput) ? loginInput : "Administrator";
             }
+            else
+            {
+                isTenantAdminSession = false;
+                _isAdminSession = false;
+            }
 
             // Ensure user model is populated
-            if (user == null && (!string.IsNullOrEmpty(authToken) || !string.IsNullOrEmpty(directUserName) || !string.IsNullOrEmpty(tenantCode) || isTenantAdminSession || directUserCode > 0))
+            if (user == null && (!string.IsNullOrEmpty(authToken) || !string.IsNullOrEmpty(directUserName) || !string.IsNullOrEmpty(tenantCode) || isAdminDetected || directUserCode > 0))
             {
-                var finalRole = isTenantAdminSession || isAdminDetected
+                var finalRole = isAdminDetected
                     ? "Administrator" 
                     : (!string.IsNullOrWhiteSpace(directUserRole) ? directUserRole : "User");
 
                 user = new SharedComponents.Rcl.Models.UserDetailsModel
                 {
-                    UserName = !string.IsNullOrWhiteSpace(directUserName) ? directUserName : (!string.IsNullOrWhiteSpace(loginInput) ? loginInput : (isTenantAdminSession ? "Administrator" : "User")),
+                    UserName = !string.IsNullOrWhiteSpace(directUserName) ? directUserName : (!string.IsNullOrWhiteSpace(loginInput) ? loginInput : (isAdminDetected ? "Administrator" : "User")),
                     Role = finalRole,
                     TenantCode = tenantCode,
                     TenantName = !string.IsNullOrWhiteSpace(tenantName) ? tenantName : "Medico Healthcare Hospital",
                     AuthToken = authToken,
-                    UserCode = directUserCode
+                    UserCode = directUserCode,
+                    BranchCode = localBhCode,
+                    CounterCode = localCntCode
                 };
             }
             else if (user != null)
             {
                 if (string.IsNullOrWhiteSpace(user.UserName) && !string.IsNullOrWhiteSpace(directUserName))
                     user.UserName = directUserName;
-                if ((string.IsNullOrWhiteSpace(user.Role) || string.Equals(user.Role, "User", StringComparison.OrdinalIgnoreCase)) && (isAdminDetected || !string.IsNullOrWhiteSpace(directUserRole) || isTenantAdminSession))
-                    user.Role = (isAdminDetected || isTenantAdminSession) ? "Administrator" : directUserRole;
+                if (isAdminDetected)
+                    user.Role = "Administrator";
+                else if (!string.IsNullOrWhiteSpace(directUserRole))
+                    user.Role = directUserRole;
                 if (string.IsNullOrWhiteSpace(user.TenantCode) && !string.IsNullOrWhiteSpace(tenantCode))
                     user.TenantCode = tenantCode;
                 if (string.IsNullOrWhiteSpace(user.AuthToken) && !string.IsNullOrWhiteSpace(authToken))
                     user.AuthToken = authToken;
+                if (!user.BranchCode.HasValue && localBhCode.HasValue)
+                    user.BranchCode = localBhCode;
+                if (!user.CounterCode.HasValue && localCntCode.HasValue)
+                    user.CounterCode = localCntCode;
             }
 
-            if (user != null && (!string.IsNullOrEmpty(user.UserName) || !string.IsNullOrEmpty(user.AuthToken) || !string.IsNullOrEmpty(user.TenantCode)))
+            if (user != null && (!string.IsNullOrEmpty(user.UserName) || !string.IsNullOrEmpty(user.AuthToken) || !string.IsNullOrEmpty(user.TenantCode) || isAdminDetected))
             {
                 int resolvedCode = user.UserCode ?? directUserCode;
 
-                // 4. Read UserRights from session storage
+                // 5. Read UserRights from session storage
                 try
                 {
                     var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
@@ -1656,7 +1790,7 @@
                 }
                 catch { }
 
-                // 5. Read UserRolePermissions from session storage
+                // 6. Read UserRolePermissions from session storage
                 try
                 {
                     var rolePermsResult = await _sessionStorage.GetAsync<List<Booking.Models.RolePermissionItem>>("UserRolePermissions");
@@ -1667,42 +1801,33 @@
                 }
                 catch { }
 
-                // 6. Convert UserRights if permissions list is empty
+                // 7. Convert UserRights if permissions list is empty
                 if ((effectivePerms == null || !effectivePerms.Any()) && rights.Any())
                 {
                     effectivePerms = RoleMasterService.ConvertUserRightsToPermissions(rights);
                 }
 
-                // 7. Check if user is an Administrator
-                bool isAdminUser = isTenantAdminSession || isAdminDetected ||
-                                  string.Equals(user.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(user.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(user.Role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(user.Role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(user.Role, "Power User", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(user.Role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-                                  string.Equals(user.Role, "Tenant", StringComparison.OrdinalIgnoreCase);
+                // 8. Check if user is an Administrator
+                bool isAdminUser = isAdminDetected;
 
                 if (isAdminUser)
                 {
                     user.Role = "Administrator";
+                    _isAdminSession = true;
                     effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
-                }
-
-                // 8. Apply permissions to RoleService immediately
-                RoleService.SetUserPermissions(effectivePerms ?? new());
-
-                // 9. If rights was empty but effectivePerms exists, create rights
-                if ((!rights.Any() || isAdminUser) && effectivePerms != null && effectivePerms.Any())
-                {
                     rights = RoleMasterService.ConvertEffectivePermissionsToUserRights(effectivePerms, resolvedCode);
-                    try { await _sessionStorage.SetAsync("UserRights", rights); } catch { }
-                    try { await _sessionStorage.SetAsync("UserRolePermissions", effectivePerms); } catch { }
-                    try { await _sessionStorage.SetAsync("IsTenantAdmin", isAdminUser); } catch { }
+                }
+                else
+                {
+                    _isAdminSession = false;
+                    if ((!rights.Any()) && effectivePerms != null && effectivePerms.Any())
+                    {
+                        rights = RoleMasterService.ConvertEffectivePermissionsToUserRights(effectivePerms, resolvedCode);
+                    }
                 }
 
-                // 10. Restore confirmed branch
-                int? restoredBhCode = user.BranchCode;
+                // 9. Restore confirmed branch
+                int? restoredBhCode = user.BranchCode ?? localBhCode;
                 try
                 {
                     var bhRes = await _sessionStorage.GetAsync<string>("bhcode");
@@ -1712,21 +1837,6 @@
                     }
                 }
                 catch { }
-
-                if (!restoredBhCode.HasValue)
-                {
-                    try
-                    {
-                        var localSessionJson = await JS.InvokeAsync<string>("medicoSessionHelper.getSession");
-                        if (!string.IsNullOrWhiteSpace(localSessionJson))
-                        {
-                            var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
-                            var localBh = jObj["bhcode"]?.ToObject<int?>();
-                            if (localBh.HasValue && localBh.Value > 0) restoredBhCode = localBh.Value;
-                        }
-                    }
-                    catch { }
-                }
 
                 if (restoredBhCode.HasValue && (restoredBhCode.Value <= 0 || IsSampleBranch(null, null, restoredBhCode.Value)))
                 {
@@ -1744,15 +1854,27 @@
                 int? effectiveConfirmedBranch = (isBranchConfirmed && restoredBhCode.HasValue && restoredBhCode.Value > 0) ? restoredBhCode.Value : null;
                 user.BranchCode = effectiveConfirmedBranch;
 
-                // 11. Set session on TenantState immediately (0ms)
-                TenantState.SetSession(user.TenantCode ?? "", user.AuthToken ?? "", user.TenantName ?? "", resolvedCode, effectiveConfirmedBranch, user.CounterCode, user, rights);
+                // 10. Set TenantState session FIRST
+                TenantState.SetSession(user.TenantCode ?? tenantCode ?? "", user.AuthToken ?? authToken ?? "", user.TenantName ?? tenantName ?? "Medico Healthcare Hospital", resolvedCode, effectiveConfirmedBranch, user.CounterCode, user, rights);
                 sessionRenderVersion++;
+
+                // 11. Apply permissions to RoleService AFTER TenantState is set
+                RoleService.SetUserPermissions(effectivePerms ?? new());
+
+                // 12. Persist to session storage & localStorage
+                if (effectivePerms != null && effectivePerms.Any())
+                {
+                    try { await _sessionStorage.SetAsync("UserRights", rights); } catch { }
+                    try { await _sessionStorage.SetAsync("UserRolePermissions", effectivePerms); } catch { }
+                    try { await _sessionStorage.SetAsync("IsTenantAdmin", isAdminUser); } catch { }
+                }
 
                 try { await _sessionStorage.SetAsync("UserDetails", user); } catch { }
                 if (!string.IsNullOrWhiteSpace(user.UserName)) { try { await _sessionStorage.SetAsync("user_name", user.UserName); } catch { } }
                 if (!string.IsNullOrWhiteSpace(user.Role)) { try { await _sessionStorage.SetAsync("user_role", user.Role); } catch { } }
                 if (!string.IsNullOrWhiteSpace(user.TenantCode)) { try { await _sessionStorage.SetAsync("tenant_code", user.TenantCode); } catch { } }
                 if (!string.IsNullOrWhiteSpace(user.AuthToken)) { try { await _sessionStorage.SetAsync("authToken", user.AuthToken); } catch { } }
+
                 try
                 {
                     var crossTab = new
@@ -1764,6 +1886,7 @@
                         user_role = user.Role ?? directUserRole,
                         user_code = resolvedCode,
                         bhcode = effectiveConfirmedBranch ?? user.BranchCode,
+                        cntcode = user.CounterCode,
                         isAdmin = isAdminUser,
                         session_branch_confirmed = isBranchConfirmed
                     };
@@ -1775,7 +1898,7 @@
                 StateHasChanged();
                 await CheckBranchSelectionAsync();
 
-                // Non-blocking background fetch if effectivePerms was empty
+                // Non-blocking background fetch if effectivePerms was empty for regular user
                 if (resolvedCode > 0 && !isAdminUser && (effectivePerms == null || !effectivePerms.Any()))
                 {
                     _ = Task.Run(async () =>
@@ -1799,7 +1922,16 @@
             }
             else
             {
-                TenantState.Clear();
+                bool localHasData = false;
+                try
+                {
+                    var localJson = await JS.InvokeAsync<string>("medicoSessionHelper.getSession");
+                    localHasData = !string.IsNullOrWhiteSpace(localJson);
+                }
+                catch { }
+
+                if (!localHasData)
+                    TenantState.Clear();
             }
         }
         catch (OperationCanceledException)
@@ -1827,6 +1959,44 @@
                 StateHasChanged();
             }
         }
+    }
+
+    // ── Admin-role helpers used by ValidateAndAuthorizeAsync ──────────────────
+    private static bool IsAdminRole(string? role)
+    {
+        if (string.IsNullOrEmpty(role)) return false;
+        return string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAdminRoleFromJwt(string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        try
+        {
+            var segments = token.Split('.');
+            if (segments.Length < 2) return false;
+            var payload = segments[1];
+            switch (payload.Length % 4)
+            {
+                case 2: payload += "=="; break;
+                case 3: payload += "="; break;
+            }
+            var jsonBytes = Convert.FromBase64String(payload);
+            var claims = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
+            if (claims == null) return false;
+            object? rVal = null;
+            if (!claims.TryGetValue("role", out rVal) &&
+                !claims.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
+                return false;
+            return IsAdminRole(rVal?.ToString());
+        }
+        catch { return false; }
     }
 
     private static bool IsSampleBranch(string? name, string? shortName, int code)
