@@ -2892,60 +2892,35 @@
         {
             currentUserCode = TenantState.UserData.UserCode.Value;
         }
+
+        // Parallelize essential data loading so Outpatient queue renders instantly
+        var doctorsTask = LoadDoctorsAsync();
+        var dataTask = LoadDataAsync();
+
+        await Task.WhenAll(doctorsTask, dataTask);
+
+        // Load auxiliary masters asynchronously in the background so they never block initial load
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.WhenAll(
+                    LoadServiceTypesAsync(),
+                    LoadTestMastersAsync(),
+                    LoadLabSettingQuietlyAsync()
+                );
+            }
+            catch { }
+        });
+    }
+
+    private async Task LoadLabSettingQuietlyAsync()
+    {
         try
         {
-            try
-            {
-                var slotRes = await _sessionStorage.GetAsync<bool>("ls_is_slot_required");
-                if (slotRes.Success)
-                {
-                    LabSettingService.IsSlotRequiredCache = slotRes.Value;
-                }
-            }
-            catch { }
-
-            try
-            {
-                var custRes = await _sessionStorage.GetAsync<bool>("ls_show_all_customers");
-                if (custRes.Success)
-                {
-                    LabSettingService.ShowAllCustomersCache = custRes.Value;
-                }
-            }
-            catch { }
-
-            try
-            {
-                var comboRes = await _sessionStorage.GetAsync<bool>("ls_enable_combo_registration");
-                if (comboRes.Success)
-                {
-                    LabSettingService.EnableComboRegistrationCache = comboRes.Value;
-                }
-            }
-            catch { }
-
-            try
-            {
-                var routeRes = await _sessionStorage.GetAsync<bool>("ls_auto_route_billing_after_register");
-                if (routeRes.Success)
-                {
-                    LabSettingService.AutoRouteBillingAfterRegisterCache = routeRes.Value;
-                }
-            }
-            catch { }
-
-            await LoadStoredPreferencesAsync();
-
             labSetting = await LabSettingService.GetLabSettingAsync() ?? new LabSettingModel();
         }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error loading lab setting: {ex.Message}");
-        }
-        await LoadDoctorsAsync();
-        await LoadServiceTypesAsync();
-        await LoadTestMastersAsync();
-        await LoadDataAsync();
+        catch { }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -2976,7 +2951,6 @@
         {
             var raw = await DoctorService.GetDoctorsAsync();
             doctors = raw.Where(d => !d.deleted).OrderBy(d => string.IsNullOrWhiteSpace(d.name) ? d.doctorfullname : d.name).ToList();
-            _ = LoadDoctorSlotsStatusAsync();
         }
         catch (Exception ex)
         {
@@ -3761,8 +3735,8 @@
         
         patientSearchQuery = "";
         showPatientDropdown = false;
-        searchedPatients.Clear();
-
+        if (!serviceTypesList.Any()) _ = LoadServiceTypesAsync();
+        if (!allTestMasters.Any()) _ = LoadTestMastersAsync();
         _ = LoadDoctorSlotsStatusAsync();
         _ = SaveDirectWalkinDraftAsync();
     }

@@ -26,35 +26,80 @@ namespace LabCare.Services
             _session = session;
         }
 
-        private void ConfigureHeaders()
+        public void ConfigureHeaders(string? token = null, string? tenantCode = null)
         {
-            if (!string.IsNullOrEmpty(_session.AuthToken))
+            string effToken = !string.IsNullOrEmpty(token) ? token : _session.AuthToken;
+            string effTenant = !string.IsNullOrEmpty(tenantCode) ? tenantCode : _session.TenantCode;
+
+            if (!string.IsNullOrEmpty(effToken))
             {
-                _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                _http.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", effToken);
             }
-            if (!string.IsNullOrEmpty(_session.TenantCode))
+            if (!string.IsNullOrEmpty(effTenant))
             {
                 if (_http.DefaultRequestHeaders.Contains("tenant_code")) 
                     _http.DefaultRequestHeaders.Remove("tenant_code");
-                _http.DefaultRequestHeaders.Add("tenant_code", _session.TenantCode);
+                _http.DefaultRequestHeaders.Add("tenant_code", effTenant);
             }
         }
 
-        public async Task<GetUser?> GetAsync(int userCode)
+        public async Task<GetUser?> GetAsync(int userCode, string? token = null, string? tenantCode = null)
         {
-            ConfigureHeaders();
+            ConfigureHeaders(token, tenantCode);
             try
             {
                 var response = await _http.GetAsync($"api/user/get?user_code={userCode}");
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonStr = await response.Content.ReadAsStringAsync();
-                    if (jsonStr.TrimStart().StartsWith("["))
+                    if (!string.IsNullOrWhiteSpace(jsonStr))
                     {
-                        var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<GetUser>>(jsonStr, _userJsonSettings);
-                        return list?.FirstOrDefault();
+                        var trimmed = jsonStr.TrimStart();
+                        if (trimmed.StartsWith("["))
+                        {
+                            try
+                            {
+                                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<GetUser>>(jsonStr, _userJsonSettings);
+                                if (list != null && list.Any() && list[0]?.user != null)
+                                {
+                                    return list.First();
+                                }
+                            }
+                            catch { }
+
+                            try
+                            {
+                                var flatList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<user_master>>(jsonStr, _userJsonSettings);
+                                if (flatList != null && flatList.Any())
+                                {
+                                    return new GetUser { user = flatList.First() };
+                                }
+                            }
+                            catch { }
+                        }
+                        else
+                        {
+                            try
+                            {
+                                var parsed = Newtonsoft.Json.JsonConvert.DeserializeObject<GetUser>(jsonStr, _userJsonSettings);
+                                if (parsed?.user != null && (!string.IsNullOrEmpty(parsed.user.name) || parsed.user.user_code > 0))
+                                {
+                                    return parsed;
+                                }
+                            }
+                            catch { }
+
+                            try
+                            {
+                                var flat = Newtonsoft.Json.JsonConvert.DeserializeObject<user_master>(jsonStr, _userJsonSettings);
+                                if (flat != null && (!string.IsNullOrEmpty(flat.name) || !string.IsNullOrEmpty(flat.short_name) || flat.user_code > 0))
+                                {
+                                    return new GetUser { user = flat };
+                                }
+                            }
+                            catch { }
+                        }
                     }
-                    return Newtonsoft.Json.JsonConvert.DeserializeObject<GetUser>(jsonStr, _userJsonSettings);
                 }
             }
             catch (Exception ex)
@@ -64,16 +109,56 @@ namespace LabCare.Services
             return null;
         }
 
-        public async Task<List<GetUser>> GetAllAsync()
+        public async Task<user_master?> GetUserMasterAsync(int userCode, string? token = null, string? tenantCode = null)
         {
-            ConfigureHeaders();
+            var res = await GetAsync(userCode, token, tenantCode);
+            if (res?.user != null) return res.user;
+
+            try
+            {
+                var all = await GetAllAsync(token, tenantCode);
+                var found = all.FirstOrDefault(u => u.user != null && (u.user.user_code == userCode || u.user.usercode == userCode));
+                if (found?.user != null) return found.user;
+            }
+            catch { }
+            return null;
+        }
+
+        public async Task<List<GetUser>> GetAllAsync(string? token = null, string? tenantCode = null)
+        {
+            ConfigureHeaders(token, tenantCode);
             try
             {
                 var response = await _http.GetAsync("api/user/getall");
                 if (response.IsSuccessStatusCode)
                 {
                     var jsonStr = await response.Content.ReadAsStringAsync();
-                    return Newtonsoft.Json.JsonConvert.DeserializeObject<List<GetUser>>(jsonStr, _userJsonSettings) ?? new();
+                    if (!string.IsNullOrWhiteSpace(jsonStr))
+                    {
+                        var trimmed = jsonStr.TrimStart();
+                        if (trimmed.StartsWith("["))
+                        {
+                            try
+                            {
+                                var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<GetUser>>(jsonStr, _userJsonSettings);
+                                if (list != null && list.Any() && list.Any(u => u?.user != null))
+                                {
+                                    return list;
+                                }
+                            }
+                            catch { }
+
+                            try
+                            {
+                                var flatList = Newtonsoft.Json.JsonConvert.DeserializeObject<List<user_master>>(jsonStr, _userJsonSettings);
+                                if (flatList != null && flatList.Any())
+                                {
+                                    return flatList.Select(u => new GetUser { user = u }).ToList();
+                                }
+                            }
+                            catch { }
+                        }
+                    }
                 }
             }
             catch (Exception ex)

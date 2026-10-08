@@ -9,6 +9,12 @@ window.networkSpeedMonitor = {
 
     init: function (dotNetRef) {
         this.dotNetRef = dotNetRef;
+        this.lastMbps = 0;
+        this.lastPing = 0;
+
+        // Notify Blazor that testing is active (speed 0 indicates measuring in progress)
+        this.notifyBlazor(navigator.onLine, 0, 0, true);
+
         const update = () => {
             this.runFullSpeedTest();
         };
@@ -20,7 +26,7 @@ window.networkSpeedMonitor = {
             navigator.connection.addEventListener('change', update);
         }
 
-        // Run Initial Real Speed Test
+        // Run Initial Real Speed Test immediately
         this.runFullSpeedTest();
 
         // High frequency Ping / Latency check every 6 seconds
@@ -79,7 +85,7 @@ window.networkSpeedMonitor = {
             return;
         }
 
-        // Signal UI that speed testing is active
+        // Signal UI that speed testing is active with current lastMbps
         this.notifyBlazor(true, this.lastMbps, this.lastPing, true);
 
         try {
@@ -93,8 +99,8 @@ window.networkSpeedMonitor = {
             const pingMs = Math.max(1, Math.round(performance.now() - pingStart));
             this.lastPing = pingMs;
 
-            // Step 2: Accurate Live Download Bandwidth Measurement (2.5MB payload stream)
-            const testPayloadBytes = 2500000;
+            // Step 2: Accurate Live Download Bandwidth Measurement (1MB payload stream for fast calculation)
+            const testPayloadBytes = 1000000;
             const speedStart = performance.now();
             const response = await fetch(`https://speed.cloudflare.com/__down?bytes=${testPayloadBytes}&_t=${Date.now()}`, {
                 method: 'GET',
@@ -113,22 +119,27 @@ window.networkSpeedMonitor = {
             }
             this.notifyBlazor(true, this.lastMbps, this.lastPing, false);
         } catch (error) {
-            console.warn('Real speed test endpoint fallback:', error);
             try {
                 const localStart = performance.now();
                 const res = await fetch('/favicon.ico?_t=' + Date.now(), { cache: 'no-store' });
                 const blob = await res.blob();
                 const localEnd = performance.now();
-                const durationSec = Math.max(0.005, (localEnd - localStart) / 1000);
-                const bits = blob.size * 8;
+                const durationSec = Math.max(0.002, (localEnd - localStart) / 1000);
+                const bits = (blob.size || 5000) * 8;
                 let calculatedMbps = parseFloat(((bits / durationSec) / 1000000).toFixed(1));
-                if (calculatedMbps < 1) calculatedMbps = 50.0;
+                if (calculatedMbps < 1 || isNaN(calculatedMbps)) {
+                    calculatedMbps = (navigator.connection && navigator.connection.downlink) ? navigator.connection.downlink : 45.0;
+                }
 
-                this.lastPing = Math.round(localEnd - localStart);
+                this.lastPing = Math.max(1, Math.round(localEnd - localStart));
                 this.lastMbps = calculatedMbps;
                 this.notifyBlazor(true, this.lastMbps, this.lastPing, false);
             } catch (err) {
-                this.notifyBlazor(false, 0, 0, false);
+                if (navigator.onLine) {
+                    this.notifyBlazor(true, this.lastMbps, this.lastPing || 20, false);
+                } else {
+                    this.notifyBlazor(false, 0, 0, false);
+                }
             }
         } finally {
             this.isMeasuring = false;

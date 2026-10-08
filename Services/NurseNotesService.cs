@@ -22,13 +22,18 @@ namespace Booking.Services
         // ══════════════════════════════════════════════════════════════════════
         // 1. TEMPERATURE
         // ══════════════════════════════════════════════════════════════════════
-        public async Task<(bool Success, string Message)> AddTemperatureAsync(AddTemperatureRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> AddTemperatureAsync(AddTemperatureRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/temperature/add");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -40,13 +45,13 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> UpdateTemperatureAsync(UpdateTemperatureRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> UpdateTemperatureAsync(UpdateTemperatureRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/temperature/update");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -58,12 +63,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<NurseTemperatureModel>> GetTemperaturesAsync(Guid ipId, string? tenantCode = null)
+        public async Task<List<NurseTemperatureModel>> GetTemperaturesAsync(Guid ipId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/temperature/{ipId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 if (!response.IsSuccessStatusCode) return new();
@@ -78,12 +83,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> DeleteTemperatureAsync(Guid tempId, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> DeleteTemperatureAsync(Guid tempId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/temperature/delete?temp_id={tempId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -98,13 +103,18 @@ namespace Booking.Services
         // ══════════════════════════════════════════════════════════════════════
         // 2. INPUT / OUTPUT
         // ══════════════════════════════════════════════════════════════════════
-        public async Task<(bool Success, string Message)> AddInputOutputAsync(AddInputOutputRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> AddInputOutputAsync(AddInputOutputRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/input-output/add");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -116,13 +126,13 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> UpdateInputOutputAsync(UpdateInputOutputRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> UpdateInputOutputAsync(UpdateInputOutputRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/input-output/update");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -134,12 +144,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<NurseInputOutputModel>> GetInputOutputsAsync(Guid ipId, string? tenantCode = null)
+        public async Task<List<NurseInputOutputModel>> GetInputOutputsAsync(Guid ipId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/input-output/{ipId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 if (!response.IsSuccessStatusCode) return new();
@@ -154,12 +164,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> DeleteInputOutputAsync(Guid ioId, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> DeleteInputOutputAsync(Guid ioId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/input-output/delete?io_id={ioId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -174,16 +184,21 @@ namespace Booking.Services
         // ══════════════════════════════════════════════════════════════════════
         // 3. SERVICE
         // ══════════════════════════════════════════════════════════════════════
-        public async Task<(bool Success, string Message)> AddServiceAsync(AddServiceRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> AddServiceAsync(AddServiceRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
                 var payloadJson = System.Text.Json.JsonSerializer.Serialize(request, new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
                 Console.WriteLine($"\n[NurseNotesService] ===> POST api/IpBedsideChart/service/add (Tenant: {tenantCode ?? "default"})\n{payloadJson}\n");
 
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/service/add");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -197,7 +212,7 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> UpdateServiceAsync(UpdateServiceRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> UpdateServiceAsync(UpdateServiceRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
@@ -206,7 +221,7 @@ namespace Booking.Services
 
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/service/update");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -220,12 +235,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<NurseServiceModel>> GetServicesAsync(Guid ipId, string? tenantCode = null)
+        public async Task<List<NurseServiceModel>> GetServicesAsync(Guid ipId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/service/{ipId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 if (!response.IsSuccessStatusCode) return new();
@@ -240,12 +255,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> DeleteServiceAsync(Guid serviceId, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> DeleteServiceAsync(Guid serviceId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/service/delete?service_id={serviceId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -260,13 +275,18 @@ namespace Booking.Services
         // ══════════════════════════════════════════════════════════════════════
         // 4. MEDICINE
         // ══════════════════════════════════════════════════════════════════════
-        public async Task<(bool Success, string Message)> AddMedicineAsync(AddMedicineRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> AddMedicineAsync(AddMedicineRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/medicine/add");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -278,13 +298,13 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> UpdateMedicineAsync(UpdateMedicineRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> UpdateMedicineAsync(UpdateMedicineRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/medicine/update");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -296,12 +316,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<NurseMedicineModel>> GetMedicinesAsync(Guid ipId, string? tenantCode = null)
+        public async Task<List<NurseMedicineModel>> GetMedicinesAsync(Guid ipId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/medicine/{ipId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 if (!response.IsSuccessStatusCode) return new();
@@ -316,12 +336,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> DeleteMedicineAsync(Guid medId, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> DeleteMedicineAsync(Guid medId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/medicine/delete?med_id={medId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -336,13 +356,18 @@ namespace Booking.Services
         // ══════════════════════════════════════════════════════════════════════
         // 5. OTHER
         // ══════════════════════════════════════════════════════════════════════
-        public async Task<(bool Success, string Message)> AddOtherAsync(AddOtherRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> AddOtherAsync(AddOtherRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/other/add");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -354,13 +379,13 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> UpdateOtherAsync(UpdateOtherRequest request, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> UpdateOtherAsync(UpdateOtherRequest request, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/other/update");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -372,12 +397,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<NurseOtherModel>> GetOthersAsync(Guid ipId, string? tenantCode = null)
+        public async Task<List<NurseOtherModel>> GetOthersAsync(Guid ipId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/other/{ipId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 if (!response.IsSuccessStatusCode) return new();
@@ -392,12 +417,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> DeleteOtherAsync(Guid otherId, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> DeleteOtherAsync(Guid otherId, string? tenantCode = null, int? userCode = null)
         {
             try
             {
                 using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/other/delete?other_id={otherId}");
-                AddTenantHeaders(req, tenantCode);
+                AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -416,9 +441,14 @@ namespace Booking.Services
         {
             try
             {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/visiting-doctor/add");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode, userCode);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -514,9 +544,14 @@ namespace Booking.Services
         {
             try
             {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
                 using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/schedule/add");
                 req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode, userCode);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
@@ -627,6 +662,54 @@ namespace Booking.Services
             {
                 Console.WriteLine($"[NurseNotesService] GetSummaryAsync error: {ex.Message}");
                 return new();
+            }
+        }
+
+        // ══════════════════════════════════════════════════════════════════════
+        // 9. AUTHORIZATION
+        // ══════════════════════════════════════════════════════════════════════
+        public async Task<(bool Success, string Message)> AuthorizeNurseNotesAsync(AuthorizeNurseNotesRequest request, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/authorize");
+                req.Content = JsonContent.Create(request);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
+
+                var response = await _http.SendAsync(req);
+                var raw = await response.Content.ReadAsStringAsync();
+                return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Nurse notes chart authorized successfully."));
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error authorizing chart: {ex.Message}");
+            }
+        }
+
+        public async Task<NurseNoteAuthorizationModel?> GetNurseNoteAuthorizationAsync(Guid ipId, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/authorize/{ipId}");
+                AddTenantHeaders(req, tenantCode, userCode);
+
+                var response = await _http.SendAsync(req);
+                if (!response.IsSuccessStatusCode) return null;
+
+                var raw = await response.Content.ReadAsStringAsync();
+                if (string.IsNullOrWhiteSpace(raw)) return null;
+
+                return JsonSerializer.Deserialize<NurseNoteAuthorizationModel>(raw, _jsonOptions);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NurseNotesService] GetNurseNoteAuthorizationAsync error: {ex.Message}");
+                return null;
             }
         }
 

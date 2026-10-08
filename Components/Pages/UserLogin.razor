@@ -2,7 +2,7 @@
 @page "/login"
 @page "/user-login"
 @layout SharedComponents.Rcl.Components.Layout.EmptyLayout
-@rendermode @(new InteractiveServerRenderMode(prerender: true))
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 @using System.Net.Http.Json
 @using System.Text.Json.Serialization
 @using Newtonsoft.Json
@@ -320,7 +320,22 @@
                 string? token = json["token"]?.ToString() ?? json["Token"]?.ToString();
                 
                 var userDetailsJson = json["userdetails"] ?? json["UserDetails"] ?? json["user"] ?? json["User"];
-                string? name = userDetailsJson?["name"]?.ToString() ?? userDetailsJson?["Name"]?.ToString() ?? "Staff Member";
+                
+                string inputDisplayName = (!string.IsNullOrWhiteSpace(loginModel.Input)) 
+                    ? (loginModel.Input.Contains("@") ? loginModel.Input.Split('@')[0] : loginModel.Input) 
+                    : "";
+
+                string? rawName = userDetailsJson?["name"]?.ToString() 
+                    ?? userDetailsJson?["Name"]?.ToString() 
+                    ?? userDetailsJson?["username"]?.ToString() 
+                    ?? userDetailsJson?["UserName"]?.ToString() 
+                    ?? userDetailsJson?["user_name"]?.ToString() 
+                    ?? userDetailsJson?["full_name"]?.ToString() 
+                    ?? userDetailsJson?["fullName"]?.ToString();
+
+                string name = (!string.IsNullOrWhiteSpace(rawName) && !string.Equals(rawName.Trim(), "Staff Member", StringComparison.OrdinalIgnoreCase) && !string.Equals(rawName.Trim(), "Main branch", StringComparison.OrdinalIgnoreCase)) 
+                    ? rawName.Trim() 
+                    : inputDisplayName;
                 
                 // Extract tenant_code with fallbacks
                 string? tenantCode = userDetailsJson?["tenant_code"]?.ToString() 
@@ -362,69 +377,154 @@
                 userName = name;
                 string safeToken = token ?? "";
 
-                List<UserRight> userRightsRaw = new List<UserRight>();
+                List<SharedComponents.Rcl.Models.User_Rights> resolvedUserRights = new();
                 bool isUserAdmin = false;
                 string userRoleName = "";
                 var rightsArrayObj = json["rights"] as JArray ?? json["Rights"] as JArray;
-                if (rightsArrayObj != null)
+                if (rightsArrayObj != null && rightsArrayObj.Count > 0)
                 {
-                    userRightsRaw = rightsArrayObj.ToObject<List<UserRight>>() ?? new List<UserRight>();
-                    var firstRight = userRightsRaw.FirstOrDefault();
-                    if (firstRight != null)
+                    foreach (var item in rightsArrayObj)
                     {
-                        userRoleName = firstRight.RoleName ?? "";
-                        if (!string.IsNullOrEmpty(firstRight.RightsJson))
+                        var rJson = item["rights_json"]?.ToString() ?? item["RightsJson"]?.ToString();
+                        var rName = item["role_name"]?.ToString() ?? item["RoleName"]?.ToString();
+                        if (!string.IsNullOrEmpty(rName) && string.IsNullOrEmpty(userRoleName)) userRoleName = rName;
+                        if (!string.IsNullOrEmpty(rJson))
                         {
                             try
                             {
-                                var rObj = Newtonsoft.Json.Linq.JObject.Parse(firstRight.RightsJson);
-                                if (rObj["IsAdmin"]?.ToObject<bool>() == true)
-                                {
-                                    isUserAdmin = true;
-                                }
+                                var rObj = Newtonsoft.Json.Linq.JObject.Parse(rJson);
+                                if (rObj["IsAdmin"]?.ToObject<bool>() == true) isUserAdmin = true;
                             }
-                            catch {}
+                            catch { }
                         }
-                    }
-                }
-                var resolvedUserRights = new List<SharedComponents.Rcl.Models.User_Rights>();
 
-                int? bhCodeVal = userDetailsJson?["bhcode"]?.ToObject<int?>() ?? userDetailsJson?["bh_code"]?.ToObject<int?>();
-                int? counterCodeVal = userDetailsJson?["cntcode"]?.ToObject<int?>() ?? userDetailsJson?["cnt_code"]?.ToObject<int?>();
-                int resolvedUserCode = userDetailsJson?["usercode"]?.ToObject<int?>() ?? userDetailsJson?["user_code"]?.ToObject<int?>() ?? 0;
+                        var modName = item["ModuleName"]?.ToString() ?? item["module_name"]?.ToString() ?? item["module"]?.ToString();
+                        var deptName = item["Department"]?.ToString() ?? item["department"]?.ToString() ?? item["dept"]?.ToString();
+                        bool toView = item["ToView"]?.ToObject<bool>() == true || item["to_view"]?.ToObject<bool>() == true || item["toview"]?.ToObject<bool>() == true;
+                        bool toAdd = item["ToAdd"]?.ToObject<bool>() == true || item["to_add"]?.ToObject<bool>() == true || item["toadd"]?.ToObject<bool>() == true;
+                        bool toEdit = item["ToEdit"]?.ToObject<bool>() == true || item["to_edit"]?.ToObject<bool>() == true || item["toedit"]?.ToObject<bool>() == true;
+                        bool toDel = item["ToDelete"]?.ToObject<bool>() == true || item["to_delete"]?.ToObject<bool>() == true || item["todelete"]?.ToObject<bool>() == true;
 
-                var userBranches = new List<SharedComponents.Rcl.Models.BranchModel>();
-                var branchesToken = userDetailsJson?["branches"] as JArray ?? userDetailsJson?["Branches"] as JArray;
-                if (branchesToken != null)
-                {
-                    foreach (var bToken in branchesToken)
-                    {
-                        int resolvedBhCode = bToken["bhcode"]?.ToObject<int?>() ?? bToken["bh_code"]?.ToObject<int?>() ?? bToken["id"]?.ToObject<int?>() ?? 0;
-                        if (resolvedBhCode > 0)
+                        if (!string.IsNullOrEmpty(modName) || !string.IsNullOrEmpty(deptName))
                         {
-                            userBranches.Add(new SharedComponents.Rcl.Models.BranchModel
+                            resolvedUserRights.Add(new SharedComponents.Rcl.Models.User_Rights
                             {
-                                bh_code = resolvedBhCode,
-                                name = bToken["name"]?.ToString() ?? bToken["branch_name"]?.ToString() ?? $"Branch {resolvedBhCode}"
+                                UserModuleID = item["UserModuleID"]?.ToObject<int>() ?? item["user_module_id"]?.ToObject<int>() ?? 0,
+                                ModuleName = modName ?? "",
+                                Department = deptName ?? "",
+                                UserCode = userDetailsJson?["usercode"]?.ToObject<int?>() ?? userDetailsJson?["user_code"]?.ToObject<int?>() ?? 0,
+                                ToView = toView,
+                                ToAdd = toAdd,
+                                ToEdit = toEdit,
+                                ToDelete = toDel
                             });
                         }
                     }
                 }
 
-                bool isPowerUser = userDetailsJson?["power_user"]?.ToObject<bool>() == true || 
-                                   userDetailsJson?["is_power_user"]?.ToObject<bool>() == true || 
-                                   userDetailsJson?["poweruser"]?.ToObject<bool>() == true;
+                int? bhCodeVal = userDetailsJson?["bhcode"]?.ToObject<int?>() 
+                    ?? userDetailsJson?["bh_code"]?.ToObject<int?>()
+                    ?? json["bhcode"]?.ToObject<int?>()
+                    ?? json["bh_code"]?.ToObject<int?>()
+                    ?? json["branch_code"]?.ToObject<int?>()
+                    ?? json["branchCode"]?.ToObject<int?>();
+                int? counterCodeVal = userDetailsJson?["cntcode"]?.ToObject<int?>() ?? userDetailsJson?["cnt_code"]?.ToObject<int?>();
+                int resolvedUserCode = userDetailsJson?["usercode"]?.ToObject<int?>() ?? userDetailsJson?["user_code"]?.ToObject<int?>() ?? 0;
+
+                var userBranches = new List<SharedComponents.Rcl.Models.BranchModel>();
+                var branchesToken = userDetailsJson?["branches"] as JArray 
+                    ?? userDetailsJson?["Branches"] as JArray
+                    ?? json["branches"] as JArray
+                    ?? json["Branches"] as JArray
+                    ?? userDetailsJson?["branch"] as JArray
+                    ?? json["branch"] as JArray
+                    ?? userDetailsJson?["user_branches"] as JArray
+                    ?? json["user_branches"] as JArray;
+                if (branchesToken != null)
+                {
+                    foreach (var bToken in branchesToken)
+                    {
+                        int resolvedBhCode = bToken["bhcode"]?.ToObject<int?>() ?? bToken["bh_code"]?.ToObject<int?>() ?? bToken["id"]?.ToObject<int?>() ?? 0;
+                        string bName = bToken["name"]?.ToString() 
+                            ?? bToken["branch_name"]?.ToString() 
+                            ?? bToken["branchName"]?.ToString() 
+                            ?? bToken["b_name"]?.ToString() 
+                            ?? bToken["branchname"]?.ToString() 
+                            ?? "";
+                        string bShort = bToken["short_name"]?.ToString() ?? bToken["shortname"]?.ToString() ?? "";
+
+                        if (resolvedBhCode > 0 && !IsSampleBranch(bName, bShort, resolvedBhCode))
+                        {
+                            userBranches.Add(new SharedComponents.Rcl.Models.BranchModel
+                            {
+                                bh_code = resolvedBhCode,
+                                name = !string.IsNullOrWhiteSpace(bName) ? bName.Trim() : (!string.IsNullOrWhiteSpace(bShort) ? bShort.Trim() : $"Branch {resolvedBhCode}")
+                            });
+                        }
+                    }
+                }
+
+                // ALWAYS fetch the valid operating branches directly from LabCareUrl (labcareapi)
+                try
+                {
+                    var branchClient = HttpClientFactory.CreateClient("LabCareUrl");
+                    if (!string.IsNullOrEmpty(tenantCode))
+                    {
+                        branchClient.DefaultRequestHeaders.Remove("tenant_code");
+                        branchClient.DefaultRequestHeaders.Add("tenant_code", tenantCode);
+                        branchClient.DefaultRequestHeaders.Remove("tenantcode");
+                        branchClient.DefaultRequestHeaders.Add("tenantcode", tenantCode);
+                        branchClient.DefaultRequestHeaders.Remove("tenant-code");
+                        branchClient.DefaultRequestHeaders.Add("tenant-code", tenantCode);
+                    }
+                    if (!string.IsNullOrEmpty(safeToken))
+                    {
+                        branchClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", safeToken);
+                    }
+                    var bRes = await branchClient.GetAsync("api/Branch/get");
+                    if (bRes.IsSuccessStatusCode)
+                    {
+                        var bJson = await bRes.Content.ReadAsStringAsync();
+                        var dbBranches = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(bJson) ?? new();
+                        var validBranches = dbBranches
+                            .Where(b => !b.deleted && !IsSampleBranch(b.name, b.short_name, b.bh_code))
+                            .ToList();
+                        if (validBranches.Any())
+                        {
+                            userBranches = validBranches.Select(vb => new SharedComponents.Rcl.Models.BranchModel
+                            {
+                                bh_code = vb.bh_code,
+                                name = !string.IsNullOrWhiteSpace(vb.name) ? vb.name.Trim() : (!string.IsNullOrWhiteSpace(vb.short_name) ? vb.short_name.Trim() : $"Branch {vb.bh_code}")
+                            }).ToList();
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[UserLogin] Error fetching branches from LabCareUrl: {ex.Message}");
+                }
+
+                // Filter out Sample Branch and ensure unique branches
+                userBranches = userBranches
+                    .Where(b => !IsSampleBranch(b.name, b.short_name, b.bh_code))
+                    .GroupBy(b => b.bh_code)
+                    .Select(g => g.First())
+                    .ToList();
+
+                string detectedRole = !string.IsNullOrEmpty(userRoleName) 
+                    ? userRoleName 
+                    : (userDetailsJson?["role"]?.ToString() ?? json["role"]?.ToString() ?? "");
 
                 bool finalIsAdmin = isUserAdmin || 
-                                   isPowerUser ||
-                                   string.Equals(userRoleName, "Admin", StringComparison.OrdinalIgnoreCase) || 
-                                   string.Equals(userRoleName, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(userRoleName, "Power User", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Admin", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(userDetailsJson?["role"]?.ToString(), "Power User", StringComparison.OrdinalIgnoreCase);
+                                   string.Equals(detectedRole, "Admin", StringComparison.OrdinalIgnoreCase) || 
+                                   string.Equals(detectedRole, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(detectedRole, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(detectedRole, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(detectedRole, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(detectedRole, "Power User", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(detectedRole, "PowerUser", StringComparison.OrdinalIgnoreCase);
 
-                string finalRole = finalIsAdmin ? "Administrator" : (!string.IsNullOrEmpty(userRoleName) ? userRoleName : (userDetailsJson?["role"]?.ToString() ?? "0"));
+                string finalRole = finalIsAdmin ? "Administrator" : (!string.IsNullOrWhiteSpace(detectedRole) ? detectedRole : "User");
 
                 string? extractedTenantName = json["tenant_name"]?.ToString() 
                     ?? json["tenantName"]?.ToString() 
@@ -443,11 +543,17 @@
                     ?? userDetailsJson?["HospitalName"]?.ToString()
                     ?? userDetailsJson?["company_name"]?.ToString();
 
-                string resolvedTenantName = !string.IsNullOrWhiteSpace(extractedTenantName) 
+                string resolvedTenantName = !string.IsNullOrWhiteSpace(extractedTenantName) && !string.Equals(extractedTenantName.Trim(), "Main branch", StringComparison.OrdinalIgnoreCase)
                     ? extractedTenantName 
-                    : (userBranches.FirstOrDefault(b => b.bh_code != 21 && !string.Equals(b.name?.Trim(), "SAMPLE BRANCH", StringComparison.OrdinalIgnoreCase))?.name ?? "");
+                    : "Medico Healthcare Hospital";
 
-                int? defaultBhCode = bhCodeVal > 0 ? bhCodeVal : (userBranches.Count == 1 ? userBranches[0].bh_code : null);
+                var validOperatingBranches = userBranches
+                    .Where(b => !IsSampleBranch(b.name, b.short_name, b.bh_code))
+                    .ToList();
+
+                int? defaultBhCode = (validOperatingBranches.Count == 1) 
+                    ? validOperatingBranches[0].bh_code 
+                    : null;
 
                 var userDetails = new SharedComponents.Rcl.Models.UserDetailsModel
                 {
@@ -466,47 +572,83 @@
                 await _sessionStorage.SetAsync("authToken", safeToken);
                 await _sessionStorage.SetAsync("tenant_code", tenantCode);
                 await _sessionStorage.SetAsync("tenant_name", resolvedTenantName);
+                await _sessionStorage.SetAsync("user_name", name);
+                await _sessionStorage.SetAsync("login_input", inputDisplayName);
+                await _sessionStorage.SetAsync("user_role", finalRole);
+                await _sessionStorage.SetAsync("user_code", resolvedUserCode);
                 await _sessionStorage.SetAsync("IsTenantAdmin", finalIsAdmin);
                 if (defaultBhCode.HasValue && defaultBhCode.Value > 0)
                 {
                     await _sessionStorage.SetAsync("bhcode", defaultBhCode.Value.ToString());
+                    await _sessionStorage.SetAsync("session_branch_confirmed", true);
                 }
                 else
                 {
                     await _sessionStorage.DeleteAsync("bhcode");
+                    await _sessionStorage.DeleteAsync("session_branch_confirmed");
                 }
                 if (counterCodeVal.HasValue) await _sessionStorage.SetAsync("cntcode", counterCodeVal.Value.ToString());
                 await _sessionStorage.SetAsync("UserDetails", userDetails);
                 await _sessionStorage.SetAsync("UserBranches", userBranches);
                 var userBranchCodes = userBranches.Select(b => b.bh_code).Distinct().ToList();
                 await _sessionStorage.SetAsync("UserBranchCodes", userBranchCodes);
+
+                try
+                {
+                    var localSessionJson = await JSRuntime.InvokeAsync<string>("medicoSessionHelper.getSession");
+                    var jObj = string.IsNullOrWhiteSpace(localSessionJson) ? new JObject() : JObject.Parse(localSessionJson);
+                    if (defaultBhCode.HasValue && defaultBhCode.Value > 0)
+                    {
+                        jObj["bhcode"] = defaultBhCode.Value;
+                        jObj["session_branch_confirmed"] = true;
+                    }
+                    else
+                    {
+                        jObj.Remove("bhcode");
+                        jObj.Remove("session_branch_confirmed");
+                    }
+                    await JSRuntime.InvokeVoidAsync("medicoSessionHelper.saveSession", jObj.ToString());
+                }
+                catch { }
                 
                 // Initialize session early so DelegatingHandlers have tenantCode
                 TenantState.SetSession(tenantCode, safeToken, resolvedTenantName, resolvedUserCode, defaultBhCode, counterCodeVal, userDetails, resolvedUserRights);
 
+                try
+                {
+                    var crossTabSession = new
+                    {
+                        authToken = safeToken,
+                        tenant_code = tenantCode,
+                        tenant_name = resolvedTenantName,
+                        user_name = name,
+                        login_input = inputDisplayName,
+                        user_role = finalRole,
+                        user_code = resolvedUserCode,
+                        bhcode = defaultBhCode,
+                        cntcode = counterCodeVal,
+                        isAdmin = finalIsAdmin,
+                        session_branch_confirmed = (defaultBhCode.HasValue && defaultBhCode.Value > 0)
+                    };
+                    await JSRuntime.InvokeVoidAsync("medicoSessionHelper.saveSession", JsonConvert.SerializeObject(crossTabSession));
+                }
+                catch { }
+
                 List<Booking.Models.RolePermissionItem> effectivePerms = new();
-                if (resolvedUserCode > 0)
+                if (resolvedUserRights.Any())
+                {
+                    effectivePerms = RoleMasterService.ConvertUserRightsToPermissions(resolvedUserRights);
+                }
+                else if (resolvedUserCode > 0)
                 {
                     try
                     {
                         effectivePerms = await RoleService.GetUserEffectivePermissionsAsync(resolvedUserCode);
-                        if (finalIsAdmin && (!effectivePerms.Any()))
-                        {
-                            effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
-                        }
                     }
                     catch (Exception permEx)
                     {
                         Console.WriteLine($"[UserLogin] Error fetching user role permissions: {permEx.Message}");
-                        if (finalIsAdmin && (!effectivePerms.Any()))
-                        {
-                            effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
-                        }
                     }
-                }
-                else if (finalIsAdmin)
-                {
-                    effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
                 }
 
                 if (finalIsAdmin && (!effectivePerms.Any()))
@@ -517,10 +659,33 @@
                 RoleService.SetUserPermissions(effectivePerms);
                 await _sessionStorage.SetAsync("UserRolePermissions", effectivePerms);
 
-                resolvedUserRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(effectivePerms, resolvedUserCode);
+                if (!resolvedUserRights.Any() && effectivePerms.Any())
+                {
+                    resolvedUserRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(effectivePerms, resolvedUserCode);
+                }
                 await _sessionStorage.SetAsync("UserRights", resolvedUserRights);
-                TenantState.SetSession(tenantCode, safeToken, resolvedTenantName, resolvedUserCode, null, counterCodeVal, userDetails, resolvedUserRights);
+                TenantState.SetSession(tenantCode, safeToken, resolvedTenantName, resolvedUserCode, defaultBhCode, counterCodeVal, userDetails, resolvedUserRights);
                 
+                try
+                {
+                    var crossTabSession = new
+                    {
+                        authToken = safeToken,
+                        tenant_code = tenantCode,
+                        tenant_name = resolvedTenantName,
+                        user_name = name,
+                        login_input = inputDisplayName,
+                        user_role = finalRole,
+                        user_code = resolvedUserCode,
+                        bhcode = defaultBhCode,
+                        cntcode = counterCodeVal,
+                        isAdmin = finalIsAdmin,
+                        session_branch_confirmed = (defaultBhCode.HasValue && defaultBhCode.Value > 0)
+                    };
+                    await JSRuntime.InvokeVoidAsync("medicoSessionHelper.saveSession", JsonConvert.SerializeObject(crossTabSession));
+                }
+                catch { }
+
                 Toast.ShowSuccess($"Login successful! Tenant: {tenantCode}");
                 await Task.Delay(1000);
                 NavigationManager.NavigateTo("/home", replace: true);
@@ -595,10 +760,34 @@
             await _sessionStorage.SetAsync("authToken", safeToken);
             await _sessionStorage.SetAsync("tenant_code", tenantCode);
             await _sessionStorage.SetAsync("tenant_name", "Medico Healthcare Hospital");
+            await _sessionStorage.SetAsync("user_name", displayName);
+            await _sessionStorage.SetAsync("login_input", displayName);
+            await _sessionStorage.SetAsync("user_role", "Administrator");
+            await _sessionStorage.SetAsync("user_code", 1);
             await _sessionStorage.SetAsync("IsTenantAdmin", true);
             await _sessionStorage.DeleteAsync("bhcode");
             await _sessionStorage.SetAsync("UserDetails", userDetails);
             await _sessionStorage.SetAsync("UserRights", defaultRights);
+
+            try
+            {
+                var crossTabSession = new
+                {
+                    authToken = safeToken,
+                    tenant_code = tenantCode,
+                    tenant_name = "Medico Healthcare Hospital",
+                    user_name = displayName,
+                    login_input = displayName,
+                    user_role = "Administrator",
+                    user_code = 1,
+                    bhcode = (int?)null,
+                    cntcode = 1,
+                    isAdmin = true,
+                    session_branch_confirmed = false
+                };
+                await JSRuntime.InvokeVoidAsync("medicoSessionHelper.saveSession", JsonConvert.SerializeObject(crossTabSession));
+            }
+            catch { }
 
             TenantState.SetSession(tenantCode, safeToken, "Medico Healthcare Hospital", 1, null, 1, userDetails, defaultRights);
 
@@ -651,15 +840,24 @@
                 if (!string.IsNullOrEmpty(tenantCodeVal))
                 {
                     successMessage = "Login successful!";
-                    userName = tenantNameVal ?? "Tenant Admin";
+                    
+                    string inputDisplayName = (!string.IsNullOrWhiteSpace(loginModel.Input)) 
+                        ? (loginModel.Input.Contains("@") ? loginModel.Input.Split('@')[0] : loginModel.Input) 
+                        : "Administrator";
+
+                    userName = inputDisplayName;
                     string safeToken = token ?? "";
                     
+                    string tenantCleanName = (!string.IsNullOrWhiteSpace(tenantNameVal) && !string.Equals(tenantNameVal.Trim(), "Main branch", StringComparison.OrdinalIgnoreCase))
+                        ? tenantNameVal.Trim()
+                        : "Medico Healthcare Hospital";
+
                     var userDetails = new SharedComponents.Rcl.Models.UserDetailsModel
                     {
                         UserName = userName,
                         Role = "Administrator",
                         TenantCode = tenantCodeVal,
-                        TenantName = tenantNameVal ?? "",
+                        TenantName = tenantCleanName,
                         AuthToken = safeToken,
                         UserCode = 0,
                         BranchCode = null,
@@ -674,13 +872,37 @@
 
                     await _sessionStorage.SetAsync("authToken", safeToken);
                     await _sessionStorage.SetAsync("tenant_code", tenantCodeVal);
-                    await _sessionStorage.SetAsync("tenant_name", tenantNameVal ?? "");
+                    await _sessionStorage.SetAsync("tenant_name", tenantCleanName);
+                    await _sessionStorage.SetAsync("user_name", userName);
+                    await _sessionStorage.SetAsync("login_input", userName);
+                    await _sessionStorage.SetAsync("user_role", "Administrator");
+                    await _sessionStorage.SetAsync("user_code", 0);
                     await _sessionStorage.SetAsync("IsTenantAdmin", true);
                     await _sessionStorage.DeleteAsync("bhcode");
                     await _sessionStorage.SetAsync("UserDetails", userDetails);
                     await _sessionStorage.SetAsync("UserRights", adminRights);
                     
-                    TenantState.SetSession(tenantCodeVal, safeToken, tenantNameVal ?? "", 0, null, null, userDetails, adminRights);
+                    try
+                    {
+                        var crossTabSession = new
+                        {
+                            authToken = safeToken,
+                            tenant_code = tenantCodeVal,
+                            tenant_name = tenantCleanName,
+                            user_name = userName,
+                            login_input = userName,
+                            user_role = "Administrator",
+                            user_code = 0,
+                            bhcode = (int?)null,
+                            cntcode = (int?)null,
+                            isAdmin = true,
+                            session_branch_confirmed = false
+                        };
+                        await JSRuntime.InvokeVoidAsync("medicoSessionHelper.saveSession", JsonConvert.SerializeObject(crossTabSession));
+                    }
+                    catch { }
+
+                    TenantState.SetSession(tenantCodeVal, safeToken, tenantCleanName, 0, null, null, userDetails, adminRights);
                     
                     Toast.ShowSuccess($"Admin login successful!");
                     await Task.Delay(1000);
@@ -719,6 +941,26 @@
             }
         }
         return string.Empty;
+    }
+
+    private static bool IsSampleBranch(string? name, string? shortName, int code)
+    {
+        if (code <= 0) return true;
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            var n = name.Trim();
+            if (n.Contains("sample", StringComparison.OrdinalIgnoreCase)) return true;
+            if (n.Contains("smpl", StringComparison.OrdinalIgnoreCase)) return true;
+            if (n.Contains("dummy", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        if (!string.IsNullOrWhiteSpace(shortName))
+        {
+            var s = shortName.Trim();
+            if (s.Contains("sample", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.Contains("smpl", StringComparison.OrdinalIgnoreCase)) return true;
+            if (s.Contains("dummy", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     public class UserLoginModel

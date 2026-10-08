@@ -8,14 +8,30 @@ retryButton.addEventListener("click", retry);
 const resumeButton = document.getElementById("components-resume-button");
 resumeButton.addEventListener("click", resume);
 
+let reconnectShowTimeout = null;
+
 function handleReconnectStateChanged(event) {
     if (event.detail.state === "show") {
-        reconnectModal.showModal();
+        clearTimeout(reconnectShowTimeout);
+        // Delay showing reconnect modal by 2 seconds so normal page refreshes never flash the box
+        reconnectShowTimeout = setTimeout(() => {
+            if (reconnectModal && !reconnectModal.open) {
+                try { reconnectModal.showModal(); } catch { }
+            }
+        }, 2000);
     } else if (event.detail.state === "hide") {
-        reconnectModal.close();
+        clearTimeout(reconnectShowTimeout);
+        if (reconnectModal && reconnectModal.open) {
+            try { reconnectModal.close(); } catch { }
+        }
     } else if (event.detail.state === "failed") {
+        clearTimeout(reconnectShowTimeout);
+        if (reconnectModal && !reconnectModal.open) {
+            try { reconnectModal.showModal(); } catch { }
+        }
         document.addEventListener("visibilitychange", retryWhenDocumentBecomesVisible);
     } else if (event.detail.state === "rejected") {
+        clearTimeout(reconnectShowTimeout);
         location.reload();
     }
 }

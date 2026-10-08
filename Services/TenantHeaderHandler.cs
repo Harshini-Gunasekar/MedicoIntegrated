@@ -133,6 +133,22 @@ namespace Booking.Services
                 request.Headers.Add("tenant-code", effectiveTenant);
             }
 
+            if (string.IsNullOrEmpty(_session.AuthToken) && !isAnonymous && !request.Headers.Contains("Authorization"))
+            {
+                try
+                {
+                    var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                    var authToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+                    if (!string.IsNullOrEmpty(authToken))
+                    {
+                        var tenantCode = !string.IsNullOrEmpty(_session.TenantCode) ? _session.TenantCode : effectiveTenant;
+                        var tenantName = _session.TenantName ?? "";
+                        _session.SetSession(tenantCode, authToken, tenantName);
+                    }
+                }
+                catch { }
+            }
+
             if (isAnonymousRegister)
             {
                 request.Headers.Remove("Authorization");
