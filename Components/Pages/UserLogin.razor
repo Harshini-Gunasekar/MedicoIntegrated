@@ -523,14 +523,20 @@
                     ? userRoleName 
                     : (rawResponseRole ?? "");
 
+                bool isPowerUser = userDetailsJson?["poweruser"]?.ToObject<bool>() == true ||
+                                   userDetailsJson?["power_user"]?.ToObject<bool>() == true ||
+                                   string.Equals(userDetailsJson?["poweruser"]?.ToString(), "true", StringComparison.OrdinalIgnoreCase) ||
+                                   string.Equals(userDetailsJson?["power_user"]?.ToString(), "true", StringComparison.OrdinalIgnoreCase) ||
+                                   json["poweruser"]?.ToObject<bool>() == true ||
+                                   json["power_user"]?.ToObject<bool>() == true;
+
                 bool finalIsAdmin = isUserAdmin || 
-                                   string.Equals(detectedRole, "Admin", StringComparison.OrdinalIgnoreCase) || 
-                                   string.Equals(detectedRole, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(detectedRole, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(detectedRole, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(detectedRole, "Tenant", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(detectedRole, "Power User", StringComparison.OrdinalIgnoreCase) ||
-                                   string.Equals(detectedRole, "PowerUser", StringComparison.OrdinalIgnoreCase);
+                                   isPowerUser ||
+                                   IsAdminRole(detectedRole) ||
+                                   IsAdminRole(rawResponseRole) ||
+                                   IsAdminRole(userDescription) ||
+                                   string.Equals(inputDisplayName, "admin", StringComparison.OrdinalIgnoreCase) ||
+                                   IsAdminRoleFromJwt(safeToken);
 
                 // Priority: Use the exact string provided in description or role from the login response
                 string finalRole = "";
@@ -675,7 +681,12 @@
                 RoleService.ClearPermissions();
 
                 List<Booking.Models.RolePermissionItem> effectivePerms = new();
-                if (resolvedUserCode > 0)
+                if (finalIsAdmin)
+                {
+                    // If user is Admin, no role_id restriction: grant all catalog permissions unconditionally
+                    effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
+                }
+                else if (resolvedUserCode > 0)
                 {
                     try
                     {
@@ -693,7 +704,7 @@
                     effectivePerms = RoleMasterService.ConvertUserRightsToPermissions(resolvedUserRights);
                 }
 
-                if (finalIsAdmin && (effectivePerms == null || !effectivePerms.Any()))
+                if (finalIsAdmin)
                 {
                     effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
                 }
@@ -1008,6 +1019,60 @@
             if (s.Contains("dummy", StringComparison.OrdinalIgnoreCase)) return true;
         }
         return false;
+    }
+
+    private static bool IsAdminRole(string? role)
+    {
+        if (string.IsNullOrWhiteSpace(role)) return false;
+        var r = role.Trim();
+        return string.Equals(r, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "TenantAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Client Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "ClientAdmin", StringComparison.OrdinalIgnoreCase) ||
+               r.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAdminRoleFromJwt(string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        try
+        {
+            var segments = token.Split('.');
+            if (segments.Length < 2) return false;
+            var payload = segments[1];
+            switch (payload.Length % 4)
+            {
+                case 2: payload += "=="; break;
+                case 3: payload += "="; break;
+            }
+            var jsonBytes = Convert.FromBase64String(payload);
+            var claims = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
+            if (claims == null) return false;
+            
+            if (claims.TryGetValue("IsAdmin", out var isAdmVal) && 
+                (string.Equals(isAdmVal?.ToString(), "true", StringComparison.OrdinalIgnoreCase) || 
+                 string.Equals(isAdmVal?.ToString(), "True", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            if (claims.TryGetValue("power_user", out var puVal) && 
+                (string.Equals(puVal?.ToString(), "true", StringComparison.OrdinalIgnoreCase) || 
+                 string.Equals(puVal?.ToString(), "True", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            object? rVal = null;
+            if (!claims.TryGetValue("role", out rVal) &&
+                !claims.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
+                return false;
+            return IsAdminRole(rVal?.ToString());
+        }
+        catch { return false; }
     }
 
     public class UserLoginModel

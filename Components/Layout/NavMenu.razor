@@ -1439,27 +1439,28 @@
             }
 
             // 4. Admin Detection
-            bool isExplicitNonAdmin = (!string.IsNullOrWhiteSpace(displayUserRole) && !IsAdminRole(displayUserRole)) ||
-                                      (TenantState.UserData != null && !string.IsNullOrWhiteSpace(TenantState.UserData.Role) && !IsAdminRole(TenantState.UserData.Role));
-
-            bool isAdminDetected = false;
-            if (!isExplicitNonAdmin)
+            bool isTenantAdminSession = false;
+            try
             {
-                isAdminDetected = IsAdminRole(displayUserRole) ||
-                                  string.Equals(displayUserName, "admin", StringComparison.OrdinalIgnoreCase) ||
-                                  (TenantState.UserData != null && IsAdminRole(TenantState.UserData.Role)) ||
-                                  (localIsAdmin && string.IsNullOrWhiteSpace(displayUserRole));
+                var itaRes = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+                if (itaRes.Success && itaRes.Value) isTenantAdminSession = true;
             }
+            catch { }
+
+            bool isAdminDetected = localIsAdmin ||
+                                  isTenantAdminSession ||
+                                  _isAdminSession ||
+                                  IsAdminRole(displayUserRole) ||
+                                  (TenantState.UserData != null && IsAdminRole(TenantState.UserData.Role)) ||
+                                  string.Equals(displayUserName, "admin", StringComparison.OrdinalIgnoreCase) ||
+                                  IsAdminRoleFromJwt(localToken) ||
+                                  IsAdminRoleFromJwt(TenantState.AuthToken);
 
             if (isAdminDetected)
             {
                 _isAdminSession = true;
-                displayUserRole = "Administrator";
+                if (string.IsNullOrWhiteSpace(displayUserRole) || displayUserRole == "User") displayUserRole = "Administrator";
                 if (string.IsNullOrWhiteSpace(displayUserName) || displayUserName == "User") displayUserName = "Administrator";
-            }
-            else
-            {
-                _isAdminSession = false;
             }
 
             // 5. Ensure permissions loaded into RoleService and UserRights into TenantState
@@ -1582,7 +1583,10 @@
             if (!string.IsNullOrWhiteSpace(TenantState.UserData.Role))
             {
                 displayUserRole = TenantState.UserData.Role;
-                _isAdminSession = IsAdminRole(displayUserRole);
+                if (IsAdminRole(displayUserRole))
+                {
+                    _isAdminSession = true;
+                }
             }
         }
     }
@@ -2233,31 +2237,73 @@
 
     private static bool IsAdminRole(string? role)
     {
-        if (string.IsNullOrEmpty(role)) return false;
-        return string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Power User", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(role)) return false;
+        var r = role.Trim();
+        return string.Equals(r, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "TenantAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Client Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "ClientAdmin", StringComparison.OrdinalIgnoreCase) ||
+               r.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAdminRoleFromJwt(string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        try
+        {
+            var segments = token.Split('.');
+            if (segments.Length < 2) return false;
+            var payload = segments[1];
+            switch (payload.Length % 4)
+            {
+                case 2: payload += "=="; break;
+                case 3: payload += "="; break;
+            }
+            var jsonBytes = Convert.FromBase64String(payload);
+            var claims = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
+            if (claims == null) return false;
+            
+            if (claims.TryGetValue("IsAdmin", out var isAdmVal) && 
+                (string.Equals(isAdmVal?.ToString(), "true", StringComparison.OrdinalIgnoreCase) || 
+                 string.Equals(isAdmVal?.ToString(), "True", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            if (claims.TryGetValue("power_user", out var puVal) && 
+                (string.Equals(puVal?.ToString(), "true", StringComparison.OrdinalIgnoreCase) || 
+                 string.Equals(puVal?.ToString(), "True", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            object? rVal = null;
+            if (!claims.TryGetValue("role", out rVal) &&
+                !claims.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
+                return false;
+            return IsAdminRole(rVal?.ToString());
+        }
+        catch { return false; }
     }
 
     private bool IsAdmin()
     {
+        if (_isAdminSession) return true;
+
         var role = TenantState.UserData?.Role;
-        if (!string.IsNullOrEmpty(role))
+        if (!string.IsNullOrEmpty(role) && IsAdminRole(role))
         {
-            bool isAdm = IsAdminRole(role);
-            _isAdminSession = isAdm;
-            return isAdm;
+            _isAdminSession = true;
+            return true;
         }
 
-        if (!string.IsNullOrEmpty(displayUserRole))
+        if (!string.IsNullOrEmpty(displayUserRole) && IsAdminRole(displayUserRole))
         {
-            bool isAdm = IsAdminRole(displayUserRole);
-            _isAdminSession = isAdm;
-            return isAdm;
+            _isAdminSession = true;
+            return true;
         }
 
         var name = TenantState.UserData?.UserName;
@@ -2271,41 +2317,14 @@
             return true;
         }
 
-        if (string.IsNullOrEmpty(role))
+        var token = TenantState.AuthToken ?? TenantState.UserData?.AuthToken;
+        if (IsAdminRoleFromJwt(token))
         {
-            // Fallback: decode from JWT claim
-            var token = TenantState.AuthToken;
-            if (!string.IsNullOrEmpty(token))
-            {
-                try
-                {
-                    var segments = token.Split('.');
-                    if (segments.Length >= 2)
-                    {
-                        var payload = segments[1];
-                        switch (payload.Length % 4)
-                        {
-                            case 2: payload += "=="; break;
-                            case 3: payload += "="; break;
-                        }
-                        var jsonBytes = Convert.FromBase64String(payload);
-                        var claimsDict = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
-                        if (claimsDict != null)
-                        {
-                            object? rVal = null;
-                            if (claimsDict.TryGetValue("role", out rVal) ||
-                                claimsDict.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
-                                role = rVal?.ToString();
-                        }
-                    }
-                }
-                catch { }
-            }
+            _isAdminSession = true;
+            return true;
         }
 
-        bool result = IsAdminRole(role);
-        _isAdminSession = result;
-        return result;
+        return false;
     }
 
     private static string NormalizeRightsKey(string? s)

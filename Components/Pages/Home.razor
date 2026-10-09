@@ -310,6 +310,7 @@
     private string tenantCode = "";
     private int? branchCode;
     private DateTime currentDateTime = DateTime.Now;
+    private bool _isAdminSession = false;
 
     protected override void OnInitialized()
     {
@@ -333,7 +334,11 @@
             if (!string.IsNullOrEmpty(TenantState.UserData.UserName))
                 userName = TenantState.UserData.UserName;
             if (!string.IsNullOrEmpty(TenantState.UserData.Role))
+            {
                 userRole = TenantState.UserData.Role;
+                if (IsAdminRole(userRole))
+                    _isAdminSession = true;
+            }
         }
         if (!string.IsNullOrEmpty(TenantState.TenantCode))
         {
@@ -393,8 +398,12 @@
                     if (!branchCode.HasValue) branchCode = jObj["bhcode"]?.ToObject<int?>();
 
                     var isAdm = jObj["isAdmin"]?.ToObject<bool>() == true;
-                    if (isAdm && string.IsNullOrEmpty(userRole))
-                        userRole = "Administrator";
+                    if (isAdm)
+                    {
+                        _isAdminSession = true;
+                        if (string.IsNullOrEmpty(userRole))
+                            userRole = "Administrator";
+                    }
 
                     // IMMEDIATELY render UI to remove any visible lag
                     isLoading = false;
@@ -402,6 +411,16 @@
                 }
             }
             catch { }
+
+            if (!_isAdminSession)
+            {
+                try
+                {
+                    var itaRes = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+                    if (itaRes.Success && itaRes.Value) _isAdminSession = true;
+                }
+                catch { }
+            }
 
             // 3. Fallbacks from ProtectedSessionStorage if empty
             if (string.IsNullOrEmpty(hospitalName))
@@ -643,26 +662,87 @@
 
     private static bool IsAdminRole(string? role)
     {
-        if (string.IsNullOrEmpty(role)) return false;
-        return string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Power User", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
-               string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(role)) return false;
+        var r = role.Trim();
+        return string.Equals(r, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "TenantAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Client Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "ClientAdmin", StringComparison.OrdinalIgnoreCase) ||
+               r.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsAdminRoleFromJwt(string? token)
+    {
+        if (string.IsNullOrEmpty(token)) return false;
+        try
+        {
+            var segments = token.Split('.');
+            if (segments.Length < 2) return false;
+            var payload = segments[1];
+            switch (payload.Length % 4)
+            {
+                case 2: payload += "=="; break;
+                case 3: payload += "="; break;
+            }
+            var jsonBytes = Convert.FromBase64String(payload);
+            var claims = System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object>>(jsonBytes);
+            if (claims == null) return false;
+            
+            if (claims.TryGetValue("IsAdmin", out var isAdmVal) && 
+                (string.Equals(isAdmVal?.ToString(), "true", StringComparison.OrdinalIgnoreCase) || 
+                 string.Equals(isAdmVal?.ToString(), "True", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            if (claims.TryGetValue("power_user", out var puVal) && 
+                (string.Equals(puVal?.ToString(), "true", StringComparison.OrdinalIgnoreCase) || 
+                 string.Equals(puVal?.ToString(), "True", StringComparison.OrdinalIgnoreCase)))
+                return true;
+
+            object? rVal = null;
+            if (!claims.TryGetValue("role", out rVal) &&
+                !claims.TryGetValue("http://schemas.microsoft.com/ws/2008/06/identity/claims/role", out rVal))
+                return false;
+            return IsAdminRole(rVal?.ToString());
+        }
+        catch { return false; }
     }
 
     private bool IsAdmin()
     {
+        if (_isAdminSession) return true;
+
         var role = userRole;
         if (string.IsNullOrEmpty(role)) role = TenantState.UserData?.Role;
+        if (!string.IsNullOrEmpty(role) && IsAdminRole(role))
+        {
+            _isAdminSession = true;
+            return true;
+        }
+
         var uName = userName;
         if (string.IsNullOrEmpty(uName)) uName = TenantState.UserData?.UserName;
         if (string.Equals(uName, "admin", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(uName, "administrator", StringComparison.OrdinalIgnoreCase)) return true;
+            string.Equals(uName, "administrator", StringComparison.OrdinalIgnoreCase))
+        {
+            _isAdminSession = true;
+            return true;
+        }
 
-        return IsAdminRole(role);
+        var token = TenantState.AuthToken ?? TenantState.UserData?.AuthToken;
+        if (IsAdminRoleFromJwt(token))
+        {
+            _isAdminSession = true;
+            return true;
+        }
+
+        return false;
     }
 
     private bool HasMainModule(string module) => IsAdmin() || RoleService.HasMainModule(module);
