@@ -19,7 +19,7 @@
 @inject IConfiguration Configuration
 @inject LabSettingService LabSettingService
 @inject IJSRuntime JSRuntime
-@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject Booking.Services.WalkinStateService WalkinStateSvc
 @inject Booking.Services.AreaMasterService AreaMasterService
 @inject Booking.Services.CityMasterService CityMasterService
@@ -1085,9 +1085,23 @@
                                      <td class="text-center">
                                          @if (uc.billedstatus != true && !string.IsNullOrEmpty(uc.unbilledid))
                                          {
-                                             <button type="button" class="btn btn-sm btn-outline-primary px-2 py-0" style="font-size:0.72rem; font-weight:600; height: 26px;" @onclick="() => StartEditUnpaid(uc)">
-                                                 <i class="bi bi-pencil-square me-1"></i>Edit
-                                             </button>
+                                             <div class="d-flex justify-content-center gap-1">
+                                                 <button type="button" class="btn btn-sm btn-outline-primary px-2 py-0" style="font-size:0.72rem; font-weight:600; height: 26px;" @onclick="() => StartEditUnpaid(uc)">
+                                                     <i class="bi bi-pencil-square me-1"></i>Edit
+                                                 </button>
+                                                 <button type="button" class="btn btn-sm btn-outline-danger px-2 py-0" style="font-size:0.72rem; font-weight:600; height: 26px;"
+                                                         disabled="@(discardingUnpaidId == uc.unbilledid)"
+                                                         @onclick="() => DiscardUnpaidChargeAsync(uc)" title="Discard Charge">
+                                                     @if (discardingUnpaidId == uc.unbilledid)
+                                                     {
+                                                         <span class="spinner-border spinner-border-sm" role="status"></span>
+                                                     }
+                                                     else
+                                                     {
+                                                         <span><i class="bi bi-trash3 me-1"></i> Discard</span>
+                                                     }
+                                                 </button>
+                                             </div>
                                          }
                                          else
                                          {
@@ -4325,6 +4339,52 @@
             ToastService.ShowError("Failed to update charge.");
         }
         StateHasChanged();
+    }
+
+    private string? discardingUnpaidId;
+
+    private async Task DiscardUnpaidChargeAsync(UnbilledChargeSummary uc)
+    {
+        if (string.IsNullOrWhiteSpace(uc.unbilledid)) return;
+
+        bool confirm = await JSRuntime.InvokeAsync<bool>("confirm", $"Are you sure you want to discard '{uc.particulars ?? uc.item_name ?? uc.entrytype ?? "this charge"}'?");
+        if (!confirm) return;
+
+        discardingUnpaidId = uc.unbilledid;
+        StateHasChanged();
+
+        try
+        {
+            var result = await HmsBillingService.DiscardUnbilledChargeAsync(uc.unbilledid);
+            if (result != null && result.discarded > 0)
+            {
+                ToastService.ShowSuccess("Unbilled charge discarded successfully.");
+                unpaidChargesList.RemoveAll(u => u.unbilledid == uc.unbilledid);
+                foreach (var kvp in visitUnbilledCharges)
+                {
+                    kvp.Value.RemoveAll(u => u.unbilledid == uc.unbilledid);
+                }
+                await LoadDataAsync();
+            }
+            else if (result != null && result.skipped.Any())
+            {
+                var reason = result.skipped.First().reason;
+                ToastService.ShowWarning($"Could not discard: {reason}");
+            }
+            else
+            {
+                ToastService.ShowError("Failed to discard unbilled charge.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error discarding charge: {ex.Message}");
+        }
+        finally
+        {
+            discardingUnpaidId = null;
+            StateHasChanged();
+        }
     }
 
     // --- Cancel OP Registration ---

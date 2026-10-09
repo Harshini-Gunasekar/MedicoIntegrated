@@ -1011,6 +1011,101 @@ namespace Booking.Services
             }
         }
 
+        public async Task<DiscardUnbilledResult?> DiscardUnbilledChargesAsync(List<string> unbilledIds)
+        {
+            try
+            {
+                if (unbilledIds == null || unbilledIds.Count == 0)
+                {
+                    Console.WriteLine("[DiscardUnbilledCharges] No unbilled IDs provided.");
+                    return new DiscardUnbilledResult();
+                }
+
+                var request = new DiscardUnbilledChargesRequest
+                {
+                    unbilledids = unbilledIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToList()
+                };
+
+                if (request.unbilledids.Count == 0)
+                {
+                    return new DiscardUnbilledResult();
+                }
+
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request);
+
+                Console.WriteLine("=================================================");
+                Console.WriteLine($"[DiscardUnbilledCharges] Calling POST api/UnbilledCharges/discard");
+                Console.WriteLine($"[DiscardUnbilledCharges] Payload: {jsonPayload}");
+                Console.WriteLine("=================================================");
+
+                var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+                var response = await _http.PostAsync("api/UnbilledCharges/discard", content);
+                var responseBody = await response.Content.ReadAsStringAsync();
+
+                Console.WriteLine($"[DiscardUnbilledCharges] Response Status: {(int)response.StatusCode} ({response.StatusCode})");
+                Console.WriteLine($"[DiscardUnbilledCharges] Response Body: {responseBody}");
+                Console.WriteLine("=================================================");
+
+                if (response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(responseBody))
+                {
+                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+
+                    // 1. Try parsing wrapper { message: "...", result: { ... } }
+                    try
+                    {
+                        var wrapped = System.Text.Json.JsonSerializer.Deserialize<DiscardUnbilledResponse>(responseBody, options);
+                        if (wrapped?.result != null && (wrapped.result.requested > 0 || wrapped.result.discarded > 0 || (wrapped.result.discarded_ids != null && wrapped.result.discarded_ids.Any()) || (wrapped.result.skipped != null && wrapped.result.skipped.Any())))
+                        {
+                            return wrapped.result;
+                        }
+
+                        // Also try Newtonsoft if System.Text.Json was empty
+                        var nWrapped = Newtonsoft.Json.JsonConvert.DeserializeObject<DiscardUnbilledResponse>(responseBody);
+                        if (nWrapped?.result != null && (nWrapped.result.requested > 0 || nWrapped.result.discarded > 0 || (nWrapped.result.discarded_ids != null && nWrapped.result.discarded_ids.Any())))
+                        {
+                            return nWrapped.result;
+                        }
+                    }
+                    catch { }
+
+                    // 2. Try parsing direct DiscardUnbilledResult { requested: 1, discarded: 1, ... }
+                    try
+                    {
+                        var direct = System.Text.Json.JsonSerializer.Deserialize<DiscardUnbilledResult>(responseBody, options);
+                        if (direct != null && (direct.requested > 0 || direct.discarded > 0 || (direct.discarded_ids != null && direct.discarded_ids.Any())))
+                        {
+                            return direct;
+                        }
+                    }
+                    catch { }
+
+                    // 3. Fallback: If 200 OK and response contains "Discarded", construct successful result
+                    if (responseBody.Contains("Discarded", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return new DiscardUnbilledResult
+                        {
+                            requested = request.unbilledids.Count,
+                            discarded = request.unbilledids.Count,
+                            discarded_ids = request.unbilledids
+                        };
+                    }
+                }
+
+                return null;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[DiscardUnbilledCharges] Error discarding unbilled charges: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<DiscardUnbilledResult?> DiscardUnbilledChargeAsync(string unbilledId)
+        {
+            if (string.IsNullOrWhiteSpace(unbilledId)) return null;
+            return await DiscardUnbilledChargesAsync(new List<string> { unbilledId });
+        }
+
         private List<UnbilledChargeSummary> ParseUnbilledChargeSummaryList(string? rawJson)
         {
             if (string.IsNullOrWhiteSpace(rawJson))

@@ -17,7 +17,7 @@
 @inject IpRegistrationService IpRegistrationService
 @inject DoctorService DoctorService
 @inject DoctorSpecialtyMasterService SpecialtyService
-@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject NavigationManager Navigation
 @inject OtService OtService
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
@@ -1679,12 +1679,18 @@
                                                                          @if (!isReadOnly)
                                                                          {
                                                                              <td class="text-center">
-                                                                                 @if (!isBilled)
-                                                                                 {
-                                                                                     <button type="button" class="btn-edit-unbilled" @onclick="() => StartEditUnbilledCharge(uc)" @onclick:stopPropagation="true" title="Edit Charge Rates">
-                                                                                         <i class="bi bi-pencil-square me-1"></i> Edit
-                                                                                     </button>
-                                                                                 }
+                                                                                  @if (!isBilled)
+                                                                                  {
+                                                                                      <div class="d-flex justify-content-center gap-1">
+                                                                                          <button type="button" class="btn-edit-unbilled" @onclick="() => StartEditUnbilledCharge(uc)" @onclick:stopPropagation="true" title="Edit Charge Rates">
+                                                                                              <i class="bi bi-pencil-square me-1"></i> Edit
+                                                                                          </button>
+                                                                                          <button type="button" class="btn btn-sm btn-outline-danger px-2 py-0" style="font-size: 0.72rem; font-weight: 600; height: 26px;"
+                                                                                                  @onclick="() => PromptDiscardUnbilledCharge(uc)" @onclick:stopPropagation="true" title="Discard Unbilled Charge">
+                                                                                              <span><i class="bi bi-trash3 me-1"></i> Discard</span>
+                                                                                          </button>
+                                                                                      </div>
+                                                                                  }
                                                                                  else
                                                                                  {
                                                                                      <span class="text-muted small">-</span>
@@ -3318,6 +3324,48 @@
                     }
                 </div>
             </div>
+        </div>
+    </div>
+}
+
+<!-- Discard Unbilled Charge Confirmation Modal Card -->
+@if (showDiscardConfirmModal && chargeToDiscard != null)
+{
+    <div class="modal-backdrop" style="z-index: 2100; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px);" @onclick="CancelDiscardChargeModal"></div>
+    <div class="confirm-card-modal" style="z-index: 2101; max-width: 440px;">
+        <div class="confirm-card-header">
+            <div class="confirm-card-icon red">
+                <i class="bi bi-trash3-fill"></i>
+            </div>
+            <div>
+                <h3 class="confirm-card-title">Discard Charge?</h3>
+                <span class="confirm-card-subtitle">Permanent removal confirmation</span>
+            </div>
+            <button type="button" class="confirm-card-close" @onclick="CancelDiscardChargeModal">×</button>
+        </div>
+        <div class="confirm-card-body">
+            <p style="margin: 0; font-size: 0.9rem; color: #334155; line-height: 1.5;">
+                Are you sure you want to discard <strong style="color: #0f172a;">'@GetUnbilledChargeDisplayName(chargeToDiscard)'</strong>?
+            </p>
+            <div class="confirm-card-warning" style="background: #fef2f2; border-color: #fee2e2; color: #991b1b;">
+                <i class="bi bi-exclamation-triangle-fill" style="color: #ef4444;"></i>
+                <span>This unbilled charge will be permanently removed.</span>
+            </div>
+        </div>
+        <div class="confirm-card-footer">
+            <button type="button" class="btn-confirm-cancel" @onclick="CancelDiscardChargeModal" disabled="@isDiscardingCharge">Cancel</button>
+            <button type="button" class="btn-confirm-action red" @onclick="ConfirmDiscardUnbilledChargeAsync" disabled="@isDiscardingCharge">
+                @if (isDiscardingCharge)
+                {
+                    <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                    <span>Discarding...</span>
+                }
+                else
+                {
+                    <i class="bi bi-trash3-fill me-1"></i>
+                    <span>Yes, Discard</span>
+                }
+            </button>
         </div>
     </div>
 }
@@ -5653,6 +5701,67 @@
             ToastService.ShowError("Failed to update unbilled charge.");
         }
         StateHasChanged();
+    }
+
+    private bool showDiscardConfirmModal = false;
+    private UnbilledChargeSummary? chargeToDiscard = null;
+    private bool isDiscardingCharge = false;
+
+    private void PromptDiscardUnbilledCharge(UnbilledChargeSummary uc)
+    {
+        if (uc == null || string.IsNullOrWhiteSpace(uc.unbilledid)) return;
+        chargeToDiscard = uc;
+        showDiscardConfirmModal = true;
+    }
+
+    private void CancelDiscardChargeModal()
+    {
+        if (isDiscardingCharge) return;
+        showDiscardConfirmModal = false;
+        chargeToDiscard = null;
+    }
+
+    private async Task ConfirmDiscardUnbilledChargeAsync()
+    {
+        if (chargeToDiscard == null || string.IsNullOrWhiteSpace(chargeToDiscard.unbilledid))
+        {
+            CancelDiscardChargeModal();
+            return;
+        }
+
+        var uc = chargeToDiscard;
+        try
+        {
+            isDiscardingCharge = true;
+            StateHasChanged();
+
+            var result = await HmsBillingService.DiscardUnbilledChargeAsync(uc.unbilledid);
+            if (result != null && result.discarded > 0)
+            {
+                ToastService.ShowSuccess("Unbilled charge discarded successfully.");
+                showDiscardConfirmModal = false;
+                chargeToDiscard = null;
+                await LoadUnbilledChargesAsync();
+            }
+            else if (result != null && result.skipped != null && result.skipped.Count > 0)
+            {
+                var reason = result.skipped[0].reason;
+                ToastService.ShowWarning($"Could not discard: {reason}");
+            }
+            else
+            {
+                ToastService.ShowError("Failed to discard unbilled charge.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error discarding charge: {ex.Message}");
+        }
+        finally
+        {
+            isDiscardingCharge = false;
+            StateHasChanged();
+        }
     }
 
     // --- Patient History Pagination ---

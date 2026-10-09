@@ -153,4 +153,53 @@ namespace Booking.Models
         {
         }
     }
+
+    public class DiscardUnbilledChargesRequest
+    {
+        // Send one id or many. A single id is just a list of one.
+        [System.Text.Json.Serialization.JsonPropertyName("unbilledids")]
+        [Newtonsoft.Json.JsonProperty("unbilledids")]
+        public List<string> unbilledids { get; set; } = new();
+    }
+
+    public class DiscardUnbilledResult
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("requested")]
+        [Newtonsoft.Json.JsonProperty("requested")]
+        public int requested { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("discarded")]
+        [Newtonsoft.Json.JsonProperty("discarded")]
+        public int discarded { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("discarded_ids")]
+        [Newtonsoft.Json.JsonProperty("discarded_ids")]
+        public List<string> discarded_ids { get; set; } = new();
+
+        [System.Text.Json.Serialization.JsonPropertyName("skipped")]
+        [Newtonsoft.Json.JsonProperty("skipped")]
+        public List<DiscardSkipped> skipped { get; set; } = new();
+    }
+
+    public class DiscardSkipped
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("unbilledid")]
+        [Newtonsoft.Json.JsonProperty("unbilledid")]
+        public string unbilledid { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("reason")]
+        [Newtonsoft.Json.JsonProperty("reason")]
+        public string reason { get; set; } = string.Empty;
+    }
+
+    public class DiscardUnbilledResponse
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("message")]
+        [Newtonsoft.Json.JsonProperty("message")]
+        public string? message { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("result")]
+        [Newtonsoft.Json.JsonProperty("result")]
+        public DiscardUnbilledResult? result { get; set; }
+    }
 }

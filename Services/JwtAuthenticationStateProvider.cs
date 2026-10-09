@@ -11,10 +11,10 @@ namespace Booking.Services
 {
     public class JwtAuthenticationStateProvider : AuthenticationStateProvider
     {
-        private readonly ProtectedSessionStorage _sessionStorage;
+        private readonly ProtectedLocalStorage _sessionStorage;
         private readonly ClaimsPrincipal _anonymous = new ClaimsPrincipal(new ClaimsIdentity());
 
-        public JwtAuthenticationStateProvider(ProtectedSessionStorage sessionStorage)
+        public JwtAuthenticationStateProvider(ProtectedLocalStorage sessionStorage)
         {
             _sessionStorage = sessionStorage;
         }

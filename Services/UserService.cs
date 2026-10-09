@@ -342,6 +342,21 @@ namespace LabCare.Services
             foreach (var prop in user.GetType().GetProperties())
             {
                 if (prop.Name == "user_image" || prop.Name == "signature_image") continue;
+
+                // When updating, do not send password if it is empty, null, whitespace, dummy placeholder, or already a bcrypt hash
+                if (isUpdate && prop.Name.Equals("password", StringComparison.OrdinalIgnoreCase))
+                {
+                    var pwdVal = prop.GetValue(user)?.ToString();
+                    if (string.IsNullOrWhiteSpace(pwdVal) || 
+                        pwdVal == "********" || 
+                        pwdVal == "••••••••" || 
+                        pwdVal.StartsWith("$2a$") || 
+                        pwdVal.StartsWith("$2b$") || 
+                        pwdVal.StartsWith("$2y$"))
+                    {
+                        continue;
+                    }
+                }
                 
                 var value = prop.GetValue(user);
                 if (value != null)

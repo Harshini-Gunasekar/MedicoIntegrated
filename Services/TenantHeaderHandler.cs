@@ -10,10 +10,10 @@ namespace Booking.Services
     public class TenantHeaderHandler : DelegatingHandler
     {
         private readonly TenantSessionState _session;
-        private readonly ProtectedSessionStorage _sessionStorage;
+        private readonly ProtectedLocalStorage _sessionStorage;
         private readonly Microsoft.Extensions.Configuration.IConfiguration _config;
 
-        public TenantHeaderHandler(TenantSessionState session, ProtectedSessionStorage sessionStorage, Microsoft.Extensions.Configuration.IConfiguration config)
+        public TenantHeaderHandler(TenantSessionState session, ProtectedLocalStorage sessionStorage, Microsoft.Extensions.Configuration.IConfiguration config)
         {
             _session = session;
             _sessionStorage = sessionStorage;
