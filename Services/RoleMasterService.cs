@@ -13,7 +13,6 @@ namespace Booking.Services
     public class RoleMasterService
     {
         private readonly IHttpClientFactory _clientFactory;
-        private readonly SharedComponents.Rcl.Services.TenantSessionState? _tenantState;
 
         private static readonly Dictionary<string, string> ModuleIcons = new(StringComparer.OrdinalIgnoreCase)
         {
@@ -30,34 +29,12 @@ namespace Booking.Services
             { "Admin Portal", "bi-shield-lock-fill" }
         };
 
-        public RoleMasterService(IHttpClientFactory clientFactory, SharedComponents.Rcl.Services.TenantSessionState? tenantState = null)
+        public RoleMasterService(IHttpClientFactory clientFactory)
         {
             _clientFactory = clientFactory;
-            _tenantState = tenantState;
         }
 
         private HttpClient Client => _clientFactory.CreateClient("MedicoAPI");
-
-        private string ResolveTenantCode(string? explicitTenant = null)
-        {
-            if (!string.IsNullOrWhiteSpace(explicitTenant)) return explicitTenant.Trim();
-            if (!string.IsNullOrWhiteSpace(_tenantState?.TenantCode)) return _tenantState.TenantCode.Trim();
-            return "";
-        }
-
-        private void AttachTenantHeaders(HttpRequestMessage request, string? explicitTenant = null)
-        {
-            var effTenant = ResolveTenantCode(explicitTenant);
-            if (!string.IsNullOrWhiteSpace(effTenant))
-            {
-                request.Headers.Remove("tenant_code");
-                request.Headers.Add("tenant_code", effTenant);
-                request.Headers.Remove("tenantcode");
-                request.Headers.Add("tenantcode", effTenant);
-                request.Headers.Remove("tenant-code");
-                request.Headers.Add("tenant-code", effTenant);
-            }
-        }
 
         public string GetModuleIcon(string moduleName)
         {
@@ -65,21 +42,15 @@ namespace Booking.Services
             return ModuleIcons.TryGetValue(moduleName, out var icon) ? icon : "bi-folder2";
         }
 
-        public async Task<List<RolePermissionItem>> GetMasterCatalogAsync(string? tenantCode = null)
+        public async Task<List<RolePermissionItem>> GetMasterCatalogAsync()
         {
             try
             {
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
-                using var request = new HttpRequestMessage(HttpMethod.Get, "api/RoleMaster/master-roles?productId=MEDICO_APP");
-                AttachTenantHeaders(request, tenantCode);
-                var res = await Client.SendAsync(request, cts.Token);
-                if (res.IsSuccessStatusCode)
+                var response = await Client.GetFromJsonAsync<List<RolePermissionItem>>("api/RoleMaster/master-roles?productId=MEDICO_APP", cts.Token);
+                if (response != null && response.Any())
                 {
-                    var response = await res.Content.ReadFromJsonAsync<List<RolePermissionItem>>(cts.Token);
-                    if (response != null && response.Any())
-                    {
-                        return response;
-                    }
+                    return response;
                 }
             }
             catch (Exception ex)
@@ -91,19 +62,12 @@ namespace Booking.Services
             return RoleCatalogDefaults.GetDefaultPermissions();
         }
 
-        public async Task<List<RoleSummaryDto>> GetRolesAsync(string? tenantCode = null)
+        public async Task<List<RoleSummaryDto>> GetRolesAsync()
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, "api/RoleMaster/get-roles");
-                AttachTenantHeaders(request, tenantCode);
-                var res = await Client.SendAsync(request);
-                if (res.IsSuccessStatusCode)
-                {
-                    var response = await res.Content.ReadFromJsonAsync<List<RoleSummaryDto>>();
-                    return response ?? new List<RoleSummaryDto>();
-                }
-                return new List<RoleSummaryDto>();
+                var response = await Client.GetFromJsonAsync<List<RoleSummaryDto>>("api/RoleMaster/get-roles");
+                return response ?? new List<RoleSummaryDto>();
             }
             catch (Exception ex)
             {
@@ -112,18 +76,11 @@ namespace Booking.Services
             }
         }
 
-        public async Task<RoleSummaryDto?> GetRoleAsync(Guid roleGuid, string? tenantCode = null)
+        public async Task<RoleSummaryDto?> GetRoleAsync(Guid roleGuid)
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, $"api/RoleMaster/get-role?roleGuid={roleGuid}");
-                AttachTenantHeaders(request, tenantCode);
-                var res = await Client.SendAsync(request);
-                if (res.IsSuccessStatusCode)
-                {
-                    return await res.Content.ReadFromJsonAsync<RoleSummaryDto>();
-                }
-                return null;
+                return await Client.GetFromJsonAsync<RoleSummaryDto>($"api/RoleMaster/get-role?roleGuid={roleGuid}");
             }
             catch (Exception ex)
             {
@@ -132,16 +89,11 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, Guid? RoleGuid, string Message)> SaveRoleAsync(RoleSaveRequest req, string? tenantCode = null)
+        public async Task<(bool Success, Guid? RoleGuid, string Message)> SaveRoleAsync(RoleSaveRequest req)
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Post, "api/RoleMaster/save-role")
-                {
-                    Content = JsonContent.Create(req)
-                };
-                AttachTenantHeaders(request, tenantCode);
-                var response = await Client.SendAsync(request);
+                var response = await Client.PostAsJsonAsync("api/RoleMaster/save-role", req);
                 if (response.IsSuccessStatusCode)
                 {
                     var content = await response.Content.ReadAsStringAsync();
@@ -162,13 +114,11 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> DeleteRoleAsync(Guid roleGuid, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> DeleteRoleAsync(Guid roleGuid)
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Delete, $"api/RoleMaster/delete-role?roleGuid={roleGuid}");
-                AttachTenantHeaders(request, tenantCode);
-                var response = await Client.SendAsync(request);
+                var response = await Client.DeleteAsync($"api/RoleMaster/delete-role?roleGuid={roleGuid}");
                 if (response.IsSuccessStatusCode)
                 {
                     return (true, "Role template deleted successfully.");
@@ -182,19 +132,12 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<long>> GetUserRolesAsync(long usercode, string? tenantCode = null)
+        public async Task<List<long>> GetUserRolesAsync(long usercode)
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, $"api/RoleMaster/get-user-roles?usercode={usercode}");
-                AttachTenantHeaders(request, tenantCode);
-                var res = await Client.SendAsync(request);
-                if (res.IsSuccessStatusCode)
-                {
-                    var response = await res.Content.ReadFromJsonAsync<List<long>>();
-                    return response ?? new List<long>();
-                }
-                return new List<long>();
+                var response = await Client.GetFromJsonAsync<List<long>>($"api/RoleMaster/get-user-roles?usercode={usercode}");
+                return response ?? new List<long>();
             }
             catch (Exception ex)
             {
@@ -203,30 +146,26 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<RolePermissionItem>> GetUserEffectivePermissionsAsync(long usercode, string? tenantCode = null)
+        public async Task<List<RolePermissionItem>> GetUserEffectivePermissionsAsync(long usercode)
         {
             if (usercode <= 0) return new List<RolePermissionItem>();
 
             try
             {
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
-                using var request = new HttpRequestMessage(HttpMethod.Get, $"api/RoleMaster/get-user-effective-permissions?usercode={usercode}");
-                AttachTenantHeaders(request, tenantCode);
-
-                var res = await Client.SendAsync(request, cts.Token);
+                var res = await Client.GetAsync($"api/RoleMaster/get-user-effective-permissions?usercode={usercode}", cts.Token);
                 if (res.IsSuccessStatusCode)
                 {
                     var content = await res.Content.ReadAsStringAsync(cts.Token);
                     if (!string.IsNullOrWhiteSpace(content))
                     {
                         var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<RolePermissionItem>>(content);
-                        if (list != null)
+                        if (list != null && list.Any())
                         {
-                            Console.WriteLine($"[RoleMasterService] Successfully retrieved {list.Count} effective permissions for usercode {usercode} (tenant: {ResolveTenantCode(tenantCode)})");
+                            Console.WriteLine($"[RoleMasterService] Successfully retrieved {list.Count} effective permissions for usercode {usercode}");
                             return list;
                         }
                     }
-                    return new List<RolePermissionItem>();
                 }
                 else
                 {
@@ -240,24 +179,35 @@ namespace Booking.Services
                 Console.WriteLine($"[RoleMasterService] Error fetching user effective permissions: {ex.Message}");
             }
 
+            // Fallback 1: Query user role IDs from DB and resolve from master catalog
+            try
+            {
+                var roleIds = await GetUserRolesAsync(usercode);
+                if (roleIds != null && roleIds.Any())
+                {
+                    var catalog = await GetMasterCatalogAsync();
+                    var matched = catalog.Where(c => roleIds.Contains(c.Role_id)).ToList();
+                    if (matched.Any())
+                    {
+                        Console.WriteLine($"[RoleMasterService] Resolved {matched.Count} permissions from role IDs for usercode {usercode}");
+                        return matched;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RoleMasterService] Fallback get user roles error: {ex.Message}");
+            }
+
             return new List<RolePermissionItem>();
         }
 
-        public async Task<(bool Success, string Message)> SaveUserRolesAsync(long usercode, List<long> roleIds, string? tenantCode = null)
+        public async Task<(bool Success, string Message)> SaveUserRolesAsync(long usercode, List<long> roleIds)
         {
             try
             {
                 var payload = new { usercode, Role_ids = roleIds };
-                using var request = new HttpRequestMessage(HttpMethod.Post, "api/RoleMaster/save-user-roles")
-                {
-                    Content = JsonContent.Create(payload)
-                };
-                AttachTenantHeaders(request, tenantCode);
-
-                var effTenant = ResolveTenantCode(tenantCode);
-                Console.WriteLine($"[RoleMasterService] Sending save-user-roles for usercode {usercode} with tenant_code: '{effTenant}' ({roleIds.Count} roles)");
-
-                var response = await Client.SendAsync(request);
+                var response = await Client.PostAsJsonAsync("api/RoleMaster/save-user-roles", payload);
                 if (response.IsSuccessStatusCode)
                 {
                     return (true, "User roles updated successfully.");
@@ -347,7 +297,7 @@ namespace Booking.Services
             OnPermissionsChanged?.Invoke();
         }
 
-        public async Task<List<RolePermissionItem>> LoadUserPermissionsAsync(long usercode, string? tenantCode = null)
+        public async Task<List<RolePermissionItem>> LoadUserPermissionsAsync(long usercode)
         {
             if (usercode <= 0)
             {
@@ -355,7 +305,7 @@ namespace Booking.Services
                 return CurrentUserPermissions;
             }
 
-            var permissions = await GetUserEffectivePermissionsAsync(usercode, tenantCode);
+            var permissions = await GetUserEffectivePermissionsAsync(usercode);
             SetUserPermissions(permissions);
             return permissions;
         }
@@ -427,16 +377,16 @@ namespace Booking.Services
             // Synonyms / Aliases (only evaluated if main module is permitted)
             if (normSub == "opdashboard" || normSub == "dashboard")
             {
-                if (_permittedActions.Contains("opdashboard") || _permittedActions.Contains("dashboard") || _permittedSubModules.Contains("opdashboard"))
+                if (_permittedActions.Contains("opdashboard") || _permittedActions.Contains("dashboard") || _permittedSubModules.Contains("opdashboard") || _permittedMainModules.Contains("opportal") || _permittedMainModules.Contains("op") || _permittedMainModules.Contains("general"))
                     return true;
             }
             if (normSub == "ipdashboard")
             {
-                if (_permittedActions.Contains("ipdashboard") || _permittedSubModules.Contains("ipdashboard"))
+                if (_permittedActions.Contains("ipdashboard") || _permittedSubModules.Contains("ipdashboard") || _permittedMainModules.Contains("ipportal") || _permittedMainModules.Contains("ip"))
                     return true;
             }
-            if (normSub == "patientcheckin" && (_permittedSubModules.Contains("walkin") || _permittedSubModules.Contains("patientcheckin") || _permittedSubModules.Contains("reception") || _permittedSubModules.Contains("refferalcasecollection"))) return true;
-            if (normSub == "outpatientvisiting" && (_permittedSubModules.Contains("outpatientvisiting") || _permittedSubModules.Contains("outpatient") || _permittedSubModules.Contains("opdconsultation") || _permittedSubModules.Contains("casesheet") || _permittedSubModules.Contains("viewcasesheet"))) return true;
+            if (normSub == "patientcheckin" && (_permittedSubModules.Contains("walkin") || _permittedSubModules.Contains("patientcheckin") || _permittedSubModules.Contains("patientcheckin") || _permittedSubModules.Contains("reception") || _permittedSubModules.Contains("refferalcasecollection") || _permittedActions.Contains("createwalkin") || _permittedActions.Contains("viewwalkin"))) return true;
+            if (normSub == "outpatientvisiting" && (_permittedSubModules.Contains("outpatientvisiting") || _permittedSubModules.Contains("outpatient") || _permittedSubModules.Contains("opdconsultation") || _permittedSubModules.Contains("casesheet") || _permittedSubModules.Contains("viewcasesheet") || _permittedActions.Contains("viewwalkin") || _permittedActions.Contains("createwalkin"))) return true;
             if (normSub == "patientmaster" && (_permittedSubModules.Contains("patientmaster") || _permittedSubModules.Contains("patientregistrationop") || _permittedSubModules.Contains("patientregistration"))) return true;
             if (normSub == "countrymaster" && (_permittedSubModules.Contains("countrymaster") || _permittedSubModules.Contains("country"))) return true;
             if (normSub == "statemaster" && (_permittedSubModules.Contains("statemaster") || _permittedSubModules.Contains("state"))) return true;
@@ -444,7 +394,9 @@ namespace Booking.Services
             if (normSub == "areamaster" && (_permittedSubModules.Contains("areamaster") || _permittedSubModules.Contains("area"))) return true;
             if (normSub == "servicetypemaster" && (_permittedSubModules.Contains("servicetypemaster") || _permittedSubModules.Contains("servicetype"))) return true;
             if (normSub == "slotmaster" && (_permittedSubModules.Contains("slotmaster") || _permittedSubModules.Contains("slots"))) return true;
-            if ((normSub == "optokendisplay" || normSub == "tokendisplayscreen" || normSub == "tokendisplay") && (_permittedActions.Contains("viewtokendisplay") || _permittedSubModules.Contains("optokendisplay") || _permittedSubModules.Contains("tokendisplay") || _permittedSubModules.Contains("tokendisplayscreen"))) return true;
+            if (normSub == "optokendisplay" && (_permittedActions.Contains("viewtokendisplay") || _permittedSubModules.Contains("optokendisplay") || _permittedSubModules.Contains("tokendisplay") || _permittedSubModules.Contains("tokendisplayscreen") || _permittedMainModules.Contains("opportal") || _permittedMainModules.Contains("op"))) return true;
+            if (normSub == "tokendisplayscreen" && (_permittedSubModules.Contains("tokendisplay") || _permittedSubModules.Contains("tokendisplayscreen") || _permittedSubModules.Contains("optokendisplay") || _permittedActions.Contains("tokendisplay") || _permittedActions.Contains("viewtokendisplay"))) return true;
+            if (normSub == "tokendisplay" && (_permittedSubModules.Contains("tokendisplayscreen") || _permittedSubModules.Contains("tokendisplay") || _permittedSubModules.Contains("optokendisplay"))) return true;
 
             // IP Portal
             if (normSub == "ipregistration" && (_permittedSubModules.Contains("ipregistration") || _permittedSubModules.Contains("admissionip"))) return true;
@@ -686,67 +638,34 @@ namespace Booking.Services
                 }
             }
 
-            // Special legacy page action mappings (only if matching submodule is explicitly permitted)
-            if (permList.Any(p => p.Sub_module?.Contains("Patient Master", StringComparison.OrdinalIgnoreCase) == true || p.Sub_module?.Contains("Patient Registration", StringComparison.OrdinalIgnoreCase) == true))
+            // Special page action mappings (only if relevant department is in permissions)
+            var specialMappings = new (string Dept, string Module)[]
             {
-                if (!result.Any(r => string.Equals(r.Department, "OP", StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, "Patient Registration OP", StringComparison.OrdinalIgnoreCase)))
-                {
-                    result.Add(new User_Rights
-                    {
-                        UserModuleID = rightId,
-                        Sno = sno++,
-                        ModuleName = "Patient Registration OP",
-                        Department = "OP",
-                        UserModuleRightsID = rightId++,
-                        UserCode = userCode,
-                        ToAdd = hasAnyAdd,
-                        ToView = true,
-                        ToEdit = hasAnyEdit,
-                        ToDelete = hasAnyDelete,
-                        ToExport = true
-                    });
-                }
-            }
-
-            if (permList.Any(p => p.Sub_module?.Contains("Patient check-in", StringComparison.OrdinalIgnoreCase) == true || p.Sub_module?.Contains("Walkin", StringComparison.OrdinalIgnoreCase) == true || p.Sub_module?.Contains("Reception", StringComparison.OrdinalIgnoreCase) == true))
+                ("OP", "Patient Registration OP"),
+                ("Reception", "Refferal Case & Collection"),
+                ("Lab", "Print Lab Result")
+            };
+            foreach (var (dept, mod) in specialMappings)
             {
-                if (!result.Any(r => string.Equals(r.Department, "Reception", StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, "Refferal Case & Collection", StringComparison.OrdinalIgnoreCase)))
+                if (permList.Any(p => string.Equals(p.Main_module, dept, StringComparison.OrdinalIgnoreCase) || p.Main_module?.Contains(dept, StringComparison.OrdinalIgnoreCase) == true))
                 {
-                    result.Add(new User_Rights
+                    if (!result.Any(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, mod, StringComparison.OrdinalIgnoreCase)))
                     {
-                        UserModuleID = rightId,
-                        Sno = sno++,
-                        ModuleName = "Refferal Case & Collection",
-                        Department = "Reception",
-                        UserModuleRightsID = rightId++,
-                        UserCode = userCode,
-                        ToAdd = hasAnyAdd,
-                        ToView = true,
-                        ToEdit = hasAnyEdit,
-                        ToDelete = hasAnyDelete,
-                        ToExport = true
-                    });
-                }
-            }
-
-            if (permList.Any(p => p.Sub_module?.Contains("Result Entry", StringComparison.OrdinalIgnoreCase) == true || p.Sub_module?.Contains("Lab Result", StringComparison.OrdinalIgnoreCase) == true))
-            {
-                if (!result.Any(r => string.Equals(r.Department, "Lab", StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, "Print Lab Result", StringComparison.OrdinalIgnoreCase)))
-                {
-                    result.Add(new User_Rights
-                    {
-                        UserModuleID = rightId,
-                        Sno = sno++,
-                        ModuleName = "Print Lab Result",
-                        Department = "Lab",
-                        UserModuleRightsID = rightId++,
-                        UserCode = userCode,
-                        ToAdd = hasAnyAdd,
-                        ToView = true,
-                        ToEdit = hasAnyEdit,
-                        ToDelete = hasAnyDelete,
-                        ToExport = true
-                    });
+                        result.Add(new User_Rights
+                        {
+                            UserModuleID = rightId,
+                            Sno = sno++,
+                            ModuleName = mod,
+                            Department = dept,
+                            UserModuleRightsID = rightId++,
+                            UserCode = userCode,
+                            ToAdd = hasAnyAdd,
+                            ToView = true,
+                            ToEdit = hasAnyEdit,
+                            ToDelete = hasAnyDelete,
+                            ToExport = true
+                        });
+                    }
                 }
             }
 
