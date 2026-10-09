@@ -67,23 +67,23 @@ namespace Booking.Services
                                requestPath.Contains("/Tenant/login", StringComparison.OrdinalIgnoreCase) ||
                                isAnonymousRegister;
 
-            string? explicitRequestTenant = null;
-            if (request.Headers.TryGetValues("tenant_code", out var tcVals) && tcVals.Any() && !string.IsNullOrWhiteSpace(tcVals.First()))
-            {
-                explicitRequestTenant = tcVals.First();
-            }
-            else if (request.Headers.TryGetValues("tenantcode", out var tcVals2) && tcVals2.Any() && !string.IsNullOrWhiteSpace(tcVals2.First()))
-            {
-                explicitRequestTenant = tcVals2.First();
-            }
-            else if (request.Headers.TryGetValues("tenant-code", out var tcVals3) && tcVals3.Any() && !string.IsNullOrWhiteSpace(tcVals3.First()))
-            {
-                explicitRequestTenant = tcVals3.First();
-            }
+            string effectiveTenant = _session.TenantCode;
 
-            string effectiveTenant = !string.IsNullOrWhiteSpace(explicitRequestTenant) 
-                ? explicitRequestTenant 
-                : _session.TenantCode;
+            if (string.IsNullOrEmpty(effectiveTenant))
+            {
+                if (request.Headers.TryGetValues("tenantcode", out var tcVals) && tcVals.Any() && !string.IsNullOrWhiteSpace(tcVals.First()))
+                {
+                    effectiveTenant = tcVals.First();
+                }
+                else if (request.Headers.TryGetValues("tenant_code", out var tcVals2) && tcVals2.Any() && !string.IsNullOrWhiteSpace(tcVals2.First()))
+                {
+                    effectiveTenant = tcVals2.First();
+                }
+                else if (request.Headers.TryGetValues("tenant-code", out var tcVals3) && tcVals3.Any() && !string.IsNullOrWhiteSpace(tcVals3.First()))
+                {
+                    effectiveTenant = tcVals3.First();
+                }
+            }
 
             if (string.IsNullOrEmpty(effectiveTenant) && !isAnonymous)
             {
@@ -111,6 +111,11 @@ namespace Booking.Services
                 {
                     // Session storage not accessible during prerendering or background invocation
                 }
+            }
+
+            if (string.IsNullOrEmpty(effectiveTenant) && !isAnonymous)
+            {
+                effectiveTenant = "0010"; // standard default tenant code
             }
 
             if (!string.IsNullOrEmpty(effectiveTenant) && !isAnonymousRegister)
