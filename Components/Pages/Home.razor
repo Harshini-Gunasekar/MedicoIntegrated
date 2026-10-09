@@ -87,12 +87,12 @@
                         <div class="identity-details">
                             <span class="identity-sub-label">LOGGED-IN USER</span>
                             <h2 class="user-name-text">
-                                @(string.IsNullOrWhiteSpace(userName) ? "Authorized User" : userName)
+                                @GetResolvedUserName()
                             </h2>
                             <div class="identity-tags">
                                 <span class="badge-tag role-tag">
                                     <i class="bi bi-person-badge-fill me-1"></i>
-                                    @(string.IsNullOrWhiteSpace(userRole) ? "System User" : userRole)
+                                    @GetResolvedUserRole()
                                 </span>
                             </div>
                         </div>
@@ -302,21 +302,35 @@
             // 1. Try reading from TenantState first
             SyncFromTenantState();
 
-            // 2. Fast single-pass localStorage session read (0ms)
+            // 2. Fast single-pass localStorage session read (0ms instant)
             try
             {
                 var localSessionJson = await JSRuntime.InvokeAsync<string>("medicoSessionHelper.getSession");
                 if (!string.IsNullOrWhiteSpace(localSessionJson))
                 {
                     var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
-                    if (string.IsNullOrEmpty(userName)) userName = jObj["user_name"]?.ToString() ?? jObj["login_input"]?.ToString() ?? "";
-                    if (string.IsNullOrEmpty(userRole)) userRole = jObj["user_role"]?.ToString() ?? "";
-                    if (string.IsNullOrEmpty(tenantCode)) tenantCode = jObj["tenant_code"]?.ToString() ?? "";
-                    if (string.IsNullOrEmpty(hospitalName)) hospitalName = jObj["tenant_name"]?.ToString() ?? "";
+                    var uName = jObj["user_name"]?.ToString() ?? jObj["login_input"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(uName)) userName = uName.Trim();
+
+                    var uRole = jObj["user_role"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(uRole)) userRole = uRole.Trim();
+
+                    var tCode = jObj["tenant_code"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(tCode)) tenantCode = tCode.Trim();
+
+                    var tName = jObj["tenant_name"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(tName) && !string.Equals(tName.Trim(), userName, StringComparison.OrdinalIgnoreCase))
+                        hospitalName = tName.Trim();
+
                     if (!branchCode.HasValue) branchCode = jObj["bhcode"]?.ToObject<int?>();
+
                     var isAdm = jObj["isAdmin"]?.ToObject<bool>() == true;
                     if (isAdm && string.IsNullOrEmpty(userRole))
                         userRole = "Administrator";
+
+                    // IMMEDIATELY render UI to remove any visible lag
+                    isLoading = false;
+                    await InvokeAsync(StateHasChanged);
                 }
             }
             catch { }
@@ -326,7 +340,7 @@
             {
                 var hRes = await _sessionStorage.GetAsync<string>("tenant_name");
                 if (hRes.Success && !string.IsNullOrEmpty(hRes.Value))
-                    hospitalName = hRes.Value;
+                    hospitalName = hRes.Value.Trim();
             }
 
             if (string.IsNullOrEmpty(userName) || string.IsNullOrEmpty(userRole))
@@ -335,11 +349,11 @@
                 if (uRes.Success && uRes.Value != null)
                 {
                     if (string.IsNullOrEmpty(userName) && !string.IsNullOrEmpty(uRes.Value.UserName))
-                        userName = uRes.Value.UserName;
+                        userName = uRes.Value.UserName.Trim();
                     if (string.IsNullOrEmpty(userRole) && !string.IsNullOrEmpty(uRes.Value.Role))
-                        userRole = uRes.Value.Role;
+                        userRole = uRes.Value.Role.Trim();
                     if (string.IsNullOrEmpty(hospitalName) && !string.IsNullOrEmpty(uRes.Value.TenantName))
-                        hospitalName = uRes.Value.TenantName;
+                        hospitalName = uRes.Value.TenantName.Trim();
                 }
             }
 
@@ -347,21 +361,21 @@
             {
                 var unRes = await _sessionStorage.GetAsync<string>("user_name");
                 if (unRes.Success && !string.IsNullOrEmpty(unRes.Value))
-                    userName = unRes.Value;
+                    userName = unRes.Value.Trim();
             }
 
             if (string.IsNullOrEmpty(userRole))
             {
                 var urRes = await _sessionStorage.GetAsync<string>("user_role");
                 if (urRes.Success && !string.IsNullOrEmpty(urRes.Value))
-                    userRole = urRes.Value;
+                    userRole = urRes.Value.Trim();
             }
 
             if (string.IsNullOrEmpty(tenantCode))
             {
                 var tRes = await _sessionStorage.GetAsync<string>("tenant_code");
                 if (tRes.Success && !string.IsNullOrEmpty(tRes.Value))
-                    tenantCode = tRes.Value;
+                    tenantCode = tRes.Value.Trim();
             }
 
             if (!branchCode.HasValue)
@@ -397,7 +411,7 @@
 
                     if (matched != null && !string.IsNullOrWhiteSpace(matched.name) && !string.Equals(matched.name.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
                     {
-                        hospitalName = matched.name;
+                        hospitalName = matched.name.Trim();
                     }
                 }
 
@@ -412,21 +426,10 @@
 
                         if (matched != null && !string.IsNullOrWhiteSpace(matched.name) && !string.Equals(matched.name.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
                         {
-                            hospitalName = matched.name;
+                            hospitalName = matched.name.Trim();
                         }
                     }
                 }
-
-                if (string.IsNullOrEmpty(hospitalName))
-                {
-                    hospitalName = "Medico Healthcare Hospital";
-                }
-
-                try
-                {
-                    await _sessionStorage.SetAsync("tenant_name", hospitalName);
-                }
-                catch { }
             }
 
             // 5. Admin role catalog initialization if needed
@@ -442,7 +445,7 @@
                 ud.UserName = userName;
                 ud.Role = string.IsNullOrEmpty(userRole) ? (IsAdmin() ? "Administrator" : (ud.Role ?? "User")) : userRole;
                 ud.TenantCode = string.IsNullOrEmpty(tenantCode) ? (ud.TenantCode ?? "") : tenantCode;
-                ud.TenantName = hospitalName;
+                ud.TenantName = GetResolvedHospitalName();
                 ud.BranchCode = branchCode;
                 var currentRights = (TenantState.UserRightsList != null && TenantState.UserRightsList.Any()) 
                     ? TenantState.UserRightsList.ToList() 
@@ -457,8 +460,11 @@
                     }
                     catch { }
                 }
-                TenantState.SetSession(ud.TenantCode, TenantState.AuthToken ?? "", hospitalName, ud.UserCode ?? (IsAdmin() ? 0 : 0), branchCode, ud.CounterCode, ud, currentRights ?? new());
+                TenantState.SetSession(ud.TenantCode, TenantState.AuthToken ?? "", ud.TenantName, ud.UserCode ?? (IsAdmin() ? 0 : 0), branchCode, ud.CounterCode, ud, currentRights ?? new List<SharedComponents.Rcl.Models.User_Rights>());
             }
+
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
         }
         catch (OperationCanceledException) { return; }
         catch (Microsoft.JSInterop.JSDisconnectedException) { return; }
@@ -468,11 +474,38 @@
         }
     }
 
+    private string GetResolvedUserName()
+    {
+        if (!string.IsNullOrWhiteSpace(userName)) return userName;
+        if (!string.IsNullOrWhiteSpace(TenantState.UserData?.UserName)) return TenantState.UserData.UserName;
+        return "Authorized User";
+    }
+
+    private string GetResolvedUserRole()
+    {
+        if (!string.IsNullOrWhiteSpace(userRole)) return userRole;
+        if (!string.IsNullOrWhiteSpace(TenantState.UserData?.Role)) return TenantState.UserData.Role;
+        if (IsAdmin()) return "Administrator";
+        return "System User";
+    }
+
     private string GetResolvedHospitalName()
     {
         if (!string.IsNullOrWhiteSpace(hospitalName) && !string.Equals(hospitalName.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
         {
             return hospitalName.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(TenantState.TenantName) && !string.Equals(TenantState.TenantName.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantState.TenantName.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(TenantState.UserData?.TenantName) && !string.Equals(TenantState.UserData.TenantName.Trim(), userName?.Trim(), StringComparison.OrdinalIgnoreCase))
+        {
+            return TenantState.UserData.TenantName.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(tenantCode) && !string.Equals(tenantCode, "MEDICO", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{tenantCode} Healthcare Facility";
         }
         return "Medico Healthcare Hospital";
     }
@@ -513,8 +546,13 @@
 
     private string GetUserInitials()
     {
-        if (string.IsNullOrWhiteSpace(userName)) return "U";
-        var parts = userName.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        var name = GetResolvedUserName();
+        if (string.IsNullOrWhiteSpace(name) || name == "Authorized User")
+        {
+            var role = GetResolvedUserRole();
+            return !string.IsNullOrWhiteSpace(role) && role.Length >= 2 ? role.Substring(0, 2).ToUpper() : "U";
+        }
+        var parts = name.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
         if (parts.Length == 1) return parts[0].Substring(0, Math.Min(2, parts[0].Length)).ToUpper();
         return (parts[0][0].ToString() + parts[1][0].ToString()).ToUpper();
     }

@@ -152,11 +152,24 @@ namespace Booking.Services
 
             try
             {
-                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(5));
-                var response = await Client.GetFromJsonAsync<List<RolePermissionItem>>($"api/RoleMaster/get-user-effective-permissions?usercode={usercode}", cts.Token);
-                if (response != null && response.Any())
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
+                var res = await Client.GetAsync($"api/RoleMaster/get-user-effective-permissions?usercode={usercode}", cts.Token);
+                if (res.IsSuccessStatusCode)
                 {
-                    return response;
+                    var content = await res.Content.ReadAsStringAsync(cts.Token);
+                    if (!string.IsNullOrWhiteSpace(content))
+                    {
+                        var list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<RolePermissionItem>>(content);
+                        if (list != null && list.Any())
+                        {
+                            Console.WriteLine($"[RoleMasterService] Successfully retrieved {list.Count} effective permissions for usercode {usercode}");
+                            return list;
+                        }
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"[RoleMasterService] get-user-effective-permissions returned status code {res.StatusCode} for usercode {usercode}");
                 }
             }
             catch (OperationCanceledException) { }
@@ -176,6 +189,7 @@ namespace Booking.Services
                     var matched = catalog.Where(c => roleIds.Contains(c.Role_id)).ToList();
                     if (matched.Any())
                     {
+                        Console.WriteLine($"[RoleMasterService] Resolved {matched.Count} permissions from role IDs for usercode {usercode}");
                         return matched;
                     }
                 }

@@ -5,10 +5,24 @@ namespace Booking.Models
 {
     public class RolePermissionItem
     {
+        [System.Text.Json.Serialization.JsonPropertyName("role_id")]
+        [Newtonsoft.Json.JsonProperty("role_id")]
         public long Role_id { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("main_module")]
+        [Newtonsoft.Json.JsonProperty("main_module")]
         public string? Main_module { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("sub_module")]
+        [Newtonsoft.Json.JsonProperty("sub_module")]
         public string? Sub_module { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("module")]
+        [Newtonsoft.Json.JsonProperty("module")]
         public string? Module { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("product_id")]
+        [Newtonsoft.Json.JsonProperty("product_id")]
         public string? Product_id { get; set; }
     }
 

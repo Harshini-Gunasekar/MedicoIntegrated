@@ -543,13 +543,22 @@
                     ?? userDetailsJson?["HospitalName"]?.ToString()
                     ?? userDetailsJson?["company_name"]?.ToString();
 
-                string resolvedTenantName = !string.IsNullOrWhiteSpace(extractedTenantName) && !string.Equals(extractedTenantName.Trim(), "Main branch", StringComparison.OrdinalIgnoreCase)
-                    ? extractedTenantName 
-                    : "Medico Healthcare Hospital";
-
                 var validOperatingBranches = userBranches
                     .Where(b => !IsSampleBranch(b.name, b.short_name, b.bh_code))
                     .ToList();
+
+                if (string.IsNullOrWhiteSpace(extractedTenantName) && validOperatingBranches.Any())
+                {
+                    var firstBranch = validOperatingBranches.FirstOrDefault(b => !string.IsNullOrWhiteSpace(b.name) && !IsSampleBranch(b.name, b.short_name, b.bh_code));
+                    if (firstBranch != null && !string.IsNullOrWhiteSpace(firstBranch.name))
+                    {
+                        extractedTenantName = firstBranch.name;
+                    }
+                }
+
+                string resolvedTenantName = (!string.IsNullOrWhiteSpace(extractedTenantName) && !string.Equals(extractedTenantName.Trim(), "Main branch", StringComparison.OrdinalIgnoreCase))
+                    ? extractedTenantName.Trim() 
+                    : (!string.IsNullOrWhiteSpace(tenantCode) && !string.Equals(tenantCode, "LAB01", StringComparison.OrdinalIgnoreCase) ? $"{tenantCode} Healthcare Facility" : "Medico Healthcare Hospital");
 
                 int? defaultBhCode = (validOperatingBranches.Count == 1) 
                     ? validOperatingBranches[0].bh_code 
@@ -635,15 +644,12 @@
                 catch { }
 
                 List<Booking.Models.RolePermissionItem> effectivePerms = new();
-                if (resolvedUserRights.Any())
-                {
-                    effectivePerms = RoleMasterService.ConvertUserRightsToPermissions(resolvedUserRights);
-                }
-                else if (resolvedUserCode > 0)
+                if (resolvedUserCode > 0)
                 {
                     try
                     {
                         effectivePerms = await RoleService.GetUserEffectivePermissionsAsync(resolvedUserCode);
+                        Console.WriteLine($"[UserLogin] Fetched {effectivePerms?.Count ?? 0} effective permissions from RoleMaster for usercode {resolvedUserCode}");
                     }
                     catch (Exception permEx)
                     {
@@ -651,15 +657,21 @@
                     }
                 }
 
-                if (finalIsAdmin && (!effectivePerms.Any()))
+                if ((effectivePerms == null || !effectivePerms.Any()) && resolvedUserRights.Any())
+                {
+                    effectivePerms = RoleMasterService.ConvertUserRightsToPermissions(resolvedUserRights);
+                }
+
+                if (finalIsAdmin && (effectivePerms == null || !effectivePerms.Any()))
                 {
                     effectivePerms = RoleCatalogDefaults.GetDefaultPermissions();
                 }
 
+                effectivePerms ??= new();
                 RoleService.SetUserPermissions(effectivePerms);
                 await _sessionStorage.SetAsync("UserRolePermissions", effectivePerms);
 
-                if (!resolvedUserRights.Any() && effectivePerms.Any())
+                if (effectivePerms.Any())
                 {
                     resolvedUserRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(effectivePerms, resolvedUserCode);
                 }
