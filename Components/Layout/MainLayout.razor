@@ -1532,6 +1532,7 @@
 
             string directUserName = "";
             string directUserRole = "";
+            string directUserDescription = "";
             string loginInput = "";
             int directUserCode = 0;
             string tenantCode = "";
@@ -1555,6 +1556,7 @@
                     directUserName = jObj["user_name"]?.ToString() ?? "";
                     loginInput = jObj["login_input"]?.ToString() ?? "";
                     directUserRole = jObj["user_role"]?.ToString() ?? "";
+                    directUserDescription = jObj["user_description"]?.ToString() ?? "";
                     directUserCode = jObj["user_code"]?.ToObject<int>() ?? 0;
                     isTenantAdminSession = jObj["isAdmin"]?.ToObject<bool>() == true;
                     isBranchConfirmed = jObj["session_branch_confirmed"]?.ToObject<bool>() == true;
@@ -1563,7 +1565,10 @@
 
                     if (!string.IsNullOrWhiteSpace(directUserName) || !string.IsNullOrWhiteSpace(authToken) || !string.IsNullOrWhiteSpace(tenantCode))
                     {
-                        var fastRole = isTenantAdminSession ? "Administrator" : (!string.IsNullOrWhiteSpace(directUserRole) ? directUserRole : "User");
+                        var fastRole = !string.IsNullOrWhiteSpace(directUserDescription) && !int.TryParse(directUserDescription.Trim(), out _)
+                            ? directUserDescription.Trim()
+                            : (isTenantAdminSession ? "Administrator" : (!string.IsNullOrWhiteSpace(directUserRole) && !int.TryParse(directUserRole.Trim(), out _) ? directUserRole.Trim() : "User"));
+
                         user = new SharedComponents.Rcl.Models.UserDetailsModel
                         {
                             UserName = !string.IsNullOrWhiteSpace(directUserName) ? directUserName : (!string.IsNullOrWhiteSpace(loginInput) ? loginInput : (isTenantAdminSession ? "Administrator" : "User")),
@@ -1618,6 +1623,16 @@
                 {
                     var itaRes = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
                     if (itaRes.Success && itaRes.Value) isTenantAdminSession = true;
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(directUserDescription))
+            {
+                try
+                {
+                    var descRes = await _sessionStorage.GetAsync<string>("user_description");
+                    if (descRes.Success && !string.IsNullOrWhiteSpace(descRes.Value)) directUserDescription = descRes.Value.Trim();
                 }
                 catch { }
             }
@@ -1702,10 +1717,26 @@
                 catch { }
             }
 
+            // Always resolve real user description from database if description is missing or numeric
+            if ((string.IsNullOrWhiteSpace(directUserDescription) || int.TryParse(directUserDescription.Trim(), out _)) && directUserCode > 0)
+            {
+                try
+                {
+                    var dbUser = await UserService.GetUserMasterAsync(directUserCode, authToken, tenantCode);
+                    if (dbUser != null && !string.IsNullOrWhiteSpace(dbUser.description))
+                    {
+                        directUserDescription = dbUser.description.Trim();
+                        try { await _sessionStorage.SetAsync("user_description", directUserDescription); } catch { }
+                    }
+                }
+                catch { }
+            }
+
             // 4. Robust Admin detection
             bool isAdminDetected = isTenantAdminSession ||
                                   _isAdminSession ||
                                   IsAdminRole(directUserRole) ||
+                                  IsAdminRole(directUserDescription) ||
                                   IsAdminRole(user?.Role) ||
                                   string.Equals(directUserName, "admin", StringComparison.OrdinalIgnoreCase) ||
                                   string.Equals(loginInput, "admin", StringComparison.OrdinalIgnoreCase) ||
@@ -1721,17 +1752,17 @@
                     directUserName = !string.IsNullOrWhiteSpace(loginInput) ? loginInput : "Administrator";
             }
 
+            var resolvedEffectiveRole = !string.IsNullOrWhiteSpace(directUserDescription) && !int.TryParse(directUserDescription.Trim(), out _)
+                ? directUserDescription.Trim()
+                : (isAdminDetected ? "Administrator" : (!string.IsNullOrWhiteSpace(directUserRole) && !int.TryParse(directUserRole.Trim(), out _) ? directUserRole.Trim() : "User"));
+
             // Ensure user model is populated
             if (user == null && (!string.IsNullOrEmpty(authToken) || !string.IsNullOrEmpty(directUserName) || !string.IsNullOrEmpty(tenantCode) || isAdminDetected || directUserCode > 0))
             {
-                var finalRole = isAdminDetected
-                    ? "Administrator" 
-                    : (!string.IsNullOrWhiteSpace(directUserRole) ? directUserRole : "User");
-
                 user = new SharedComponents.Rcl.Models.UserDetailsModel
                 {
                     UserName = !string.IsNullOrWhiteSpace(directUserName) ? directUserName : (!string.IsNullOrWhiteSpace(loginInput) ? loginInput : (isAdminDetected ? "Administrator" : "User")),
-                    Role = finalRole,
+                    Role = resolvedEffectiveRole,
                     TenantCode = tenantCode,
                     TenantName = !string.IsNullOrWhiteSpace(tenantName) ? tenantName : "Medico Healthcare Hospital",
                     AuthToken = authToken,
@@ -1746,8 +1777,8 @@
                     user.UserName = directUserName;
                 if (isAdminDetected)
                     user.Role = "Administrator";
-                else if (!string.IsNullOrWhiteSpace(directUserRole))
-                    user.Role = directUserRole;
+                else
+                    user.Role = resolvedEffectiveRole;
                 if (string.IsNullOrWhiteSpace(user.TenantCode) && !string.IsNullOrWhiteSpace(tenantCode))
                     user.TenantCode = tenantCode;
                 if (string.IsNullOrWhiteSpace(user.AuthToken) && !string.IsNullOrWhiteSpace(authToken))
@@ -1854,6 +1885,7 @@
                 try { await _sessionStorage.SetAsync("UserDetails", user); } catch { }
                 if (!string.IsNullOrWhiteSpace(user.UserName)) { try { await _sessionStorage.SetAsync("user_name", user.UserName); } catch { } }
                 if (!string.IsNullOrWhiteSpace(user.Role)) { try { await _sessionStorage.SetAsync("user_role", user.Role); } catch { } }
+                if (!string.IsNullOrWhiteSpace(directUserDescription)) { try { await _sessionStorage.SetAsync("user_description", directUserDescription); } catch { } }
                 if (!string.IsNullOrWhiteSpace(user.TenantCode)) { try { await _sessionStorage.SetAsync("tenant_code", user.TenantCode); } catch { } }
                 if (!string.IsNullOrWhiteSpace(user.AuthToken)) { try { await _sessionStorage.SetAsync("authToken", user.AuthToken); } catch { } }
 
@@ -1865,7 +1897,8 @@
                         tenant_code = user.TenantCode ?? tenantCode,
                         tenant_name = user.TenantName ?? tenantName,
                         user_name = user.UserName ?? directUserName,
-                        user_role = user.Role ?? directUserRole,
+                        user_role = user.Role ?? resolvedEffectiveRole,
+                        user_description = !string.IsNullOrWhiteSpace(directUserDescription) ? directUserDescription : (user.Role ?? resolvedEffectiveRole),
                         user_code = resolvedCode,
                         bhcode = effectiveConfirmedBranch ?? user.BranchCode,
                         cntcode = user.CounterCode,

@@ -11,6 +11,7 @@
 @inject Booking.Services.HmsBillingService HmsBillingService
 @inject Booking.Services.ToastService ToastService
 @inject Booking.Services.RoleMasterService RoleService
+@inject LabCare.Services.UserService UserService
 @inject IJSRuntime JSRuntime
 @implements IDisposable
 
@@ -239,8 +240,10 @@
     private string hospitalName = "";
     private string userName = "";
     private string userRole = "";
+    private string userDescription = "";
     private string tenantCode = "";
     private int? branchCode;
+    private int userCode = 0;
     private DateTime currentDateTime = DateTime.Now;
     private bool _isAdminSession = false;
 
@@ -271,7 +274,11 @@
                 if (IsAdminRole(userRole))
                     _isAdminSession = true;
             }
+            if (TenantState.UserData.UserCode.HasValue && TenantState.UserData.UserCode.Value > 0)
+                userCode = TenantState.UserData.UserCode.Value;
         }
+        if (TenantState.UserCode > 0)
+            userCode = TenantState.UserCode;
         if (!string.IsNullOrEmpty(TenantState.TenantCode))
         {
             tenantCode = TenantState.TenantCode;
@@ -317,8 +324,14 @@
                     var uName = jObj["user_name"]?.ToString() ?? jObj["login_input"]?.ToString() ?? "";
                     if (!string.IsNullOrWhiteSpace(uName)) userName = uName.Trim();
 
+                    var uDesc = jObj["user_description"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(uDesc)) userDescription = uDesc.Trim();
+
                     var uRole = jObj["user_role"]?.ToString() ?? "";
                     if (!string.IsNullOrWhiteSpace(uRole)) userRole = uRole.Trim();
+
+                    var uCode = jObj["user_code"]?.ToObject<int?>() ?? 0;
+                    if (uCode > 0) userCode = uCode;
 
                     var tCode = jObj["tenant_code"]?.ToString() ?? "";
                     if (!string.IsNullOrWhiteSpace(tCode)) tenantCode = tCode.Trim();
@@ -362,6 +375,28 @@
                     hospitalName = hRes.Value.Trim();
             }
 
+            if (string.IsNullOrWhiteSpace(userDescription))
+            {
+                try
+                {
+                    var descRes = await _sessionStorage.GetAsync<string>("user_description");
+                    if (descRes.Success && !string.IsNullOrWhiteSpace(descRes.Value))
+                        userDescription = descRes.Value.Trim();
+                }
+                catch { }
+            }
+
+            if (userCode <= 0)
+            {
+                try
+                {
+                    var ucRes = await _sessionStorage.GetAsync<int>("user_code");
+                    if (ucRes.Success && ucRes.Value > 0)
+                        userCode = ucRes.Value;
+                }
+                catch { }
+            }
+
             if (string.IsNullOrEmpty(userName) || string.IsNullOrEmpty(userRole))
             {
                 var uRes = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
@@ -373,6 +408,8 @@
                         userRole = uRes.Value.Role.Trim();
                     if (string.IsNullOrEmpty(hospitalName) && !string.IsNullOrEmpty(uRes.Value.TenantName))
                         hospitalName = uRes.Value.TenantName.Trim();
+                    if (userCode <= 0 && uRes.Value.UserCode.HasValue && uRes.Value.UserCode.Value > 0)
+                        userCode = uRes.Value.UserCode.Value;
                 }
             }
 
@@ -395,6 +432,21 @@
                 var tRes = await _sessionStorage.GetAsync<string>("tenant_code");
                 if (tRes.Success && !string.IsNullOrEmpty(tRes.Value))
                     tenantCode = tRes.Value.Trim();
+            }
+
+            // Always resolve real user description from database if description is missing or numeric
+            if ((string.IsNullOrWhiteSpace(userDescription) || int.TryParse(userDescription.Trim(), out _)) && userCode > 0)
+            {
+                try
+                {
+                    var dbUser = await UserService.GetUserMasterAsync(userCode, TenantState.AuthToken, tenantCode);
+                    if (dbUser != null && !string.IsNullOrWhiteSpace(dbUser.description))
+                    {
+                        userDescription = dbUser.description.Trim();
+                        try { await _sessionStorage.SetAsync("user_description", userDescription); } catch { }
+                    }
+                }
+                catch { }
             }
 
             if (!branchCode.HasValue)
@@ -502,8 +554,12 @@
 
     private string GetResolvedUserRole()
     {
-        if (!string.IsNullOrWhiteSpace(userRole)) return userRole;
-        if (!string.IsNullOrWhiteSpace(TenantState.UserData?.Role)) return TenantState.UserData.Role;
+        if (!string.IsNullOrWhiteSpace(userDescription) && !int.TryParse(userDescription.Trim(), out _))
+            return userDescription.Trim();
+        if (!string.IsNullOrWhiteSpace(userRole) && !int.TryParse(userRole.Trim(), out _))
+            return userRole.Trim();
+        if (!string.IsNullOrWhiteSpace(TenantState.UserData?.Role) && !int.TryParse(TenantState.UserData.Role.Trim(), out _))
+            return TenantState.UserData.Role.Trim();
         if (IsAdmin()) return "Administrator";
         return "System User";
     }

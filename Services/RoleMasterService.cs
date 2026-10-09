@@ -146,14 +146,19 @@ namespace Booking.Services
             }
         }
 
-        public async Task<List<RolePermissionItem>> GetUserEffectivePermissionsAsync(long usercode)
+        public async Task<List<RolePermissionItem>> GetUserEffectivePermissionsAsync(long usercode, string? tenantCode = null)
         {
             if (usercode <= 0) return new List<RolePermissionItem>();
 
             try
             {
                 using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
-                var res = await Client.GetAsync($"api/RoleMaster/get-user-effective-permissions?usercode={usercode}", cts.Token);
+                var url = $"api/RoleMaster/get-user-effective-permissions?usercode={usercode}";
+                if (!string.IsNullOrWhiteSpace(tenantCode))
+                {
+                    url += $"&tenant_code={Uri.EscapeDataString(tenantCode)}";
+                }
+                var res = await Client.GetAsync(url, cts.Token);
                 if (res.IsSuccessStatusCode)
                 {
                     var content = await res.Content.ReadAsStringAsync(cts.Token);

@@ -7,8 +7,21 @@ namespace Booking.Services
 {
     public class ToastService
     {
-        public event Action OnShow;
-        public List<ToastMessage> Toasts { get; private set; } = new();
+        private readonly object _lock = new();
+        private readonly List<ToastMessage> _toasts = new();
+
+        public event Action? OnShow;
+
+        public List<ToastMessage> Toasts
+        {
+            get
+            {
+                lock (_lock)
+                {
+                    return _toasts.ToList();
+                }
+            }
+        }
 
         public void ShowError(string message) => ShowToast(message, "error");
         public void ShowSuccess(string message) => ShowToast(message, "success");
@@ -20,22 +33,57 @@ namespace Booking.Services
         public void Warning(string message) => ShowWarning(message);
         public void Info(string message) => ShowInfo(message);
 
+        public void Remove(ToastMessage toast) => RemoveToast(toast);
+
+        public void RemoveToast(ToastMessage toast)
+        {
+            if (toast == null) return;
+            bool removed = false;
+            lock (_lock)
+            {
+                removed = _toasts.Remove(toast);
+                if (!removed)
+                {
+                    var match = _toasts.FirstOrDefault(t => t.Id == toast.Id);
+                    if (match != null)
+                    {
+                        removed = _toasts.Remove(match);
+                    }
+                }
+            }
+
+            if (removed)
+            {
+                OnShow?.Invoke();
+            }
+        }
+
         private void ShowToast(string message, string type)
         {
+            if (string.IsNullOrWhiteSpace(message)) return;
+
             var toast = new ToastMessage { Message = message, Type = type };
-            Toasts.Add(toast);
+            lock (_lock)
+            {
+                _toasts.Add(toast);
+            }
             OnShow?.Invoke();
 
-            Task.Delay(5000).ContinueWith(_ =>
+            _ = Task.Run(async () =>
             {
-                Toasts.Remove(toast);
-                OnShow?.Invoke();
+                try
+                {
+                    await Task.Delay(5000);
+                    RemoveToast(toast);
+                }
+                catch { }
             });
         }
     }
 
     public class ToastMessage
     {
+        public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public string Message { get; set; } = "";
         public string Type { get; set; } = "error";
     }
