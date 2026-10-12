@@ -188,6 +188,56 @@ namespace Booking.Services
             }
         }
 
+        public async Task<List<CaseSheetPrescriptionViewModel>> GetAllPrescriptionsByVisitAsync(Guid? opId = null, Guid? ipId = null)
+        {
+            var list = new List<CaseSheetPrescriptionViewModel>();
+            try
+            {
+                var queryParams = new List<string>();
+                if (ipId.HasValue && ipId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"ip_id={ipId.Value}");
+                }
+                else if (opId.HasValue && opId.Value != Guid.Empty)
+                {
+                    queryParams.Add($"op_id={opId.Value}");
+                }
+
+                var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
+
+                // 1. Check if dedicated all-prescriptions endpoint is supported
+                try
+                {
+                    var allResponse = await _http.GetAsync($"api/CaseSheet/prescription/all{queryString}");
+                    if (allResponse.IsSuccessStatusCode)
+                    {
+                        var allItems = await allResponse.Content.ReadFromJsonAsync<List<CaseSheetPrescriptionViewModel>>();
+                        if (allItems != null && allItems.Count > 0)
+                        {
+                            foreach (var it in allItems) AdjustPrescriptionDatesToIst(it);
+                            return allItems;
+                        }
+                    }
+                }
+                catch
+                {
+                    // Ignore and fallback
+                }
+
+                // 2. Fallback to single prescription endpoint
+                var single = await GetPrescriptionByVisitAsync(opId, ipId);
+                if (single != null && (!string.IsNullOrEmpty(single.pr_code) || (single.items != null && single.items.Any())))
+                {
+                    list.Add(single);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting all prescriptions: {ex.Message}");
+            }
+            return list;
+        }
+
         public async Task<List<CaseSheetViewModel>> GetPatientHistoryAsync(decimal custid, int pageNo = 1, int pageSize = 10)
         {
             try

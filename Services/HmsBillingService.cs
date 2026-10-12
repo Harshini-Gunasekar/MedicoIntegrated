@@ -16,12 +16,14 @@ namespace Booking.Services
         private readonly HttpClient _http;
         private readonly IHttpClientFactory? _clientFactory;
         private readonly TenantSessionState? _session;
+        private readonly LabSettingService? _labSettingService;
 
-        public HmsBillingService(HttpClient http, IHttpClientFactory? clientFactory = null, TenantSessionState? session = null)
+        public HmsBillingService(HttpClient http, IHttpClientFactory? clientFactory = null, TenantSessionState? session = null, LabSettingService? labSettingService = null)
         {
             _http = http;
             _clientFactory = clientFactory;
             _session = session;
+            _labSettingService = labSettingService;
         }
 
         private HttpClient GetClient(string? tenantCode = null)
@@ -225,10 +227,17 @@ namespace Booking.Services
             }
         }
 
-        public Task<LabSettingModel?> GetLabSettingInternalAsync()
+        public async Task<LabSettingModel?> GetLabSettingInternalAsync()
         {
-            // Do not call api/LabSetting/get continuously
-            return Task.FromResult<LabSettingModel?>(null);
+            if (_labSettingService != null)
+            {
+                try
+                {
+                    return await _labSettingService.GetLabSettingAsync();
+                }
+                catch { }
+            }
+            return null;
         }
 
         public static bool TryParseShiftEndTime(string? timeStr, out TimeSpan timeSpan)
@@ -1143,6 +1152,95 @@ namespace Booking.Services
             {
                 Console.WriteLine($"[HmsBillingService] Error fetching combined billing summary: {ex.Message}");
                 return null;
+            }
+        }
+
+        public async Task<(bool Success, string Message, string RawResponse)> AutoBillOpAsync(AutoBillOpRequest request, string? tenantCode = null, string? authToken = null)
+        {
+            try
+            {
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                var effectiveAuth = !string.IsNullOrWhiteSpace(authToken) ? authToken : _session?.AuthToken;
+                var client = GetClient(effectiveTenant);
+
+                var jsonPayload = System.Text.Json.JsonSerializer.Serialize(request);
+                Console.WriteLine($"[AutoBillOpAsync] POST api/HmsBilling/auto-bill-op | Tenant: {effectiveTenant} | Payload: {jsonPayload}");
+
+                using var reqMsg = new HttpRequestMessage(HttpMethod.Post, "api/HmsBilling/auto-bill-op");
+                reqMsg.Content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
+
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                {
+                    reqMsg.Headers.Remove("tenant_code");
+                    reqMsg.Headers.Remove("tenantcode");
+                    reqMsg.Headers.Remove("tenant-code");
+                    reqMsg.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenant-code", effectiveTenant);
+                }
+
+                if (!string.IsNullOrEmpty(effectiveAuth))
+                {
+                    reqMsg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveAuth);
+                }
+
+                var response = await client.SendAsync(reqMsg);
+                var rawResponse = await response.Content.ReadAsStringAsync();
+                Console.WriteLine($"[AutoBillOpAsync] Response Status: {(int)response.StatusCode} ({response.StatusCode}) | Body: {rawResponse}");
+
+                string message = string.Empty;
+                bool isSuccess = response.IsSuccessStatusCode;
+
+                try
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(rawResponse);
+                    var root = doc.RootElement;
+                    if (root.ValueKind == System.Text.Json.JsonValueKind.Object)
+                    {
+                        if (root.TryGetProperty("message", out var msgProp) && msgProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            message = msgProp.GetString() ?? "";
+                        }
+                        else if (root.TryGetProperty("error", out var errProp) && errProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            message = errProp.GetString() ?? "";
+                        }
+                        else if (root.TryGetProperty("msg", out var mProp) && mProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            message = mProp.GetString() ?? "";
+                        }
+
+                        if (root.TryGetProperty("success", out var succProp))
+                        {
+                            if (succProp.ValueKind == System.Text.Json.JsonValueKind.False) isSuccess = false;
+                            else if (succProp.ValueKind == System.Text.Json.JsonValueKind.True) isSuccess = true;
+                        }
+                        else if (root.TryGetProperty("status", out var statProp) && statProp.ValueKind == System.Text.Json.JsonValueKind.String)
+                        {
+                            var statStr = statProp.GetString() ?? "";
+                            if (string.Equals(statStr, "error", StringComparison.OrdinalIgnoreCase) || string.Equals(statStr, "fail", StringComparison.OrdinalIgnoreCase))
+                                isSuccess = false;
+                            else if (string.Equals(statStr, "success", StringComparison.OrdinalIgnoreCase))
+                                isSuccess = true;
+                        }
+                    }
+                }
+                catch
+                {
+                    message = rawResponse;
+                }
+
+                if (string.IsNullOrWhiteSpace(message))
+                {
+                    message = isSuccess ? "Auto bill generated successfully and moved to cash counter!" : $"Failed with HTTP {(int)response.StatusCode}: {response.ReasonPhrase}";
+                }
+
+                return (isSuccess, message, rawResponse);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AutoBillOpAsync] Error: {ex.Message}");
+                return (false, $"Error: {ex.Message}", string.Empty);
             }
         }
     }

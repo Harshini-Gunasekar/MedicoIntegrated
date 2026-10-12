@@ -296,7 +296,7 @@ namespace medico_backend.Model
 
         // Prescription
         public CaseSheetPrescriptionRequest? prescription { get; set; }
-
+        public List<CaseSheetPrescriptionRequest> prescription_list { get; set; } = new();
 
         // Investigation
         public CaseSheetInvestigationRequest? investigation { get; set; }
@@ -454,7 +454,7 @@ namespace medico_backend.Model
 
         // Prescription
         public CaseSheetPrescriptionViewModel? prescription { get; set; }
-
+        public List<CaseSheetPrescriptionViewModel> prescription_list { get; set; } = new();
 
         // Investigation
         public CaseSheetInvestigationViewModel? investigation { get; set; }

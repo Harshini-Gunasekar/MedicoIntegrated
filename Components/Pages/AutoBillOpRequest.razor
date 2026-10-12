@@ -1,0 +1,1467 @@
+@page "/auto-bill-op"
+@page "/billing/auto-bill-op"
+@page "/AutoBillOpRequest"
+@rendermode InteractiveServer
+@using Booking.Models
+@using Booking.Services
+@using Booking.Helpers
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using Newtonsoft.Json
+@inject HmsBillingService HmsBillingService
+@inject AppointmentBookingService BookingService
+@inject DoctorService DoctorService
+@inject CounterMasterService CounterMasterService
+@inject ToastService ToastService
+@inject NavigationManager NavigationManager
+@inject IJSRuntime JSRuntime
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
+
+<PageTitle>Auto Bill OP - Medico Billing</PageTitle>
+
+<div class="autobill-page-wrapper">
+    <!-- 1. Header Card -->
+    <div class="autobill-header-card">
+        <div class="header-title-group">
+            <div class="header-icon-box">
+                <i class="bi bi-lightning-charge-fill"></i>
+            </div>
+            <div>
+                <h2 class="header-title">Auto Bill OP Request</h2>
+                <div class="header-subtitle">
+                    <span class="status-pulse-dot"></span>
+                    <span>Convert unbilled OP registrations to cash bills and transfer to cash counter</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="header-metrics-row">
+            <div class="metric-card total">
+                <div class="metric-icon">
+                    <i class="bi bi-people-fill"></i>
+                </div>
+                <div class="metric-content">
+                    <span class="metric-label">UNBILLED OP</span>
+                    <span class="metric-val">@filteredList.Count</span>
+                </div>
+            </div>
+
+            <div class="metric-card charges">
+                <div class="metric-icon">
+                    <i class="bi bi-file-earmark-medical-fill"></i>
+                </div>
+                <div class="metric-content">
+                    <span class="metric-label">WITH CHARGES</span>
+                    <span class="metric-val">@filteredList.Count(x => x.unbilled_charges_count > 0)</span>
+                </div>
+            </div>
+
+            <div class="metric-card @(IsCurrentCounterShiftOpen ? "shift-open" : "shift-closed")">
+                <div class="metric-icon">
+                    <i class="bi @(IsCurrentCounterShiftOpen ? "bi-check-circle-fill" : "bi-exclamation-triangle-fill")"></i>
+                </div>
+                <div class="metric-content">
+                    <span class="metric-label">COUNTER SHIFT</span>
+                    <span class="metric-val" style="font-size: 0.85rem;">
+                        @(IsCurrentCounterShiftOpen ? "Shift Open" : "Shift Not Open")
+                    </span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 2. Controls & Filter Card -->
+    <div class="config-card">
+        <div class="config-main-row">
+            <div class="config-left-group">
+                <!-- Branch Selector -->
+                <div class="control-pill-group">
+                    <span class="control-pill-label">
+                        <i class="bi bi-building"></i> Branch:
+                    </span>
+                    <select class="control-pill-select" value="@selectedBranchCode" @onchange="OnBranchChanged">
+                        <option value="0">All Branches (Auto)</option>
+                        @foreach (var b in branchesList)
+                        {
+                            <option value="@b.bh_code">@b.name (@b.bh_code)</option>
+                        }
+                    </select>
+                </div>
+
+                <!-- Cash Counter Selector -->
+                <div class="control-pill-group">
+                    <span class="control-pill-label">
+                        <i class="bi bi-wallet2"></i> Cash Counter:
+                    </span>
+                    <select @key="@($"counter-select-{selectedBranchCode}")" class="control-pill-select" value="@selectedCounterCode" @onchange="OnCounterChanged">
+                        @if (!AvailableCountersForBranch.Any())
+                        {
+                            <option value="1">Counter 1</option>
+                        }
+                        else
+                        {
+                            @foreach (var c in AvailableCountersForBranch)
+                            {
+                                <option value="@c.CntCode">
+                                    @c.DisplayName @(c.HasOpenShift ? "🟢 (Shift Open)" : "⚪ (Closed)")
+                                </option>
+                            }
+                        }
+                    </select>
+                </div>
+
+                <!-- Shift Status Pill & Quick Open -->
+                @if (IsCurrentCounterShiftOpen)
+                {
+                    var shift = CurrentCounterOpenShift;
+                    <span class="shift-status-badge open">
+                        <i class="bi bi-check-circle-fill"></i> Shift Active (Counter #@selectedCounterCode@(shift?.bhcode > 0 ? $" • Branch #{shift.bhcode}" : ""))
+                    </span>
+                }
+                else
+                {
+                    <span class="shift-status-badge closed" title="Cash counter must have an open shift for auto billing">
+                        <i class="bi bi-exclamation-octagon-fill"></i> Shift Closed
+                    </span>
+                    <button type="button" class="btn-quick-open" @onclick="OpenShiftForCurrentCounterAsync" disabled="@isOpeningShift">
+                        @if (isOpeningShift)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                            <span>Opening...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-box-arrow-in-right"></i>
+                            <span>Open Shift Now</span>
+                        }
+                    </button>
+                }
+            </div>
+
+            <div class="d-flex align-items-center gap-2">
+                @if (selectedOpIds.Any())
+                {
+                    <button type="button" class="btn-bulk-move" @onclick="BulkMoveToCashAsync" disabled="@(isBulkProcessing || !IsCurrentCounterShiftOpen)">
+                        @if (isBulkProcessing)
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                            <span>Processing (@bulkProcessedCount/@selectedOpIds.Count)...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-lightning-charge-fill"></i>
+                            <span>Move Selected (@selectedOpIds.Count) to Cash</span>
+                        }
+                    </button>
+                }
+
+                <button type="button" class="btn-refresh" @onclick="RefreshDataAsync" disabled="@loading">
+                    <i class="bi bi-arrow-clockwise @(loading ? "spin" : "")"></i>
+                    <span>Refresh</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- Filter Row -->
+        <div class="filter-row">
+            <!-- Search Input -->
+            <div class="search-box-wrap">
+                <i class="bi bi-search search-icon"></i>
+                <input type="text" class="search-input" placeholder="Search by patient name, OP No, mobile, ID..." 
+                       value="@searchQuery" @oninput="OnSearchInput" />
+                @if (!string.IsNullOrEmpty(searchQuery))
+                {
+                    <button class="search-clear-btn" @onclick="ClearSearch">
+                        <i class="bi bi-x-circle-fill"></i>
+                    </button>
+                }
+            </div>
+
+            <!-- Date Tabs -->
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <div class="date-pill-tabs">
+                    <button type="button" class="date-tab-btn @(dateFilterMode == "TODAY" ? "active" : "")" @onclick='() => SetDateFilter("TODAY")'>
+                        Today
+                    </button>
+                    <button type="button" class="date-tab-btn @(dateFilterMode == "YESTERDAY" ? "active" : "")" @onclick='() => SetDateFilter("YESTERDAY")'>
+                        Yesterday
+                    </button>
+                    <button type="button" class="date-tab-btn @(dateFilterMode == "ALL" ? "active" : "")" @onclick='() => SetDateFilter("ALL")'>
+                        All Pending
+                    </button>
+                    <button type="button" class="date-tab-btn @(dateFilterMode == "CUSTOM" ? "active" : "")" @onclick='() => SetDateFilter("CUSTOM")'>
+                        Custom
+                    </button>
+                </div>
+
+                @if (dateFilterMode == "CUSTOM")
+                {
+                    <div class="d-flex align-items-center gap-1">
+                        <input type="date" class="form-control form-control-sm" style="font-size: 0.78rem; width: 130px;"
+                               value="@fromDate.ToString("yyyy-MM-dd")" @onchange="OnFromDateChanged" />
+                        <span class="text-muted" style="font-size: 0.75rem;">to</span>
+                        <input type="date" class="form-control form-control-sm" style="font-size: 0.78rem; width: 130px;"
+                               value="@toDate.ToString("yyyy-MM-dd")" @onchange="OnToDateChanged" />
+                    </div>
+                }
+
+                <!-- Doctor Filter -->
+                <select class="form-select form-select-sm" style="font-size: 0.78rem; max-width: 180px;" 
+                        value="@selectedDoctorCode" @onchange="OnDoctorChanged">
+                    <option value="0">All Doctors</option>
+                    @foreach (var doc in doctorsList)
+                    {
+                        <option value="@doc.dcode">@doc.name</option>
+                    }
+                </select>
+            </div>
+        </div>
+    </div>
+
+    <!-- 3. Table Card -->
+    <div class="table-card">
+        <div class="table-header-info">
+            <div class="d-flex align-items-center gap-2">
+                <span class="fw-bold text-dark">Unbilled Outpatient (OP) Registrations</span>
+                <span class="badge bg-secondary" style="font-size: 0.7rem;">@filteredList.Count Records</span>
+            </div>
+            <div class="d-flex align-items-center gap-3">
+                @if (selectedOpIds.Any())
+                {
+                    <span class="text-primary fw-bold" style="font-size: 0.78rem;">
+                        @selectedOpIds.Count patient(s) selected
+                    </span>
+                }
+                <span style="font-size: 0.75rem;">
+                    Target: <strong>@(GetSelectedBranchDisplayName())</strong> &bull; <strong>Counter #@selectedCounterCode</strong>
+                </span>
+            </div>
+        </div>
+
+        @if (loading)
+        {
+            <div class="loading-box">
+                <div class="spinner-border text-primary" role="status"></div>
+                <span style="font-size: 0.88rem; font-weight: 600;">Loading unbilled OP patients...</span>
+            </div>
+        }
+        else if (!filteredList.Any())
+        {
+            <div class="empty-state-box">
+                <div class="empty-icon-circle">
+                    <i class="bi bi-check2-circle"></i>
+                </div>
+                <h4 class="empty-title">No Unbilled OP Registrations</h4>
+                <p class="empty-desc">
+                    All outpatient registrations for the selected filter have already been billed or moved to cash counter.
+                </p>
+                <button type="button" class="btn btn-sm btn-outline-primary mt-2" @onclick="RefreshDataAsync">
+                    <i class="bi bi-arrow-clockwise me-1"></i> Check Again
+                </button>
+            </div>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="autobill-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 40px; text-align: center;">
+                                <input type="checkbox" checked="@IsAllSelected" @onchange="ToggleSelectAll" />
+                            </th>
+                            <th style="width: 60px;">#</th>
+                            <th>Patient Details</th>
+                            <th>OP Number / Date</th>
+                            <th>Doctor & Dept</th>
+                            <th>Visit Type</th>
+                            <th>Unbilled Items</th>
+                            <th>Status</th>
+                            <th style="text-align: center; width: 150px;">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @for (int i = 0; i < filteredList.Count; i++)
+                        {
+                            var index = i + 1;
+                            var item = filteredList[i];
+                            var opIdStr = item.op_id.ToString();
+                            bool isSelected = selectedOpIds.Contains(opIdStr);
+                            bool isProcessingThis = processingOpId == opIdStr;
+
+                            <tr style="@(isSelected ? "background: #f0fdf4;" : "")">
+                                <td style="text-align: center;">
+                                    <input type="checkbox" checked="@isSelected" @onchange="() => ToggleItemSelection(opIdStr)" />
+                                </td>
+                                <td style="color: #64748b; font-weight: 600;">@index</td>
+                                <td>
+                                    <div class="patient-cell">
+                                        <span class="patient-name-text">@item.patient_name</span>
+                                        <div class="patient-sub-text">
+                                            <span><i class="bi bi-person-badge"></i> #@item.custid</span>
+                                            @if (!string.IsNullOrEmpty(item.mobile))
+                                            {
+                                                <span>&bull;</span>
+                                                <span><i class="bi bi-telephone"></i> @item.mobile</span>
+                                            }
+                                        </div>
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="d-flex flex-column gap-1">
+                                        <div class="d-flex align-items-center gap-1">
+                                            <span class="op-badge-pill">@item.op_no</span>
+                                            @if (!string.IsNullOrEmpty(item.token_no))
+                                            {
+                                                <span class="token-badge" title="Token Number">T#@item.token_no</span>
+                                            }
+                                        </div>
+                                        <span class="text-muted" style="font-size: 0.72rem;">
+                                            <i class="bi bi-calendar3 me-1"></i>@item.visit_date.ToString("dd MMM yyyy")
+                                        </span>
+                                    </div>
+                                </td>
+                                <td>
+                                    <div class="d-flex flex-column">
+                                        <span class="fw-bold" style="color: #1e293b; font-size: 0.8rem;">
+                                            @(string.IsNullOrWhiteSpace(item.doctor_name) ? "Not Assigned" : item.doctor_name)
+                                        </span>
+                                        <span class="text-muted" style="font-size: 0.7rem;">
+                                            Consultant Doctor
+                                        </span>
+                                    </div>
+                                </td>
+                                <td>
+                                    <span class="badge bg-light text-dark border" style="font-size: 0.72rem;">
+                                        @(string.IsNullOrWhiteSpace(item.visit_type) ? "OP VISIT" : item.visit_type)
+                                    </span>
+                                </td>
+                                <td>
+                                    @if (item.unbilled_charges_count > 0)
+                                    {
+                                        <button type="button" class="charges-chip" @onclick="() => OpenChargesModal(item)" title="Click to view unbilled charges breakdown">
+                                            <i class="bi bi-file-earmark-medical"></i>
+                                            <span>@item.unbilled_charges_count items</span>
+                                            <strong class="text-primary ms-1">₹@item.unbilled_charges_total.ToString("N0")</strong>
+                                        </button>
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted" style="font-size: 0.72rem;">Standard Consultation</span>
+                                    }
+                                </td>
+                                <td>
+                                    <span class="unbilled-status-pill">
+                                        <i class="bi bi-hourglass-split"></i> UNBILLED
+                                    </span>
+                                </td>
+                                <td style="text-align: center;">
+                                    <button type="button" class="btn-move-cash" 
+                                            @onclick="() => MoveToCashAsync(item)" 
+                                            disabled="@(isProcessingThis || isBulkProcessing || !IsCurrentCounterShiftOpen)"
+                                            title="@(!IsCurrentCounterShiftOpen ? "Open counter shift to enable Move to Cash" : "Auto bill and transfer to cash counter")">
+                                        @if (isProcessingThis)
+                                        {
+                                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                            <span>Moving...</span>
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-arrow-right-circle-fill"></i>
+                                            <span>Move to Cash</span>
+                                        }
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </div>
+</div>
+
+<!-- Modal: View Unbilled Charges Details -->
+@if (showChargesModal && modalPatient != null)
+{
+    <div class="modal-backdrop-custom" @onclick="CloseChargesModal"></div>
+    <div class="modal-dialog-custom">
+        <div class="modal-header-custom">
+            <h4 class="modal-title-custom">
+                <i class="bi bi-receipt text-primary"></i> Unbilled Charges Breakdown
+            </h4>
+            <button type="button" class="modal-close-btn" @onclick="CloseChargesModal">&times;</button>
+        </div>
+        <div class="modal-body-custom">
+            <div class="p-2 bg-light rounded border d-flex justify-content-between align-items-center">
+                <div>
+                    <strong class="d-block text-dark">@modalPatient.patient_name</strong>
+                    <span class="text-muted" style="font-size: 0.75rem;">OP: @modalPatient.op_no &bull; ID: #@modalPatient.custid</span>
+                </div>
+                <div class="text-end">
+                    <span class="text-muted d-block" style="font-size: 0.7rem;">TOTAL AMOUNT</span>
+                    <strong class="text-primary" style="font-size: 1.1rem;">₹@modalPatient.unbilled_charges_total.ToString("N2")</strong>
+                </div>
+            </div>
+
+            <div style="max-height: 240px; overflow-y: auto;">
+                <table class="table table-sm table-bordered" style="font-size: 0.78rem; margin: 0;">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Particulars</th>
+                            <th style="text-align: center;">Qty</th>
+                            <th style="text-align: right;">Rate</th>
+                            <th style="text-align: right;">Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var c in modalPatient.charges)
+                        {
+                            <tr>
+                                <td>@(string.IsNullOrWhiteSpace(c.particulars) ? (c.item_name ?? c.entrytype ?? "Charge") : c.particulars)</td>
+                                <td style="text-align: center;">@(c.quantity ?? 1)</td>
+                                <td style="text-align: right;">₹@string.Format("{0:N2}", c.rate ?? 0)</td>
+                                <td style="text-align: right; font-weight: 700; color: #0284c7;">₹@string.Format("{0:N2}", c.amount ?? 0)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="modal-footer-custom">
+            <button type="button" class="btn-modal-secondary" @onclick="CloseChargesModal">Close</button>
+            <button type="button" class="btn-modal-primary" @onclick="() => { CloseChargesModal(); MoveToCashAsync(modalPatient); }" disabled="@(!IsCurrentCounterShiftOpen)">
+                <i class="bi bi-arrow-right-circle-fill"></i> Move to Cash
+            </button>
+        </div>
+    </div>
+}
+
+@code {
+    public class OpUnbilledRow
+    {
+        public Guid op_id { get; set; }
+        public string op_no { get; set; } = string.Empty;
+        public decimal custid { get; set; }
+        public string patient_name { get; set; } = string.Empty;
+        public string mobile { get; set; } = string.Empty;
+        public string doctor_name { get; set; } = string.Empty;
+        public int dcode { get; set; }
+        public string token_no { get; set; } = string.Empty;
+        public string visit_type { get; set; } = string.Empty;
+        public DateOnly visit_date { get; set; }
+        public DateTime created_at { get; set; }
+        public int unbilled_charges_count { get; set; }
+        public decimal unbilled_charges_total { get; set; }
+        public List<UnbilledChargeSummary> charges { get; set; } = new();
+    }
+
+    private bool loading = true;
+    private bool isOpeningShift = false;
+    private string? processingOpId = null;
+    private bool isBulkProcessing = false;
+    private int bulkProcessedCount = 0;
+
+    // Selections & Filters
+    private int selectedBranchCode = 0; // 0 means All Branches (Auto)
+    private int selectedCounterCode = 1;
+    private int selectedDoctorCode = 0;
+    private string searchQuery = string.Empty;
+    private string dateFilterMode = "TODAY"; // "TODAY", "YESTERDAY", "ALL", "CUSTOM"
+    private DateTime fromDate = DateTime.UtcNow.ToIndianTime().Date;
+    private DateTime toDate = DateTime.UtcNow.ToIndianTime().Date;
+
+    // Master data
+    private List<Booking.Models.BranchModel> branchesList = new();
+    private List<CounterMasterModel> countersList = new();
+    private List<CounterTimingDto> openCountersList = new();
+    private List<DoctorMasterModel> doctorsList = new();
+
+    // Data lists
+    private List<OpUnbilledRow> allUnbilledList = new();
+    private List<OpUnbilledRow> filteredList = new();
+    private HashSet<string> selectedOpIds = new();
+
+    // Modal
+    private bool showChargesModal = false;
+    private OpUnbilledRow? modalPatient = null;
+
+    public class CounterDisplayItem
+    {
+        public int CntCode { get; set; }
+        public int? BhCode { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public string DisplayName { get; set; } = string.Empty;
+        public bool HasOpenShift { get; set; }
+    }
+
+    private IEnumerable<CounterDisplayItem> AvailableCountersForBranch
+    {
+        get
+        {
+            if (selectedBranchCode <= 0)
+            {
+                return AllAvailableCounters;
+            }
+
+            var list = new List<CounterDisplayItem>();
+            var seen = new HashSet<int>();
+
+            // 1. From counters explicitly configured for this branch
+            foreach (var c in countersList.Where(c => !c.deleted && c.bhcode == selectedBranchCode))
+            {
+                int code = (int)c.cntcode;
+                if (code <= 0 || !seen.Add(code)) continue;
+
+                bool isOpen = openCountersList.Any(s => s.cntcode == code && s.todate == null);
+                string baseName = !string.IsNullOrWhiteSpace(c.name) ? c.name.Trim() : $"Counter {code}";
+
+                var branchObj = branchesList.FirstOrDefault(b => b.bh_code == c.bhcode);
+                string branchTag = branchObj != null ? $" ({branchObj.name})" : $" (Branch #{c.bhcode})";
+
+                list.Add(new CounterDisplayItem
+                {
+                    CntCode = code,
+                    BhCode = c.bhcode,
+                    Name = baseName,
+                    DisplayName = $"{baseName}{branchTag}",
+                    HasOpenShift = isOpen
+                });
+            }
+
+            // 2. Also include any open shift records associated with this branch
+            foreach (var s in openCountersList.Where(s => s.todate == null && s.cntcode.HasValue && s.bhcode == selectedBranchCode))
+            {
+                int code = s.cntcode!.Value;
+                if (code <= 0 || !seen.Add(code)) continue;
+
+                string baseName = $"Counter {code}";
+                var branchObj = branchesList.FirstOrDefault(b => b.bh_code == s.bhcode);
+                string branchTag = branchObj != null ? $" ({branchObj.name})" : $" (Branch #{s.bhcode})";
+
+                list.Add(new CounterDisplayItem
+                {
+                    CntCode = code,
+                    BhCode = s.bhcode,
+                    Name = baseName,
+                    DisplayName = $"{baseName}{branchTag}",
+                    HasOpenShift = true
+                });
+            }
+
+            // 3. Fallback: If no counters explicitly mapped to this branch, allow unassigned counters
+            if (!list.Any())
+            {
+                foreach (var c in countersList.Where(c => !c.deleted && (c.bhcode == null || c.bhcode == 0)))
+                {
+                    int code = (int)c.cntcode;
+                    if (code <= 0 || !seen.Add(code)) continue;
+
+                    bool isOpen = openCountersList.Any(s => s.cntcode == code && s.todate == null);
+                    string baseName = !string.IsNullOrWhiteSpace(c.name) ? c.name.Trim() : $"Counter {code}";
+
+                    list.Add(new CounterDisplayItem
+                    {
+                        CntCode = code,
+                        BhCode = c.bhcode,
+                        Name = baseName,
+                        DisplayName = $"{baseName} (Universal)",
+                        HasOpenShift = isOpen
+                    });
+                }
+            }
+
+            if (!list.Any())
+            {
+                list.Add(new CounterDisplayItem
+                {
+                    CntCode = 1,
+                    Name = "Counter 1",
+                    DisplayName = "Counter 1",
+                    HasOpenShift = openCountersList.Any(s => s.cntcode == 1 && s.todate == null)
+                });
+            }
+
+            return list.OrderBy(x => x.CntCode);
+        }
+    }
+
+    private IEnumerable<CounterDisplayItem> AllAvailableCounters
+    {
+        get
+        {
+            var list = new List<CounterDisplayItem>();
+            var seen = new HashSet<int>();
+
+            foreach (var c in countersList)
+            {
+                int code = (int)c.cntcode;
+                if (code <= 0 || !seen.Add(code)) continue;
+
+                bool isOpen = openCountersList.Any(s => s.cntcode == code && s.todate == null);
+                string baseName = !string.IsNullOrWhiteSpace(c.name) ? c.name.Trim() : $"Counter {code}";
+
+                var branchObj = branchesList.FirstOrDefault(b => b.bh_code == c.bhcode);
+                string branchTag = branchObj != null 
+                    ? $" ({branchObj.name})" 
+                    : (c.bhcode.HasValue && c.bhcode.Value > 0 ? $" (Branch #{c.bhcode})" : "");
+
+                list.Add(new CounterDisplayItem
+                {
+                    CntCode = code,
+                    BhCode = c.bhcode,
+                    Name = baseName,
+                    DisplayName = $"{baseName}{branchTag}",
+                    HasOpenShift = isOpen
+                });
+            }
+
+            foreach (var s in openCountersList.Where(s => s.todate == null && s.cntcode.HasValue))
+            {
+                int code = s.cntcode!.Value;
+                if (code <= 0 || !seen.Add(code)) continue;
+
+                string baseName = $"Counter {code}";
+                var branchObj = branchesList.FirstOrDefault(b => b.bh_code == s.bhcode);
+                string branchTag = branchObj != null 
+                    ? $" ({branchObj.name})" 
+                    : (s.bhcode.HasValue && s.bhcode.Value > 0 ? $" (Branch #{s.bhcode})" : "");
+
+                list.Add(new CounterDisplayItem
+                {
+                    CntCode = code,
+                    BhCode = s.bhcode,
+                    Name = baseName,
+                    DisplayName = $"{baseName}{branchTag}",
+                    HasOpenShift = true
+                });
+            }
+
+            if (!list.Any())
+            {
+                list.Add(new CounterDisplayItem
+                {
+                    CntCode = 1,
+                    Name = "Counter 1",
+                    DisplayName = "Counter 1",
+                    HasOpenShift = openCountersList.Any(s => s.cntcode == 1 && s.todate == null)
+                });
+            }
+
+            return list.OrderBy(x => x.CntCode);
+        }
+    }
+
+    private CounterTimingDto? CurrentCounterOpenShift =>
+        openCountersList.FirstOrDefault(s => s.cntcode == selectedCounterCode && s.todate == null);
+
+    private bool IsCurrentCounterShiftOpen => CurrentCounterOpenShift != null;
+
+    private bool IsAllSelected =>
+        filteredList.Any() && filteredList.All(x => selectedOpIds.Contains(x.op_id.ToString()));
+
+    private string GetSelectedBranchDisplayName()
+    {
+        if (selectedBranchCode == 0) return "All Branches (Auto)";
+        var b = branchesList.FirstOrDefault(x => x.bh_code == selectedBranchCode);
+        return b != null ? $"{b.name} (#{b.bh_code})" : $"Branch #{selectedBranchCode}";
+    }
+
+    private async Task<string> GetEffectiveTenantCodeAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(TenantState?.TenantCode))
+            return TenantState.TenantCode;
+
+        try
+        {
+            var t1 = await _sessionStorage.GetAsync<string>("tenant_code");
+            if (t1.Success && !string.IsNullOrWhiteSpace(t1.Value)) return t1.Value;
+
+            var t2 = await _sessionStorage.GetAsync<string>("tenantcode");
+            if (t2.Success && !string.IsNullOrWhiteSpace(t2.Value)) return t2.Value;
+
+            var ud = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (ud.Success && !string.IsNullOrWhiteSpace(ud.Value?.TenantCode)) return ud.Value.TenantCode;
+        }
+        catch { }
+
+        return "";
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadMasterDataAsync();
+        await LoadDataAsync();
+    }
+
+    private async Task LoadMasterDataAsync()
+    {
+        try
+        {
+            var effTenant = await GetEffectiveTenantCodeAsync();
+            var doctorsTask = DoctorService.GetDoctorsAsync();
+            var countersTask = CounterMasterService.GetCountersAsync();
+            var openCountersTask = HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true, tenantCode: effTenant);
+            var branchesTask = LoadBranchesInternalAsync();
+
+            await Task.WhenAll(doctorsTask, countersTask, openCountersTask, branchesTask);
+
+            doctorsList = (await doctorsTask) ?? new();
+            countersList = (await countersTask) ?? new();
+            openCountersList = (await openCountersTask) ?? new();
+            branchesList = await branchesTask;
+
+            // 1. Resolve counter & branch: Prioritize active open shift!
+            var anyOpenShift = openCountersList.FirstOrDefault(s => s.todate == null && s.cntcode.HasValue);
+            if (anyOpenShift != null && anyOpenShift.cntcode.HasValue)
+            {
+                selectedCounterCode = anyOpenShift.cntcode.Value;
+                if (anyOpenShift.bhcode.HasValue && anyOpenShift.bhcode.Value > 0)
+                {
+                    selectedBranchCode = anyOpenShift.bhcode.Value;
+                }
+                else if (branchesList.Any())
+                {
+                    selectedBranchCode = branchesList.First().bh_code;
+                }
+            }
+            else
+            {
+                // Fallback to saved session
+                int savedBh = 0;
+                try
+                {
+                    var bhRes = await _sessionStorage.GetAsync<string>("bhcode");
+                    if (bhRes.Success && !string.IsNullOrEmpty(bhRes.Value)) int.TryParse(bhRes.Value, out savedBh);
+                }
+                catch { }
+
+                if (savedBh > 0 && branchesList.Any(b => b.bh_code == savedBh))
+                {
+                    selectedBranchCode = savedBh;
+                }
+                else if (branchesList.Any())
+                {
+                    selectedBranchCode = branchesList.First().bh_code;
+                }
+
+                int savedCnt = 0;
+                try
+                {
+                    var cntRes = await _sessionStorage.GetAsync<string>("cntcode");
+                    if (cntRes.Success && !string.IsNullOrEmpty(cntRes.Value)) int.TryParse(cntRes.Value, out savedCnt);
+                }
+                catch { }
+
+                if (savedCnt > 0 && AvailableCountersForBranch.Any(c => c.CntCode == savedCnt))
+                {
+                    selectedCounterCode = savedCnt;
+                }
+                else
+                {
+                    AutoSetCounterForBranch(selectedBranchCode);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AutoBillOp] Error loading masters: {ex.Message}");
+        }
+    }
+
+    private async Task<List<Booking.Models.BranchModel>> LoadBranchesInternalAsync()
+    {
+        // 1. Session storage cache from MainLayout
+        try
+        {
+            var sessRes = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.BranchModel>>("UserBranches");
+            if (sessRes.Success && sessRes.Value != null && sessRes.Value.Any())
+            {
+                var list = sessRes.Value
+                    .Where(b => b.bh_code > 0)
+                    .Select(b => new Booking.Models.BranchModel
+                    {
+                        bh_code = b.bh_code,
+                        name = !string.IsNullOrWhiteSpace(b.name) ? b.name.Trim() : $"Branch #{b.bh_code}"
+                    })
+                    .GroupBy(b => b.bh_code)
+                    .Select(g => g.First())
+                    .ToList();
+
+                if (list.Any())
+                {
+                    return list;
+                }
+            }
+        }
+        catch { }
+
+        // 2. Query LabCareUrl then DoctorApi
+        var effTenant = await GetEffectiveTenantCodeAsync();
+        var effToken = !string.IsNullOrWhiteSpace(TenantState?.AuthToken) ? TenantState.AuthToken : "";
+
+        string[] clientNames = new[] { "LabCareUrl", "DoctorApi" };
+        foreach (var cName in clientNames)
+        {
+            try
+            {
+                var client = ClientFactory.CreateClient(cName);
+                if (!string.IsNullOrEmpty(effTenant))
+                {
+                    client.DefaultRequestHeaders.Remove("tenant_code");
+                    client.DefaultRequestHeaders.Remove("tenantcode");
+                    client.DefaultRequestHeaders.Remove("tenant-code");
+                    client.DefaultRequestHeaders.Add("tenant_code", effTenant);
+                    client.DefaultRequestHeaders.Add("tenantcode", effTenant);
+                    client.DefaultRequestHeaders.Add("tenant-code", effTenant);
+                }
+                if (!string.IsNullOrEmpty(effToken))
+                {
+                    client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effToken);
+                }
+
+                var response = await client.GetAsync("api/Branch/get");
+                if (response.IsSuccessStatusCode)
+                {
+                    var json = await response.Content.ReadAsStringAsync();
+                    var parsed = ParseBranchesFromJson(json);
+                    if (parsed.Any())
+                    {
+                        return parsed;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[AutoBillOp] Error loading branches from {cName}: {ex.Message}");
+            }
+        }
+
+        return new List<Booking.Models.BranchModel> { new() { bh_code = 1, name = "Main Branch" } };
+    }
+
+    private List<Booking.Models.BranchModel> ParseBranchesFromJson(string json)
+    {
+        var result = new List<Booking.Models.BranchModel>();
+        try
+        {
+            var jArr = Newtonsoft.Json.Linq.JArray.Parse(json);
+            foreach (var item in jArr)
+            {
+                int code = item["bh_code"]?.ToObject<int>()
+                    ?? item["bhcode"]?.ToObject<int>()
+                    ?? item["code"]?.ToObject<int>()
+                    ?? item["id"]?.ToObject<int>()
+                    ?? 0;
+
+                string rawName = item["name"]?.ToString()
+                    ?? item["branch_name"]?.ToString()
+                    ?? item["branchName"]?.ToString()
+                    ?? item["b_name"]?.ToString()
+                    ?? item["short_name"]?.ToString()
+                    ?? "";
+
+                bool isDel = item["deleted"]?.ToObject<bool>() == true || item["is_deleted"]?.ToObject<bool>() == true;
+
+                if (code > 0 && !isDel)
+                {
+                    result.Add(new Booking.Models.BranchModel
+                    {
+                        bh_code = code,
+                        name = !string.IsNullOrWhiteSpace(rawName) ? rawName.Trim() : $"Branch #{code}"
+                    });
+                }
+            }
+        }
+        catch
+        {
+            try
+            {
+                var list = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                result = list.Where(b => !b.deleted && b.bh_code > 0).ToList();
+            }
+            catch { }
+        }
+
+        return result.GroupBy(b => b.bh_code).Select(g => g.First()).ToList();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        loading = true;
+        StateHasChanged();
+
+        try
+        {
+            // 1. Fetch OP Registrations
+            var opTask = BookingService.GetAllOpRegistrationsAsync();
+
+            // 2. Fetch all unbilled charges
+            var unbilledChargesTask = HmsBillingService.GetAllUnbilledChargesAsync();
+
+            // 3. Fetch bills to verify already billed visits
+            var billsTask = HmsBillingService.ListBillsAsync(new HmsBillFilterRequest { pagesize = 1000 });
+
+            // 4. Refresh open counters status
+            var openCountersTask = HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true);
+
+            await Task.WhenAll(opTask, unbilledChargesTask, billsTask, openCountersTask);
+
+            var rawOps = (await opTask) ?? new();
+            var allUnbilledCharges = (await unbilledChargesTask) ?? new();
+            var billsResponse = await billsTask;
+            var bills = billsResponse?.data ?? new();
+            openCountersList = (await openCountersTask) ?? new();
+
+            // Index bills by opvisitid, op_id, and custid
+            var billedOpNos = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var b in bills)
+            {
+                if (!string.IsNullOrWhiteSpace(b.opvisitid)) billedOpNos.Add(b.opvisitid.Trim());
+            }
+
+            // Index unbilled charges by opvisitid and op_id
+            var unbilledByOp = new Dictionary<string, List<UnbilledChargeSummary>>(StringComparer.OrdinalIgnoreCase);
+            foreach (var charge in allUnbilledCharges)
+            {
+                if (charge.billedstatus == true) continue;
+                if (!string.IsNullOrWhiteSpace(charge.opvisitid))
+                {
+                    var k = charge.opvisitid.Trim();
+                    if (!unbilledByOp.ContainsKey(k)) unbilledByOp[k] = new();
+                    unbilledByOp[k].Add(charge);
+                }
+            }
+
+            var rowList = new List<OpUnbilledRow>();
+
+            foreach (var op in rawOps)
+            {
+                if (op.isdeleted) continue;
+
+                var opIdStr = op.op_id.ToString();
+                var opNoStr = (op.op_no ?? "").Trim();
+
+                // Check billed status
+                bool isBilledFromDb = string.Equals(op.billed_status, "BILLED", StringComparison.OrdinalIgnoreCase);
+                bool hasBillGenerated = (!string.IsNullOrEmpty(opNoStr) && billedOpNos.Contains(opNoStr))
+                                     || billedOpNos.Contains(opIdStr);
+
+                // Collect unbilled charges for this OP
+                var charges = new List<UnbilledChargeSummary>();
+                if (!string.IsNullOrEmpty(opIdStr) && unbilledByOp.TryGetValue(opIdStr, out var c1))
+                {
+                    charges.AddRange(c1);
+                }
+                if (!string.IsNullOrEmpty(opNoStr) && unbilledByOp.TryGetValue(opNoStr, out var c2))
+                {
+                    foreach (var c in c2)
+                    {
+                        if (!charges.Any(x => string.Equals(x.unbilledid, c.unbilledid, StringComparison.OrdinalIgnoreCase)))
+                            charges.Add(c);
+                    }
+                }
+
+                // If already billed and no outstanding unbilled charges, skip
+                if ((isBilledFromDb || hasBillGenerated) && !charges.Any())
+                {
+                    continue;
+                }
+
+                decimal chargesTotal = charges.Sum(c => (decimal)(c.amount ?? 0));
+
+                rowList.Add(new OpUnbilledRow
+                {
+                    op_id = op.op_id,
+                    op_no = !string.IsNullOrWhiteSpace(op.op_no) ? op.op_no : $"OP-{op.custid}",
+                    custid = op.custid,
+                    patient_name = !string.IsNullOrWhiteSpace(op.patient_name) ? op.patient_name : "Unknown Patient",
+                    mobile = op.mobile ?? "",
+                    doctor_name = op.doctor_name ?? "",
+                    dcode = op.dcode,
+                    token_no = op.token_no ?? "",
+                    visit_type = op.visit_type ?? "NEWVISIT",
+                    visit_date = op.visit_date,
+                    created_at = op.created_at,
+                    unbilled_charges_count = charges.Count,
+                    unbilled_charges_total = chargesTotal,
+                    charges = charges
+                });
+            }
+
+            allUnbilledList = rowList.OrderByDescending(x => x.created_at).ToList();
+            ApplyFilters();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AutoBillOp] Error loading data: {ex.Message}");
+            ToastService.ShowError($"Failed to load unbilled OP list: {ex.Message}");
+        }
+        finally
+        {
+            loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ApplyFilters()
+    {
+        var result = allUnbilledList.AsEnumerable();
+
+        // 1. Date Filter
+        if (dateFilterMode == "TODAY")
+        {
+            var today = DateTime.UtcNow.ToIndianTime().Date;
+            result = result.Where(x => x.visit_date.ToDateTime(TimeOnly.MinValue).Date == today);
+        }
+        else if (dateFilterMode == "YESTERDAY")
+        {
+            var yest = DateTime.UtcNow.ToIndianTime().Date.AddDays(-1);
+            result = result.Where(x => x.visit_date.ToDateTime(TimeOnly.MinValue).Date == yest);
+        }
+        else if (dateFilterMode == "CUSTOM")
+        {
+            var f = fromDate.Date;
+            var t = toDate.Date;
+            result = result.Where(x => {
+                var d = x.visit_date.ToDateTime(TimeOnly.MinValue).Date;
+                return d >= f && d <= t;
+            });
+        }
+
+        // 2. Doctor Filter
+        if (selectedDoctorCode > 0)
+        {
+            result = result.Where(x => x.dcode == selectedDoctorCode);
+        }
+
+        // 3. Search Query
+        if (!string.IsNullOrWhiteSpace(searchQuery))
+        {
+            var q = searchQuery.Trim().ToLowerInvariant();
+            result = result.Where(x =>
+                x.patient_name.ToLowerInvariant().Contains(q) ||
+                x.op_no.ToLowerInvariant().Contains(q) ||
+                x.mobile.Contains(q) ||
+                x.custid.ToString().Contains(q) ||
+                x.doctor_name.ToLowerInvariant().Contains(q) ||
+                x.token_no.ToLowerInvariant().Contains(q));
+        }
+
+        filteredList = result.ToList();
+    }
+
+    private void OnSearchInput(ChangeEventArgs e)
+    {
+        searchQuery = e.Value?.ToString() ?? string.Empty;
+        ApplyFilters();
+    }
+
+    private void ClearSearch()
+    {
+        searchQuery = string.Empty;
+        ApplyFilters();
+    }
+
+    private void SetDateFilter(string mode)
+    {
+        dateFilterMode = mode;
+        if (mode == "TODAY")
+        {
+            fromDate = DateTime.UtcNow.ToIndianTime().Date;
+            toDate = DateTime.UtcNow.ToIndianTime().Date;
+        }
+        else if (mode == "YESTERDAY")
+        {
+            fromDate = DateTime.UtcNow.ToIndianTime().Date.AddDays(-1);
+            toDate = DateTime.UtcNow.ToIndianTime().Date.AddDays(-1);
+        }
+        ApplyFilters();
+    }
+
+    private void OnFromDateChanged(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var parsed))
+        {
+            fromDate = parsed;
+            ApplyFilters();
+        }
+    }
+
+    private void OnToDateChanged(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var parsed))
+        {
+            toDate = parsed;
+            ApplyFilters();
+        }
+    }
+
+    private void OnDoctorChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var dcode))
+        {
+            selectedDoctorCode = dcode;
+            ApplyFilters();
+        }
+    }
+
+    private void AutoSetCounterForBranch(int bh)
+    {
+        selectedBranchCode = bh;
+
+        // 1. Priority 1: Check if any counter has an ACTIVE OPEN SHIFT on this branch
+        var openShiftOnBranch = openCountersList
+            .FirstOrDefault(s => s.todate == null && s.cntcode.HasValue && (bh == 0 || s.bhcode == bh));
+
+        if (openShiftOnBranch != null && openShiftOnBranch.cntcode.HasValue)
+        {
+            selectedCounterCode = openShiftOnBranch.cntcode.Value;
+            return;
+        }
+
+        // 2. Priority 2: Pick the first configured counter in this branch
+        if (bh > 0)
+        {
+            var branchCounter = countersList
+                .Where(c => !c.deleted && c.bhcode == bh && c.cntcode > 0)
+                .OrderBy(c => c.orderno > 0 ? c.orderno : (int)c.cntcode)
+                .FirstOrDefault();
+
+            if (branchCounter != null)
+            {
+                selectedCounterCode = (int)branchCounter.cntcode;
+                return;
+            }
+
+            var anyBranchShift = openCountersList
+                .FirstOrDefault(s => s.bhcode == bh && s.cntcode.HasValue && s.cntcode.Value > 0);
+            if (anyBranchShift != null && anyBranchShift.cntcode.HasValue)
+            {
+                selectedCounterCode = anyBranchShift.cntcode.Value;
+                return;
+            }
+        }
+
+        // 3. Fallback: If "All Branches" (bh == 0) or no branch-specific counter found
+        var anyOpen = openCountersList.FirstOrDefault(s => s.todate == null && s.cntcode.HasValue && s.cntcode.Value > 0);
+        if (anyOpen != null && anyOpen.cntcode.HasValue)
+        {
+            selectedCounterCode = anyOpen.cntcode.Value;
+            return;
+        }
+
+        var availableForBranch = AvailableCountersForBranch.ToList();
+        if (availableForBranch.Any(c => c.CntCode == selectedCounterCode))
+        {
+            return;
+        }
+
+        if (availableForBranch.Any())
+        {
+            selectedCounterCode = availableForBranch.First().CntCode;
+        }
+        else
+        {
+            selectedCounterCode = 1;
+        }
+    }
+
+    private void OnBranchChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var bh))
+        {
+            AutoSetCounterForBranch(bh);
+            StateHasChanged();
+        }
+    }
+
+    private void OnCounterChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var cnt))
+        {
+            selectedCounterCode = cnt;
+
+            // If selected counter has an open shift, sync selectedBranchCode to that shift's branch
+            var shift = openCountersList.FirstOrDefault(s => s.cntcode == cnt && s.todate == null);
+            if (shift != null && shift.bhcode.HasValue && shift.bhcode.Value > 0)
+            {
+                selectedBranchCode = shift.bhcode.Value;
+            }
+            else
+            {
+                var cm = countersList.FirstOrDefault(c => (int)c.cntcode == cnt);
+                if (cm?.bhcode.HasValue == true && cm.bhcode.Value > 0)
+                {
+                    selectedBranchCode = cm.bhcode.Value;
+                }
+            }
+            StateHasChanged();
+        }
+    }
+
+    private async Task RefreshDataAsync()
+    {
+        await LoadDataAsync();
+    }
+
+    private void ToggleItemSelection(string opIdStr)
+    {
+        if (selectedOpIds.Contains(opIdStr))
+            selectedOpIds.Remove(opIdStr);
+        else
+            selectedOpIds.Add(opIdStr);
+    }
+
+    private void ToggleSelectAll(ChangeEventArgs e)
+    {
+        bool select = e.Value is bool b && b;
+        if (select)
+        {
+            foreach (var item in filteredList)
+                selectedOpIds.Add(item.op_id.ToString());
+        }
+        else
+        {
+            selectedOpIds.Clear();
+        }
+    }
+
+    private void OpenChargesModal(OpUnbilledRow row)
+    {
+        modalPatient = row;
+        showChargesModal = true;
+    }
+
+    private void CloseChargesModal()
+    {
+        showChargesModal = false;
+        modalPatient = null;
+    }
+
+    private async Task OpenShiftForCurrentCounterAsync()
+    {
+        isOpeningShift = true;
+        StateHasChanged();
+
+        try
+        {
+            int usercode = 10;
+            try
+            {
+                var udRes = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (udRes.Success && udRes.Value != null && udRes.Value.UserCode > 0)
+                    usercode = (int)udRes.Value.UserCode;
+            }
+            catch { }
+
+            var openReq = new OpenShiftRequest
+            {
+                cntcode = selectedCounterCode,
+                bhcode = selectedBranchCode,
+                usercode = usercode,
+                computercode = 1,
+                shift_mode = "VARIABLE"
+            };
+
+            var rawRes = await HmsBillingService.OpenShiftAsync(openReq);
+            if (rawRes.Contains("Error", StringComparison.OrdinalIgnoreCase))
+            {
+                ToastService.ShowError($"Failed to open shift: {rawRes}");
+            }
+            else
+            {
+                ToastService.ShowSuccess($"Shift opened successfully for Counter #{selectedCounterCode}!");
+                openCountersList = await HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error opening shift: {ex.Message}");
+        }
+        finally
+        {
+            isOpeningShift = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task<(bool Success, string Message)> ExecuteAutoBillSingleAsync(string opIdStr, string effTenant, string effToken)
+    {
+        var activeShift = CurrentCounterOpenShift;
+
+        // Determine branch code to send
+        // Priority 1: If open shift has a bhcode > 0, send that
+        // Priority 2: If selectedBranchCode > 0, send selectedBranchCode
+        // Priority 3: null (allow backend to match open shift without branch conflict)
+        int? branchToSend = (activeShift != null && activeShift.bhcode.HasValue && activeShift.bhcode.Value > 0)
+            ? activeShift.bhcode.Value
+            : (selectedBranchCode > 0 ? selectedBranchCode : null);
+
+        var request = new Booking.Models.AutoBillOpRequest
+        {
+            op_id = opIdStr,
+            enteredbhcode = branchToSend,
+            cntcode = selectedCounterCode
+        };
+
+        var (success, message, raw) = await HmsBillingService.AutoBillOpAsync(request, effTenant, effToken);
+
+        // Smart fallback retry:
+        // If the backend returns "Selected billing counter shift session is not open."
+        // it means the backend query couldn't match counter_timing.bhcode = @enteredbhcode.
+        // We retry with enteredbhcode = null or activeShift.bhcode!
+        if (!success && (message.Contains("shift session is not open", StringComparison.OrdinalIgnoreCase) ||
+                         raw.Contains("shift session is not open", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (request.enteredbhcode.HasValue)
+            {
+                Console.WriteLine($"[AutoBillOp] Retry attempt 1 with enteredbhcode = null for OP {opIdStr}");
+                request.enteredbhcode = null;
+                var res2 = await HmsBillingService.AutoBillOpAsync(request, effTenant, effToken);
+                success = res2.Success;
+                message = res2.Message;
+                raw = res2.RawResponse;
+            }
+
+            if (!success && activeShift != null && activeShift.bhcode.HasValue && activeShift.bhcode.Value > 0 && request.enteredbhcode != activeShift.bhcode)
+            {
+                Console.WriteLine($"[AutoBillOp] Retry attempt 2 with enteredbhcode = {activeShift.bhcode} for OP {opIdStr}");
+                request.enteredbhcode = activeShift.bhcode;
+                var res3 = await HmsBillingService.AutoBillOpAsync(request, effTenant, effToken);
+                success = res3.Success;
+                message = res3.Message;
+                raw = res3.RawResponse;
+            }
+        }
+
+        return (success, message);
+    }
+
+    private async Task MoveToCashAsync(OpUnbilledRow item)
+    {
+        var activeShift = CurrentCounterOpenShift;
+        if (activeShift == null)
+        {
+            var effTenantQuick = await GetEffectiveTenantCodeAsync();
+            openCountersList = await HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true, tenantCode: effTenantQuick) ?? new();
+            activeShift = CurrentCounterOpenShift;
+        }
+
+        if (activeShift == null)
+        {
+            ToastService.ShowWarning($"Cash Counter #{selectedCounterCode} has no open shift. Please open shift first.");
+            return;
+        }
+
+        var opIdStr = item.op_id.ToString();
+        processingOpId = opIdStr;
+        StateHasChanged();
+
+        try
+        {
+            var effTenant = await GetEffectiveTenantCodeAsync();
+            var effToken = !string.IsNullOrWhiteSpace(TenantState?.AuthToken) ? TenantState.AuthToken : "";
+
+            var (success, message) = await ExecuteAutoBillSingleAsync(opIdStr, effTenant, effToken);
+
+            if (success)
+            {
+                ToastService.ShowSuccess(message);
+                selectedOpIds.Remove(opIdStr);
+                allUnbilledList.RemoveAll(x => x.op_id == item.op_id);
+                ApplyFilters();
+            }
+            else
+            {
+                ToastService.ShowError(message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error: {ex.Message}");
+        }
+        finally
+        {
+            processingOpId = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task BulkMoveToCashAsync()
+    {
+        var activeShift = CurrentCounterOpenShift;
+        if (activeShift == null)
+        {
+            var effTenantQuick = await GetEffectiveTenantCodeAsync();
+            openCountersList = await HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true, tenantCode: effTenantQuick) ?? new();
+            activeShift = CurrentCounterOpenShift;
+        }
+
+        if (activeShift == null)
+        {
+            ToastService.ShowWarning($"Cash Counter #{selectedCounterCode} has no open shift. Please open shift first.");
+            return;
+        }
+
+        if (!selectedOpIds.Any())
+        {
+            ToastService.ShowWarning("Please select at least one patient to move to cash.");
+            return;
+        }
+
+        isBulkProcessing = true;
+        bulkProcessedCount = 0;
+        StateHasChanged();
+
+        int successCount = 0;
+        int failureCount = 0;
+        var opIdsToProcess = selectedOpIds.ToList();
+
+        try
+        {
+            var effTenant = await GetEffectiveTenantCodeAsync();
+            var effToken = !string.IsNullOrWhiteSpace(TenantState?.AuthToken) ? TenantState.AuthToken : "";
+
+            foreach (var opId in opIdsToProcess)
+            {
+                bulkProcessedCount++;
+                StateHasChanged();
+
+                var (success, _) = await ExecuteAutoBillSingleAsync(opId, effTenant, effToken);
+                if (success)
+                {
+                    successCount++;
+                    selectedOpIds.Remove(opId);
+                    allUnbilledList.RemoveAll(x => x.op_id.ToString() == opId);
+                }
+                else
+                {
+                    failureCount++;
+                }
+            }
+
+            ApplyFilters();
+
+            if (failureCount == 0)
+            {
+                ToastService.ShowSuccess($"Successfully moved {successCount} OP patient(s) to cash counter!");
+            }
+            else
+            {
+                ToastService.ShowWarning($"Moved {successCount} OP patient(s) successfully. {failureCount} failed.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Bulk move error: {ex.Message}");
+        }
+        finally
+        {
+            isBulkProcessing = false;
+            StateHasChanged();
+            await LoadDataAsync();
+        }
+    }
+}
