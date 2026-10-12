@@ -3,6 +3,7 @@
 @using Booking.Models
 @using Booking.Services
 @using LIMS_Backend.Model
+@using Medico_Backend.Model
 @using SharedComponents.Rcl.Models
 @using SharedComponents.Rcl.Services
 @using System.Net.Http.Json
@@ -18,6 +19,7 @@
 @inject ToastService Toast
 @inject LabCare.Services.UserService UserService
 @inject Booking.Services.RoleMasterService RoleService
+@inject Booking.Services.CounterMasterService CounterService
 
 @if (!showForm)
 {
@@ -440,9 +442,10 @@ else
                     </div>
                 </div>
 
-                <!-- Right Column: Profile Photo & Signature -->
-                <div class="user-card-panel">
-                    <div class="user-panel-header">
+                <!-- Right Column: Profile Photo & Signature & Branch/Counter -->
+                <div style="display: flex; flex-direction: column; gap: 20px;">
+                    <div class="user-card-panel" style="margin-bottom: 0;">
+                        <div class="user-panel-header">
                         <h4 class="user-panel-title">
                             <span class="material-symbols-outlined text-indigo-600" style="font-size: 18px;">photo_library</span>
                             Profile Images
@@ -580,6 +583,49 @@ else
                         </div>
                     </div>
                 </div>
+
+                <!-- Branch & Counter Selection Panel -->
+                <div class="user-card-panel" style="margin-bottom: 0;">
+                    <div class="user-panel-header">
+                        <h4 class="user-panel-title">
+                            <span class="material-symbols-outlined text-indigo-600" style="font-size: 18px;">storefront</span>
+                            Branch &amp; Counter Selection
+                        </h4>
+                        <span class="user-panel-subtitle">Assigned Workstation</span>
+                    </div>
+
+                    <div class="user-fields-2col">
+                        <!-- Branch Selection -->
+                        <div class="user-field-item">
+                            <label class="user-field-label">
+                                Branch
+                            </label>
+                            <select class="lab-input" value="@(current.bh_code?.ToString() ?? "")" @onchange="OnBranchSelectionChanged">
+                                <option value="">-- Select Branch --</option>
+                                @foreach (var b in allBranches)
+                                {
+                                    int bCode = b.bh_code > 0 ? b.bh_code : (b.bhcode ?? 0);
+                                    <option value="@bCode">@b.name</option>
+                                }
+                            </select>
+                        </div>
+
+                        <!-- Counter Selection -->
+                        <div class="user-field-item">
+                            <label class="user-field-label">
+                                Counter
+                            </label>
+                            <select class="lab-input" value="@(current.cnt_code.HasValue ? Convert.ToInt64(current.cnt_code.Value).ToString() : "")" @onchange="OnCounterSelectionChanged">
+                                <option value="">-- Select Counter --</option>
+                                @foreach (var c in FilteredCountersForUser)
+                                {
+                                    <option value="@(Convert.ToInt64(c.cntcode))">@c.name</option>
+                                }
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
             </div>
 
             <!-- Role & Branch Rights Overview Banner Card -->
@@ -1004,6 +1050,75 @@ else
     private List<int> selectedBranchCodes = new();
     private bool isAllBranchesSelected => allBranches.Any() && allBranches.All(b => selectedBranchCodes.Contains(b.bh_code > 0 ? b.bh_code : (b.bhcode ?? 0)));
 
+    // ── Counter Selection State & Helpers ──────────────────────────────────────
+    private List<CounterMasterModel> allCounters = new();
+
+    private IEnumerable<CounterMasterModel> FilteredCountersForUser
+    {
+        get
+        {
+            if (current.bh_code.HasValue && current.bh_code.Value > 0)
+            {
+                var branchCounters = allCounters.Where(c => c.bhcode == current.bh_code.Value).ToList();
+                if (branchCounters.Any()) return branchCounters;
+            }
+            return allCounters;
+        }
+    }
+
+    private void OnBranchSelectionChanged(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out var bCode) && bCode > 0)
+        {
+            current.bh_code = bCode;
+            if (!selectedBranchCodes.Contains(bCode))
+            {
+                selectedBranchCodes.Add(bCode);
+            }
+
+            // If selected counter does not belong to this branch, reset counter
+            if (current.cnt_code.HasValue)
+            {
+                var counter = allCounters.FirstOrDefault(c => Convert.ToInt64(c.cntcode) == Convert.ToInt64(current.cnt_code.Value));
+                if (counter != null && counter.bhcode.HasValue && counter.bhcode.Value > 0 && counter.bhcode.Value != bCode)
+                {
+                    current.cnt_code = null;
+                }
+            }
+        }
+        else
+        {
+            current.bh_code = null;
+        }
+        StateHasChanged();
+    }
+
+    private void OnCounterSelectionChanged(ChangeEventArgs e)
+    {
+        if (decimal.TryParse(e.Value?.ToString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var cCode) && cCode > 0)
+        {
+            current.cnt_code = cCode;
+            // If branch is not yet selected, and counter belongs to a branch, auto-select branch
+            if (current.bh_code == null || current.bh_code == 0)
+            {
+                var counter = allCounters.FirstOrDefault(c => Convert.ToInt64(c.cntcode) == Convert.ToInt64(cCode));
+                if (counter?.bhcode.HasValue == true && counter.bhcode.Value > 0)
+                {
+                    current.bh_code = counter.bhcode.Value;
+                    if (!selectedBranchCodes.Contains(counter.bhcode.Value))
+                    {
+                        selectedBranchCodes.Add(counter.bhcode.Value);
+                    }
+                }
+            }
+        }
+        else
+        {
+            current.cnt_code = null;
+        }
+        StateHasChanged();
+    }
+
     private void ToggleAllBranches(bool isChecked)
     {
         selectedBranchCodes.Clear();
@@ -1426,6 +1541,7 @@ else
                 {
                     TenantState.SetSession(TenantCode, AuthToken, TenantName);
                     await LoadBranches();
+                    await LoadCounters();
                     await LoadUsers();
                     await LoadGroups();
                     await LoadRclProducts();
@@ -1473,6 +1589,37 @@ else
         catch (Exception ex)
         {
             /* Console.WriteLine($"Error loading branches: {ex.Message}") */;
+        }
+    }
+
+    // ── Load Counters ─────────────────────────────────────────────────────────
+    private async Task LoadCounters()
+    {
+        try
+        {
+            var res = await CounterService.GetCountersAsync();
+            if (res != null && res.Any())
+            {
+                allCounters = res.Where(c => !c.deleted).OrderBy(c => c.orderno).ThenBy(c => c.name).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[UserMaster] LoadCounters from CounterService: {ex.Message}");
+        }
+
+        if (!allCounters.Any())
+        {
+            try
+            {
+                using var client = CreateClient();
+                var res = await client.GetFromJsonAsync<List<CounterMasterModel>>($"{BaseUrl}api/CounterMaster/get");
+                if (res != null && res.Any())
+                {
+                    allCounters = res.Where(c => !c.deleted).OrderBy(c => c.orderno).ThenBy(c => c.name).ToList();
+                }
+            }
+            catch { }
         }
     }
 
@@ -1567,12 +1714,48 @@ else
                     current.address = !string.IsNullOrWhiteSpace(current.permanent_address) ? current.permanent_address : current.current_address;
                 }
                 
-                if (getUserResult.branch != null)
+                if (getUserResult.branch != null && getUserResult.branch.Any())
                 {
                     selectedBranchCodes = getUserResult.branch
                         .Select(b => b.bhcode ?? 0)
                         .Where(c => c > 0)
                         .ToList();
+
+                    // If branch or counter are not set directly on user_master, populate from user_branch_master
+                    var branchWithCounter = getUserResult.branch.FirstOrDefault(b => b.cntcode.HasValue && b.cntcode > 0);
+                    if (branchWithCounter != null)
+                    {
+                        if (current.bh_code == null || current.bh_code == 0)
+                        {
+                            current.bh_code = branchWithCounter.bhcode;
+                        }
+                        if (current.cnt_code == null || current.cnt_code == 0)
+                        {
+                            current.cnt_code = branchWithCounter.cntcode;
+                        }
+                    }
+                    else
+                    {
+                        var firstBranch = getUserResult.branch.FirstOrDefault(b => b.bhcode.HasValue && b.bhcode > 0);
+                        if ((current.bh_code == null || current.bh_code == 0) && firstBranch != null)
+                        {
+                            current.bh_code = firstBranch.bhcode;
+                        }
+                    }
+                }
+
+                if ((current.cnt_code == null || current.cnt_code == 0) && current.bh_code.HasValue && getUserResult.branch != null)
+                {
+                    var matchedBranch = getUserResult.branch.FirstOrDefault(b => b.bhcode == current.bh_code && b.cntcode.HasValue && b.cntcode > 0);
+                    if (matchedBranch != null)
+                    {
+                        current.cnt_code = matchedBranch.cntcode;
+                    }
+                }
+
+                if (current.bh_code.HasValue && current.bh_code.Value > 0 && !selectedBranchCodes.Contains(current.bh_code.Value))
+                {
+                    selectedBranchCodes.Add(current.bh_code.Value);
                 }
                 
                 if (getUserResult.department != null && allGroups.Any())
@@ -1661,8 +1844,15 @@ else
             tenant_code   = u.tenant_code,
             user_image     = u.user_image,
             signature_image= u.signature_image,
+            bh_code        = u.bh_code,
+            cnt_code       = u.cnt_code,
         };
         newPassword = "";
+
+        if (current.bh_code.HasValue && current.bh_code.Value > 0 && !selectedBranchCodes.Contains(current.bh_code.Value))
+        {
+            selectedBranchCodes.Add(current.bh_code.Value);
+        }
 
         if (string.IsNullOrEmpty(current.role) && !string.IsNullOrEmpty(current.module))
         {
@@ -1730,14 +1920,51 @@ else
         StateHasChanged();
         try
         {
+            // Auto-detect branch from counter if counter is selected but branch is empty
+            if ((current.bh_code == null || current.bh_code == 0) && current.cnt_code.HasValue && current.cnt_code.Value > 0)
+            {
+                var counterObj = allCounters.FirstOrDefault(c => Convert.ToInt64(c.cntcode) == Convert.ToInt64(current.cnt_code.Value));
+                if (counterObj?.bhcode.HasValue == true && counterObj.bhcode.Value > 0)
+                {
+                    current.bh_code = counterObj.bhcode.Value;
+                }
+            }
+
+            // Ensure primary selected branch is included in selectedBranchCodes
+            if (current.bh_code.HasValue && current.bh_code.Value > 0 && !selectedBranchCodes.Contains(current.bh_code.Value))
+            {
+                selectedBranchCodes.Add(current.bh_code.Value);
+            }
+
             var branchList = new List<UserBranchMaster>();
             if (selectedBranchCodes != null && selectedBranchCodes.Any())
             {
                 foreach (var bhCode in selectedBranchCodes)
                 {
+                    int? branchCntCode = null;
+                    if (current.bh_code.HasValue && current.bh_code.Value == bhCode && current.cnt_code.HasValue && current.cnt_code.Value > 0)
+                    {
+                        branchCntCode = (int)current.cnt_code.Value;
+                    }
+                    else if (selectedBranchCodes.Count == 1 && current.cnt_code.HasValue && current.cnt_code.Value > 0)
+                    {
+                        branchCntCode = (int)current.cnt_code.Value;
+                    }
+                    else
+                    {
+                        // Preserve existing counter for this branch if it was already set
+                        var existingBranch = AllUsersRaw.FirstOrDefault(x => x.user?.user_code == current.user_code)
+                                                ?.branch?.FirstOrDefault(b => b.bhcode == bhCode && b.cntcode.HasValue && b.cntcode.Value > 0);
+                        if (existingBranch != null)
+                        {
+                            branchCntCode = existingBranch.cntcode;
+                        }
+                    }
+
                     branchList.Add(new UserBranchMaster
                     {
                         bhcode = bhCode,
+                        cntcode = branchCntCode,
                         user_code = isEditMode ? current.user_code : (int?)null,
                         tenant_code = TenantCode,
                         deleted = false

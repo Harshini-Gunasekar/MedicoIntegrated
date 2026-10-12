@@ -28,6 +28,7 @@
 @inject Booking.Services.PrefixMasterService PrefixMasterService
 @inject Booking.Services.TestMasterService TestMasterService
 @inject LabCare.Services.TestService LabCareTestSvc
+@inject LabCare.Services.UserService UserService
 @implements IDisposable
 @using Microsoft.JSInterop
 
@@ -3946,37 +3947,118 @@
                     deptCode = docObj.spcode.Value;
                 }
 
-                int? branchCode = TenantState.BranchCode ?? TenantState.UserData?.BranchCode;
-                if (!branchCode.HasValue || branchCode.Value == 0)
+                // Resolve bhcode and cntcode of the user who done registration
+                int? branchCode = TenantState?.BranchCode ?? TenantState?.UserData?.BranchCode;
+                int? counterCode = TenantState?.CounterCode ?? TenantState?.UserData?.CounterCode;
+
+                if (!branchCode.HasValue || branchCode.Value <= 0 || !counterCode.HasValue || counterCode.Value <= 0)
                 {
                     try
                     {
-                        var bhRes = await _sessionStorage.GetAsync<int>("bhcode");
-                        if (bhRes.Success && bhRes.Value > 0) branchCode = bhRes.Value;
-                        else
+                        var uRes = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                        if (uRes.Success && uRes.Value != null)
                         {
-                            var bhStrRes = await _sessionStorage.GetAsync<string>("bhcode");
-                            if (bhStrRes.Success && int.TryParse(bhStrRes.Value, out var parsedBh) && parsedBh > 0) branchCode = parsedBh;
+                            if ((!branchCode.HasValue || branchCode.Value <= 0) && uRes.Value.BranchCode.HasValue && uRes.Value.BranchCode.Value > 0)
+                                branchCode = uRes.Value.BranchCode.Value;
+                            if ((!counterCode.HasValue || counterCode.Value <= 0) && uRes.Value.CounterCode.HasValue && uRes.Value.CounterCode.Value > 0)
+                                counterCode = uRes.Value.CounterCode.Value;
                         }
                     }
                     catch { }
                 }
 
-                int? counterCode = TenantState.CounterCode ?? TenantState.UserData?.CounterCode;
-                if (!counterCode.HasValue || counterCode.Value == 0)
+                if (!branchCode.HasValue || branchCode.Value <= 0)
                 {
                     try
                     {
-                        var cntRes = await _sessionStorage.GetAsync<int>("cntcode");
-                        if (cntRes.Success && cntRes.Value > 0) counterCode = cntRes.Value;
-                        else
+                        var bhStrRes = await _sessionStorage.GetAsync<string>("bhcode");
+                        if (bhStrRes.Success && int.TryParse(bhStrRes.Value, out var parsedBh) && parsedBh > 0)
+                            branchCode = parsedBh;
+                    }
+                    catch { }
+                    if (!branchCode.HasValue || branchCode.Value <= 0)
+                    {
+                        try
                         {
-                            var cntStrRes = await _sessionStorage.GetAsync<string>("cntcode");
-                            if (cntStrRes.Success && int.TryParse(cntStrRes.Value, out var parsedCnt) && parsedCnt > 0) counterCode = parsedCnt;
+                            var bhRes = await _sessionStorage.GetAsync<int>("bhcode");
+                            if (bhRes.Success && bhRes.Value > 0) branchCode = bhRes.Value;
+                        }
+                        catch { }
+                    }
+                }
+
+                if (!counterCode.HasValue || counterCode.Value <= 0)
+                {
+                    try
+                    {
+                        var cntStrRes = await _sessionStorage.GetAsync<string>("cntcode");
+                        if (cntStrRes.Success && int.TryParse(cntStrRes.Value, out var parsedCnt) && parsedCnt > 0)
+                            counterCode = parsedCnt;
+                    }
+                    catch { }
+                    if (!counterCode.HasValue || counterCode.Value <= 0)
+                    {
+                        try
+                        {
+                            var cntRes = await _sessionStorage.GetAsync<int>("cntcode");
+                            if (cntRes.Success && cntRes.Value > 0) counterCode = cntRes.Value;
+                        }
+                        catch { }
+                    }
+                }
+
+                if (!branchCode.HasValue || branchCode.Value <= 0 || !counterCode.HasValue || counterCode.Value <= 0)
+                {
+                    try
+                    {
+                        var localSessionJson = await JSRuntime.InvokeAsync<string>("medicoSessionHelper.getSession");
+                        if (!string.IsNullOrWhiteSpace(localSessionJson))
+                        {
+                            var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
+                            if (!branchCode.HasValue || branchCode.Value <= 0)
+                                branchCode = jObj["bhcode"]?.ToObject<int?>() ?? jObj["bh_code"]?.ToObject<int?>();
+                            if (!counterCode.HasValue || counterCode.Value <= 0)
+                                counterCode = jObj["cntcode"]?.ToObject<int?>() ?? jObj["cnt_code"]?.ToObject<int?>();
                         }
                     }
                     catch { }
                 }
+
+                if ((!branchCode.HasValue || branchCode.Value <= 0 || !counterCode.HasValue || counterCode.Value <= 0) && resolvedUserCode > 0)
+                {
+                    try
+                    {
+                        var userProfile = await UserService.GetAsync(resolvedUserCode);
+                        if (userProfile?.user != null)
+                        {
+                            if (!branchCode.HasValue || branchCode.Value <= 0)
+                            {
+                                if (userProfile.user.bh_code.HasValue && userProfile.user.bh_code.Value > 0)
+                                    branchCode = userProfile.user.bh_code.Value;
+                                else if (userProfile.user.bhcode.HasValue && userProfile.user.bhcode.Value > 0)
+                                    branchCode = userProfile.user.bhcode.Value;
+                                else if (userProfile.branch != null && userProfile.branch.Any(b => b.bhcode.HasValue && b.bhcode.Value > 0))
+                                    branchCode = userProfile.branch.First(b => b.bhcode.HasValue && b.bhcode.Value > 0).bhcode.Value;
+                            }
+
+                            if (!counterCode.HasValue || counterCode.Value <= 0)
+                            {
+                                if (userProfile.user.cnt_code.HasValue && userProfile.user.cnt_code.Value > 0)
+                                    counterCode = (int)userProfile.user.cnt_code.Value;
+                                else if (userProfile.user.cntcode.HasValue && userProfile.user.cntcode.Value > 0)
+                                    counterCode = (int)userProfile.user.cntcode.Value;
+                                else if (userProfile.user.op_cnt_code.HasValue && userProfile.user.op_cnt_code.Value > 0)
+                                    counterCode = (int)userProfile.user.op_cnt_code.Value;
+                                else if (userProfile.branch != null && userProfile.branch.Any(b => b.cntcode.HasValue && b.cntcode.Value > 0))
+                                    counterCode = userProfile.branch.First(b => b.cntcode.HasValue && b.cntcode.Value > 0).cntcode.Value;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                int resolvedBhCode = branchCode.HasValue && branchCode.Value > 0 ? branchCode.Value : 1;
+                int resolvedCntCode = counterCode.HasValue && counterCode.Value > 0 ? counterCode.Value : 1;
 
                 int? primaryServiceId = null;
                 if (walkinRegType == "OTHERS")
@@ -4007,8 +4089,9 @@
                     primary_type = walkinRegType == "OP" ? "CONSULTATION" : (walkinRegType == "DRESSING" ? "DRESSING" : "SERVICE"),
                     primary_service_id = primaryServiceId,
                     notes = directWalkinRequest.notes,
-                    enteredbhcode = branchCode.HasValue && branchCode.Value > 0 ? branchCode.Value : 1,
-                    cntcode = counterCode.HasValue && counterCode.Value > 0 ? counterCode.Value : 1,
+                    enteredbhcode = resolvedBhCode,
+                    bhcode = resolvedBhCode,
+                    cntcode = resolvedCntCode,
                     additional_items = new List<OPRegistrationModel.ComboRegistrationItemRequest>(),
                     usercode = resolvedUserCode
                 };

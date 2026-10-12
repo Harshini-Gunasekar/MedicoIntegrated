@@ -672,13 +672,88 @@
     {
         _ = InvokeAsync(async () =>
         {
-            if (isDisposed) return;
+            if (isDisposed || _isCircuitAborted) return;
             EvaluateAccess();
             await CheckBranchSelectionAsync();
             var relativePath = NavigationManager.ToBaseRelativePath(NavigationManager.Uri);
             SyncCurrentPageToTabs(relativePath);
             StateHasChanged();
+
+            // Check rights from RoleMaster on each navigation; update session & reload page if changed
+            await CheckAndUpdateRightsOnNavigationAsync();
         });
+    }
+
+    private bool _isCheckingRightsOnNav = false;
+
+    private async Task CheckAndUpdateRightsOnNavigationAsync()
+    {
+        if (isDisposed || _isCircuitAborted || !_hasSessionValidated || _isCheckingRightsOnNav) return;
+
+        var relativePath = NormalizePath(NavigationManager.ToBaseRelativePath(NavigationManager.Uri));
+        if (IsAnonymousPath(relativePath)) return;
+
+        int userCode = TenantState.UserCode;
+        if (userCode <= 0 && TenantState.UserData?.UserCode.HasValue == true)
+        {
+            userCode = TenantState.UserData.UserCode.Value;
+        }
+
+        if (userCode <= 0 || IsAdmin()) return;
+
+        _isCheckingRightsOnNav = true;
+        try
+        {
+            var tenantCode = TenantState.TenantCode ?? TenantState.UserData?.TenantCode;
+            var serverPerms = await RoleService.GetUserEffectivePermissionsAsync(userCode, tenantCode);
+            if (serverPerms != null && serverPerms.Any())
+            {
+                var currentPerms = RoleService.CurrentUserPermissions;
+                bool hasChanged = !RoleMasterService.ArePermissionsEqual(currentPerms, serverPerms);
+
+                if (hasChanged)
+                {
+                    Console.WriteLine($"[MainLayout] Permissions changed for usercode {userCode} on navigation. Updating session and reloading page...");
+
+                    // 1. Update RoleService in-memory
+                    RoleService.SetUserPermissions(serverPerms);
+
+                    // 2. Convert to UserRights
+                    var newRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(serverPerms, userCode);
+
+                    // 3. Persist to session storage
+                    try { await _sessionStorage.SetAsync("UserRolePermissions", serverPerms); } catch { }
+                    try { await _sessionStorage.SetAsync("UserRights", newRights); } catch { }
+
+                    // 4. Update TenantState session
+                    if (TenantState.UserData != null)
+                    {
+                        TenantState.SetSession(
+                            tenantCode ?? "",
+                            TenantState.AuthToken ?? "",
+                            TenantState.TenantName ?? "",
+                            userCode,
+                            TenantState.UserData.BranchCode,
+                            TenantState.UserData.CounterCode,
+                            TenantState.UserData,
+                            newRights);
+                    }
+
+                    _navMenuRef?.RefreshMenu();
+
+                    // 5. Force reload the page so the page components update their rights
+                    NavigationManager.NavigateTo(NavigationManager.Uri, forceLoad: true);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[MainLayout] CheckAndUpdateRightsOnNavigationAsync error: {ex.Message}");
+        }
+        finally
+        {
+            _isCheckingRightsOnNav = false;
+        }
     }
 
     private void HandleSessionChanged()
@@ -1923,12 +1998,21 @@
                             var serverPerms = await RoleService.GetUserEffectivePermissionsAsync(resolvedCode, user.TenantCode);
                             if (serverPerms != null && serverPerms.Any())
                             {
-                                RoleService.SetUserPermissions(serverPerms);
-                                try { await _sessionStorage.SetAsync("UserRolePermissions", serverPerms); } catch { }
-                                var newRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(serverPerms, resolvedCode);
-                                try { await _sessionStorage.SetAsync("UserRights", newRights); } catch { }
-                                TenantState.SetSession(user.TenantCode ?? "", user.AuthToken ?? "", user.TenantName ?? "", resolvedCode, effectiveConfirmedBranch, user.CounterCode, user, newRights);
-                                _navMenuRef?.RefreshMenu();
+                                bool hasChanged = !RoleMasterService.ArePermissionsEqual(RoleService.CurrentUserPermissions, serverPerms);
+                                if (hasChanged)
+                                {
+                                    RoleService.SetUserPermissions(serverPerms);
+                                    try { await _sessionStorage.SetAsync("UserRolePermissions", serverPerms); } catch { }
+                                    var newRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(serverPerms, resolvedCode);
+                                    try { await _sessionStorage.SetAsync("UserRights", newRights); } catch { }
+                                    TenantState.SetSession(user.TenantCode ?? "", user.AuthToken ?? "", user.TenantName ?? "", resolvedCode, effectiveConfirmedBranch, user.CounterCode, user, newRights);
+                                    _navMenuRef?.RefreshMenu();
+                                    await InvokeAsync(() =>
+                                    {
+                                        EvaluateAccess();
+                                        StateHasChanged();
+                                    });
+                                }
                             }
                         }
                         catch { }

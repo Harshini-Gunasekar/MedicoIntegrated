@@ -918,66 +918,97 @@
         try {
             var targetFileName = (fileName || 'Item_Master_Upload_Template') + '.xlsx';
             var headers = [
-                "itemname", "shortname", "description", "itemtype", "manufacturername", "drugname", "packaging", "schedule",
-                "categorycode", "subcategorycode", "hsncode", "uomcode", "brandcode", "manufacturercode", "taxcode", "naturetype",
-                "ledgergroupcode", "expiryalertdays", "gstpercentage", "purchaserate", "salesrate", "mrp", "currentstock",
-                "minstock", "reorderlevel", "packsize", "isexpiry", "batchrequired", "expiryrequired", "serialrequired",
-                "isnarcoticdrug", "isactive", "deleted"
+                "itemname",
+                "shortname",
+                "category",
+                "itemtype",
+                "uom",
+                "purchaserate",
+                "mrp",
+                "gst",
+                "packsize",
+                "hsncode",
+                "minstock",
+                "reorderlevel",
+                "isexpiry",
+                "noofdays",
+                "schedule",
+                "drugname",
+                "isnarcoticdrug"
             ];
 
-            var sampleRow = {
-                "itemname": "Paracetamol 500mg",
-                "shortname": "PCM 500",
-                "description": "Paracetamol Tablets IP 500mg",
-                "itemtype": "Tablet",
-                "manufacturername": "Cipla Ltd",
-                "drugname": "Paracetamol",
-                "packaging": "Strip of 10",
-                "schedule": "H",
-                "categorycode": 1,
-                "subcategorycode": 1,
-                "hsncode": 30049099,
-                "uomcode": 1,
-                "brandcode": 1,
-                "manufacturercode": 1,
-                "taxcode": 1,
-                "naturetype": 1,
-                "ledgergroupcode": 1,
-                "expiryalertdays": 60,
-                "gstpercentage": 12,
-                "purchaserate": 15.00,
-                "salesrate": 20.00,
-                "mrp": 22.00,
-                "currentstock": 100,
-                "minstock": 10,
-                "reorderlevel": 20,
-                "packsize": 10,
-                "isexpiry": "yes",
-                "batchrequired": "yes",
-                "expiryrequired": "yes",
-                "serialrequired": "no",
-                "isnarcoticdrug": "no",
-                "isactive": "yes",
-                "deleted": "no"
-            };
+            var sampleRows = [
+                {
+                    "itemname": "Paracetamol 500mg",
+                    "shortname": "PCM 500",
+                    "category": "Medicine",
+                    "itemtype": "Tablet",
+                    "uom": "STRIP",
+                    "purchaserate": 15.00,
+                    "mrp": 22.00,
+                    "gst": 12,
+                    "packsize": 10,
+                    "hsncode": 30049099,
+                    "minstock": 10,
+                    "reorderlevel": 20,
+                    "isexpiry": "Yes",
+                    "noofdays": 60,
+                    "schedule": "H",
+                    "drugname": "Paracetamol",
+                    "isnarcoticdrug": "No"
+                },
+                {
+                    "itemname": "A4 Paper Sheet",
+                    "shortname": "A4 Paper",
+                    "category": "Stationary",
+                    "itemtype": "Writables",
+                    "uom": "NOS",
+                    "purchaserate": 2.00,
+                    "mrp": 3.00,
+                    "gst": 5,
+                    "packsize": 1,
+                    "hsncode": 48025690,
+                    "minstock": 50,
+                    "reorderlevel": 100,
+                    "isexpiry": "No",
+                    "noofdays": 0,
+                    "schedule": "",
+                    "drugname": "",
+                    "isnarcoticdrug": "No"
+                }
+            ];
 
             if (window.XLSX) {
-                var ws = XLSX.utils.json_to_sheet([sampleRow], { header: headers });
+                var ws = XLSX.utils.json_to_sheet(sampleRows, { header: headers });
                 ws['!cols'] = [
-                    { wch: 28 }, { wch: 14 }, { wch: 32 }, { wch: 14 }, { wch: 22 }, { wch: 20 }, { wch: 16 }, { wch: 12 },
-                    { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 18 }, { wch: 12 }, { wch: 12 },
-                    { wch: 16 }, { wch: 16 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
-                    { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 14 },
-                    { wch: 16 }, { wch: 12 }, { wch: 12 }
+                    { wch: 26 }, // itemname
+                    { wch: 16 }, // shortname
+                    { wch: 18 }, // category
+                    { wch: 18 }, // itemtype
+                    { wch: 12 }, // uom
+                    { wch: 14 }, // purchaserate
+                    { wch: 12 }, // mrp
+                    { wch: 10 }, // gst
+                    { wch: 10 }, // packsize
+                    { wch: 14 }, // hsncode
+                    { wch: 12 }, // minstock
+                    { wch: 14 }, // reorderlevel
+                    { wch: 12 }, // isexpiry
+                    { wch: 12 }, // noofdays
+                    { wch: 12 }, // schedule
+                    { wch: 20 }, // drugname
+                    { wch: 16 }  // isnarcoticdrug
                 ];
                 var wb = XLSX.utils.book_new();
-                XLSX.utils.book_append_sheet(wb, ws, "Item Master Template");
+                XLSX.utils.book_append_sheet(wb, ws, "Items");
                 XLSX.writeFile(wb, targetFileName);
                 return true;
             } else {
                 var csvRows = [headers.join(',')];
-                var sampleValues = headers.map(function (h) { return '"' + (sampleRow[h] !== undefined ? sampleRow[h] : '') + '"'; });
-                csvRows.push(sampleValues.join(','));
+                sampleRows.forEach(function (row) {
+                    var sampleValues = headers.map(function (h) { return '"' + (row[h] !== undefined ? row[h] : '') + '"'; });
+                    csvRows.push(sampleValues.join(','));
+                });
                 var csvContent = "data:text/csv;charset=utf-8,\uFEFF" + encodeURIComponent(csvRows.join('\n'));
                 var downloadLink = document.createElement("a");
                 downloadLink.setAttribute("href", csvContent);

@@ -5,12 +5,19 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
 using Booking.Models;
+using SharedComponents.Rcl.Services;
 
 namespace Booking.Services
 {
     public class LabSettingService
     {
         private readonly HttpClient _http;
+        private readonly TenantSessionState? _session;
+        private LabSettingModel? _cachedSetting = null;
+        private string? _cachedTenantCode = null;
+        private int? _cachedBhCode = null;
+
+        // Backward compatibility static fallback properties (do not override database values)
         public static bool? ShowAllCustomersCache { get; set; }
         public static bool? IsSlotRequiredCache { get; set; }
         public static bool? CriticalValueIndicationCache { get; set; }
@@ -19,13 +26,27 @@ namespace Booking.Services
         public static bool? EnableComboRegistrationCache { get; set; }
         public static bool? AutoRouteBillingAfterRegisterCache { get; set; }
 
-        public LabSettingService(HttpClient http)
+        public LabSettingService(HttpClient http, TenantSessionState? session = null)
         {
             _http = http;
+            _session = session;
         }
 
-        public async Task<LabSettingModel?> GetLabSettingAsync(int? bhCode = null)
+        public void ClearCache()
         {
+            _cachedSetting = null;
+            _cachedTenantCode = null;
+            _cachedBhCode = null;
+        }
+
+        public async Task<LabSettingModel?> GetLabSettingAsync(int? bhCode = null, bool forceRefresh = false)
+        {
+            var currentTenant = _session?.TenantCode;
+            if (!forceRefresh && _cachedSetting != null && _cachedTenantCode == currentTenant && _cachedBhCode == bhCode)
+            {
+                return _cachedSetting;
+            }
+
             try
             {
                 var url = "api/LabSetting/get";
@@ -36,29 +57,19 @@ namespace Booking.Services
                 var list = await _http.GetFromJsonAsync<List<LabSettingModel>>(url);
                 var setting = list?.FirstOrDefault() ?? new LabSettingModel();
                 
-                if (ShowAllCustomersCache.HasValue) setting.show_all_customers = ShowAllCustomersCache.Value;
-                else if (!setting.show_all_customers.HasValue) setting.show_all_customers = true;
-
-                if (IsSlotRequiredCache.HasValue) setting.is_slot_required = IsSlotRequiredCache.Value;
-                else if (!setting.is_slot_required.HasValue) setting.is_slot_required = true;
-
+                // Keep the tenant's saved database values if present; only default if null
+                if (!setting.show_all_customers.HasValue) setting.show_all_customers = true;
+                if (!setting.is_slot_required.HasValue) setting.is_slot_required = true;
                 if (!setting.op_age_wise_split.HasValue) setting.op_age_wise_split = false;
+                if (!setting.critical_value_indication.HasValue) setting.critical_value_indication = false;
+                if (!setting.show_physical_bill.HasValue) setting.show_physical_bill = true;
+                if (!setting.payment_required_online_reg.HasValue) setting.payment_required_online_reg = false;
+                if (!setting.enable_combo_registration.HasValue) setting.enable_combo_registration = false;
+                if (!setting.auto_route_billing_after_register.HasValue) setting.auto_route_billing_after_register = false;
 
-                if (CriticalValueIndicationCache.HasValue) setting.critical_value_indication = CriticalValueIndicationCache.Value;
-                else if (!setting.critical_value_indication.HasValue) setting.critical_value_indication = false;
-
-                if (ShowPhysicalBillCache.HasValue) setting.show_physical_bill = ShowPhysicalBillCache.Value;
-                else if (!setting.show_physical_bill.HasValue) setting.show_physical_bill = true;
-
-                if (PaymentRequiredOnlineRegCache.HasValue) setting.payment_required_online_reg = PaymentRequiredOnlineRegCache.Value;
-                else if (!setting.payment_required_online_reg.HasValue) setting.payment_required_online_reg = false;
-
-                if (EnableComboRegistrationCache.HasValue) setting.enable_combo_registration = EnableComboRegistrationCache.Value;
-                else if (!setting.enable_combo_registration.HasValue) setting.enable_combo_registration = false;
-
-                if (AutoRouteBillingAfterRegisterCache.HasValue) setting.auto_route_billing_after_register = AutoRouteBillingAfterRegisterCache.Value;
-                else if (!setting.auto_route_billing_after_register.HasValue) setting.auto_route_billing_after_register = false;
-
+                _cachedSetting = setting;
+                _cachedTenantCode = currentTenant;
+                _cachedBhCode = bhCode;
                 return setting;
             }
             catch (Exception ex)
@@ -66,14 +77,14 @@ namespace Booking.Services
                 Console.WriteLine($"Error fetching LabSetting: {ex.Message}");
                 return new LabSettingModel
                 {
-                    show_all_customers = ShowAllCustomersCache ?? true,
-                    is_slot_required = IsSlotRequiredCache ?? true,
+                    show_all_customers = true,
+                    is_slot_required = true,
                     op_age_wise_split = false,
-                    critical_value_indication = CriticalValueIndicationCache ?? false,
-                    show_physical_bill = ShowPhysicalBillCache ?? true,
-                    payment_required_online_reg = PaymentRequiredOnlineRegCache ?? false,
-                    enable_combo_registration = EnableComboRegistrationCache ?? false,
-                    auto_route_billing_after_register = AutoRouteBillingAfterRegisterCache ?? false
+                    critical_value_indication = false,
+                    show_physical_bill = true,
+                    payment_required_online_reg = false,
+                    enable_combo_registration = false,
+                    auto_route_billing_after_register = false
                 };
             }
         }
@@ -82,6 +93,7 @@ namespace Booking.Services
         {
             try
             {
+                ClearCache();
                 var url = isUpdate ? "api/LabSetting/update" : "api/LabSetting/insert";
                 var response = await _http.PostAsync(url, content);
                 var errStr = await response.Content.ReadAsStringAsync();
@@ -99,6 +111,7 @@ namespace Booking.Services
         {
             try
             {
+                ClearCache();
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
                 Console.WriteLine($"[LabSettingService] Insert Payload:\n{jsonPayload}");
@@ -106,6 +119,11 @@ namespace Booking.Services
                 var response = await _http.PostAsJsonAsync("api/LabSetting/insert", model);
                 var errStr = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"[LabSettingService] JSON Insert Response ({response.StatusCode}): {errStr}");
+                if (response.IsSuccessStatusCode)
+                {
+                    _cachedSetting = model;
+                    _cachedTenantCode = _session?.TenantCode;
+                }
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
@@ -119,6 +137,7 @@ namespace Booking.Services
         {
             try
             {
+                ClearCache();
                 var jsonOptions = new System.Text.Json.JsonSerializerOptions { WriteIndented = true };
                 var jsonPayload = System.Text.Json.JsonSerializer.Serialize(model, jsonOptions);
                 Console.WriteLine($"[LabSettingService] Update Payload:\n{jsonPayload}");
@@ -126,6 +145,11 @@ namespace Booking.Services
                 var response = await _http.PostAsJsonAsync("api/LabSetting/update", model);
                 var errStr = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"[LabSettingService] JSON Update Response ({response.StatusCode}): {errStr}");
+                if (response.IsSuccessStatusCode)
+                {
+                    _cachedSetting = model;
+                    _cachedTenantCode = _session?.TenantCode;
+                }
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
@@ -139,6 +163,7 @@ namespace Booking.Services
         {
             try
             {
+                ClearCache();
                 var response = await _http.PostAsync($"api/LabSetting/delete?lsid={lsid}", null);
                 return response.IsSuccessStatusCode;
             }

@@ -225,42 +225,10 @@ namespace Booking.Services
             }
         }
 
-        public async Task<LabSettingModel?> GetLabSettingInternalAsync()
+        public Task<LabSettingModel?> GetLabSettingInternalAsync()
         {
-            try
-            {
-                var client = GetClient();
-                var rawJson = await client.GetStringAsync("api/LabSetting/get");
-                if (string.IsNullOrWhiteSpace(rawJson)) return null;
-
-                using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
-                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-
-                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
-                {
-                    var list = System.Text.Json.JsonSerializer.Deserialize<List<LabSettingModel>>(rawJson, options);
-                    return list?.FirstOrDefault();
-                }
-                else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
-                {
-                    if (doc.RootElement.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
-                    {
-                        var list = System.Text.Json.JsonSerializer.Deserialize<List<LabSettingModel>>(dataProp.GetRawText(), options);
-                        return list?.FirstOrDefault();
-                    }
-                    if (doc.RootElement.TryGetProperty("value", out var valProp) && valProp.ValueKind == System.Text.Json.JsonValueKind.Array)
-                    {
-                        var list = System.Text.Json.JsonSerializer.Deserialize<List<LabSettingModel>>(valProp.GetRawText(), options);
-                        return list?.FirstOrDefault();
-                    }
-                    return System.Text.Json.JsonSerializer.Deserialize<LabSettingModel>(rawJson, options);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[HmsBillingService] Error fetching LabSetting: {ex.Message}");
-            }
-            return null;
+            // Do not call api/LabSetting/get continuously
+            return Task.FromResult<LabSettingModel?>(null);
         }
 
         public static bool TryParseShiftEndTime(string? timeStr, out TimeSpan timeSpan)

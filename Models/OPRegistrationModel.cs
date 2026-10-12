@@ -311,6 +311,11 @@ namespace Booking.Models
 
             public string? notes { get; set; }
             public int? enteredbhcode { get; set; }
+
+            [JsonPropertyName("bhcode")]
+            [Newtonsoft.Json.JsonProperty("bhcode")]
+            public int? bhcode { get => enteredbhcode; set => enteredbhcode = value; }
+
             public int? cntcode { get; set; }
 
             // Everything else gets billed onto the SAME op_id, no separate token

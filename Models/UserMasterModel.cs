@@ -47,6 +47,16 @@ namespace LIMS_Backend.Model
         public bool? all_branch { get; set; }
         public int? bh_code { get; set; }
         public decimal? cnt_code { get; set; }
+
+        [Write(false)]
+        [Newtonsoft.Json.JsonProperty("bhcode")]
+        [JsonPropertyName("bhcode")]
+        public int? bhcode { get => bh_code; set => bh_code = value; }
+
+        [Write(false)]
+        [Newtonsoft.Json.JsonProperty("cntcode")]
+        [JsonPropertyName("cntcode")]
+        public decimal? cntcode { get => cnt_code; set => cnt_code = value; }
         public decimal? hd_code { get; set; }
         public decimal? op_cnt_code { get; set; }
         public decimal? ip_cnt_code { get; set; }
@@ -108,6 +118,16 @@ namespace LIMS_Backend.Model
         public DateTimeOffset? ibsdate { get; set; }
         public bool deleted { get; set; }
         public string? tenant_code { get; set; }
+
+        [Write(false)]
+        [Newtonsoft.Json.JsonProperty("cnt_code")]
+        [JsonPropertyName("cnt_code")]
+        public int? cnt_code { get => cntcode; set => cntcode = value; }
+
+        [Write(false)]
+        [Newtonsoft.Json.JsonProperty("bh_code")]
+        [JsonPropertyName("bh_code")]
+        public int? bh_code { get => bhcode; set => bhcode = value; }
     }
 
     [Table("mastertenant.user_department_master")]

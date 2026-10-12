@@ -244,6 +244,27 @@ namespace Booking.Services
             return s.Replace(" ", "").Replace("_", "").Replace("-", "").ToLowerInvariant();
         }
 
+        public static bool ArePermissionsEqual(IEnumerable<RolePermissionItem>? listA, IEnumerable<RolePermissionItem>? listB)
+        {
+            if (listA == null && listB == null) return true;
+            if (listA == null || listB == null) return false;
+
+            var itemsA = listA.ToList();
+            var itemsB = listB.ToList();
+
+            if (itemsA.Count != itemsB.Count) return false;
+
+            var setA = new HashSet<long>(itemsA.Select(x => x.Role_id));
+            var setB = new HashSet<long>(itemsB.Select(x => x.Role_id));
+
+            if (!setA.SetEquals(setB)) return false;
+
+            var pathSetA = new HashSet<string>(itemsA.Select(x => $"{x.Main_module?.Trim()}|{x.Sub_module?.Trim()}|{x.Module?.Trim()}"), StringComparer.OrdinalIgnoreCase);
+            var pathSetB = new HashSet<string>(itemsB.Select(x => $"{x.Main_module?.Trim()}|{x.Sub_module?.Trim()}|{x.Module?.Trim()}"), StringComparer.OrdinalIgnoreCase);
+
+            return pathSetA.SetEquals(pathSetB);
+        }
+
         public void SetUserPermissions(IEnumerable<RolePermissionItem>? permissions)
         {
             CurrentUserPermissions = permissions?.ToList() ?? new List<RolePermissionItem>();

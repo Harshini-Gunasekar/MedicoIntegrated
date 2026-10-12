@@ -196,6 +196,22 @@ namespace LabCare.Services
             }
         }
 
+        private void EnsureBranchCountersSynced(user_master model, IList<UserBranchMaster>? branchModel)
+        {
+            if (branchModel == null || branchModel.Count == 0) return;
+
+            // If user has a selected counter, make sure the matching branch in branchModel has it
+            if (model.cnt_code.HasValue && model.cnt_code.Value > 0)
+            {
+                var targetBranch = branchModel.FirstOrDefault(b => b.bhcode == model.bh_code) 
+                                ?? (branchModel.Count == 1 ? branchModel[0] : null);
+                if (targetBranch != null && !targetBranch.cntcode.HasValue)
+                {
+                    targetBranch.cntcode = (int)model.cnt_code.Value;
+                }
+            }
+        }
+
         public async Task<HttpResponseMessage> InsertAsync(
             user_master model, 
             IList<UserBranchMaster>? branchModel = null, 
@@ -209,6 +225,7 @@ namespace LabCare.Services
             Guid? roleTemplateGuid = null)
         {
             ConfigureHeaders();
+            EnsureBranchCountersSynced(model, branchModel);
             LogPayloadToTerminal("Insert", model, branchModel, userImageFileName, signatureImageFileName);
             using var content = BuildUserFormData(model, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: false, roleIds, roleTemplateName, roleTemplateGuid);
             return await _http.PostAsync("api/user/insert", content);
@@ -227,6 +244,7 @@ namespace LabCare.Services
             string? roleTemplateName = null,
             Guid? roleTemplateGuid = null)
         {
+            EnsureBranchCountersSynced(model, branchModel);
             if (isAnonymousRegister)
             {
                 LogPayloadToTerminal("Register", model, branchModel, userImageFileName, signatureImageFileName);
@@ -268,6 +286,7 @@ namespace LabCare.Services
             Guid? roleTemplateGuid = null)
         {
             ConfigureHeaders();
+            EnsureBranchCountersSynced(user, branchModel);
             LogPayloadToTerminal("Update", user, branchModel, userImageFileName, signatureImageFileName);
             using var content = BuildUserFormData(user, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: true, roleIds, roleTemplateName, roleTemplateGuid);
             return await _http.PostAsync("api/user/update", content);
@@ -324,6 +343,7 @@ namespace LabCare.Services
             string? roleTemplateName = null,
             Guid? roleTemplateGuid = null)
         {
+            EnsureBranchCountersSynced(user, branchModel);
             var content = new MultipartFormDataContent();
 
             Action<string, string> addField = (name, value) => {
@@ -336,6 +356,24 @@ namespace LabCare.Services
                 if (name == "user_code")
                 {
                     content.Add(new StringContent(value), "usercode");
+                }
+                if (name == "bh_code" || name == "bhcode")
+                {
+                    content.Add(new StringContent(value), "Profile.User.bhcode");
+                    content.Add(new StringContent(value), "Profile.User.bh_code");
+                    content.Add(new StringContent(value), "bhcode");
+                    content.Add(new StringContent(value), "bh_code");
+                    content.Add(new StringContent(value), "user.bhcode");
+                    content.Add(new StringContent(value), "user.bh_code");
+                }
+                if (name == "cnt_code" || name == "cntcode")
+                {
+                    content.Add(new StringContent(value), "Profile.User.cntcode");
+                    content.Add(new StringContent(value), "Profile.User.cnt_code");
+                    content.Add(new StringContent(value), "cntcode");
+                    content.Add(new StringContent(value), "cnt_code");
+                    content.Add(new StringContent(value), "user.cntcode");
+                    content.Add(new StringContent(value), "user.cnt_code");
                 }
             };
 
@@ -410,11 +448,15 @@ namespace LabCare.Services
                     {
                         content.Add(new StringContent(branch.bhcode.Value.ToString()), $"Profile.Branches[{i}].bhcode");
                         content.Add(new StringContent(branch.bhcode.Value.ToString()), $"branches[{i}].bhcode");
+                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"Profile.Branches[{i}].bh_code");
+                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"branches[{i}].bh_code");
                     }
                     if (branch.cntcode.HasValue)
                     {
                         content.Add(new StringContent(branch.cntcode.Value.ToString()), $"Profile.Branches[{i}].cntcode");
                         content.Add(new StringContent(branch.cntcode.Value.ToString()), $"branches[{i}].cntcode");
+                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"Profile.Branches[{i}].cnt_code");
+                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"branches[{i}].cnt_code");
                     }
                     if (branch.user_code.HasValue)
                     {
