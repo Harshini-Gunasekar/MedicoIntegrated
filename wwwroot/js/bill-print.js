@@ -801,6 +801,200 @@
         } catch (e) { }
     };
 
+    window.normalizeExcelExpiryDates = function (inputId) {
+        return new Promise(function (resolve) {
+            try {
+                var input = document.getElementById(inputId);
+                if (!input || !input.files || !input.files[0]) {
+                    resolve(null);
+                    return;
+                }
+
+                if (!window.XLSX) {
+                    console.warn('XLSX library not loaded on page');
+                    resolve(null);
+                    return;
+                }
+
+                var file = input.files[0];
+                var reader = new FileReader();
+
+                reader.onload = function (e) {
+                    try {
+                        var data = new Uint8Array(e.target.result);
+                        var workbook = XLSX.read(data, { type: 'array', cellDates: false });
+                        if (!workbook || !workbook.SheetNames || workbook.SheetNames.length === 0) {
+                            resolve(null);
+                            return;
+                        }
+
+                        var monthMap = {
+                            'jan': '01', 'feb': '02', 'mar': '03', 'apr': '04', 'may': '05', 'jun': '06',
+                            'jul': '07', 'aug': '08', 'sep': '09', 'oct': '10', 'nov': '11', 'dec': '12'
+                        };
+
+                        function parseAndFormatDate(val, formattedText) {
+                            var str = '';
+                            if (formattedText !== undefined && formattedText !== null) {
+                                str = String(formattedText).trim();
+                            }
+                            if (!str && val !== undefined && val !== null) {
+                                str = String(val).trim();
+                            }
+                            if (!str || str === '-' || str === 'NA' || str === 'N/A' || str === 'NIL') {
+                                return null;
+                            }
+
+                            // Already yyyy-MM-dd
+                            if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+                                return str;
+                            }
+
+                            // 1. Day-Month-Year with month name (e.g. 01-May-27, 1-May-2027, 30-Apr-29, 01/May/27, 01.May.27)
+                            var matchDayMonthYear = str.match(/^(\d{1,2})[-/. ]([A-Za-z]{3,9})[-/. ](\d{2,4})$/);
+                            if (matchDayMonthYear) {
+                                var day = parseInt(matchDayMonthYear[1], 10);
+                                var monKey = matchDayMonthYear[2].toLowerCase().substring(0, 3);
+                                var year = parseInt(matchDayMonthYear[3], 10);
+                                if (year < 100) year = 2000 + year; // e.g. 27 -> 2027
+                                if (monthMap[monKey]) {
+                                    var mm = monthMap[monKey];
+                                    var dd = String(day).padStart(2, '0');
+                                    return year + '-' + mm + '-' + dd;
+                                }
+                            }
+
+                            // 2. Month-Year with month name (e.g. May-27, Apr-29, May/2027) -> End of month (e.g. 2029-04-30)
+                            var matchMonthYear = str.match(/^([A-Za-z]{3,9})[-/. ](\d{2,4})$/);
+                            if (matchMonthYear) {
+                                var monKey = matchMonthYear[1].toLowerCase().substring(0, 3);
+                                var year = parseInt(matchMonthYear[2], 10);
+                                if (year < 100) year = 2000 + year;
+                                if (monthMap[monKey]) {
+                                    var mm = monthMap[monKey];
+                                    var lastDay = new Date(year, parseInt(mm, 10), 0).getDate();
+                                    return year + '-' + mm + '-' + String(lastDay).padStart(2, '0');
+                                }
+                            }
+
+                            // 3. Numeric Day-Month-Year (e.g. 01-05-2027, 01/05/27, 1-5-27, 01.05.2027)
+                            var matchNumericFull = str.match(/^(\d{1,2})[-/.](\d{1,2})[-/.](\d{2,4})$/);
+                            if (matchNumericFull) {
+                                var day = parseInt(matchNumericFull[1], 10);
+                                var month = parseInt(matchNumericFull[2], 10);
+                                var year = parseInt(matchNumericFull[3], 10);
+                                if (year < 100) year = 2000 + year;
+                                if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
+                                    return year + '-' + String(month).padStart(2, '0') + '-' + String(day).padStart(2, '0');
+                                }
+                            }
+
+                            // 4. Numeric Month-Year (e.g. 05/27, 05-2027, 5/27, 04/29) -> End of month
+                            var matchNumericMonthYear = str.match(/^(\d{1,2})[-/.](\d{2,4})$/);
+                            if (matchNumericMonthYear) {
+                                var month = parseInt(matchNumericMonthYear[1], 10);
+                                var year = parseInt(matchNumericMonthYear[2], 10);
+                                if (year < 100) year = 2000 + year;
+                                if (month >= 1 && month <= 12) {
+                                    var lastDay = new Date(year, month, 0).getDate();
+                                    return year + '-' + String(month).padStart(2, '0') + '-' + String(lastDay).padStart(2, '0');
+                                }
+                            }
+
+                            // 5. Excel numeric serial date (e.g. 46508)
+                            var numVal = Number(val);
+                            if (!isNaN(numVal) && numVal > 20000 && numVal < 90000 && window.XLSX && window.XLSX.SSF) {
+                                try {
+                                    var parsed = window.XLSX.SSF.parse_date_code(numVal);
+                                    if (parsed && parsed.y && parsed.m && parsed.d) {
+                                        var yyyy = String(parsed.y).padStart(4, '0');
+                                        var mm = String(parsed.m).padStart(2, '0');
+                                        var dd = String(parsed.d).padStart(2, '0');
+                                        return yyyy + '-' + mm + '-' + dd;
+                                    }
+                                } catch (e) { }
+                            }
+
+                            return null;
+                        }
+
+                        var modifiedAny = false;
+                        var expAliases = ['expdate', 'expirydate', 'expiry', 'exp', 'expiry_date', 'exp_date'];
+
+                        // Normalize expiry dates across all sheets
+                        for (var s = 0; s < workbook.SheetNames.length; s++) {
+                            var ws = workbook.Sheets[workbook.SheetNames[s]];
+                            if (!ws || !ws['!ref']) continue;
+
+                            var range = XLSX.utils.decode_range(ws['!ref']);
+                            var expCols = [];
+
+                            for (var C = range.s.c; C <= range.e.c; ++C) {
+                                var headerCell = ws[XLSX.utils.encode_cell({ r: range.s.r, c: C })];
+                                if (headerCell && headerCell.v !== undefined && headerCell.v !== null) {
+                                    var hVal = String(headerCell.v).toLowerCase().replace(/[^a-z0-9]/g, '');
+                                    for (var a = 0; a < expAliases.length; a++) {
+                                        if (hVal === expAliases[a] || hVal.indexOf(expAliases[a]) !== -1) {
+                                            expCols.push(C);
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (expCols.length === 0) continue;
+
+                            for (var R = range.s.r + 1; R <= range.e.r; ++R) {
+                                for (var k = 0; k < expCols.length; k++) {
+                                    var colIdx = expCols[k];
+                                    var addr = XLSX.utils.encode_cell({ r: R, c: colIdx });
+                                    var cell = ws[addr];
+                                    if (cell && (cell.v !== undefined || cell.w !== undefined)) {
+                                        var normDate = parseAndFormatDate(cell.v, cell.w);
+                                        if (normDate) {
+                                            cell.t = 's';
+                                            cell.v = normDate;
+                                            cell.w = normDate;
+                                            delete cell.z;
+                                            modifiedAny = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (!modifiedAny) {
+                            resolve(null);
+                            return;
+                        }
+
+                        var out = XLSX.write(workbook, { bookType: 'xlsx', type: 'array' });
+                        var binary = '';
+                        var bytes = new Uint8Array(out);
+                        var len = bytes.byteLength;
+                        for (var i = 0; i < len; i += 8192) {
+                            binary += String.fromCharCode.apply(null, bytes.subarray(i, Math.min(i + 8192, len)));
+                        }
+                        resolve(btoa(binary));
+                    } catch (err) {
+                        console.error('normalizeExcelExpiryDates processing error:', err);
+                        resolve(null);
+                    }
+                };
+
+                reader.onerror = function (err) {
+                    console.error('normalizeExcelExpiryDates read error:', err);
+                    resolve(null);
+                };
+
+                reader.readAsArrayBuffer(file);
+            } catch (ex) {
+                console.error('normalizeExcelExpiryDates error:', ex);
+                resolve(null);
+            }
+        });
+    };
+
     window.downloadSkippedStocksExcel = function (data, fileName) {
         try {
             if (!data || !Array.isArray(data) || data.length === 0) {
@@ -1451,6 +1645,72 @@ window.printWorklistHtml = function (worklistJson, title) {
         win.document.close();
     } catch (err) {
         console.error('[LabCare] printWorklistHtml failed:', err);
+    }
+};
+
+window.setIframeHtml = function (iframeId, htmlContent) {
+    try {
+        const iframe = document.getElementById(iframeId);
+        if (!iframe) return false;
+        iframe.srcdoc = htmlContent;
+        return true;
+    } catch (e) {
+        console.error('setIframeHtml error:', e);
+        return false;
+    }
+};
+
+window.convertHtmlToPdfBase64 = async function (htmlContent, title) {
+    try {
+        // Ensure html2pdf is loaded
+        if (!window.html2pdf) {
+            await new Promise((resolve, reject) => {
+                const script = document.createElement('script');
+                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
+                script.onload = resolve;
+                script.onerror = () => reject(new Error('Failed to load html2pdf.js'));
+                document.head.appendChild(script);
+            });
+        }
+
+        const container = document.createElement('div');
+        container.style.position = 'fixed';
+        container.style.left = '-9999px';
+        container.style.top = '0';
+        container.style.width = '210mm';
+        container.style.background = '#ffffff';
+        container.innerHTML = htmlContent;
+        document.body.appendChild(container);
+
+        const cleanTitle = (title || 'Report').replace(/[^a-zA-Z0-9_-]/g, '_');
+        const opt = {
+            margin: [8, 8, 8, 8],
+            filename: `${cleanTitle}.pdf`,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { scale: 2, useCORS: true, letterRendering: true },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        };
+
+        const pdfBlob = await window.html2pdf().set(opt).from(container).outputPdf('blob');
+        if (document.body.contains(container)) {
+            document.body.removeChild(container);
+        }
+
+        const reader = new FileReader();
+        const base64 = await new Promise((resolve, reject) => {
+            reader.onloadend = () => {
+                const res = reader.result || '';
+                const base64data = res.includes(',') ? res.split(',')[1] : res;
+                resolve(base64data);
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(pdfBlob);
+        });
+
+        return base64;
+    } catch (err) {
+        console.error('convertHtmlToPdfBase64 failed:', err);
+        return null;
     }
 };
 

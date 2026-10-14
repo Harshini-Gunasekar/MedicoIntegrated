@@ -1114,7 +1114,7 @@
         }
     </div>
     <div class="sidebar-footer">
-        <!-- Compact User Profile Bar with Inline Quick Logout -->
+        <!-- Compact User Profile Bar with Inline Quick Shift Action -->
         <div class="sidebar-profile" title="@GetDisplayUserName() (@GetDisplayUserRole())">
             <div class="profile-pic-container">
                 <div class="profile-pic-initials">@GetUserInitials()</div>
@@ -1124,27 +1124,28 @@
                 <span class="profile-name">@(GetDisplayUserName())</span>
                 <span class="profile-role">@(GetDisplayUserRole())</span>
             </div>
-            <button type="button" class="btn-profile-logout" @onclick="HandleLogout" title="Logout of Medico Portal">
-                <i class="bi bi-box-arrow-right"></i>
-            </button>
-        </div>
-
-        <!-- Ultra-Compact Bottom Action Bar: Shift Pill + Version -->
-        <div class="sidebar-footer-actions">
-            @if (hasNavActiveShift)
+            @if (hasNavActiveShift && !isFixedShiftTimingMode)
             {
-                <button type="button" class="btn-sidebar-shift btn-sidebar-end-shift" @onclick="PromptEndShiftInNav" title="End active billing counter shift">
+                <button type="button" class="btn-profile-shift btn-profile-end-shift" @onclick="PromptEndShiftInNav" title="End active billing counter shift">
                     <i class="bi bi-stop-circle-fill"></i>
                     <span>End Shift</span>
                 </button>
             }
-            else
+            else if (!hasNavActiveShift)
             {
-                <button type="button" class="btn-sidebar-shift btn-sidebar-open-shift" @onclick="NavigateToOpenCounter" title="No active shift open. Click to open counter shift.">
+                <button type="button" class="btn-profile-shift btn-profile-open-shift" @onclick="NavigateToOpenCounter" title="No active shift open. Click to open counter shift.">
                     <i class="bi bi-door-open-fill"></i>
                     <span>Open Shift</span>
                 </button>
             }
+        </div>
+
+        <!-- Ultra-Compact Bottom Action Bar: Logout Button + Version -->
+        <div class="sidebar-footer-actions">
+            <button type="button" class="btn-sidebar-shift btn-sidebar-logout" @onclick="HandleLogout" title="Logout of Medico Portal">
+                <i class="bi bi-box-arrow-right"></i>
+                <span>Logout</span>
+            </button>
 
             <div class="sidebar-version-badge" title="Medico Portal v@(AppVersionInfo.Version)">
                 <span class="version-dot"></span>
@@ -1293,6 +1294,7 @@
 
     private System.Threading.Timer? _shiftExpirationTimer;
     private bool hasNavActiveShift = false;
+    private bool isFixedShiftTimingMode = false;
     private bool showNavEndShiftModal = false;
     private bool isEndingNavShift = false;
     private Guid selectedNavShiftCnttid = Guid.Empty;
@@ -1314,6 +1316,7 @@
         NavigationManager.LocationChanged += OnLocationChanged;
         TenantState.OnSessionChanged += HandleSessionChanged;
         RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        LabSettingService.OnSettingsChanged += HandleLabSettingsChanged;
         ExpandSubmenuForCurrentUri();
         // Only sync from TenantState if it is already populated (e.g. same-tab navigation)
         SyncUserProfile();
@@ -1653,6 +1656,16 @@
         NavigationManager.LocationChanged -= OnLocationChanged;
         TenantState.OnSessionChanged -= HandleSessionChanged;
         RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
+        LabSettingService.OnSettingsChanged -= HandleLabSettingsChanged;
+    }
+
+    private void HandleLabSettingsChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (isDisposed) return;
+            await RefreshActiveShiftStatusAsync();
+        });
     }
 
     private async Task ToggleSidebar()
@@ -2579,25 +2592,36 @@
         catch { }
         try
         {
-            await _sessionStorage.DeleteAsync("authToken");
-            await _sessionStorage.DeleteAsync("tenant_code");
-            await _sessionStorage.DeleteAsync("tenant_name");
-            await _sessionStorage.DeleteAsync("UserDetails");
-            await _sessionStorage.DeleteAsync("UserRights");
-            await _sessionStorage.DeleteAsync("bhcode");
-            await _sessionStorage.DeleteAsync("session_branch_confirmed");
-            await _sessionStorage.DeleteAsync("UserBranches");
-            await _sessionStorage.DeleteAsync("UserBranchCodes");
+            await JS.InvokeVoidAsync("medicoTabs.clearTabs");
         }
         catch { }
-        RoleService.ClearPermissions();
-        try
+
+        // Comprehensive ProtectedLocalStorage cleanup
+        var keysToDelete = new[]
         {
-            await _sessionStorage.DeleteAsync("UserRolePermissions");
+            "authToken", "auth_token", "tenant_code", "tenant_name",
+            "UserDetails", "UserRights", "UserRolePermissions",
+            "bhcode", "session_branch_confirmed", "UserBranches", "UserBranchCodes",
+            "user_name", "login_input", "user_role", "user_description",
+            "user_code", "IsTenantAdmin", "cntcode",
+            "sales_draft_tabs", "sales_billed_prescriptions",
+            "sales_draft_patient_id", "sales_draft_bill_items",
+            "active_nav_group", "PurchaseFilterDraft"
+        };
+
+        foreach (var key in keysToDelete)
+        {
+            try
+            {
+                await _sessionStorage.DeleteAsync(key);
+            }
+            catch { }
         }
-        catch { }
+
+        RoleService.ClearPermissions();
+        LabSettingService.ClearCache();
         TenantState.Clear();
-        NavigationManager.NavigateTo("/user-login", replace: true);
+        NavigationManager.NavigateTo("/user-login", forceLoad: true);
     }
 
     private async Task RefreshActiveShiftStatusAsync()
@@ -2605,11 +2629,57 @@
         if (isDisposed || !TenantState.IsAuthenticated) return;
         try
         {
-            var openCounters = await HmsBillingService.GetOpenCountersAsync();
+            var openCountersTask = HmsBillingService.GetOpenCountersAsync();
+            int? branchCode = TenantState.BranchCode.HasValue && TenantState.BranchCode.Value > 0 ? TenantState.BranchCode.Value : null;
+            var labSettingTask = LabSettingService.GetLabSettingAsync(branchCode);
+
+            await Task.WhenAll(openCountersTask, labSettingTask);
+            var openCounters = await openCountersTask;
+            var labSetting = await labSettingTask;
+
+            if (labSetting == null || string.IsNullOrWhiteSpace(labSetting.shift_timing_mode))
+            {
+                try
+                {
+                    labSetting = await LabSettingService.GetLabSettingAsync(null);
+                }
+                catch { }
+            }
+
             bool hasOpen = openCounters != null && openCounters.Any();
-            if (hasNavActiveShift != hasOpen)
+
+            // Determine if Shift Timing Mode is Fixed Timing vs Variable
+            bool isFixed = false;
+            if (labSetting != null && !string.IsNullOrWhiteSpace(labSetting.shift_timing_mode))
+            {
+                isFixed = string.Equals(labSetting.shift_timing_mode.Trim(), "FIXED", StringComparison.OrdinalIgnoreCase);
+            }
+            else if (hasOpen)
+            {
+                int savedCntCode = 0;
+                try
+                {
+                    var cntCodeRes = await _sessionStorage.GetAsync<string>("cntcode");
+                    if (cntCodeRes.Success && !string.IsNullOrEmpty(cntCodeRes.Value))
+                    {
+                        int.TryParse(cntCodeRes.Value, out savedCntCode);
+                    }
+                }
+                catch { }
+
+                var active = (savedCntCode > 0 ? openCounters!.FirstOrDefault(s => s.cntcode == savedCntCode) : null)
+                             ?? openCounters!.FirstOrDefault();
+
+                if (active != null && string.Equals(active.shift_mode, "FIXED", StringComparison.OrdinalIgnoreCase))
+                {
+                    isFixed = true;
+                }
+            }
+
+            if (hasNavActiveShift != hasOpen || isFixedShiftTimingMode != isFixed)
             {
                 hasNavActiveShift = hasOpen;
+                isFixedShiftTimingMode = isFixed;
                 await InvokeAsync(StateHasChanged);
             }
         }
@@ -2670,16 +2740,17 @@
                 catch { }
             }
 
-            string resolvedBranchName = "Main branch";
+            string resolvedBranchName = "";
             string resolvedCounterName = $"Counter {resolvedCntCode}";
             try
             {
                 var counters = await CounterMasterService.GetCountersAsync();
                 if (counters != null && counters.Any())
                 {
-                    var cnt = counters.FirstOrDefault(c => (int)c.cntcode == resolvedCntCode && (c.bhcode == resolvedBhCode || c.bhcode == 0 || c.bhcode == null))
-                              ?? counters.FirstOrDefault(c => (int)c.cntcode == resolvedCntCode)
-                              ?? counters.FirstOrDefault(c => c.bhcode == resolvedBhCode);
+                    var cnt = (resolvedCntCode > 0 ? counters.FirstOrDefault(c => (int)c.cntcode == resolvedCntCode && (resolvedBhCode <= 0 || c.bhcode == resolvedBhCode || c.bhcode == 0 || c.bhcode == null)) : null)
+                              ?? (resolvedCntCode > 0 ? counters.FirstOrDefault(c => (int)c.cntcode == resolvedCntCode) : null)
+                              ?? (resolvedBhCode > 0 ? counters.FirstOrDefault(c => c.bhcode == resolvedBhCode) : null)
+                              ?? counters.FirstOrDefault();
 
                     if (cnt != null)
                     {
@@ -2688,10 +2759,80 @@
                         {
                             resolvedCounterName = cnt.name;
                         }
+                        if (cnt.bhcode.HasValue && cnt.bhcode.Value > 0)
+                        {
+                            resolvedBhCode = cnt.bhcode.Value;
+                        }
                     }
                 }
             }
             catch { }
+
+            // Dynamically resolve branch name
+            try
+            {
+                if (TenantState.UserData?.Branches != null && TenantState.UserData.Branches.Any())
+                {
+                    var bMatch = TenantState.UserData.Branches.FirstOrDefault(b => b.bh_code == resolvedBhCode);
+                    if (bMatch != null && !string.IsNullOrWhiteSpace(bMatch.name))
+                    {
+                        resolvedBranchName = bMatch.name.Trim();
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(resolvedBranchName))
+                {
+                    try
+                    {
+                        var uBranchesRes = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.BranchModel>>("UserBranches");
+                        if (uBranchesRes.Success && uBranchesRes.Value != null)
+                        {
+                            var bMatch = uBranchesRes.Value.FirstOrDefault(b => b.bh_code == resolvedBhCode);
+                            if (bMatch != null && !string.IsNullOrWhiteSpace(bMatch.name))
+                            {
+                                resolvedBranchName = bMatch.name.Trim();
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrWhiteSpace(resolvedBranchName))
+                {
+                    try
+                    {
+                        var bClient = ClientFactory.CreateClient("LabCareUrl");
+                        var effTenant = !string.IsNullOrWhiteSpace(TenantState.TenantCode) ? TenantState.TenantCode : "";
+                        if (!string.IsNullOrEmpty(effTenant))
+                        {
+                            bClient.DefaultRequestHeaders.Remove("tenant_code");
+                            bClient.DefaultRequestHeaders.Add("tenant_code", effTenant);
+                        }
+                        if (!string.IsNullOrWhiteSpace(TenantState.AuthToken))
+                        {
+                            bClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+                        }
+                        var bRes = await bClient.GetAsync("api/Branch/get");
+                        if (bRes.IsSuccessStatusCode)
+                        {
+                            var bJson = await bRes.Content.ReadAsStringAsync();
+                            var dbBranches = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(bJson);
+                            var bMatch = dbBranches?.FirstOrDefault(b => b.bh_code == resolvedBhCode);
+                            if (bMatch != null && !string.IsNullOrWhiteSpace(bMatch.name))
+                            {
+                                resolvedBranchName = bMatch.name.Trim();
+                            }
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+
+            if (string.IsNullOrWhiteSpace(resolvedBranchName))
+            {
+                resolvedBranchName = resolvedBhCode > 1 ? $"Branch {resolvedBhCode}" : "Main branch";
+            }
 
             navPromptBhCode = resolvedBhCode;
             navPromptCntCode = resolvedCntCode;
@@ -2788,7 +2929,17 @@
                 hasNavActiveShift = true;
                 try
                 {
+                    await _sessionStorage.SetAsync("bhcode", navPromptBhCode.ToString());
                     await _sessionStorage.SetAsync("cntcode", navPromptCntCode.ToString());
+                    TenantState.SetSession(
+                        TenantState.TenantCode,
+                        TenantState.AuthToken,
+                        TenantState.TenantName,
+                        TenantState.UserCode,
+                        navPromptBhCode,
+                        navPromptCntCode,
+                        TenantState.UserData,
+                        TenantState.UserRightsList?.ToList() ?? new List<SharedComponents.Rcl.Models.User_Rights>());
                 }
                 catch { }
                 showNavOpenShiftModal = false;

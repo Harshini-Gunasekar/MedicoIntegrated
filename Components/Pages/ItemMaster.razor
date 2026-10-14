@@ -123,6 +123,7 @@
                                         <li>Numeric columns: <strong>purchaserate, mrp, gst, packsize, hsncode, minstock, reorderlevel</strong>.</li>
                                         <li>Yes/No columns: <strong>isexpiry, isnarcoticdrug</strong> (accepts <em>Yes/No, True/False, 1/0</em>).</li>
                                         <li>Alert days: <strong>noofdays</strong> for expiry alert days.</li>
+                                        <li>Expiry dates (e.g. <strong>01-May-27</strong>, <strong>30-Apr-29</strong>) are automatically converted to standard <strong>yyyy-MM-dd</strong> format before upload.</li>
                                     </ul>
                                 </div>
                             </div>
@@ -1349,13 +1350,14 @@
                 client.DefaultRequestHeaders.Add("usercode", userCode.ToString());
             }
 
-            using var content = new MultipartFormDataContent();
+            // Pre-process and normalize Excel expiry dates directly in C# (e.g. 01-Feb-28 -> 2028-02-01, 01-May-27 -> 2027-05-01)
+            using var fileStream = selectedExcelFile.OpenReadStream(maxAllowedSize: 15 * 1024 * 1024);
+            byte[] normalizedBytes = await Booking.Helpers.ExcelDateNormalizer.NormalizeExcelDatesAsync(fileStream);
 
-            // Stream file contents
-            var fileStream = selectedExcelFile.OpenReadStream(maxAllowedSize: 10 * 1024 * 1024);
-            var streamContent = new StreamContent(fileStream);
-            streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-            content.Add(streamContent, "file", selectedExcelFile.Name);
+            using var content = new MultipartFormDataContent();
+            var byteContent = new ByteArrayContent(normalizedBytes);
+            byteContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            content.Add(byteContent, "file", selectedExcelFile.Name);
 
             var endpoint = $"ItemMaster/upload-item-excel?skipduplicates={skipDuplicates.ToString().ToLower()}";
             var response = await client.PostAsync(endpoint, content);
@@ -1960,23 +1962,23 @@
             
             try
             {
-                bool isAdmin = false;
+                bool isAdmin = await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage);
+                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                 try
                 {
                     var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
                     if (userResult.Success && userResult.Value != null)
                     {
-                        if (userResult.Value.UserCode.HasValue && userResult.Value.UserCode.Value > 0)
+                        currentUser = userResult.Value;
+                        if (currentUser.UserCode.HasValue && currentUser.UserCode.Value > 0)
                         {
-                            userCode = userResult.Value.UserCode.Value;
+                            userCode = currentUser.UserCode.Value;
                         }
                         else if (TenantState?.UserCode > 0)
                         {
                             userCode = TenantState.UserCode;
                         }
-                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                  userResult.Value.UserCode == 0 ||
-                                  userResult.Value.UserCode == 1;
+                        isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
                     }
                     else if (TenantState?.UserCode > 0)
                     {
@@ -1997,44 +1999,52 @@
                 }
                 else
                 {
-                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                    if (rightsResult.Success && rightsResult.Value != null)
+                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
+                    try
                     {
-                        var pageRight = rightsResult.Value.FirstOrDefault(r => 
-                            r.ModuleName != null && 
-                            r.ModuleName.Trim().Equals("Item_Master", StringComparison.OrdinalIgnoreCase));
-                        
-                        if (pageRight != null)
+                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                        if (rightsResult.Success && rightsResult.Value != null)
                         {
-                            hasViewRight = pageRight.ToView;
-                            hasCreateRight = pageRight.ToAdd;
-                            hasEditRight = pageRight.ToEdit;
-                            hasDeleteRight = pageRight.ToDelete;
-                        }
-                        else
-                        {
-                            hasViewRight = false;
-                            hasCreateRight = false;
-                            hasEditRight = false;
-                            hasDeleteRight = false;
+                            rightsList = rightsResult.Value;
                         }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        hasViewRight = false;
-                        hasCreateRight = false;
-                        hasEditRight = false;
-                        hasDeleteRight = false;
+                        Console.WriteLine($"Error reading rights from session: {ex.Message}");
                     }
+
+                    var r = UserPermissionHelper.GetRights(currentUser, TenantState, rightsList, "Item Master", "Item_Master", "Item");
+                    hasViewRight = r.View;
+                    hasCreateRight = r.Add;
+                    hasEditRight = r.Edit;
+                    hasDeleteRight = r.Delete;
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error checking Item_Master rights: {ex.Message}");
-                hasViewRight = false;
-                hasCreateRight = false;
-                hasEditRight = false;
-                hasDeleteRight = false;
+                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+                {
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                    hasEditRight = true;
+                    hasDeleteRight = true;
+                }
+                else
+                {
+                    hasViewRight = false;
+                    hasCreateRight = false;
+                    hasEditRight = false;
+                    hasDeleteRight = false;
+                }
+            }
+
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+                hasEditRight = true;
+                hasDeleteRight = true;
             }
 
             if (!hasViewRight)

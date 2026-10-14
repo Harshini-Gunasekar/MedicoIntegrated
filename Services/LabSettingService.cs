@@ -32,11 +32,14 @@ namespace Booking.Services
             _session = session;
         }
 
+        public event Action? OnSettingsChanged;
+
         public void ClearCache()
         {
             _cachedSetting = null;
             _cachedTenantCode = null;
             _cachedBhCode = null;
+            try { OnSettingsChanged?.Invoke(); } catch { }
         }
 
         public async Task<LabSettingModel?> GetLabSettingAsync(int? bhCode = null, bool forceRefresh = false)

@@ -62,11 +62,22 @@ namespace Booking.Services
         {
             if (string.IsNullOrWhiteSpace(message)) return;
 
-            var toast = new ToastMessage { Message = message, Type = type };
+            ToastMessage toast;
             lock (_lock)
             {
+                // Prevent duplicate notifications if already displaying the exact same message
+                if (_toasts.Any(t => string.Equals(t.Message, message, StringComparison.OrdinalIgnoreCase)))
+                {
+                    return;
+                }
+
+                // Clear any existing notifications so no more than one notification is active at a time
+                _toasts.Clear();
+
+                toast = new ToastMessage { Message = message, Type = type };
                 _toasts.Add(toast);
             }
+
             OnShow?.Invoke();
 
             _ = Task.Run(async () =>

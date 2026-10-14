@@ -144,6 +144,10 @@ public class sales_detail
 
     public decimal packsize { get; set; } = 1;
 
+    public decimal mrp { get; set; }
+
+    public decimal unitcost { get; set; }
+
     public Guid? queue_id { get; set; }
 
     public Guid? pr_det_id { get; set; }

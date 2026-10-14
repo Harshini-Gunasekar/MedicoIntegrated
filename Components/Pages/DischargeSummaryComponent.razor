@@ -1,4 +1,5 @@
 @using Booking.Services
+@using Booking.Helpers
 @using medico_backend.Model
 @inject DischargeSummaryService DsService
 @inject CaseSheetService CaseSheetService
@@ -6,6 +7,7 @@
 @inject ToastService ToastService
 @inject IJSRuntime JSRuntime
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 
 @if (Visible)
 {
@@ -754,21 +756,21 @@
         {
             try
             {
-                bool isAdmin = false;
+                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                 try
                 {
                     var userResult = await sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
                     if (userResult.Success && userResult.Value != null)
                     {
-                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                  userResult.Value.UserCode == 0 ||
-                                  userResult.Value.UserCode == 1;
+                        currentUser = userResult.Value;
                     }
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error checking user details: {ex.Message}");
                 }
+
+                bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, sessionStorage);
 
                 if (isAdmin)
                 {
@@ -778,49 +780,49 @@
                 }
                 else
                 {
-                    var rightsResult = await sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                    if (rightsResult.Success && rightsResult.Value != null)
+                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
+                    try
                     {
-                        var dischargeRight = rightsResult.Value.FirstOrDefault(r => 
-                            r.ModuleName != null && 
-                            (r.ModuleName.Trim().Equals("Discharge_Summery", StringComparison.OrdinalIgnoreCase) ||
-                             r.ModuleName.Trim().Equals("Discharge_Summary", StringComparison.OrdinalIgnoreCase)));
-                        
-                        if (dischargeRight != null)
+                        var rightsResult = await sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                        if (rightsResult.Success && rightsResult.Value != null)
                         {
-                            hasViewRight = dischargeRight.ToView;
-                            hasEditRight = dischargeRight.ToEdit;
+                            rightsList = rightsResult.Value;
                         }
-                        else
-                        {
-                            hasViewRight = false;
-                            hasEditRight = false;
-                        }
-
-                        var printRight = rightsResult.Value.FirstOrDefault(r => 
-                            r.ModuleName != null && 
-                            (r.ModuleName.Trim().Equals("Print_DischargeSummery", StringComparison.OrdinalIgnoreCase) ||
-                             r.ModuleName.Trim().Equals("Print_DischargeSummary", StringComparison.OrdinalIgnoreCase)));
-                        
-                        hasExportRight = printRight != null && printRight.ToExport;
                     }
-                    else
+                    catch { }
+
+                    if (rightsList == null || !rightsList.Any())
                     {
-                        hasViewRight = false;
-                        hasEditRight = false;
-                        hasExportRight = false;
+                        rightsList = TenantState?.UserRightsList?.ToList();
+                    }
+
+                    var dsRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, sessionStorage, rightsList, "Discharge Summary", "DischargeSummary", "Discharge_Summary", "Discharge_Summery");
+                    hasViewRight = dsRight.View;
+                    hasEditRight = dsRight.Edit;
+
+                    var printRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, sessionStorage, rightsList, "Print Discharge Summary", "Print_DischargeSummary", "Print_DischargeSummery");
+                    hasExportRight = printRight.View || printRight.Add || printRight.Edit || dsRight.View;
+
+                    if (await UserPermissionHelper.IsAdminAsync(null, TenantState, sessionStorage))
+                    {
+                        hasViewRight = true;
+                        hasEditRight = true;
+                        hasExportRight = true;
                     }
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error retrieving user rights: {ex.Message}");
-                hasViewRight = false;
-                hasEditRight = false;
-                hasExportRight = false;
+                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, sessionStorage))
+                {
+                    hasViewRight = true;
+                    hasEditRight = true;
+                    hasExportRight = true;
+                }
             }
 
-            if (!hasViewRight)
+            if (!hasViewRight && !(await UserPermissionHelper.IsAdminAsync(null, TenantState, sessionStorage)))
             {
                 ToastService.ShowError("You do not have permission to view discharge summaries.");
                 await CloseModal();
@@ -1287,7 +1289,7 @@
 
     private async Task SavePatientDischargeSummary()
     {
-        if (!hasEditRight)
+        if (!hasEditRight && !(await UserPermissionHelper.IsAdminAsync(null, TenantState, sessionStorage)))
         {
             ToastService.ShowError("You do not have permission to save discharge summaries.");
             return;
@@ -1357,7 +1359,7 @@
 
     private async Task PrintDischargeSummaryPdf()
     {
-        if (!hasExportRight)
+        if (!hasExportRight && !(await UserPermissionHelper.IsAdminAsync(null, TenantState, sessionStorage)))
         {
             ToastService.ShowError("You do not have permission to print discharge summaries.");
             return;

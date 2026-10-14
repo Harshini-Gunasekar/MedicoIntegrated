@@ -38,6 +38,7 @@ namespace medico_backend.Model
             public string ip_status { get; set; } = "ADMITTED";
 
             public bool isinsurancepatient { get; set; } = false;
+            public bool isreimbursementpatient { get; set; } = false;
             public string? insurance_company { get; set; }
             public string? policyno { get; set; }
             public string? authorizationno { get; set; }
@@ -124,6 +125,7 @@ namespace medico_backend.Model
             public int bedcode { get; set; }        // required — must allocate a bed on admission
 
             public bool isinsurancepatient { get; set; } = false;
+            public bool isreimbursementpatient { get; set; } = false;
             public string? insurance_company { get; set; }
             public string? policyno { get; set; }
             public string? authorizationno { get; set; }
@@ -167,6 +169,7 @@ namespace medico_backend.Model
             public DateTime? expected_dischargedate { get; set; }
 
             public bool isinsurancepatient { get; set; } = false;
+            public bool isreimbursementpatient { get; set; } = false;
             public string? insurance_company { get; set; }
             public string? policyno { get; set; }
             public string? authorizationno { get; set; }

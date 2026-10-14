@@ -19,6 +19,7 @@
 @inject BedMasterService BedMasterService
 @inject AppointmentBookingService AppointmentBookingService
 @inject CaseSheetService CaseSheetService
+@inject LabCare.Services.UserService UserService
 @inject ToastService ToastService
 @inject IJSRuntime JSRuntime
 @inject IHttpClientFactory ClientFactory
@@ -396,7 +397,7 @@
                     </div>
 
                     <div class="header-actions">
-                        <button type="button" class="btn-authorize-chart @(currentAuthorization?.is_authorized == true ? "authorized" : "")" @onclick="AuthorizeChartAsync" disabled="@isAuthorizing" title="@(currentAuthorization?.is_authorized == true ? $"Authorized on {FormatAuthDateTimeFull(currentAuthorization.authorized_at)}" : "Authorize bedside chart")">
+                        <button type="button" class="btn-authorize-chart @(currentAuthorization?.is_authorized == true ? "authorized" : "")" @onclick="AuthorizeChartAsync" disabled="@isAuthorizing" title="@(currentAuthorization?.is_authorized == true ? (string.IsNullOrWhiteSpace(GetAuthorizedByName()) ? $"Authorized on {FormatAuthDateTimeFull(currentAuthorization.authorized_at)}" : $"Authorized by {GetAuthorizedByName()} on {FormatAuthDateTimeFull(currentAuthorization.authorized_at)}") : "Authorize bedside chart")">
                             @if (isAuthorizing)
                             {
                                 <span class="spinner-border spinner-border-sm me-1" role="status"></span>
@@ -404,8 +405,27 @@
                             }
                             else if (currentAuthorization?.is_authorized == true)
                             {
+                                var authUser = GetAuthorizedByName();
+                                var authTime = FormatAuthDateTime(currentAuthorization.authorized_at);
                                 <i class="bi bi-shield-fill-check"></i>
-                                <span>Authorized @(currentAuthorization.authorized_at.HasValue ? $"({FormatAuthDateTime(currentAuthorization.authorized_at)})" : "")</span>
+                                <span>
+                                    @if (!string.IsNullOrWhiteSpace(authUser) && !string.IsNullOrWhiteSpace(authTime))
+                                    {
+                                        @($"Authorized by {authUser} ({authTime})")
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(authUser))
+                                    {
+                                        @($"Authorized by {authUser}")
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(authTime))
+                                    {
+                                        @($"Authorized ({authTime})")
+                                    }
+                                    else
+                                    {
+                                        @("Authorized")
+                                    }
+                                </span>
                             }
                             else
                             {
@@ -8018,6 +8038,7 @@
     private bool isAuthorizing = false;
     private string currentShiftDisplay = "Evening Shift";
     private string? savedIpId = null;
+    private Dictionary<int, string> _cachedUserNames = new();
 
     private int GetEffectiveUserCode() => (currentUserCode.HasValue && currentUserCode.Value > 0) ? currentUserCode.Value : 1;
 
@@ -8479,6 +8500,11 @@
                 }
             }
 
+            if (currentUserCode.HasValue && !string.IsNullOrWhiteSpace(currentUserName))
+            {
+                _cachedUserNames[currentUserCode.Value] = currentUserName;
+            }
+
             // Restore active tab
             if (!string.IsNullOrWhiteSpace(QueryTab) && IsValidTab(QueryTab))
             {
@@ -8858,6 +8884,10 @@
             await Task.WhenAll(tAuth, tSummary, tVitals);
 
             currentAuthorization = tAuth.Result;
+            if (currentAuthorization != null && currentAuthorization.is_authorized)
+            {
+                _ = EnsureAuthorizedByNameLoadedAsync();
+            }
             var summary = tSummary.Result;
             vitalsList = tVitals.Result ?? new();
 
@@ -8931,6 +8961,10 @@
                     {
                         currentAuthorization.authorized_at = DateTime.Now;
                     }
+                    if (string.IsNullOrWhiteSpace(currentAuthorization.authorized_by_name))
+                    {
+                        currentAuthorization.authorized_by_name = !string.IsNullOrWhiteSpace(currentUserName) ? currentUserName : $"Staff #{effectiveUserCode}";
+                    }
                 }
                 else
                 {
@@ -8940,8 +8974,13 @@
                         custid = selectedPatient.custid,
                         is_authorized = true,
                         authorized_at = DateTime.Now,
-                        authorized_by = effectiveUserCode
+                        authorized_by = effectiveUserCode,
+                        authorized_by_name = !string.IsNullOrWhiteSpace(currentUserName) ? currentUserName : $"Staff #{effectiveUserCode}"
                     };
+                }
+                if (effectiveUserCode > 0 && !string.IsNullOrWhiteSpace(currentUserName))
+                {
+                    _cachedUserNames[effectiveUserCode] = currentUserName;
                 }
             }
             else
@@ -9012,6 +9051,97 @@
             }
         }
         return val.ToString("dd-MMM-yyyy hh:mm tt");
+    }
+
+    private string GetAuthorizedByName()
+    {
+        if (currentAuthorization == null) return "";
+
+        // 1. Direct properties if populated by API
+        if (!string.IsNullOrWhiteSpace(currentAuthorization.authorized_by_name))
+            return currentAuthorization.authorized_by_name.Trim();
+        if (!string.IsNullOrWhiteSpace(currentAuthorization.user_name))
+            return currentAuthorization.user_name.Trim();
+        if (!string.IsNullOrWhiteSpace(currentAuthorization.name))
+            return currentAuthorization.name.Trim();
+        if (!string.IsNullOrWhiteSpace(currentAuthorization.staff_name))
+            return currentAuthorization.staff_name.Trim();
+        if (!string.IsNullOrWhiteSpace(currentAuthorization.username))
+            return currentAuthorization.username.Trim();
+
+        // 2. Check logged-in user code match
+        int effCode = GetEffectiveUserCode();
+        if (currentAuthorization.authorized_by.HasValue)
+        {
+            int code = currentAuthorization.authorized_by.Value;
+            if (code == effCode && !string.IsNullOrWhiteSpace(currentUserName))
+            {
+                return currentUserName;
+            }
+
+            if (currentUserCode.HasValue && code == currentUserCode.Value && !string.IsNullOrWhiteSpace(currentUserName))
+            {
+                return currentUserName;
+            }
+
+            // 3. Memory cache
+            if (_cachedUserNames.TryGetValue(code, out var cached) && !string.IsNullOrWhiteSpace(cached))
+            {
+                return cached;
+            }
+
+            // Fallback while loading
+            if (!string.IsNullOrWhiteSpace(currentUserName) && (code <= 1 || code == effCode))
+            {
+                return currentUserName;
+            }
+
+            return $"Staff #{code}";
+        }
+
+        return !string.IsNullOrWhiteSpace(currentUserName) ? currentUserName : "";
+    }
+
+    private async Task EnsureAuthorizedByNameLoadedAsync()
+    {
+        try
+        {
+            if (currentAuthorization == null || !currentAuthorization.is_authorized) return;
+            if (!string.IsNullOrWhiteSpace(currentAuthorization.authorized_by_name)) return;
+            if (!string.IsNullOrWhiteSpace(currentAuthorization.user_name)) return;
+
+            int effCode = GetEffectiveUserCode();
+            int? authCode = currentAuthorization.authorized_by;
+
+            if (authCode.HasValue && authCode.Value > 0)
+            {
+                int code = authCode.Value;
+                if ((code == effCode || code == (currentUserCode ?? 0)) && !string.IsNullOrWhiteSpace(currentUserName))
+                {
+                    currentAuthorization.authorized_by_name = currentUserName;
+                    _cachedUserNames[code] = currentUserName;
+                    return;
+                }
+
+                if (_cachedUserNames.TryGetValue(code, out var cached) && !string.IsNullOrWhiteSpace(cached))
+                {
+                    currentAuthorization.authorized_by_name = cached;
+                    return;
+                }
+
+                var userMaster = await UserService.GetUserMasterAsync(code, AuthToken, DefaultTenant);
+                if (userMaster != null && !string.IsNullOrWhiteSpace(userMaster.name))
+                {
+                    _cachedUserNames[code] = userMaster.name;
+                    currentAuthorization.authorized_by_name = userMaster.name;
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] EnsureAuthorizedByNameLoadedAsync error: {ex.Message}");
+        }
     }
 
     private void OpenCaseSheetModal()
@@ -11741,6 +11871,8 @@
 
     private string GetAddedByText(int? usercode)
     {
+        if (usercode.HasValue && _cachedUserNames.TryGetValue(usercode.Value, out var name) && !string.IsNullOrWhiteSpace(name))
+            return name;
         if (!string.IsNullOrWhiteSpace(currentUserName)) return currentUserName;
         return usercode.HasValue ? $"Staff #{usercode.Value}" : "Staff";
     }

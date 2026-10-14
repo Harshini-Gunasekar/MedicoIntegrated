@@ -16,6 +16,8 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject Booking.Services.HmsBillingService HmsBillingService
+@inject Booking.Services.CounterMasterService CounterMasterService
 
 <PageTitle>Billing Reports</PageTitle>
 
@@ -50,6 +52,20 @@
                             @foreach (var b in branches)
                             {
                                 <option value="@b.bh_code">@b.name</option>
+                            }
+                        </select>
+                    </div>
+                }
+
+                @if (counters.Any())
+                {
+                    <div class="header-filter-control-group branch-group">
+                        <label class="header-filter-lbl"><i class="bi bi-wallet2 text-primary"></i> COUNTER</label>
+                        <select class="form-select header-filter-input" @bind="selectedCounterCode">
+                            <option value="0">All Counters</option>
+                            @foreach (var c in FilteredCounters)
+                            {
+                                <option value="@((int)c.cntcode)">@(string.IsNullOrWhiteSpace(c.name) ? $"Counter {c.cntcode}" : c.name)</option>
                             }
                         </select>
                     </div>
@@ -129,9 +145,15 @@
                         <span class="report-link-text">Pay Mode Statement</span>
                     </div>
 
+@* Hidden per user request:
                     <div class="report-text-row" @onclick='() => OpenReportPreview("PAYMODE_SUMMARY")'>
                         <span class="report-link-text">Pay Mode Summary</span>
                     </div>
+
+                    <div class="report-text-row" @onclick='() => OpenReportPreview("PAYMODE_COLLECTION")'>
+                        <span class="report-link-text">Pay Mode Collection</span>
+                    </div>
+*@
                 </div>
             </div>
         </div>
@@ -669,15 +691,19 @@
     private string errorMessage = "";
 
     private int selectedBranchCode = 0;
+    private int selectedCounterCode = 0;
     private DateTime selectedFromDate = new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
     private DateTime selectedToDate = DateTime.Now;
 
     private List<Booking.Models.BranchModel> branches = new();
+    private List<Medico_Backend.Model.CounterMasterModel> counters = new();
+    private string currentLoadedHtml = "";
 
     protected override async Task OnInitializedAsync()
     {
         await LoadSessionAndTenant();
         await LoadBranches();
+        await LoadCounters();
     }
 
     private async Task LoadSessionAndTenant()
@@ -760,6 +786,44 @@
         return new List<int>();
     }
 
+    private async Task LoadCounters()
+    {
+        try
+        {
+            var result = await CounterMasterService.GetCountersAsync();
+            counters = (result ?? new List<Medico_Backend.Model.CounterMasterModel>())
+                .Where(c => !c.deleted)
+                .ToList();
+
+            var cntResult = await _sessionStorage.GetAsync<string>("cntcode");
+            if (cntResult.Success && int.TryParse(cntResult.Value, out var cCode) && cCode > 0)
+            {
+                if (counters.Any(c => (int)c.cntcode == cCode))
+                {
+                    selectedCounterCode = cCode;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[BillingReports] Load counters error: {ex.Message}");
+        }
+    }
+
+    private IEnumerable<Medico_Backend.Model.CounterMasterModel> FilteredCounters
+    {
+        get
+        {
+            if (counters == null || !counters.Any()) return Enumerable.Empty<Medico_Backend.Model.CounterMasterModel>();
+            if (selectedBranchCode > 0)
+            {
+                var branchFiltered = counters.Where(c => c.bhcode == selectedBranchCode).ToList();
+                if (branchFiltered.Any()) return branchFiltered;
+            }
+            return counters;
+        }
+    }
+
     private HttpClient CreateClient()
     {
         var client = ClientFactory.CreateClient("Medico");
@@ -788,13 +852,29 @@
         hasLoadedReport = false;
         errorMessage = "";
         currentLoadedBase64 = "";
+        currentLoadedHtml = "";
         StateHasChanged();
 
         string title = GetReportDisplayName(reportKey);
 
         try
         {
-            currentLoadedBase64 = await FetchReportBase64(reportKey);
+            if (reportKey == "PAYMODE_COLLECTION")
+            {
+                await GeneratePayModeCollectionReport();
+                return;
+            }
+
+            try
+            {
+                currentLoadedBase64 = await FetchReportBase64(reportKey);
+            }
+            catch (Exception) when (reportKey == "PAYMODE_SUMMARY")
+            {
+                // Fallback for Pay Mode Summary to the paymode collection endpoint
+                await GeneratePayModeCollectionReport();
+                return;
+            }
 
             if (!string.IsNullOrWhiteSpace(currentLoadedBase64))
             {
@@ -827,26 +907,42 @@
         isGeneratingReport = false;
         hasLoadedReport = false;
         currentLoadedBase64 = "";
+        currentLoadedHtml = "";
         errorMessage = "";
         StateHasChanged();
     }
 
     private async Task DownloadCurrentReport()
     {
+        string cleanTitle = GetReportDisplayName(selectedReportKey).Replace(" ", "_");
+        string fileName = $"{cleanTitle}_{selectedFromDate:ddMMyyyy}_{selectedToDate:ddMMyyyy}.pdf";
+
         if (!string.IsNullOrWhiteSpace(currentLoadedBase64))
         {
-            string cleanTitle = GetReportDisplayName(selectedReportKey).Replace(" ", "_");
-            string fileName = $"{cleanTitle}_{selectedFromDate:ddMMyyyy}_{selectedToDate:ddMMyyyy}.pdf";
             await JS.InvokeVoidAsync("downloadPdfFile", currentLoadedBase64, fileName);
             ToastService.ShowSuccess($"Downloading {GetReportDisplayName(selectedReportKey)}...");
+        }
+        else if (!string.IsNullOrWhiteSpace(currentLoadedHtml))
+        {
+            var pdfBase64 = await JS.InvokeAsync<string>("convertHtmlToPdfBase64", currentLoadedHtml, cleanTitle);
+            if (!string.IsNullOrWhiteSpace(pdfBase64))
+            {
+                currentLoadedBase64 = pdfBase64;
+                await JS.InvokeVoidAsync("downloadPdfFile", currentLoadedBase64, fileName);
+                ToastService.ShowSuccess($"Downloading {GetReportDisplayName(selectedReportKey)}...");
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("printIframePdf", "billingReportModalFrame", "");
+            }
         }
     }
 
     private async Task PrintCurrentReport()
     {
-        if (!string.IsNullOrWhiteSpace(currentLoadedBase64))
+        if (!string.IsNullOrWhiteSpace(currentLoadedBase64) || !string.IsNullOrWhiteSpace(currentLoadedHtml))
         {
-            await JS.InvokeVoidAsync("printIframePdf", "billingReportModalFrame", currentLoadedBase64);
+            await JS.InvokeVoidAsync("printIframePdf", "billingReportModalFrame", currentLoadedBase64 ?? "");
             ToastService.ShowSuccess($"{GetReportDisplayName(selectedReportKey)} sent to printer.");
         }
     }
@@ -867,6 +963,7 @@
         "SUMMARY" => "Summary",
         "PAYMODE_STATEMENT" => "Pay Mode Statement",
         "PAYMODE_SUMMARY" => "Pay Mode Summary",
+        "PAYMODE_COLLECTION" => "Pay Mode Collection",
         _ => "Billing Report"
     };
 
@@ -991,6 +1088,13 @@
                 if (!string.IsNullOrEmpty(baseApi))
                     list.Add($"{baseApi}/api/report/getpaymodesummary?fromdate={fromStr}&todate={toStr}{bhParam}");
                 break;
+
+            case "PAYMODE_COLLECTION":
+                string cntParam = selectedCounterCode > 0 ? $"&cntcode={selectedCounterCode}" : "";
+                list.Add($"api/HmsBilling/reports/paymode-collection?fromdate={fromStr}&todate={toStr}{bhParam}{cntParam}");
+                if (!string.IsNullOrEmpty(baseApi))
+                    list.Add($"{baseApi}/api/HmsBilling/reports/paymode-collection?fromdate={fromStr}&todate={toStr}{bhParam}{cntParam}");
+                break;
         }
 
         return list;
@@ -1059,5 +1163,499 @@
         }
 
         throw new Exception(string.IsNullOrEmpty(lastError) ? "Backend report service returned empty data." : lastError);
+    }
+
+    private async Task GeneratePayModeCollectionReport()
+    {
+        int effectiveBhCode = selectedBranchCode;
+        if (effectiveBhCode == 0 && !IsAdmin())
+        {
+            var allowed = GetAuthorizedBranchCodes();
+            if (allowed.Count == 1)
+            {
+                effectiveBhCode = allowed[0];
+            }
+        }
+
+        int? effBh = effectiveBhCode > 0 ? effectiveBhCode : null;
+        int? effCnt = selectedCounterCode > 0 ? selectedCounterCode : null;
+
+        var reportData = await HmsBillingService.GetPayModeCollectionReportAsync(
+            selectedFromDate,
+            selectedToDate,
+            effBh,
+            effCnt,
+            DefaultTenant,
+            AuthToken);
+
+        if (reportData == null)
+        {
+            throw new Exception("Unable to retrieve paymode collection data from server.");
+        }
+
+        currentLoadedHtml = BuildPayModeCollectionHtml(reportData, effBh, effCnt);
+
+        // Try converting to PDF Base64
+        try
+        {
+            currentLoadedBase64 = await JS.InvokeAsync<string>("convertHtmlToPdfBase64", currentLoadedHtml, "Pay_Mode_Collection");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[BillingReports] convertHtmlToPdfBase64 notice: {ex.Message}");
+            currentLoadedBase64 = "";
+        }
+
+        hasLoadedReport = true;
+        StateHasChanged();
+        await Task.Delay(50);
+
+        if (!string.IsNullOrWhiteSpace(currentLoadedBase64))
+        {
+            await JS.InvokeVoidAsync("setIframePdfBase64", "billingReportModalFrame", currentLoadedBase64);
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("setIframeHtml", "billingReportModalFrame", currentLoadedHtml);
+        }
+    }
+
+    private string BuildPayModeCollectionHtml(HmsPayModeCollectionResponse data, int? requestedBh, int? requestedCnt)
+    {
+        string hospitalName = !string.IsNullOrWhiteSpace(TenantState?.TenantName) ? TenantState.TenantName : "MEDICO HEALTHCARE HOSPITAL";
+        string branchDisplay = "All Branches";
+        int effBh = data.bhcode ?? requestedBh ?? selectedBranchCode;
+        if (effBh > 0)
+        {
+            var foundBranch = branches.FirstOrDefault(b => b.bh_code == effBh);
+            branchDisplay = foundBranch != null ? foundBranch.name : $"Branch #{effBh}";
+        }
+
+        string counterDisplay = "All Counters";
+        int effCnt = data.cntcode ?? requestedCnt ?? selectedCounterCode;
+        if (effCnt > 0)
+        {
+            var foundCounter = counters.FirstOrDefault(c => (int)c.cntcode == effCnt);
+            counterDisplay = foundCounter != null && !string.IsNullOrWhiteSpace(foundCounter.name) ? foundCounter.name : $"Counter #{effCnt}";
+        }
+
+        string fromStr = data.fromdate.ToString("dd-MMM-yyyy");
+        string toStr = data.todate.ToString("dd-MMM-yyyy");
+        string printTime = DateTime.Now.ToString("dd-MMM-yyyy hh:mm tt");
+        string userName = !string.IsNullOrWhiteSpace(TenantState?.UserData?.UserName) ? TenantState.UserData.UserName : "Administrator";
+
+        int totalBills = data.items?.Sum(i => i.bill_count) ?? 0;
+        int totalReceipts = data.total_receipts > 0 ? data.total_receipts : (data.items?.Sum(i => i.receipt_count) ?? 0);
+        double grandTotal = data.grand_total > 0 ? data.grand_total : (data.items?.Sum(i => i.total_collected) ?? 0);
+
+        var rowsHtml = new System.Text.StringBuilder();
+        if (data.items != null && data.items.Any())
+        {
+            int sNo = 1;
+            foreach (var item in data.items)
+            {
+                string pName = !string.IsNullOrWhiteSpace(item.paymode_name) ? item.paymode_name : "Cash";
+                string badgeClass = pName.ToLower() switch
+                {
+                    var p when p.Contains("cash") => "cash",
+                    var p when p.Contains("card") => "card",
+                    var p when p.Contains("upi") || p.Contains("gpay") => "upi",
+                    var p when p.Contains("advance") || p.Contains("advan") => "advance",
+                    _ => "default"
+                };
+
+                double sharePct = item.percentage;
+                if (sharePct <= 0 && grandTotal > 0)
+                {
+                    sharePct = Math.Round((item.total_collected / grandTotal) * 100, 2);
+                }
+
+                rowsHtml.Append($@"
+                    <tr>
+                        <td style=""text-align: center; font-weight: 600;"">{sNo++}</td>
+                        <td><span class=""mode-badge {badgeClass}"">{System.Web.HttpUtility.HtmlEncode(pName)}</span></td>
+                        <td style=""text-align: right; font-weight: 600;"">{item.receipt_count}</td>
+                        <td style=""text-align: right; font-weight: 600;"">{item.bill_count}</td>
+                        <td style=""text-align: right; font-weight: 750; color: #0f172a;"">₹{item.total_collected:N2}</td>
+                        <td style=""text-align: right;"">
+                            <div class=""share-wrap"">
+                                <span style=""font-weight: 700;"">{sharePct:F2}%</span>
+                                <div class=""share-bar-bg"">
+                                    <div class=""share-bar-fill"" style=""width: {Math.Min(100, Math.Max(0, sharePct)):F0}%;""></div>
+                                </div>
+                            </div>
+                        </td>
+                    </tr>");
+            }
+        }
+        else
+        {
+            rowsHtml.Append(@"<tr><td colspan=""6"" style=""text-align: center; color: #64748b; padding: 24px;"">No pay mode collection records found for the selected date range.</td></tr>");
+        }
+
+        return $@"<!DOCTYPE html>
+<html lang=""en"">
+<head>
+    <meta charset=""utf-8"" />
+    <title>Pay Mode Collection Report</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        body {{
+            margin: 0;
+            padding: 24px;
+            background: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, ""Segoe UI"", Roboto, Helvetica, Arial, sans-serif;
+            color: #0f172a;
+            font-size: 13px;
+            line-height: 1.45;
+        }}
+        .report-page {{
+            max-width: 900px;
+            margin: 0 auto;
+            background: #ffffff;
+        }}
+        .report-header {{
+            border-bottom: 2.5px solid #2563eb;
+            padding-bottom: 12px;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }}
+        .hospital-brand {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+        .hospital-icon {{
+            width: 44px;
+            height: 44px;
+            border-radius: 10px;
+            background: #eff6ff;
+            color: #2563eb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+            font-weight: 800;
+            border: 1.5px solid #bfdbfe;
+        }}
+        .hospital-title {{
+            font-size: 19px;
+            font-weight: 800;
+            color: #0f172a;
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: -0.01em;
+        }}
+        .hospital-subtitle {{
+            font-size: 11px;
+            color: #64748b;
+            margin-top: 2px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            font-weight: 600;
+        }}
+        .report-title-badge {{
+            text-align: right;
+        }}
+        .report-main-title {{
+            font-size: 17px;
+            font-weight: 850;
+            color: #1e40af;
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+        }}
+        .report-sub-title {{
+            font-size: 10.5px;
+            color: #475569;
+            font-weight: 650;
+            margin-top: 2px;
+            text-transform: uppercase;
+        }}
+        .meta-strip {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            padding: 10px 14px;
+            margin-bottom: 16px;
+        }}
+        .meta-item {{
+            display: flex;
+            flex-direction: column;
+        }}
+        .meta-lbl {{
+            font-size: 9.5px;
+            color: #64748b;
+            font-weight: 750;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }}
+        .meta-val {{
+            font-size: 12.5px;
+            font-weight: 750;
+            color: #0f172a;
+            margin-top: 2px;
+        }}
+        .kpi-row {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 12px;
+            margin-bottom: 18px;
+        }}
+        .kpi-card {{
+            background: #ffffff;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 10px 12px;
+            border-left: 4px solid #3b82f6;
+        }}
+        .kpi-card.highlight {{
+            border-left-color: #16a34a;
+            background: #f0fdf4;
+            border-color: #bbf7d0;
+        }}
+        .kpi-card.purple {{ border-left-color: #8b5cf6; }}
+        .kpi-card.amber {{ border-left-color: #f59e0b; }}
+        .kpi-lbl {{
+            font-size: 9.5px;
+            color: #64748b;
+            text-transform: uppercase;
+            font-weight: 750;
+            letter-spacing: 0.5px;
+        }}
+        .kpi-val {{
+            font-size: 17px;
+            font-weight: 850;
+            color: #0f172a;
+            margin-top: 3px;
+        }}
+        .kpi-card.highlight .kpi-val {{
+            color: #15803d;
+        }}
+        table.collection-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 22px;
+            font-size: 12.5px;
+        }}
+        table.collection-table th {{
+            background: #0f172a;
+            color: #ffffff;
+            padding: 9px 12px;
+            font-size: 11px;
+            font-weight: 750;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border: 1px solid #0f172a;
+        }}
+        table.collection-table td {{
+            padding: 9px 12px;
+            border: 1px solid #e2e8f0;
+            color: #1e293b;
+        }}
+        table.collection-table tbody tr:nth-child(even) {{
+            background: #f8fafc;
+        }}
+        .mode-badge {{
+            display: inline-block;
+            padding: 3px 9px;
+            border-radius: 5px;
+            font-weight: 750;
+            font-size: 11.5px;
+            background: #e0f2fe;
+            color: #0369a1;
+            border: 1px solid #bae6fd;
+        }}
+        .mode-badge.cash {{ background: #dcfce7; color: #15803d; border-color: #bbf7d0; }}
+        .mode-badge.card {{ background: #ede9fe; color: #6d28d9; border-color: #ddd6fe; }}
+        .mode-badge.upi {{ background: #ffedd5; color: #c2410c; border-color: #fed7aa; }}
+        .mode-badge.advance {{ background: #fef3c7; color: #b45309; border-color: #fde68a; }}
+        .share-wrap {{
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 8px;
+        }}
+        .share-bar-bg {{
+            width: 50px;
+            height: 6px;
+            background: #e2e8f0;
+            border-radius: 3px;
+            overflow: hidden;
+            display: inline-block;
+        }}
+        .share-bar-fill {{
+            height: 100%;
+            background: #2563eb;
+            border-radius: 3px;
+        }}
+        table.collection-table tfoot tr {{
+            background: #f1f5f9;
+            font-weight: 850;
+            border-top: 2.5px solid #0f172a;
+            border-bottom: 2.5px solid #0f172a;
+        }}
+        table.collection-table tfoot td {{
+            padding: 10px 12px;
+            color: #0f172a;
+            font-size: 13px;
+            border: 1px solid #cbd5e1;
+        }}
+        .signatures-grid {{
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-top: 36px;
+            padding-top: 10px;
+        }}
+        .sig-box {{
+            text-align: center;
+        }}
+        .sig-line {{
+            border-top: 1px dashed #94a3b8;
+            margin-bottom: 6px;
+        }}
+        .sig-title {{
+            font-size: 10.5px;
+            font-weight: 750;
+            color: #475569;
+            text-transform: uppercase;
+        }}
+        .sig-sub {{
+            font-size: 9.5px;
+            color: #94a3b8;
+        }}
+        .system-footer {{
+            margin-top: 22px;
+            border-top: 1px solid #e2e8f0;
+            padding-top: 8px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            color: #94a3b8;
+        }}
+        @media print {{
+            body {{ padding: 0; }}
+            .no-print {{ display: none !important; }}
+            table.collection-table th {{ background: #0f172a !important; color: #fff !important; -webkit-print-color-adjust: exact; }}
+            .kpi-card.highlight {{ background: #f0fdf4 !important; -webkit-print-color-adjust: exact; }}
+            .mode-badge {{ -webkit-print-color-adjust: exact; }}
+        }}
+    </style>
+</head>
+<body>
+    <div class=""report-page"">
+        <div class=""report-header"">
+            <div class=""hospital-brand"">
+                <div class=""hospital-icon"">✚</div>
+                <div>
+                    <h1 class=""hospital-title"">{System.Web.HttpUtility.HtmlEncode(hospitalName)}</h1>
+                    <div class=""hospital-subtitle"">Official Billing &amp; Financial Management</div>
+                </div>
+            </div>
+            <div class=""report-title-badge"">
+                <h2 class=""report-main-title"">Pay Mode Collection</h2>
+                <div class=""report-sub-title"">Summary Report</div>
+            </div>
+        </div>
+
+        <div class=""meta-strip"">
+            <div class=""meta-item"">
+                <span class=""meta-lbl"">From Date</span>
+                <span class=""meta-val"">{fromStr}</span>
+            </div>
+            <div class=""meta-item"">
+                <span class=""meta-lbl"">To Date</span>
+                <span class=""meta-val"">{toStr}</span>
+            </div>
+            <div class=""meta-item"">
+                <span class=""meta-lbl"">Branch</span>
+                <span class=""meta-val"">{System.Web.HttpUtility.HtmlEncode(branchDisplay)}</span>
+            </div>
+            <div class=""meta-item"">
+                <span class=""meta-lbl"">Cash Counter</span>
+                <span class=""meta-val"">{System.Web.HttpUtility.HtmlEncode(counterDisplay)}</span>
+            </div>
+        </div>
+
+        <div class=""kpi-row"">
+            <div class=""kpi-card highlight"">
+                <div class=""kpi-lbl"">Grand Total Collected</div>
+                <div class=""kpi-val"">₹{grandTotal:N2}</div>
+            </div>
+            <div class=""kpi-card purple"">
+                <div class=""kpi-lbl"">Total Receipts</div>
+                <div class=""kpi-val"">{totalReceipts}</div>
+            </div>
+            <div class=""kpi-card amber"">
+                <div class=""kpi-lbl"">Total Bills Settled</div>
+                <div class=""kpi-val"">{totalBills}</div>
+            </div>
+            <div class=""kpi-card"">
+                <div class=""kpi-lbl"">Payment Modes</div>
+                <div class=""kpi-val"">{data.items?.Count ?? 0}</div>
+            </div>
+        </div>
+
+        <table class=""collection-table"">
+            <thead>
+                <tr>
+                    <th style=""width: 45px; text-align: center;"">#</th>
+                    <th>Payment Mode</th>
+                    <th style=""width: 110px; text-align: right;"">Receipts</th>
+                    <th style=""width: 100px; text-align: right;"">Bills</th>
+                    <th style=""width: 170px; text-align: right;"">Amount Collected (₹)</th>
+                    <th style=""width: 130px; text-align: right;"">Share (%)</th>
+                </tr>
+            </thead>
+            <tbody>
+                {rowsHtml}
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td colspan=""2"" style=""text-align: right; text-transform: uppercase;"">GRAND TOTAL:</td>
+                    <td style=""text-align: right;"">{totalReceipts}</td>
+                    <td style=""text-align: right;"">{totalBills}</td>
+                    <td style=""text-align: right; font-size: 14px; color: #15803d;"">₹{grandTotal:N2}</td>
+                    <td style=""text-align: right;"">100.00%</td>
+                </tr>
+            </tfoot>
+        </table>
+
+        <div class=""signatures-grid"">
+            <div class=""sig-box"">
+                <div class=""sig-line""></div>
+                <div class=""sig-title"">Prepared By</div>
+                <div class=""sig-sub"">{System.Web.HttpUtility.HtmlEncode(userName)}</div>
+            </div>
+            <div class=""sig-box"">
+                <div class=""sig-line""></div>
+                <div class=""sig-title"">Verified By</div>
+                <div class=""sig-sub"">Supervisor</div>
+            </div>
+            <div class=""sig-box"">
+                <div class=""sig-line""></div>
+                <div class=""sig-title"">Cashier / Counter</div>
+                <div class=""sig-sub"">In-charge</div>
+            </div>
+            <div class=""sig-box"">
+                <div class=""sig-line""></div>
+                <div class=""sig-title"">Accounts Officer</div>
+                <div class=""sig-sub"">Authorized Signatory</div>
+            </div>
+        </div>
+
+        <div class=""system-footer"">
+            <span>Official Report &bull; Medico Hospital Billing System</span>
+            <span>Generated on {printTime}</span>
+        </div>
+    </div>
+</body>
+</html>";
     }
 }

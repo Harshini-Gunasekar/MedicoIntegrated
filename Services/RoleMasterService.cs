@@ -29,9 +29,12 @@ namespace Booking.Services
             { "Admin Portal", "bi-shield-lock-fill" }
         };
 
-        public RoleMasterService(IHttpClientFactory clientFactory)
+        private readonly SharedComponents.Rcl.Services.TenantSessionState? _tenantState;
+
+        public RoleMasterService(IHttpClientFactory clientFactory, SharedComponents.Rcl.Services.TenantSessionState? tenantState = null)
         {
             _clientFactory = clientFactory;
+            _tenantState = tenantState;
         }
 
         private HttpClient Client => _clientFactory.CreateClient("MedicoAPI");
@@ -62,12 +65,36 @@ namespace Booking.Services
             return RoleCatalogDefaults.GetDefaultPermissions();
         }
 
-        public async Task<List<RoleSummaryDto>> GetRolesAsync()
+        public async Task<List<RoleSummaryDto>> GetRolesAsync(string? tenantCode = null)
         {
             try
             {
-                var response = await Client.GetFromJsonAsync<List<RoleSummaryDto>>("api/RoleMaster/get-roles");
-                return response ?? new List<RoleSummaryDto>();
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode)
+                    ? tenantCode.Trim()
+                    : (!string.IsNullOrWhiteSpace(_tenantState?.TenantCode) ? _tenantState.TenantCode.Trim() : null);
+
+                using var req = new HttpRequestMessage(HttpMethod.Get, "api/RoleMaster/get-roles");
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    req.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                    req.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                }
+
+                var res = await Client.SendAsync(req);
+                if (res.IsSuccessStatusCode)
+                {
+                    var response = await res.Content.ReadFromJsonAsync<List<RoleSummaryDto>>();
+                    if (response != null && !string.IsNullOrWhiteSpace(effectiveTenant))
+                    {
+                        return response.Where(r => string.Equals(r.Tenant_code, effectiveTenant, StringComparison.OrdinalIgnoreCase)).ToList();
+                    }
+                    return response ?? new List<RoleSummaryDto>();
+                }
+                else
+                {
+                    Console.WriteLine($"[RoleMasterService] Error fetching roles, status: {res.StatusCode}");
+                    return new List<RoleSummaryDto>();
+                }
             }
             catch (Exception ex)
             {
@@ -76,11 +103,27 @@ namespace Booking.Services
             }
         }
 
-        public async Task<RoleSummaryDto?> GetRoleAsync(Guid roleGuid)
+        public async Task<RoleSummaryDto?> GetRoleAsync(Guid roleGuid, string? tenantCode = null)
         {
             try
             {
-                return await Client.GetFromJsonAsync<RoleSummaryDto>($"api/RoleMaster/get-role?roleGuid={roleGuid}");
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode)
+                    ? tenantCode.Trim()
+                    : (!string.IsNullOrWhiteSpace(_tenantState?.TenantCode) ? _tenantState.TenantCode.Trim() : null);
+
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"api/RoleMaster/get-role?roleGuid={roleGuid}");
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    req.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                    req.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                }
+
+                var res = await Client.SendAsync(req);
+                if (res.IsSuccessStatusCode)
+                {
+                    return await res.Content.ReadFromJsonAsync<RoleSummaryDto>();
+                }
+                return null;
             }
             catch (Exception ex)
             {
@@ -89,11 +132,30 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, Guid? RoleGuid, string Message)> SaveRoleAsync(RoleSaveRequest req)
+        public async Task<(bool Success, Guid? RoleGuid, string Message)> SaveRoleAsync(RoleSaveRequest req, string? tenantCode = null)
         {
             try
             {
-                var response = await Client.PostAsJsonAsync("api/RoleMaster/save-role", req);
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode)
+                    ? tenantCode.Trim()
+                    : (!string.IsNullOrWhiteSpace(req.Tenant_code)
+                        ? req.Tenant_code.Trim()
+                        : (!string.IsNullOrWhiteSpace(_tenantState?.TenantCode) ? _tenantState.TenantCode.Trim() : null));
+
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    req.Tenant_code = effectiveTenant;
+                }
+
+                using var reqMsg = new HttpRequestMessage(HttpMethod.Post, "api/RoleMaster/save-role");
+                reqMsg.Content = JsonContent.Create(req);
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    reqMsg.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                }
+
+                var response = await Client.SendAsync(reqMsg);
                 if (response.IsSuccessStatusCode)
                 {
                     var content = await response.Content.ReadAsStringAsync();
@@ -114,11 +176,22 @@ namespace Booking.Services
             }
         }
 
-        public async Task<(bool Success, string Message)> DeleteRoleAsync(Guid roleGuid)
+        public async Task<(bool Success, string Message)> DeleteRoleAsync(Guid roleGuid, string? tenantCode = null)
         {
             try
             {
-                var response = await Client.DeleteAsync($"api/RoleMaster/delete-role?roleGuid={roleGuid}");
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode)
+                    ? tenantCode.Trim()
+                    : (!string.IsNullOrWhiteSpace(_tenantState?.TenantCode) ? _tenantState.TenantCode.Trim() : null);
+
+                using var reqMsg = new HttpRequestMessage(HttpMethod.Delete, $"api/RoleMaster/delete-role?roleGuid={roleGuid}");
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    reqMsg.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                }
+
+                var response = await Client.SendAsync(reqMsg);
                 if (response.IsSuccessStatusCode)
                 {
                     return (true, "Role template deleted successfully.");
@@ -562,7 +635,8 @@ namespace Booking.Services
 
         public static List<User_Rights> ConvertEffectivePermissionsToUserRights(
             IEnumerable<RolePermissionItem>? permissions, 
-            int userCode = 0)
+            int userCode = 0,
+            bool isAdmin = false)
         {
             var result = new List<User_Rights>();
             var permList = permissions?.ToList() ?? new List<RolePermissionItem>();
@@ -574,9 +648,10 @@ namespace Booking.Services
                 .GroupBy(p => string.IsNullOrWhiteSpace(p.Sub_module) ? "General" : p.Sub_module.Trim())
                 .ToList();
 
-            bool hasAnyAdd = userCode == 0 || userCode == 1;
-            bool hasAnyEdit = userCode == 0 || userCode == 1;
-            bool hasAnyDelete = userCode == 0 || userCode == 1;
+            bool isAdministrator = isAdmin || userCode == 0 || userCode == 1;
+            bool hasAnyAdd = isAdministrator;
+            bool hasAnyEdit = isAdministrator;
+            bool hasAnyDelete = isAdministrator;
 
             foreach (var group in subGroups)
             {
@@ -597,11 +672,11 @@ namespace Booking.Services
                 bool toDelete = hasAnyDelete || actionNames.Any(a => 
                     a.Contains("delete") || a.Contains("remove") || a.Contains("cancel") || a.Contains("drop"));
 
-                bool toExport = actionNames.Any(a => 
-                    a.Contains("download") || a.Contains("print") || a.Contains("export") || a.Contains("excel") || a.Contains("pdf")) || userCode == 0 || userCode == 1;
+                bool toExport = isAdministrator || actionNames.Any(a => 
+                    a.Contains("download") || a.Contains("print") || a.Contains("export") || a.Contains("excel") || a.Contains("pdf"));
 
-                bool toView = actionNames.Any(a => 
-                    a.Contains("view") || a.Contains("list") || a.Contains("dashboard") || a.Contains("report") || a.Contains("search") || a.Contains("read") || a.Contains("status") || a.Contains("preview") || a.Contains("display") || a.Contains("console") || a.Contains("notes")) || toAdd || toEdit || toDelete || toExport || userCode == 0 || userCode == 1;
+                bool toView = isAdministrator || actionNames.Any(a => 
+                    a.Contains("view") || a.Contains("list") || a.Contains("dashboard") || a.Contains("report") || a.Contains("search") || a.Contains("read") || a.Contains("status") || a.Contains("preview") || a.Contains("display") || a.Contains("console") || a.Contains("notes")) || toAdd || toEdit || toDelete || toExport;
 
                 if (toAdd) hasAnyAdd = true;
                 if (toEdit) hasAnyEdit = true;

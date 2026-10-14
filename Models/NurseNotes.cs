@@ -1,5 +1,6 @@
 
 using Dapper.Contrib.Extensions;
+using System.Text.Json.Serialization;
 
 namespace medico_backend.Model
 {
@@ -378,6 +379,26 @@ namespace medico_backend.Model
             public int? updated_by { get; set; }
             public DateTime? updated_at { get; set; }
             public string tenant_code { get; set; } = string.Empty;
+
+            [Write(false)]
+            [JsonPropertyName("authorized_by_name")]
+            public string? authorized_by_name { get; set; }
+
+            [Write(false)]
+            [JsonPropertyName("user_name")]
+            public string? user_name { get; set; }
+
+            [Write(false)]
+            [JsonPropertyName("username")]
+            public string? username { get; set; }
+
+            [Write(false)]
+            [JsonPropertyName("name")]
+            public string? name { get; set; }
+
+            [Write(false)]
+            [JsonPropertyName("staff_name")]
+            public string? staff_name { get; set; }
         }
 
         public class AuthorizeNurseNotesRequest

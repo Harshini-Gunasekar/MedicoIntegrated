@@ -144,7 +144,7 @@
                                         <td style="text-align: center;">
                                             @if (hasEditRight)
                                             {
-                                                <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                                <button class="action-btn btn-edit" disabled="@isEditLoading" @onclick="async () => await EditPurchase(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
                                             }
                                             @if (hasDeleteRight)
                                             {
@@ -168,7 +168,7 @@
                                     <div>
                                         @if (hasEditRight)
                                         {
-                                            <button class="action-btn btn-edit" @onclick="async () => await EditPurchase(p)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                            <button class="action-btn btn-edit" disabled="@isEditLoading" @onclick="async () => await EditPurchase(p)" title="Edit"><i class="bi bi-pencil-square"></i></button>
                                         }
                                         @if (hasDeleteRight)
                                         {
@@ -1714,16 +1714,7 @@
     private decimal? GetRate(PurchaseDetailModel detail) => !IsEdit && detail.rate == 0 ? null : detail.rate;
     private void SetRate(PurchaseDetailModel detail, decimal? value) => detail.rate = value ?? 0;
 
-    private decimal? GetMrp(PurchaseDetailModel detail)
-    {
-        if (detail.mrp > 0) return detail.mrp;
-        if (detail.itemcode > 0)
-        {
-            var matched = ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode);
-            if (matched != null && matched.mrp > 0) return matched.mrp;
-        }
-        return !IsEdit ? null : detail.mrp;
-    }
+    private decimal? GetMrp(PurchaseDetailModel detail) => !IsEdit && detail.mrp == 0 ? null : detail.mrp;
     private void SetMrp(PurchaseDetailModel detail, decimal? value) => detail.mrp = value ?? 0;
 
     private decimal? GetDisc(PurchaseDetailModel detail) => !IsEdit && detail.discountpercentage == 0 ? null : detail.discountpercentage;
@@ -1945,21 +1936,21 @@
             
             try
             {
-                bool isAdmin = false;
+                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                 try
                 {
                     var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
                     if (userResult.Success && userResult.Value != null)
                     {
-                        isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                  userResult.Value.UserCode == 0 ||
-                                  userResult.Value.UserCode == 1;
+                        currentUser = userResult.Value;
                     }
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error checking user details: {ex.Message}");
                 }
+
+                bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
 
                 if (isAdmin)
                 {
@@ -1970,44 +1961,52 @@
                 }
                 else
                 {
-                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                    if (rightsResult.Success && rightsResult.Value != null)
+                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
+                    try
                     {
-                        var pageRight = rightsResult.Value.FirstOrDefault(r => 
-                            r.ModuleName != null && 
-                            r.ModuleName.Trim().Equals("Purchase_Purchase", StringComparison.OrdinalIgnoreCase));
-                        
-                        if (pageRight != null)
+                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                        if (rightsResult.Success && rightsResult.Value != null)
                         {
-                            hasViewRight = pageRight.ToView;
-                            hasCreateRight = pageRight.ToAdd;
-                            hasEditRight = pageRight.ToEdit;
-                            hasDeleteRight = pageRight.ToDelete;
-                        }
-                        else
-                        {
-                            hasViewRight = false;
-                            hasCreateRight = false;
-                            hasEditRight = false;
-                            hasDeleteRight = false;
+                            rightsList = rightsResult.Value;
                         }
                     }
-                    else
+                    catch (Exception ex)
                     {
-                        hasViewRight = false;
-                        hasCreateRight = false;
-                        hasEditRight = false;
-                        hasDeleteRight = false;
+                        Console.WriteLine($"Error reading rights from session: {ex.Message}");
                     }
+
+                    var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Purchase", "Purchase_Purchase", "Purchase Purchase", "Purchase Order", "Receive Stock");
+                    hasViewRight = r.View;
+                    hasCreateRight = r.Add;
+                    hasEditRight = r.Edit;
+                    hasDeleteRight = r.Delete;
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error checking Purchase_Purchase rights: {ex.Message}");
-                hasViewRight = false;
-                hasCreateRight = false;
-                hasEditRight = false;
-                hasDeleteRight = false;
+                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+                {
+                    hasViewRight = true;
+                    hasCreateRight = true;
+                    hasEditRight = true;
+                    hasDeleteRight = true;
+                }
+                else
+                {
+                    hasViewRight = false;
+                    hasCreateRight = false;
+                    hasEditRight = false;
+                    hasDeleteRight = false;
+                }
+            }
+
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+                hasEditRight = true;
+                hasDeleteRight = true;
             }
 
             if (!hasViewRight)
@@ -2621,129 +2620,58 @@
         ShowModal = true;
     }
 
+    private bool isEditLoading = false;
+
     private async Task EditPurchase(PurchaseMasterModel master)
     {
-        if (!hasEditRight)
+        if (isEditLoading) return;
+        isEditLoading = true;
+        try
         {
-            ToastService.ShowError("You do not have permission to edit purchases.");
-            return;
-        }
-        IsEdit = true;
-        // Try multiple ID variations for the fetch
-        var ids = new List<string?>();
-        if (master.purchasecode > 0) ids.Add(master.purchasecode.ToString());
-        if (!string.IsNullOrEmpty(master.billno)) ids.Add(master.billno);
-        if (!string.IsNullOrEmpty(master.invoiceno)) ids.Add(master.invoiceno);
-        
-        // Remove duplicates and nulls
-        ids = ids.Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
-
-        if (!ids.Any()) {
-            ToastService.ShowWarning("Cannot edit: ID not found");
-            return;
-        }
-        bool fetchSuccess = false;
-        var attemptLogs = new List<string>();
-
-        foreach (var id in ids) {
-            var isNumeric = long.TryParse(id, out long numericId);
-            var variations = new List<(string url, HttpMethod method, object? body)>();
-            
-            if (isNumeric) {
-                variations.Add(($"api/ItemMaster/getpurchasebycode?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode?purchaseCode={id}&tenantCode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode/{id}?tenantcode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebyid?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode", HttpMethod.Post, new { purchasecode = numericId, tenantcode = DefaultTenant }));
-                variations.Add(($"api/ItemMaster/getpurchase?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"Purchase/getpurchasebycode?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode?purchasecode={id}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode/{id}", HttpMethod.Get, null));
-            } else {
-                variations.Add(($"api/ItemMaster/getpurchasebycode?billno={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode?billNo={id}&tenantCode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode", HttpMethod.Post, new { billno = id, tenantcode = DefaultTenant }));
-                variations.Add(($"api/ItemMaster/getpurchase?billno={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
-                variations.Add(($"api/ItemMaster/getpurchasebycode?billno={id}", HttpMethod.Get, null));
+            if (!hasEditRight)
+            {
+                ToastService.ShowError("You do not have permission to edit purchases.");
+                return;
             }
+            IsEdit = true;
 
-            foreach (var v in variations) {
-                try {
-                    var client = CreateClient();
-                    HttpResponseMessage response;
-                    if (v.method == HttpMethod.Get) {
-                        response = await client.GetAsync(v.url);
-                    } else {
-                        response = await client.PostAsJsonAsync(v.url, v.body);
-                    }
+            bool fetchSuccess = false;
 
-                    var statusInfo = $"URL: {v.url} ({v.method}) -> Status: {(int)response.StatusCode}";
-                    attemptLogs.Add(statusInfo);
-                    Console.WriteLine($"[EditPurchase Diagnostic] {statusInfo}");
+            // 1. Check if cached details are already present in memory from getallpurchases
+            var cached = FullPurchaseRequests.FirstOrDefault(f => 
+                (master.purchasecode > 0 && f.master?.purchasecode == master.purchasecode) || 
+                (!string.IsNullOrEmpty(master.billno) && f.master?.billno == master.billno));
 
-                    if (response.IsSuccessStatusCode) {
-                        var responseString = await response.Content.ReadAsStringAsync();
-                        Console.WriteLine($"[EditPurchase Diagnostic] URL: {v.url} -> Raw JSON response: {responseString}");
-                        var loaded = ParseRequestResponse(responseString);
-                        if (loaded != null) {
-                            CurrentRequest = loaded;
-                            // Dates are now DateTime?, no string normalization needed
-                            fetchSuccess = true;
-                            break;
-                        } else {
-                            attemptLogs.Add($"  -> Succeeded but ParseRequestResponse returned null. JSON length: {responseString.Length}");
-                        }
-                    } else {
-                        var errorBody = await response.Content.ReadAsStringAsync();
-                        attemptLogs.Add($"  -> Failed Status: {(int)response.StatusCode}. Error: {errorBody}");
-                        if (response.StatusCode == System.Net.HttpStatusCode.BadRequest || response.StatusCode == System.Net.HttpStatusCode.InternalServerError) {
-                            Console.WriteLine($"[EditPurchase Diagnostic] Endpoint returned error {(int)response.StatusCode}. Breaking early to prevent redundant HTTP requests and terminal spam.");
-                            break;
-                        }
-                    }
-                } catch (Exception ex) {
-                    attemptLogs.Add($"URL: {v.url} Exception: {ex.Message}");
-                    Console.WriteLine($"[EditPurchase Diagnostic] Error for {v.url}: {ex}");
-                }
-            }
-            if (fetchSuccess) break;
-        }
-
-        if (!fetchSuccess) {
-            Console.WriteLine("[EditPurchase Diagnostic] All variations failed to load purchase details!");
-            foreach (var log in attemptLogs) {
-                Console.WriteLine($"  {log}");
-            }
-            var cached = FullPurchaseRequests.FirstOrDefault(f => f.master?.purchasecode == master.purchasecode);
-            CurrentRequest = new PurchaseRequest {
-                master = new PurchaseMasterModel {
-                    purchasecode = master.purchasecode,
-                    billno = master.billno,
-                    billdate = master.billdate,
-                    invoiceno = master.invoiceno,
-                    invoicedate = master.invoicedate,
-                    vendorcode = master.vendorcode,
-                    grossamount = master.grossamount,
-                    discountamount = master.discountamount,
-                    taxamount = master.taxamount,
-                    netamount = master.netamount,
-                    overalldiscount = master.overalldiscount,
-                    roundoff = master.roundoff,
-                    grncode = master.grncode,
-                    transportationcharges = master.transportationcharges,
-                    paymentmode = master.paymentmode,
-                    paymentstatus = master.paymentstatus,
-                    currencycode = master.currencycode,
-                    isactive = master.isactive,
-                    deleted = master.deleted,
-                    remarks = master.remarks,
-                    usercode = master.usercode,
-                    tenantcode = master.tenantcode ?? DefaultTenant,
-                    branchcode = master.branchcode ?? "BLR001",
-                    companycode = master.companycode ?? "CMP001"
-                },
-                details = cached?.details != null 
-                    ? cached.details.Select(d => new PurchaseDetailModel {
+            if (cached?.details != null && cached.details.Any())
+            {
+                CurrentRequest = new PurchaseRequest {
+                    master = new PurchaseMasterModel {
+                        purchasecode = master.purchasecode,
+                        billno = master.billno,
+                        billdate = master.billdate,
+                        invoiceno = master.invoiceno,
+                        invoicedate = master.invoicedate,
+                        vendorcode = master.vendorcode,
+                        grossamount = master.grossamount,
+                        discountamount = master.discountamount,
+                        taxamount = master.taxamount,
+                        netamount = master.netamount,
+                        overalldiscount = master.overalldiscount,
+                        roundoff = master.roundoff,
+                        grncode = master.grncode,
+                        transportationcharges = master.transportationcharges,
+                        paymentmode = master.paymentmode,
+                        paymentstatus = master.paymentstatus,
+                        currencycode = master.currencycode,
+                        isactive = master.isactive,
+                        deleted = master.deleted,
+                        remarks = master.remarks,
+                        usercode = master.usercode,
+                        tenantcode = master.tenantcode ?? DefaultTenant,
+                        branchcode = master.branchcode ?? "BLR001",
+                        companycode = master.companycode ?? "CMP001"
+                    },
+                    details = cached.details.Select(d => new PurchaseDetailModel {
                         purchasedetailcode = d.purchasedetailcode,
                         purchasecode = d.purchasecode,
                         itemcode = d.itemcode,
@@ -2771,12 +2699,156 @@
                         mrp = d.mrp,
                         tenantcode = d.tenantcode ?? DefaultTenant
                     }).ToList()
-                    : new List<PurchaseDetailModel>()
-            };
-            // Dates are now DateTime?, no string normalization needed
-            Console.WriteLine($"[Purchase Master] Fallback loaded basic record info for code: {master.purchasecode}");
-            ToastService.ShowSuccess("Loaded purchase record details successfully.");
-        }
+                };
+                fetchSuccess = true;
+            }
+
+            if (!fetchSuccess)
+            {
+                // Try multiple ID variations for the fetch
+                var ids = new List<string?>();
+                if (master.purchasecode > 0) ids.Add(master.purchasecode.ToString());
+                if (!string.IsNullOrEmpty(master.billno)) ids.Add(master.billno);
+                if (!string.IsNullOrEmpty(master.invoiceno)) ids.Add(master.invoiceno);
+                
+                // Remove duplicates and nulls
+                ids = ids.Where(x => !string.IsNullOrEmpty(x)).Distinct().ToList();
+
+                if (!ids.Any()) {
+                    ToastService.ShowWarning("Cannot edit: ID not found");
+                    return;
+                }
+                var attemptLogs = new List<string>();
+
+                foreach (var id in ids) {
+                    var isNumeric = long.TryParse(id, out long numericId);
+                    var variations = new List<(string url, HttpMethod method, object? body)>();
+                    
+                    if (isNumeric) {
+                        variations.Add(($"api/ItemMaster/getpurchasebycode?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode?purchaseCode={id}&tenantCode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode/{id}?tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebyid?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode", HttpMethod.Post, new { purchasecode = numericId, tenantcode = DefaultTenant }));
+                        variations.Add(($"api/ItemMaster/getpurchase?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"Purchase/getpurchasebycode?purchasecode={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode?purchasecode={id}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode/{id}", HttpMethod.Get, null));
+                    } else {
+                        variations.Add(($"api/ItemMaster/getpurchasebycode?billno={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode?billNo={id}&tenantCode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode", HttpMethod.Post, new { billno = id, tenantcode = DefaultTenant }));
+                        variations.Add(($"api/ItemMaster/getpurchase?billno={id}&tenantcode={DefaultTenant}", HttpMethod.Get, null));
+                        variations.Add(($"api/ItemMaster/getpurchasebycode?billno={id}", HttpMethod.Get, null));
+                    }
+
+                    foreach (var v in variations) {
+                        try {
+                            var client = CreateClient();
+                            HttpResponseMessage response;
+                            if (v.method == HttpMethod.Get) {
+                                response = await client.GetAsync(v.url);
+                            } else {
+                                response = await client.PostAsJsonAsync(v.url, v.body);
+                            }
+
+                            var statusInfo = $"URL: {v.url} ({v.method}) -> Status: {(int)response.StatusCode}";
+                            attemptLogs.Add(statusInfo);
+                            Console.WriteLine($"[EditPurchase Diagnostic] {statusInfo}");
+
+                            if (response.IsSuccessStatusCode) {
+                                var responseString = await response.Content.ReadAsStringAsync();
+                                Console.WriteLine($"[EditPurchase Diagnostic] URL: {v.url} -> Raw JSON response: {responseString}");
+                                var loaded = ParseRequestResponse(responseString);
+                                if (loaded != null) {
+                                    CurrentRequest = loaded;
+                                    fetchSuccess = true;
+                                    break;
+                                } else {
+                                    attemptLogs.Add($"  -> Succeeded but ParseRequestResponse returned null. JSON length: {responseString.Length}");
+                                }
+                            } else {
+                                var errorBody = await response.Content.ReadAsStringAsync();
+                                attemptLogs.Add($"  -> Failed Status: {(int)response.StatusCode}. Error: {errorBody}");
+                                if (response.StatusCode == System.Net.HttpStatusCode.BadRequest || response.StatusCode == System.Net.HttpStatusCode.InternalServerError) {
+                                    Console.WriteLine($"[EditPurchase Diagnostic] Endpoint returned error {(int)response.StatusCode}. Breaking early to prevent redundant HTTP requests and terminal spam.");
+                                    break;
+                                }
+                            }
+                        } catch (Exception ex) {
+                            attemptLogs.Add($"URL: {v.url} Exception: {ex.Message}");
+                            Console.WriteLine($"[EditPurchase Diagnostic] Error for {v.url}: {ex}");
+                        }
+                    }
+                    if (fetchSuccess) break;
+                }
+
+                if (!fetchSuccess) {
+                    Console.WriteLine("[EditPurchase Diagnostic] All variations failed to load purchase details!");
+                    foreach (var log in attemptLogs) {
+                        Console.WriteLine($"  {log}");
+                    }
+                    CurrentRequest = new PurchaseRequest {
+                        master = new PurchaseMasterModel {
+                            purchasecode = master.purchasecode,
+                            billno = master.billno,
+                            billdate = master.billdate,
+                            invoiceno = master.invoiceno,
+                            invoicedate = master.invoicedate,
+                            vendorcode = master.vendorcode,
+                            grossamount = master.grossamount,
+                            discountamount = master.discountamount,
+                            taxamount = master.taxamount,
+                            netamount = master.netamount,
+                            overalldiscount = master.overalldiscount,
+                            roundoff = master.roundoff,
+                            grncode = master.grncode,
+                            transportationcharges = master.transportationcharges,
+                            paymentmode = master.paymentmode,
+                            paymentstatus = master.paymentstatus,
+                            currencycode = master.currencycode,
+                            isactive = master.isactive,
+                            deleted = master.deleted,
+                            remarks = master.remarks,
+                            usercode = master.usercode,
+                            tenantcode = master.tenantcode ?? DefaultTenant,
+                            branchcode = master.branchcode ?? "BLR001",
+                            companycode = master.companycode ?? "CMP001"
+                        },
+                        details = cached?.details != null 
+                            ? cached.details.Select(d => new PurchaseDetailModel {
+                                purchasedetailcode = d.purchasedetailcode,
+                                purchasecode = d.purchasecode,
+                                itemcode = d.itemcode,
+                                quantity = d.quantity,
+                                freequantity = d.freequantity,
+                                uomcode = d.uomcode,
+                                rate = d.rate,
+                                discountpercentage = d.discountpercentage,
+                                discountamount = d.discountamount,
+                                taxpercentage = d.taxpercentage,
+                                taxamount = d.taxamount,
+                                amount = d.amount,
+                                totalamount = d.totalamount,
+                                batchno = d.batchno,
+                                manufacturingdate = d.manufacturingdate,
+                                expirydate = d.expirydate,
+                                orderedqty = d.orderedqty,
+                                receivedqty = d.receivedqty,
+                                rejectedqty = d.rejectedqty,
+                                warehousecode = d.warehousecode,
+                                packaging = d.packaging,
+                                manufacturercode = d.manufacturercode,
+                                packsize = d.packsize,
+                                packg = d.packg,
+                                mrp = d.mrp,
+                                tenantcode = d.tenantcode ?? DefaultTenant
+                            }).ToList()
+                            : new List<PurchaseDetailModel>()
+                    };
+                    Console.WriteLine($"[Purchase Master] Fallback loaded basic record info for code: {master.purchasecode}");
+                }
+            }
 
         CurrentRequest.details ??= new List<PurchaseDetailModel>();
 
@@ -2859,6 +2931,11 @@
         NewDetailItem = new PurchaseDetailModel { tenantcode = DefaultTenant };
 
         ShowModal = true;
+        }
+        finally
+        {
+            isEditLoading = false;
+        }
     }
 
     private PurchaseRequest? ParseRequestResponse(string json)

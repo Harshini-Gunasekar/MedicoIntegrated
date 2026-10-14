@@ -3,10 +3,13 @@
 @using Booking.Models
 @using Booking.Services
 @using SharedComponents.Rcl.Services
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
 @rendermode @(new InteractiveServerRenderMode(prerender: false))
+@implements IDisposable
 
 @inject RoleMasterService RoleService
 @inject TenantSessionState TenantState
+@inject ProtectedLocalStorage _sessionStorage
 @inject ToastService Toast
 @inject IJSRuntime JSRuntime
 
@@ -105,7 +108,7 @@
                 </div>
                 <div class="kpi-content">
                     <span class="kpi-label">Active Tenant</span>
-                    <h3 class="kpi-value tenant-code-badge">@(string.IsNullOrWhiteSpace(TenantState.TenantCode) ? "Default" : TenantState.TenantCode)</h3>
+                    <h3 class="kpi-value tenant-code-badge">@(string.IsNullOrWhiteSpace(DisplayTenantCode) ? "Default" : DisplayTenantCode)</h3>
                     <span class="kpi-hint">Facility ID</span>
                 </div>
             </div>
@@ -479,13 +482,26 @@
     private List<ModuleTreeNode> hierarchyTree = new();
     private RoleSummaryDto? roleToDelete = null;
 
+    private string currentTenantCode = string.Empty;
+    private bool hasLoadedRoles = false;
+
+    private string DisplayTenantCode => !string.IsNullOrWhiteSpace(currentTenantCode) 
+        ? currentTenantCode 
+        : (!string.IsNullOrWhiteSpace(TenantState.TenantCode) ? TenantState.TenantCode.Trim() : "");
+
     private List<RoleSummaryDto> FilteredRoles
     {
         get
         {
-            if (string.IsNullOrWhiteSpace(roleSearchQuery)) return rolesList;
+            var list = rolesList;
+            if (!string.IsNullOrWhiteSpace(DisplayTenantCode) && !string.Equals(DisplayTenantCode, "Default", StringComparison.OrdinalIgnoreCase))
+            {
+                list = list.Where(r => string.IsNullOrEmpty(r.Tenant_code) || string.Equals(r.Tenant_code, DisplayTenantCode, StringComparison.OrdinalIgnoreCase)).ToList();
+            }
+
+            if (string.IsNullOrWhiteSpace(roleSearchQuery)) return list;
             var q = roleSearchQuery.Trim().ToLowerInvariant();
-            return rolesList.Where(r => 
+            return list.Where(r => 
                 r.Role_Name.ToLowerInvariant().Contains(q) ||
                 r.MainModulesCovered.Any(m => m.ToLowerInvariant().Contains(q))
             ).ToList();
@@ -497,21 +513,95 @@
 
     protected override async Task OnInitializedAsync()
     {
+        TenantState.OnSessionChanged += HandleSessionChanged;
+
         // 1. Instantaneous 0-ms catalog initialization from pre-compiled static defaults
         masterCatalog = RoleCatalogDefaults.GetDefaultPermissions();
         hierarchyTree = RoleService.BuildHierarchy(masterCatalog, new HashSet<long>());
 
-        // 2. Load tenant roles & live master permissions in background
-        await LoadRolesAndCatalogAsync();
+        // 2. If TenantCode is already available in TenantState, load roles immediately
+        if (!string.IsNullOrWhiteSpace(TenantState.TenantCode))
+        {
+            currentTenantCode = TenantState.TenantCode.Trim();
+            await LoadRolesAndCatalogAsync();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            string? resolved = null;
+            if (!string.IsNullOrWhiteSpace(TenantState.TenantCode))
+            {
+                resolved = TenantState.TenantCode.Trim();
+            }
+            else
+            {
+                try
+                {
+                    var sRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                    if (sRes.Success && !string.IsNullOrWhiteSpace(sRes.Value))
+                    {
+                        resolved = sRes.Value.Trim();
+                    }
+                    else
+                    {
+                        var sRes2 = await _sessionStorage.GetAsync<string>("TenantCode");
+                        if (sRes2.Success && !string.IsNullOrWhiteSpace(sRes2.Value))
+                        {
+                            resolved = sRes2.Value.Trim();
+                        }
+                    }
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrWhiteSpace(resolved))
+            {
+                resolved = !string.IsNullOrWhiteSpace(TenantState.TenantCode) ? TenantState.TenantCode.Trim() : "0010";
+            }
+
+            if (!string.Equals(currentTenantCode, resolved, StringComparison.OrdinalIgnoreCase) || !hasLoadedRoles)
+            {
+                currentTenantCode = resolved;
+                await LoadRolesAndCatalogAsync();
+                StateHasChanged();
+            }
+        }
+    }
+
+    private void HandleSessionChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            var newTenant = TenantState.TenantCode?.Trim() ?? "";
+            if (!string.IsNullOrWhiteSpace(newTenant) && !string.Equals(newTenant, currentTenantCode, StringComparison.OrdinalIgnoreCase))
+            {
+                currentTenantCode = newTenant;
+                await LoadRolesAndCatalogAsync();
+                StateHasChanged();
+            }
+        });
+    }
+
+    public void Dispose()
+    {
+        TenantState.OnSessionChanged -= HandleSessionChanged;
     }
 
     private async Task LoadRolesAndCatalogAsync()
     {
         isLoadingRoles = true;
+        StateHasChanged();
         try
         {
+            var effectiveTenant = !string.IsNullOrWhiteSpace(currentTenantCode) 
+                ? currentTenantCode 
+                : (!string.IsNullOrWhiteSpace(TenantState.TenantCode) ? TenantState.TenantCode.Trim() : "0010");
+
             var liveCatalogTask = RoleService.GetMasterCatalogAsync();
-            var rolesTask = RoleService.GetRolesAsync();
+            var rolesTask = RoleService.GetRolesAsync(effectiveTenant);
 
             await Task.WhenAll(liveCatalogTask, rolesTask);
 
@@ -520,7 +610,11 @@
                 masterCatalog = liveCatalogTask.Result;
             }
 
-            rolesList = rolesTask.Result ?? new List<RoleSummaryDto>();
+            var fetchedRoles = rolesTask.Result ?? new List<RoleSummaryDto>();
+            rolesList = fetchedRoles
+                .Where(r => string.IsNullOrEmpty(r.Tenant_code) || string.Equals(r.Tenant_code, effectiveTenant, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            hasLoadedRoles = true;
         }
         catch (Exception ex)
         {
@@ -554,7 +648,8 @@
         permissionSearchQuery = string.Empty;
 
         // Fetch latest role details from API to ensure fresh permission list
-        var fullRole = await RoleService.GetRoleAsync(role.RoleNameGUID);
+        var effectiveTenant = !string.IsNullOrWhiteSpace(currentTenantCode) ? currentTenantCode : TenantState.TenantCode;
+        var fullRole = await RoleService.GetRoleAsync(role.RoleNameGUID, effectiveTenant);
         var assigned = new HashSet<long>(fullRole?.AssignedRoleIds ?? role.AssignedRoleIds);
 
         hierarchyTree = RoleService.BuildHierarchy(masterCatalog, assigned);
@@ -619,14 +714,16 @@
         isSaving = true;
         try
         {
+            var effectiveTenant = !string.IsNullOrWhiteSpace(currentTenantCode) ? currentTenantCode : (!string.IsNullOrWhiteSpace(TenantState.TenantCode) ? TenantState.TenantCode : null);
             var req = new RoleSaveRequest
             {
                 RoleNameGUID = currentRoleGuid,
                 Role_Name = currentRoleName.Trim(),
+                Tenant_code = effectiveTenant,
                 Role_ids = selectedRoleIds
             };
 
-            var (success, newGuid, message) = await RoleService.SaveRoleAsync(req);
+            var (success, newGuid, message) = await RoleService.SaveRoleAsync(req, effectiveTenant);
             if (success)
             {
                 Toast.Success("Role template saved successfully.");
@@ -665,7 +762,8 @@
         isDeleting = true;
         try
         {
-            var (success, message) = await RoleService.DeleteRoleAsync(roleToDelete.RoleNameGUID);
+            var effectiveTenant = !string.IsNullOrWhiteSpace(currentTenantCode) ? currentTenantCode : (!string.IsNullOrWhiteSpace(TenantState.TenantCode) ? TenantState.TenantCode : null);
+            var (success, message) = await RoleService.DeleteRoleAsync(roleToDelete.RoleNameGUID, effectiveTenant);
             if (success)
             {
                 Toast.Success($"Role template '{roleToDelete.Role_Name}' deleted.");

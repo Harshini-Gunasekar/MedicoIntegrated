@@ -40,6 +40,7 @@ namespace Booking.Models
     {
         public Guid? RoleNameGUID { get; set; }
         public string Role_Name { get; set; } = string.Empty;
+        public string? Tenant_code { get; set; }
         public List<long> Role_ids { get; set; } = new();
     }
 

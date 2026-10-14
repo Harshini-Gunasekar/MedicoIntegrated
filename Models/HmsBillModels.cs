@@ -209,5 +209,54 @@ namespace Booking.Models
         public int? enteredbhcode { get; set; }              // branch of the cash counter
         public int? cntcode { get; set; }                    // cash counter code (must have an open shift)
     }
+
+    public class HmsPayModeSourceRow
+    {
+        public string source { get; set; } = "";        // BILL | DUE | ADVANCE
+        public string paymode { get; set; } = "";       // CASH | CARD | UPI | CHEQUE | BANK | MIXED
+        public int receipt_count { get; set; }
+        public int bill_count { get; set; }
+        public double total_collected { get; set; }
+    }
+
+    public class HmsPayModeTotalRow
+    {
+        public string paymode { get; set; } = "";
+        public double bill_amount { get; set; }
+        public double due_amount { get; set; }
+        public double advance_amount { get; set; }
+        public double total { get; set; }
+    }
+
+    public class HmsPayModeCollectionRow
+    {
+        public decimal? pmcode { get; set; }
+        public string? paymode_name { get; set; }
+        public int receipt_count { get; set; }
+        public int bill_count { get; set; }
+        public double total_collected { get; set; }
+        public double percentage { get; set; }          // filled in C#
+    }
+
+    public class HmsPayModeCollectionResponse
+    {
+        public DateTime fromdate { get; set; }
+        public DateTime todate { get; set; }
+        public int? bhcode { get; set; }
+        public int? cntcode { get; set; }
+
+        public double bill_total { get; set; }          // collected at billing
+        public double due_total { get; set; }           // collected through due collection
+        public double advance_total { get; set; }       // advance deposits
+        public double grand_total { get; set; }         // bill + due + advance
+        public double advance_refunded { get; set; }    // refunds paid out
+        public double net_total { get; set; }           // grand_total - advance_refunded
+
+        public List<HmsPayModeTotalRow> by_paymode { get; set; } = new();     // one row per paymode
+        public List<HmsPayModeSourceRow> details { get; set; } = new();       // paymode x source
+
+        public int total_receipts { get; set; }
+        public List<HmsPayModeCollectionRow> items { get; set; } = new();
+    }
 }
 

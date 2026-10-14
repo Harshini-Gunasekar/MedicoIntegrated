@@ -6,6 +6,7 @@
 @using Booking.Services
 @using Newtonsoft.Json
 @using Booking.Models
+@using Booking.Helpers
 @inject BedMasterService BedService
 @inject BlockMasterService BlockService
 @inject FloorMasterService FloorService
@@ -13,6 +14,7 @@
 @inject DoctorService DoctorService
 @inject ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject NavigationManager Navigation
 @inject IpRegistrationService IpService
 @inject RoomTypeMasterService RoomTypeService
@@ -334,8 +336,12 @@
                 </div>
             </div>
 
-            @* Row 4: Is Insurance Patient *@
+            @* Row 4: Reimbursement & Insurance Patient *@
             <div class="um-grid-cols-4">
+                <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 10px;">
+                    <input type="checkbox" id="isreimbursement" @bind="admitRequest.isreimbursementpatient" @bind:after="PrintPayload" style="width: 16px; height: 16px; cursor: pointer;" />
+                    <label for="isreimbursement" style="margin-bottom: 0; cursor: pointer; text-transform: none;">Is Reimbursement Patient</label>
+                </div>
                 <div class="form-group" style="flex-direction: row; align-items: center; gap: 8px; margin-top: 10px;">
                     <input type="checkbox" id="isinsurance" @bind="admitRequest.isinsurancepatient" @bind:after="PrintPayload" style="width: 16px; height: 16px; cursor: pointer;" />
                     <label for="isinsurance" style="margin-bottom: 0; cursor: pointer; text-transform: none;">Is Insurance Patient</label>
@@ -633,21 +639,21 @@
 
                 try
                 {
-                    bool isAdmin = false;
+                    SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                     try
                     {
                         var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
                         if (userResult.Success && userResult.Value != null)
                         {
-                            isAdmin = string.Equals(userResult.Value.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-                                      userResult.Value.UserCode == 0 ||
-                                      userResult.Value.UserCode == 1;
+                            currentUser = userResult.Value;
                         }
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Error checking user details: {ex.Message}");
                     }
+
+                    bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
 
                     if (isAdmin)
                     {
@@ -656,39 +662,44 @@
                     }
                     else
                     {
-                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
+                        List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
+                        try
                         {
-                            var bedsRight = rightsResult.Value.FirstOrDefault(r => 
-                                r.ModuleName != null && 
-                                r.ModuleName.Trim().Equals("Available_Beds", StringComparison.OrdinalIgnoreCase));
-                            
-                            if (bedsRight != null)
+                            var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                            if (rightsResult.Success && rightsResult.Value != null)
                             {
-                                hasViewRight = bedsRight.ToView;
-                                hasEditRight = bedsRight.ToEdit;
-                            }
-                            else
-                            {
-                                hasViewRight = false;
-                                hasEditRight = false;
+                                rightsList = rightsResult.Value;
                             }
                         }
-                        else
+                        catch { }
+
+                        if (rightsList == null || !rightsList.Any())
                         {
-                            hasViewRight = false;
-                            hasEditRight = false;
+                            rightsList = TenantState?.UserRightsList?.ToList();
+                        }
+
+                        var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Available Beds", "Available_Beds", "AvailableBeds");
+                        hasViewRight = r.View;
+                        hasEditRight = r.Edit;
+
+                        if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+                        {
+                            hasViewRight = true;
+                            hasEditRight = true;
                         }
                     }
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"Error checking Available_Beds rights: {ex.Message}");
-                    hasViewRight = false;
-                    hasEditRight = false;
+                    if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+                    {
+                        hasViewRight = true;
+                        hasEditRight = true;
+                    }
                 }
 
-                if (!hasViewRight)
+                if (!hasViewRight && !(await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
                 {
                     ToastService.ShowError("You do not have permission to view available beds.");
                     Navigation.NavigateTo("/home");

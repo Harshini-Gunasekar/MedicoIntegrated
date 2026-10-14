@@ -696,11 +696,13 @@ namespace Booking.Services
 
                 foreach (var client in clientsToTry)
                 {
+                    bool gotValidResponse = false;
                     foreach (var ep in endpoints)
                     {
                         try
                         {
-                            var response = await client.GetAsync(ep);
+                            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(6));
+                            var response = await client.GetAsync(ep, cts.Token);
                             if (response.IsSuccessStatusCode)
                             {
                                 var rawJson = await response.Content.ReadAsStringAsync();
@@ -710,6 +712,7 @@ namespace Booking.Services
                                     if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
                                     {
                                         rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(rawJson, options);
+                                        gotValidResponse = true;
                                     }
                                     else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
                                     {
@@ -717,9 +720,10 @@ namespace Booking.Services
                                             rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(dataProp.GetRawText(), options);
                                         else if (doc.RootElement.TryGetProperty("value", out var valProp))
                                             rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(valProp.GetRawText(), options);
+                                        gotValidResponse = true;
                                     }
 
-                                    if (rawCounters != null && rawCounters.Any())
+                                    if (gotValidResponse)
                                     {
                                         break;
                                     }
@@ -728,7 +732,7 @@ namespace Booking.Services
                         }
                         catch { }
                     }
-                    if (rawCounters != null && rawCounters.Any()) break;
+                    if (gotValidResponse) break;
                 }
 
                 if (rawCounters != null && rawCounters.Any())
@@ -1242,6 +1246,165 @@ namespace Booking.Services
                 Console.WriteLine($"[AutoBillOpAsync] Error: {ex.Message}");
                 return (false, $"Error: {ex.Message}", string.Empty);
             }
+        }
+
+        public async Task<HmsPayModeCollectionResponse?> GetPayModeCollectionReportAsync(
+            DateTime fromDate, 
+            DateTime toDate, 
+            int? bhCode = null, 
+            int? cntCode = null, 
+            string? tenantCode = null, 
+            string? authToken = null)
+        {
+            try
+            {
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                var effectiveAuth = !string.IsNullOrWhiteSpace(authToken) ? authToken : _session?.AuthToken;
+                var client = GetClient(effectiveTenant);
+
+                string fromStr = fromDate.ToString("yyyy-MM-dd");
+                string toStr = toDate.ToString("yyyy-MM-dd");
+                var queryParams = new List<string>
+                {
+                    $"fromdate={fromStr}",
+                    $"todate={toStr}"
+                };
+                if (bhCode.HasValue && bhCode.Value > 0)
+                {
+                    queryParams.Add($"bhcode={bhCode.Value}");
+                }
+                if (cntCode.HasValue && cntCode.Value > 0)
+                {
+                    queryParams.Add($"cntcode={cntCode.Value}");
+                }
+
+                string url = $"api/HmsBilling/reports/paymode-collection?{string.Join("&", queryParams)}";
+                Console.WriteLine($"[HmsBillingService] Calling paymode collection: {url}");
+
+                var baseUrlsToTry = new List<string>();
+                if (client.BaseAddress != null)
+                {
+                    baseUrlsToTry.Add(client.BaseAddress.ToString().TrimEnd('/'));
+                }
+                const string liveMedicoBaseUrl = "http://medicoapi.iscansoft.com";
+                if (!baseUrlsToTry.Any(b => b.Contains("medicoapi.iscansoft.com", StringComparison.OrdinalIgnoreCase)))
+                {
+                    baseUrlsToTry.Add(liveMedicoBaseUrl);
+                }
+
+                HttpResponseMessage? response = null;
+                string? rawJson = null;
+
+                foreach (var bUrl in baseUrlsToTry)
+                {
+                    try
+                    {
+                        var fullUrl = $"{bUrl.TrimEnd('/')}/{url.TrimStart('/')}";
+                        Console.WriteLine($"[HmsBillingService] Calling paymode collection on {fullUrl}");
+
+                        using var reqMsg = new HttpRequestMessage(HttpMethod.Get, fullUrl);
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            reqMsg.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                            reqMsg.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                            reqMsg.Headers.TryAddWithoutValidation("tenant-code", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(effectiveAuth))
+                        {
+                            reqMsg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveAuth);
+                        }
+
+                        using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(8));
+                        var testClient = _clientFactory != null ? _clientFactory.CreateClient() : new HttpClient();
+                        var resp = await testClient.SendAsync(reqMsg, cts.Token);
+                        if (resp.IsSuccessStatusCode)
+                        {
+                            response = resp;
+                            rawJson = await resp.Content.ReadAsStringAsync();
+                            break;
+                        }
+                        else
+                        {
+                            Console.WriteLine($"[HmsBillingService] Paymode request to {fullUrl} returned {resp.StatusCode}");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[HmsBillingService] Error calling {bUrl}: {ex.Message}");
+                    }
+                }
+
+                if (response != null && response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(rawJson))
+                {
+                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var result = System.Text.Json.JsonSerializer.Deserialize<HmsPayModeCollectionResponse>(rawJson, options);
+                    if (result != null)
+                    {
+                        if (result.grand_total <= 0)
+                        {
+                            if (result.by_paymode != null && result.by_paymode.Any())
+                            {
+                                result.grand_total = result.by_paymode.Sum(b => b.total);
+                            }
+                            else if (result.items != null && result.items.Any())
+                            {
+                                result.grand_total = result.items.Sum(i => i.total_collected);
+                            }
+                        }
+
+                        if (result.net_total <= 0 && result.grand_total > 0)
+                        {
+                            result.net_total = result.grand_total - result.advance_refunded;
+                        }
+
+                        if (result.total_receipts <= 0)
+                        {
+                            if (result.details != null && result.details.Any())
+                            {
+                                result.total_receipts = result.details.Sum(d => d.receipt_count);
+                            }
+                            else if (result.items != null && result.items.Any())
+                            {
+                                result.total_receipts = result.items.Sum(i => i.receipt_count);
+                            }
+                        }
+
+                        // Synchronize items from by_paymode if items is empty
+                        if ((result.items == null || !result.items.Any()) && result.by_paymode != null && result.by_paymode.Any())
+                        {
+                            double effectiveTotal = result.net_total > 0 ? result.net_total : result.grand_total;
+                            result.items = result.by_paymode.Select(bp => new HmsPayModeCollectionRow
+                            {
+                                paymode_name = bp.paymode,
+                                total_collected = bp.total,
+                                receipt_count = result.details?.Where(d => string.Equals(d.paymode, bp.paymode, StringComparison.OrdinalIgnoreCase)).Sum(d => d.receipt_count) ?? 0,
+                                bill_count = result.details?.Where(d => string.Equals(d.paymode, bp.paymode, StringComparison.OrdinalIgnoreCase)).Sum(d => d.bill_count) ?? 0,
+                                percentage = effectiveTotal > 0 ? Math.Round((bp.total / effectiveTotal) * 100, 2) : 0
+                            }).ToList();
+                        }
+                        else if (result.items != null && result.items.Any())
+                        {
+                            double effectiveTotal = result.net_total > 0 ? result.net_total : result.grand_total;
+                            if (effectiveTotal > 0)
+                            {
+                                foreach (var item in result.items)
+                                {
+                                    if (item.percentage <= 0 && item.total_collected > 0)
+                                    {
+                                        item.percentage = Math.Round((item.total_collected / effectiveTotal) * 100, 2);
+                                    }
+                                }
+                            }
+                        }
+                        return result;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HmsBillingService] Error fetching paymode collection report: {ex.Message}");
+            }
+            return null;
         }
     }
 }
