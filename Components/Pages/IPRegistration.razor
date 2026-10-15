@@ -7,6 +7,7 @@
 @using Newtonsoft.Json
 @using Booking.Models
 @inject IpRegistrationService IpService
+@inject HmsBillingService HmsBillingService
 @inject DoctorService DoctorService
 @inject FloorMasterService FloorService
 @inject RoomTypeMasterService RoomTypeService
@@ -701,10 +702,94 @@
                 <label>Discharge Summary / Comments</label>
                 <textarea class="filter-control" style="height: 100px; resize: none;" @bind="dischargeRequest.discharge_summary" placeholder="Provide summary of patient status, medication instructions, follow-up advice..."></textarea>
             </div>
+
+            @if (hasUnbilledDischargePending)
+            {
+                <div style="background: #fef2f2; border: 1px solid #fee2e2; border-radius: 8px; padding: 0.75rem; margin-top: 0.85rem; display: flex; flex-direction: column; gap: 0.5rem;">
+                    <div style="display: flex; align-items: flex-start; gap: 0.5rem; color: #991b1b; font-size: 0.83rem; font-weight: 600;">
+                        <i class="bi bi-exclamation-triangle-fill" style="color: #ef4444; margin-top: 1px; flex-shrink: 0;"></i>
+                        <span style="line-height: 1.4;">@(!string.IsNullOrWhiteSpace(unbilledErrorMessage) ? unbilledErrorMessage : "Cannot discharge: unbilled charges are pending. Generate the final bill first.")</span>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; justify-content: flex-end; align-items: center; margin-top: 0.25rem;">
+                        <button type="button" class="btn-modal" style="background: #ef4444; color: #ffffff; border: none; padding: 0.4rem 0.85rem; font-size: 0.82rem; border-radius: 6px; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: 0.35rem;" @onclick="DiscardUnbilledAndDischargeAsync" disabled="@isDiscardingUnbilled">
+                            @if (isDiscardingUnbilled)
+                            {
+                                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                                <span>Discarding...</span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-trash3-fill"></i>
+                                <span>Discard</span>
+                            }
+                        </button>
+                        <button type="button" class="btn-modal" style="background: #2563eb; color: #ffffff; border: none; padding: 0.4rem 0.85rem; font-size: 0.82rem; border-radius: 6px; cursor: pointer; font-weight: 600; display: inline-flex; align-items: center; gap: 0.35rem;" @onclick="NavigateToBillingFromDischarge" disabled="@isDiscardingUnbilled">
+                            <i class="bi bi-receipt"></i>
+                            <span>Billing</span>
+                        </button>
+                    </div>
+                </div>
+            }
         </div>
         <div class="modal-footer">
             <button class="btn-modal cancel" @onclick="CloseDischargeModal">Cancel</button>
-            <button class="btn-modal confirm" @onclick="ExecuteDischarge">Confirm Discharge</button>
+            <button class="btn-modal confirm" @onclick="ExecuteDischarge" disabled="@isDiscardingUnbilled">Confirm Discharge</button>
+        </div>
+    </div>
+}
+
+@* --- UNBILLED CHARGES DISCHARGE PROMPT MODAL --- *@
+@if (showUnbilledDischargePrompt)
+{
+    <div class="modal-backdrop" style="z-index: 1300; background: rgba(15, 23, 42, 0.65); backdrop-filter: blur(4px);" @onclick="CloseUnbilledDischargePrompt"></div>
+    <div class="confirm-card-modal" style="z-index: 1301; max-width: 480px;">
+        <div class="confirm-card-header">
+            <div class="confirm-card-icon red">
+                <i class="bi bi-exclamation-octagon-fill"></i>
+            </div>
+            <div>
+                <h3 class="confirm-card-title">Pending Unbilled Charges</h3>
+                <span class="confirm-card-subtitle">Action required to proceed with discharge</span>
+            </div>
+            <button type="button" class="confirm-card-close" @onclick="CloseUnbilledDischargePrompt" disabled="@isDiscardingUnbilled">&times;</button>
+        </div>
+        <div class="confirm-card-body">
+            @if (selectedDischargeAdmission != null)
+            {
+                <div style="font-size: 0.85rem; color: #1e293b; background: #f8fafc; padding: 0.6rem 0.85rem; border-radius: 8px; border: 1px solid #e2e8f0; display: flex; flex-direction: column; gap: 0.25rem;">
+                    <div><strong>Patient:</strong> @(string.IsNullOrWhiteSpace(selectedDischargeAdmission.patient_name) ? selectedDischargeAdmission.custid.ToString() : selectedDischargeAdmission.patient_name)</div>
+                    @if (!string.IsNullOrWhiteSpace(selectedDischargeAdmission.ip_no))
+                    {
+                        <div><strong>IP No:</strong> @selectedDischargeAdmission.ip_no</div>
+                    }
+                </div>
+            }
+            <div class="confirm-card-warning" style="background: #fef2f2; border-color: #fee2e2; color: #991b1b;">
+                <i class="bi bi-exclamation-triangle-fill" style="color: #ef4444; margin-top: 2px;"></i>
+                <span style="font-size: 0.85rem; line-height: 1.4;">@(!string.IsNullOrWhiteSpace(unbilledErrorMessage) ? unbilledErrorMessage : "Cannot discharge: unbilled charges are pending. Generate the final bill first.")</span>
+            </div>
+            <p style="margin: 0; font-size: 0.88rem; color: #475569; line-height: 1.5;">
+                Unbilled charges must be cleared before discharge. Would you like to <strong>Discard</strong> them or proceed to <strong>Billing</strong>?
+            </p>
+        </div>
+        <div class="confirm-card-footer" style="display: flex; justify-content: flex-end; gap: 0.65rem; align-items: center;">
+            <button type="button" class="btn-confirm-cancel" @onclick="CloseUnbilledDischargePrompt" disabled="@isDiscardingUnbilled">Cancel</button>
+            <button type="button" class="btn-confirm-action red" @onclick="DiscardUnbilledAndDischargeAsync" disabled="@isDiscardingUnbilled" title="Delete unbilled charges and complete discharge">
+                @if (isDiscardingUnbilled)
+                {
+                    <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                    <span>Discarding...</span>
+                }
+                else
+                {
+                    <i class="bi bi-trash3-fill me-1"></i>
+                    <span>Discard</span>
+                }
+            </button>
+            <button type="button" class="btn-confirm-action" style="background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #ffffff;" @onclick="NavigateToBillingFromDischarge" disabled="@isDiscardingUnbilled" title="Go to Billing page">
+                <i class="bi bi-receipt me-1"></i>
+                <span>Billing</span>
+            </button>
         </div>
     </div>
 }
@@ -1803,6 +1888,12 @@
         }
     }
 
+    private bool showUnbilledDischargePrompt = false;
+    private bool hasUnbilledDischargePending = false;
+    private string unbilledErrorMessage = "";
+    private bool isDiscardingUnbilled = false;
+    private IPRegistrationModel.IpRegistrationModel? selectedDischargeAdmission;
+
     private void OpenDischargeModal(IPRegistrationModel.IpRegistrationModel admission)
     {
         if (!hasEditRight)
@@ -1810,6 +1901,10 @@
             ToastService.ShowError("You do not have permission to discharge patients.");
             return;
         }
+        selectedDischargeAdmission = admission;
+        showUnbilledDischargePrompt = false;
+        hasUnbilledDischargePending = false;
+        unbilledErrorMessage = "";
         dischargeRequest = new IPRegistrationModel.DischargeRequest
         {
             ip_id = admission.ip_id,
@@ -1822,8 +1917,166 @@
     private void CloseDischargeModal()
     {
         showDischargeModal = false;
+        showUnbilledDischargePrompt = false;
+        hasUnbilledDischargePending = false;
+        unbilledErrorMessage = "";
         selectResetKey++;
         StateHasChanged();
+    }
+
+    private void CloseUnbilledDischargePrompt()
+    {
+        if (isDiscardingUnbilled) return;
+        showUnbilledDischargePrompt = false;
+        StateHasChanged();
+    }
+
+    private void NavigateToBillingFromDischarge()
+    {
+        showUnbilledDischargePrompt = false;
+        hasUnbilledDischargePending = false;
+        showDischargeModal = false;
+        selectResetKey++;
+
+        var targetIpId = dischargeRequest?.ip_id != null && dischargeRequest.ip_id != Guid.Empty
+            ? dischargeRequest.ip_id
+            : selectedDischargeAdmission?.ip_id;
+
+        if (targetIpId.HasValue && targetIpId.Value != Guid.Empty)
+        {
+            Navigation.NavigateTo($"/billing/{targetIpId.Value}");
+        }
+        else
+        {
+            Navigation.NavigateTo("/billing");
+        }
+    }
+
+    private async Task DiscardUnbilledAndDischargeAsync()
+    {
+        if (isDiscardingUnbilled) return;
+        if (dischargeRequest == null || dischargeRequest.ip_id == Guid.Empty)
+        {
+            ToastService.ShowError("Admission ID is missing.");
+            return;
+        }
+
+        try
+        {
+            isDiscardingUnbilled = true;
+            StateHasChanged();
+
+            var unbilledIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // 1. IP room rent summary calculation & unbilled IDs
+            try
+            {
+                var roomRent = await HmsBillingService.GetIpRoomRentSummaryAsync(dischargeRequest.ip_id);
+                if (roomRent != null)
+                {
+                    foreach (var r in roomRent.Where(x => !string.IsNullOrWhiteSpace(x.unbilledid) && x.billedstatus != true))
+                    {
+                        unbilledIds.Add(r.unbilledid!);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[IPRegistration] Error fetching room rent summary: {ex.Message}");
+            }
+
+            // 2. Fetch visit unbilled charges (registration, consultations, room rent, etc.)
+            try
+            {
+                string? opIdStr = selectedDischargeAdmission?.op_id?.ToString();
+                var visitCharges = await HmsBillingService.GetUnbilledChargesByVisitAsync(opIdStr, dischargeRequest.ip_id);
+                if (visitCharges != null)
+                {
+                    foreach (var vc in visitCharges.Where(x => !string.IsNullOrWhiteSpace(x.unbilledid) && x.billedstatus != true))
+                    {
+                        unbilledIds.Add(vc.unbilledid!);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[IPRegistration] Error fetching visit unbilled charges: {ex.Message}");
+            }
+
+            // 3. Fallback: check all unbilled charges by ip_id if none found yet
+            if (unbilledIds.Count == 0)
+            {
+                try
+                {
+                    var allCharges = await HmsBillingService.GetAllUnbilledChargesAsync(null, dischargeRequest.ip_id.ToString());
+                    if (allCharges != null)
+                    {
+                        foreach (var ac in allCharges.Where(x => !string.IsNullOrWhiteSpace(x.unbilledid) && x.billedstatus != true))
+                        {
+                            unbilledIds.Add(ac.unbilledid!);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[IPRegistration] Error fetching all unbilled charges: {ex.Message}");
+                }
+            }
+
+            var idList = unbilledIds.Where(id => !string.IsNullOrWhiteSpace(id)).Distinct().ToList();
+
+            // 4. Discard unbilled charges
+            if (idList.Count > 0)
+            {
+                var discardResult = await HmsBillingService.DiscardUnbilledChargesAsync(idList);
+                if (discardResult == null || (discardResult.discarded <= 0 && (discardResult.discarded_ids == null || !discardResult.discarded_ids.Any())))
+                {
+                    foreach (var id in idList)
+                    {
+                        try
+                        {
+                            await HmsBillingService.DiscardUnbilledChargeAsync(id);
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            // 5. Complete discharge
+            var (dcSuccess, dcMessage) = await IpService.DischargePatientAsync(dischargeRequest);
+            if (dcSuccess)
+            {
+                ToastService.ShowSuccess("Unbilled charges discarded. Patient discharged successfully.");
+                showUnbilledDischargePrompt = false;
+                hasUnbilledDischargePending = false;
+                showDischargeModal = false;
+                selectResetKey++;
+                await LoadDataAsync();
+                StateHasChanged();
+            }
+            else
+            {
+                if (idList.Count > 0)
+                {
+                    ToastService.ShowWarning($"Unbilled charges discarded. Discharge: {dcMessage}");
+                }
+                else
+                {
+                    ToastService.ShowError(dcMessage);
+                }
+                showUnbilledDischargePrompt = false;
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error discarding charges: {ex.Message}");
+        }
+        finally
+        {
+            isDiscardingUnbilled = false;
+            StateHasChanged();
+        }
     }
 
     private async Task ExecuteDischarge()
@@ -1846,12 +2099,32 @@
             {
                 ToastService.ShowSuccess(message);
                 showDischargeModal = false;
+                showUnbilledDischargePrompt = false;
+                hasUnbilledDischargePending = false;
+                unbilledErrorMessage = "";
+                selectResetKey++;
                 await LoadDataAsync();
                 StateHasChanged();
             }
             else
             {
-                ToastService.ShowError(message);
+                bool isUnbilledOrBalance = !string.IsNullOrWhiteSpace(message) &&
+                    (message.Contains("unbilled", StringComparison.OrdinalIgnoreCase) ||
+                     message.Contains("final bill", StringComparison.OrdinalIgnoreCase) ||
+                     message.Contains("balance", StringComparison.OrdinalIgnoreCase));
+
+                if (isUnbilledOrBalance)
+                {
+                    unbilledErrorMessage = message;
+                    hasUnbilledDischargePending = true;
+                    showUnbilledDischargePrompt = true;
+                    ToastService.ShowError(message);
+                    StateHasChanged();
+                }
+                else
+                {
+                    ToastService.ShowError(message);
+                }
             }
         }
         catch (Exception ex)

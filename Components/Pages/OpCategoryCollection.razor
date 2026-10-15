@@ -1,0 +1,899 @@
+@page "/op-category-collection"
+@page "/billing/op-category-collection"
+@rendermode InteractiveServer
+
+@using System.Text.Json
+@using Booking.Models
+@using Booking.Services
+@using SharedComponents.Rcl.Services
+@using Microsoft.JSInterop
+@using Microsoft.AspNetCore.Components
+
+@inject HmsBillingService BillingService
+@inject DoctorService DoctorService
+@inject CounterMasterService CounterMasterService
+@inject IHttpClientFactory ClientFactory
+@inject TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage SessionStorage
+@inject ToastService ToastService
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject IJSRuntime JS
+@inject NavigationManager NavManager
+
+<PageTitle>Billing Categorization Report | Medico</PageTitle>
+
+<div class="cash-counter-wrapper">
+    <!-- ======================================================== -->
+    <!-- 1. PAGE HEADER (Title on Left, Summary Cards on Right)   -->
+    <!-- ======================================================== -->
+    <div class="page-header">
+        <div class="header-left-group">
+            <div class="header-title-container">
+                <div class="header-title-icon">
+                    <i class="bi bi-pie-chart-fill"></i>
+                </div>
+                <div>
+                    <h1 class="header-title">Billing Categorization</h1>
+                    <div class="header-subtitle">Departmental Category Breakdown &amp; Financial Ledger</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Header Summary Cards (Right Aligned, Generous Space) -->
+        <div class="header-summary-cards">
+            <div class="summary-card bill-card" title="Total OP Visits for Selected Period">
+                <div class="summary-icon">
+                    <i class="bi bi-people-fill"></i>
+                </div>
+                <div class="summary-content">
+                    <div class="summary-label">TOTAL OP VISITS</div>
+                    <div class="summary-value">@(reportData?.total_visits ?? 0)</div>
+                </div>
+            </div>
+
+            <div class="summary-card net-card" title="Total Net Billed Amount (Gross minus Discounts)">
+                <div class="summary-icon">
+                    <i class="bi bi-receipt"></i>
+                </div>
+                <div class="summary-content">
+                    <div class="summary-label">TOTAL NET BILLED</div>
+                    <div class="summary-value">&#8377;@((reportData?.total_net ?? 0).ToString("N2"))</div>
+                </div>
+            </div>
+
+            <div class="summary-card paid-card" title="Total Amount Collected (@EfficiencyPercent.ToString("0.0")% Collection Efficiency)">
+                <div class="summary-icon">
+                    <i class="bi bi-cash-stack"></i>
+                </div>
+                <div class="summary-content">
+                    <div class="summary-label">TOTAL COLLECTED</div>
+                    <div class="summary-value">&#8377;@((reportData?.total_collected ?? 0).ToString("N2"))</div>
+                </div>
+            </div>
+
+            <div class="summary-card due-card" title="Total Outstanding Due Amount">
+                <div class="summary-icon">
+                    <i class="bi bi-exclamation-circle"></i>
+                </div>
+                <div class="summary-content">
+                    <div class="summary-label">OUTSTANDING DUE</div>
+                    <div class="summary-value">&#8377;@((reportData?.total_due ?? 0).ToString("N2"))</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- 2. FILTER SECTION (Matched to Cash Counter Design)       -->
+    <!-- ======================================================== -->
+    <div class="filter-card">
+        <div class="filter-top-bar">
+            <div class="filter-bar-title">
+                <i class="bi bi-funnel-fill text-primary"></i>
+                <span>FILTERS &amp; PARAMETERS</span>
+            </div>
+            <!-- Quick Date Chips -->
+            <div class="quick-date-chips">
+                <button type="button" class="date-chip @(IsActivePreset("today") ? "active" : "")" @onclick='() => SetDatePreset("today")'>Today</button>
+                <button type="button" class="date-chip @(IsActivePreset("yesterday") ? "active" : "")" @onclick='() => SetDatePreset("yesterday")'>Yesterday</button>
+                <button type="button" class="date-chip @(IsActivePreset("this_week") ? "active" : "")" @onclick='() => SetDatePreset("this_week")'>This Week</button>
+                <button type="button" class="date-chip @(IsActivePreset("this_month") ? "active" : "")" @onclick='() => SetDatePreset("this_month")'>This Month</button>
+                <button type="button" class="date-chip @(IsActivePreset("last_30_days") ? "active" : "")" @onclick='() => SetDatePreset("last_30_days")'>Last 30 Days</button>
+            </div>
+        </div>
+
+        <div class="filter-grid">
+            <div class="filter-item">
+                <label>BRANCH</label>
+                <select class="form-select" @bind="selectedBhCode">
+                    <option value="0">All Branches</option>
+                    @foreach (var b in branches)
+                    {
+                        <option value="@b.bh_code">@b.name</option>
+                    }
+                </select>
+            </div>
+
+            <div class="filter-item">
+                <label>CASH COUNTER</label>
+                <select class="form-select" @bind="selectedCntCode">
+                    <option value="0">All Counters</option>
+                    @foreach (var c in FilteredCounters)
+                    {
+                        <option value="@((int)c.cntcode)">@(string.IsNullOrWhiteSpace(c.name) ? $"Counter {c.cntcode}" : c.name)</option>
+                    }
+                </select>
+            </div>
+
+            <div class="filter-item">
+                <label>DOCTOR / CONSULTANT</label>
+                <select class="form-select" @bind="selectedDCode">
+                    <option value="0">All Doctors</option>
+                    @foreach (var d in doctors)
+                    {
+                        <option value="@d.dcode">@d.name</option>
+                    }
+                </select>
+            </div>
+
+            <div class="filter-item">
+                <label>FROM DATE</label>
+                <input type="date" class="form-control" @bind="fromDate" />
+            </div>
+
+            <div class="filter-item">
+                <label>TO DATE</label>
+                <input type="date" class="form-control" @bind="toDate" />
+            </div>
+
+            <div class="filter-item search-item">
+                <label>SEARCH IN TABLE</label>
+                <div class="search-input-wrapper">
+                    <i class="bi bi-search search-icon"></i>
+                    <input type="text" class="form-control"
+                           @bind="searchQuery"
+                           @bind:event="oninput"
+                           placeholder="Search category, service, OP, patient, tokens..." />
+                    @if (!string.IsNullOrEmpty(searchQuery))
+                    {
+                        <i class="bi bi-x-circle search-clear-icon" @onclick='() => searchQuery = ""'></i>
+                    }
+                </div>
+            </div>
+
+            <div class="filter-item action-item">
+                <div class="filter-actions-inline">
+                    <button class="btn-primary" @onclick="ApplyFiltersAsync" disabled="@isLoading">
+                        @if (isLoading)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            <span>Searching...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-search"></i>
+                            <span>Search</span>
+                        }
+                    </button>
+                    <button class="btn-secondary" @onclick="ResetFiltersAsync" disabled="@isLoading" title="Reset Filters">
+                        <i class="bi bi-arrow-clockwise"></i>
+                        <span>Reset</span>
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ======================================================== -->
+    <!-- 3. TABLE CARD (Toggle beside Table Header, No CSV/Print) -->
+    <!-- ======================================================== -->
+    <div class="table-card">
+        <div class="table-header">
+            <div class="table-header-left">
+                <h2 class="table-title">
+                    @if (activeTab == "categories")
+                    {
+                        <span>OP Billing Breakdown</span>
+                    }
+                    else if (activeTab == "services")
+                    {
+                        <span>Service &amp; Procedure Billing Details</span>
+                    }
+                    else
+                    {
+                        <span>Patient OP Visits Ledger</span>
+                    }
+                </h2>
+
+                <!-- Mode Toggle Pills moved right near table header title -->
+                <div class="counter-mode-pills table-mode-pills">
+                    <button type="button" class="mode-pill @(activeTab == "categories" ? "active" : "")" @onclick='() => activeTab = "categories"' title="Category Breakdown">
+                        <i class="bi bi-grid-fill"></i>
+                        <span>Category Breakdown</span>
+                        <span class="badge-count">@(reportData?.categories?.Count ?? 0)</span>
+                    </button>
+                    <button type="button" class="mode-pill @(activeTab == "services" ? "active" : "")" @onclick='() => activeTab = "services"' title="Service Items">
+                        <i class="bi bi-list-check"></i>
+                        <span>Service Items</span>
+                        <span class="badge-count">@(reportData?.services?.Count ?? 0)</span>
+                    </button>
+                    <button type="button" class="mode-pill @(activeTab == "visits" ? "active" : "")" @onclick='() => activeTab = "visits"' title="OP Patient Visits">
+                        <i class="bi bi-person-lines-fill"></i>
+                        <span>OP Patient Visits</span>
+                        <span class="badge-count">@(reportData?.visits?.Count ?? 0)</span>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Table Actions: Refresh button and record count badge only (Export CSV & Print removed) -->
+            <div class="table-actions">
+                <button class="table-btn-action" @onclick="RefreshReportAsync" disabled="@isLoading" title="Refresh all data">
+                    <i class="bi bi-arrow-clockwise @(isLoading ? "spin-icon" : "")"></i>
+                    <span>Refresh</span>
+                </button>
+                <span class="record-count">Total: @CurrentActiveCount records</span>
+            </div>
+        </div>
+
+        <div class="table-responsive">
+            @if (isLoading)
+            {
+                <div class="table-loading-container">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <span class="loading-text">Loading Billing Categorization data...</span>
+                </div>
+            }
+            else if (!string.IsNullOrEmpty(errorMessage))
+            {
+                <div class="table-empty-container text-danger">
+                    <i class="bi bi-exclamation-triangle-fill fs-3 mb-2"></i>
+                    <span class="fw-bold">@errorMessage</span>
+                    <button class="btn btn-outline-primary btn-sm mt-3 px-3" @onclick="RefreshReportAsync">Try Again</button>
+                </div>
+            }
+            else if (reportData == null || (reportData.categories.Count == 0 && reportData.services.Count == 0 && reportData.visits.Count == 0))
+            {
+                <div class="table-empty-container">
+                    <i class="bi bi-inbox fs-3 text-muted mb-2"></i>
+                    <span class="fw-bold text-dark">No Records Found</span>
+                    <span class="text-muted small">No outpatient billing transactions found for the selected date range and criteria.</span>
+                    <button class="btn btn-secondary btn-sm mt-3" @onclick="ResetFiltersAsync">Clear Filters</button>
+                </div>
+            }
+            else
+            {
+                @if (activeTab == "categories")
+                {
+                    <!-- CATEGORIES TABLE -->
+                    <table class="custom-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px;" class="text-center">S.NO</th>
+                                <th>CATEGORY</th>
+                                <th class="text-center">VISITS</th>
+                                <th class="text-center">BILLS</th>
+                                <th class="text-center">ITEMS / QTY</th>
+                                <th class="text-end">GROSS</th>
+                                <th class="text-end">DISCOUNT</th>
+                                <th class="text-end">NET AMOUNT</th>
+                                <th class="text-end">COLLECTED</th>
+                                <th class="text-end">DUE AMOUNT</th>
+                                <th class="text-center">RECOVERY</th>
+                                <th class="text-center" style="width: 100px;">STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{ int catIdx = 1; }
+                            @foreach (var c in FilteredCategories)
+                            {
+                                var eff = c.net_amount > 0 ? (c.collected_amount / c.net_amount) * 100 : 0;
+                                <tr>
+                                    <td class="text-center text-muted font-numeric">@(catIdx++)</td>
+                                    <td>
+                                        <div class="category-name-cell">
+                                            <span class="cat-badge-dot @GetCategoryColorClass(c.category)"></span>
+                                            <span class="category-name-text">@c.category</span>
+                                        </div>
+                                    </td>
+                                    <td class="text-center font-numeric">
+                                        <span class="badge-count-pill">@c.visit_count</span>
+                                    </td>
+                                    <td class="text-center font-numeric">@c.bill_count</td>
+                                    <td class="text-center font-numeric">@c.item_count</td>
+                                    <td class="text-end font-numeric text-muted">&#8377;@c.gross_amount.ToString("N2")</td>
+                                    <td class="text-end font-numeric @(c.discount_amount > 0 ? "text-danger" : "text-muted")">
+                                        @(c.discount_amount > 0 ? $"-₹{c.discount_amount:N2}" : "₹0.00")
+                                    </td>
+                                    <td class="text-end font-numeric font-bold">&#8377;@c.net_amount.ToString("N2")</td>
+                                    <td class="text-end font-numeric text-success font-bold">&#8377;@c.collected_amount.ToString("N2")</td>
+                                    <td class="text-end font-numeric @(c.due_amount > 0 ? "text-danger font-bold" : "text-muted")">
+                                        &#8377;@c.due_amount.ToString("N2")
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="efficiency-badge @(eff >= 100 ? "eff-complete" : eff > 0 ? "eff-partial" : "eff-zero")">
+                                            @eff.ToString("0.0")%
+                                        </span>
+                                    </td>
+                                    <td class="text-center">
+                                        @if (c.due_amount <= 0 && c.net_amount > 0)
+                                        {
+                                            <span class="status-badge settled">Settled</span>
+                                        }
+                                        else if (c.collected_amount > 0 && c.due_amount > 0)
+                                        {
+                                            <span class="status-badge pending">Partial</span>
+                                        }
+                                        else if (c.due_amount > 0)
+                                        {
+                                            <span class="status-badge due">Pending</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="status-badge neutral">Zero Net</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                        <tfoot>
+                            <tr class="table-total-row">
+                                <td colspan="2" class="font-bold">TOTAL SUMMARY (@FilteredCategories.Count Categories)</td>
+                                <td class="text-center font-bold">@FilteredCategories.Sum(x => x.visit_count)</td>
+                                <td class="text-center font-bold">@FilteredCategories.Sum(x => x.bill_count)</td>
+                                <td class="text-center font-bold">@FilteredCategories.Sum(x => x.item_count)</td>
+                                <td class="text-end font-numeric font-bold">&#8377;@FilteredCategories.Sum(x => x.gross_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold">&#8377;@FilteredCategories.Sum(x => x.discount_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold text-primary">&#8377;@FilteredCategories.Sum(x => x.net_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold text-success">&#8377;@FilteredCategories.Sum(x => x.collected_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold text-danger">&#8377;@FilteredCategories.Sum(x => x.due_amount).ToString("N2")</td>
+                                <td class="text-center font-bold">
+                                    @{
+                                        var tNet = FilteredCategories.Sum(x => x.net_amount);
+                                        var tCol = FilteredCategories.Sum(x => x.collected_amount);
+                                        var tEff = tNet > 0 ? (tCol / tNet) * 100 : 0;
+                                    }
+                                    <span class="efficiency-badge eff-complete">@tEff.ToString("0.0")%</span>
+                                </td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                }
+                else if (activeTab == "services")
+                {
+                    <!-- SERVICES TABLE -->
+                    <table class="custom-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px;" class="text-center">S.NO</th>
+                                <th style="width: 100px;">SERVICE ID</th>
+                                <th>SERVICE NAME</th>
+                                <th class="text-center">VISITS</th>
+                                <th class="text-center">ITEMS / QTY</th>
+                                <th>TOKENS</th>
+                                <th class="text-end">NET AMOUNT</th>
+                                <th class="text-end">COLLECTED</th>
+                                <th class="text-end">DUE AMOUNT</th>
+                                <th class="text-center">RECOVERY</th>
+                                <th class="text-center" style="width: 100px;">STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{ int sIdx = 1; }
+                            @foreach (var s in FilteredServices)
+                            {
+                                var eff = s.net_amount > 0 ? (s.collected_amount / s.net_amount) * 100 : 0;
+                                <tr>
+                                    <td class="text-center text-muted font-numeric">@(sIdx++)</td>
+                                    <td>
+                                        <span class="service-id-badge">#@(s.service_id?.ToString() ?? "-")</span>
+                                    </td>
+                                    <td>
+                                        <span class="service-name-text">@s.service_name</span>
+                                    </td>
+                                    <td class="text-center font-numeric">
+                                        <span class="badge-count-pill">@s.visit_count</span>
+                                    </td>
+                                    <td class="text-center font-numeric">@s.item_count</td>
+                                    <td>
+                                        @if (!string.IsNullOrWhiteSpace(s.tokens))
+                                        {
+                                            <div class="tokens-list">
+                                                @foreach (var tok in s.tokens.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Take(5))
+                                                {
+                                                    <span class="token-pill">#@tok</span>
+                                                }
+                                                @if (s.tokens.Split(',').Length > 5)
+                                                {
+                                                    <span class="token-pill more">+@(s.tokens.Split(',').Length - 5)</span>
+                                                }
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">-</span>
+                                        }
+                                    </td>
+                                    <td class="text-end font-numeric font-bold">&#8377;@s.net_amount.ToString("N2")</td>
+                                    <td class="text-end font-numeric text-success font-bold">&#8377;@s.collected_amount.ToString("N2")</td>
+                                    <td class="text-end font-numeric @(s.due_amount > 0 ? "text-danger font-bold" : "text-muted")">
+                                        &#8377;@s.due_amount.ToString("N2")
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="efficiency-badge @(eff >= 100 ? "eff-complete" : eff > 0 ? "eff-partial" : "eff-zero")">
+                                            @eff.ToString("0.0")%
+                                        </span>
+                                    </td>
+                                    <td class="text-center">
+                                        @if (s.due_amount <= 0 && s.net_amount > 0)
+                                        {
+                                            <span class="status-badge settled">Settled</span>
+                                        }
+                                        else if (s.collected_amount > 0 && s.due_amount > 0)
+                                        {
+                                            <span class="status-badge pending">Partial</span>
+                                        }
+                                        else if (s.due_amount > 0)
+                                        {
+                                            <span class="status-badge due">Pending</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="status-badge neutral">Zero Net</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                        <tfoot>
+                            <tr class="table-total-row">
+                                <td colspan="3" class="font-bold">TOTAL SUMMARY (@FilteredServices.Count Services)</td>
+                                <td class="text-center font-bold">@FilteredServices.Sum(x => x.visit_count)</td>
+                                <td class="text-center font-bold">@FilteredServices.Sum(x => x.item_count)</td>
+                                <td></td>
+                                <td class="text-end font-numeric font-bold text-primary">&#8377;@FilteredServices.Sum(x => x.net_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold text-success">&#8377;@FilteredServices.Sum(x => x.collected_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold text-danger">&#8377;@FilteredServices.Sum(x => x.due_amount).ToString("N2")</td>
+                                <td class="text-center font-bold">
+                                    @{
+                                        var tNetS = FilteredServices.Sum(x => x.net_amount);
+                                        var tColS = FilteredServices.Sum(x => x.collected_amount);
+                                        var tEffS = tNetS > 0 ? (tColS / tNetS) * 100 : 0;
+                                    }
+                                    <span class="efficiency-badge eff-complete">@tEffS.ToString("0.0")%</span>
+                                </td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                }
+                else if (activeTab == "visits")
+                {
+                    <!-- VISITS TABLE (Action Column Removed, Clean Non-Zero Category Badges) -->
+                    <table class="custom-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 50px;" class="text-center">S.NO</th>
+                                <th style="width: 130px;">OP NUMBER</th>
+                                <th style="width: 75px;" class="text-center">TOKEN</th>
+                                <th style="width: 140px;">DATE &amp; TIME</th>
+                                <th>PATIENT NAME</th>
+                                <th style="width: 85px;" class="text-center">CUST ID</th>
+                                <th>BILL NUMBERS</th>
+                                <th>CATEGORY BREAKDOWN</th>
+                                <th class="text-end">NET AMOUNT</th>
+                                <th class="text-end">COLLECTED</th>
+                                <th class="text-end">DUE AMOUNT</th>
+                                <th class="text-center" style="width: 100px;">STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @{ int vIdx = 1; }
+                            @foreach (var v in FilteredVisits)
+                            {
+                                var nonZeroCategories = v.net_by_category?
+                                    .Where(kvp => kvp.Value > 0)
+                                    .ToList() ?? new List<KeyValuePair<string, double>>();
+
+                                <tr>
+                                    <td class="text-center text-muted font-numeric">@(vIdx++)</td>
+                                    <td>
+                                        <span class="bill-no">@(string.IsNullOrWhiteSpace(v.op_no) ? "OP Visit" : v.op_no)</span>
+                                    </td>
+                                    <td class="text-center">
+                                        @if (!string.IsNullOrWhiteSpace(v.token_no))
+                                        {
+                                            <span class="token-pill">#@v.token_no</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted">-</span>
+                                        }
+                                    </td>
+                                    <td class="font-numeric text-muted">
+                                        @(v.visit_date?.ToString("dd-MM-yyyy hh:mm tt") ?? "-")
+                                    </td>
+                                    <td>
+                                        <span class="patient-name">@(string.IsNullOrWhiteSpace(v.patient_name) ? "Walk-in Patient" : v.patient_name)</span>
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="custid-pill">@(v.custid?.ToString() ?? "-")</span>
+                                    </td>
+                                    <td>
+                                        @if (!string.IsNullOrWhiteSpace(v.bill_nos))
+                                        {
+                                            <div class="bills-list">
+                                                @foreach (var bNo in v.bill_nos.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                                                {
+                                                    <span class="bill-badge">@bNo</span>
+                                                }
+                                            </div>
+                                        }
+                                        else
+                                        {
+                                            <span class="text-muted small">Not generated</span>
+                                        }
+                                    </td>
+                                    <td>
+                                        <div class="category-chips-list">
+                                            @if (nonZeroCategories.Any())
+                                            {
+                                                @foreach (var kvp in nonZeroCategories)
+                                                {
+                                                    <span class="category-chip @GetCategoryColorClass(kvp.Key)">
+                                                        @kvp.Key: &#8377;@kvp.Value.ToString("0.##")
+                                                    </span>
+                                                }
+                                            }
+                                            else
+                                            {
+                                                <span class="text-muted small">-</span>
+                                            }
+                                        </div>
+                                    </td>
+                                    <td class="text-end font-numeric font-bold">&#8377;@v.net_amount.ToString("N2")</td>
+                                    <td class="text-end font-numeric text-success font-bold">&#8377;@v.collected_amount.ToString("N2")</td>
+                                    <td class="text-end font-numeric @(v.due_amount > 0 ? "text-danger font-bold" : "text-muted")">
+                                        &#8377;@v.due_amount.ToString("N2")
+                                    </td>
+                                    <td class="text-center">
+                                        @if (v.due_amount <= 0 && v.net_amount > 0)
+                                        {
+                                            <span class="status-badge settled">Settled</span>
+                                        }
+                                        else if (v.collected_amount > 0 && v.due_amount > 0)
+                                        {
+                                            <span class="status-badge pending">Partial</span>
+                                        }
+                                        else if (v.due_amount > 0)
+                                        {
+                                            <span class="status-badge due">Pending</span>
+                                        }
+                                        else
+                                        {
+                                            <span class="status-badge neutral">Zero Net</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                        <tfoot>
+                            <tr class="table-total-row">
+                                <td colspan="8" class="font-bold">TOTAL SUMMARY (@FilteredVisits.Count Visits)</td>
+                                <td class="text-end font-numeric font-bold text-primary">&#8377;@FilteredVisits.Sum(x => x.net_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold text-success">&#8377;@FilteredVisits.Sum(x => x.collected_amount).ToString("N2")</td>
+                                <td class="text-end font-numeric font-bold text-danger">&#8377;@FilteredVisits.Sum(x => x.due_amount).ToString("N2")</td>
+                                <td></td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                }
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private string DefaultTenant = "0010";
+    private string AuthToken = "";
+
+    // Filters
+    private DateTime fromDate = new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
+    private DateTime toDate = DateTime.Now;
+    private int selectedBhCode = 0;
+    private int selectedCntCode = 0;
+    private int selectedDCode = 0;
+    private string currentPreset = "this_month";
+
+    // View State
+    private string activeTab = "categories";
+    private string searchQuery = "";
+    private bool isLoading = false;
+    private string errorMessage = "";
+
+    // Data
+    private HmsOpCategoryCollectionResponse? reportData;
+    private List<Booking.Models.BranchModel> branches = new();
+    private List<Medico_Backend.Model.CounterMasterModel> counters = new();
+    private List<DoctorMasterModel> doctors = new();
+
+    private int CurrentActiveCount => activeTab switch
+    {
+        "categories" => FilteredCategories.Count,
+        "services" => FilteredServices.Count,
+        "visits" => FilteredVisits.Count,
+        _ => 0
+    };
+
+    private double EfficiencyPercent =>
+        (reportData?.total_net ?? 0) > 0
+            ? Math.Round(((reportData?.total_collected ?? 0) / (reportData?.total_net ?? 1)) * 100, 1)
+            : 0;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadSessionAndTenantAsync();
+        await Task.WhenAll(
+            LoadBranchesAsync(),
+            LoadCountersAsync(),
+            LoadDoctorsAsync()
+        );
+        await FetchReportDataAsync();
+    }
+
+    private async Task LoadSessionAndTenantAsync()
+    {
+        try
+        {
+            var tenantResult = await SessionStorage.GetAsync<string>("tenant_code");
+            DefaultTenant = tenantResult.Success && !string.IsNullOrWhiteSpace(tenantResult.Value)
+                ? tenantResult.Value
+                : (TenantState?.TenantCode ?? "0010");
+
+            var tokenResult = await SessionStorage.GetAsync<string>("authToken");
+            if (!tokenResult.Success || string.IsNullOrEmpty(tokenResult.Value))
+            {
+                tokenResult = await SessionStorage.GetAsync<string>("auth_token");
+            }
+            AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : (TenantState?.AuthToken ?? "");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OpCategoryCollection] Session load error: {ex.Message}");
+        }
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            if (!string.IsNullOrEmpty(TenantState?.TenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", TenantState.TenantCode);
+            }
+            if (!string.IsNullOrEmpty(TenantState?.AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", TenantState.AuthToken);
+            }
+
+            var response = await client.GetAsync("api/Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                branches = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                branches = branches.Where(b => !b.deleted).ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OpCategoryCollection] Load branches error: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            var result = await CounterMasterService.GetCountersAsync();
+            counters = (result ?? new List<Medico_Backend.Model.CounterMasterModel>())
+                .Where(c => !c.deleted)
+                .ToList();
+
+            var cntResult = await SessionStorage.GetAsync<string>("cntcode");
+            if (cntResult.Success && int.TryParse(cntResult.Value, out var cCode) && cCode > 0)
+            {
+                if (counters.Any(c => (int)c.cntcode == cCode))
+                {
+                    selectedCntCode = cCode;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OpCategoryCollection] Load counters error: {ex.Message}");
+        }
+    }
+
+    private async Task LoadDoctorsAsync()
+    {
+        try
+        {
+            var list = await DoctorService.GetDoctorsAsync();
+            doctors = list ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OpCategoryCollection] Load doctors error: {ex.Message}");
+        }
+    }
+
+    private IEnumerable<Medico_Backend.Model.CounterMasterModel> FilteredCounters
+    {
+        get
+        {
+            if (counters == null || !counters.Any()) return Enumerable.Empty<Medico_Backend.Model.CounterMasterModel>();
+            if (selectedBhCode > 0)
+            {
+                var branchFiltered = counters.Where(c => c.bhcode == selectedBhCode).ToList();
+                if (branchFiltered.Any()) return branchFiltered;
+            }
+            return counters;
+        }
+    }
+
+    private async Task FetchReportDataAsync()
+    {
+        isLoading = true;
+        errorMessage = "";
+        StateHasChanged();
+
+        try
+        {
+            int? effBh = selectedBhCode > 0 ? selectedBhCode : null;
+            int? effCnt = selectedCntCode > 0 ? selectedCntCode : null;
+            int? effDCode = selectedDCode > 0 ? selectedDCode : null;
+
+            reportData = await BillingService.GetOpCategoryCollectionReportAsync(
+                fromDate,
+                toDate,
+                effBh,
+                effCnt,
+                effDCode,
+                DefaultTenant,
+                AuthToken);
+
+            if (reportData == null)
+            {
+                errorMessage = "Failed to load report data from the server. Please check your connectivity or try again.";
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error: {ex.Message}";
+            ToastService.ShowError(errorMessage);
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        await FetchReportDataAsync();
+    }
+
+    private async Task RefreshReportAsync()
+    {
+        await FetchReportDataAsync();
+    }
+
+    private async Task ResetFiltersAsync()
+    {
+        fromDate = new DateTime(DateTime.Now.Year, DateTime.Now.Month, 1);
+        toDate = DateTime.Now;
+        selectedBhCode = 0;
+        selectedCntCode = 0;
+        selectedDCode = 0;
+        currentPreset = "this_month";
+        searchQuery = "";
+        await FetchReportDataAsync();
+    }
+
+    private void SetDatePreset(string preset)
+    {
+        currentPreset = preset;
+        var today = DateTime.Today;
+
+        switch (preset)
+        {
+            case "today":
+                fromDate = today;
+                toDate = today;
+                break;
+            case "yesterday":
+                fromDate = today.AddDays(-1);
+                toDate = today.AddDays(-1);
+                break;
+            case "this_week":
+                int diff = (7 + (today.DayOfWeek - DayOfWeek.Monday)) % 7;
+                fromDate = today.AddDays(-1 * diff);
+                toDate = today;
+                break;
+            case "this_month":
+                fromDate = new DateTime(today.Year, today.Month, 1);
+                toDate = today;
+                break;
+            case "last_30_days":
+                fromDate = today.AddDays(-30);
+                toDate = today;
+                break;
+        }
+
+        _ = FetchReportDataAsync();
+    }
+
+    private bool IsActivePreset(string preset) => currentPreset == preset;
+
+    // Filtered lists for view
+    private List<HmsOpCategoryAmountRow> FilteredCategories
+    {
+        get
+        {
+            if (reportData?.categories == null) return new();
+            if (string.IsNullOrWhiteSpace(searchQuery)) return reportData.categories;
+            var q = searchQuery.Trim().ToLowerInvariant();
+            return reportData.categories.Where(c => c.category != null && c.category.ToLowerInvariant().Contains(q)).ToList();
+        }
+    }
+
+    private List<HmsOpServiceAmountRow> FilteredServices
+    {
+        get
+        {
+            if (reportData?.services == null) return new();
+            if (string.IsNullOrWhiteSpace(searchQuery)) return reportData.services;
+            var q = searchQuery.Trim().ToLowerInvariant();
+            return reportData.services.Where(s =>
+                (s.service_name != null && s.service_name.ToLowerInvariant().Contains(q)) ||
+                (s.service_id.HasValue && s.service_id.Value.ToString().Contains(q)) ||
+                (s.tokens != null && s.tokens.ToLowerInvariant().Contains(q))
+            ).ToList();
+        }
+    }
+
+    private List<HmsOpVisitCategoryRow> FilteredVisits
+    {
+        get
+        {
+            if (reportData?.visits == null) return new();
+            if (string.IsNullOrWhiteSpace(searchQuery)) return reportData.visits;
+            var q = searchQuery.Trim().ToLowerInvariant();
+            return reportData.visits.Where(v =>
+                (v.patient_name != null && v.patient_name.ToLowerInvariant().Contains(q)) ||
+                (v.op_no != null && v.op_no.ToLowerInvariant().Contains(q)) ||
+                (v.token_no != null && v.token_no.ToLowerInvariant().Contains(q)) ||
+                (v.bill_nos != null && v.bill_nos.ToLowerInvariant().Contains(q)) ||
+                (v.custid.HasValue && v.custid.Value.ToString().Contains(q))
+            ).ToList();
+        }
+    }
+
+    private string GetCategoryColorClass(string? category)
+    {
+        if (string.IsNullOrEmpty(category)) return "cat-default";
+        var c = category.ToUpperInvariant();
+        if (c.Contains("CONSULT")) return "cat-consult";
+        if (c.Contains("LAB") || c.Contains("INVEST")) return "cat-lab";
+        if (c.Contains("SCAN") || c.Contains("XRAY") || c.Contains("RAD")) return "cat-scan";
+        if (c.Contains("SERVICE") || c.Contains("PROC")) return "cat-service";
+        if (c.Contains("DRESS")) return "cat-dress";
+        if (c.Contains("ECG")) return "cat-ecg";
+        if (c.Contains("PHYSIO")) return "cat-physio";
+        if (c.Contains("PHARM")) return "cat-pharmacy";
+        return "cat-default";
+    }
+}

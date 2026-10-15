@@ -1281,57 +1281,32 @@ namespace Booking.Services
                 string url = $"api/HmsBilling/reports/paymode-collection?{string.Join("&", queryParams)}";
                 Console.WriteLine($"[HmsBillingService] Calling paymode collection: {url}");
 
-                var baseUrlsToTry = new List<string>();
-                if (client.BaseAddress != null)
+                var baseAddress = client.BaseAddress?.ToString().TrimEnd('/') ?? "";
+                var fullUrl = !string.IsNullOrEmpty(baseAddress) ? $"{baseAddress}/{url.TrimStart('/')}" : url;
+                Console.WriteLine($"[HmsBillingService] Calling paymode collection on {fullUrl}");
+
+                using var reqMsg = new HttpRequestMessage(HttpMethod.Get, fullUrl);
+                if (!string.IsNullOrEmpty(effectiveTenant))
                 {
-                    baseUrlsToTry.Add(client.BaseAddress.ToString().TrimEnd('/'));
+                    reqMsg.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenant-code", effectiveTenant);
                 }
-                const string liveMedicoBaseUrl = "http://medicoapi.iscansoft.com";
-                if (!baseUrlsToTry.Any(b => b.Contains("medicoapi.iscansoft.com", StringComparison.OrdinalIgnoreCase)))
+                if (!string.IsNullOrEmpty(effectiveAuth))
                 {
-                    baseUrlsToTry.Add(liveMedicoBaseUrl);
+                    reqMsg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveAuth);
                 }
 
-                HttpResponseMessage? response = null;
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var response = await client.SendAsync(reqMsg, cts.Token);
                 string? rawJson = null;
-
-                foreach (var bUrl in baseUrlsToTry)
+                if (response.IsSuccessStatusCode)
                 {
-                    try
-                    {
-                        var fullUrl = $"{bUrl.TrimEnd('/')}/{url.TrimStart('/')}";
-                        Console.WriteLine($"[HmsBillingService] Calling paymode collection on {fullUrl}");
-
-                        using var reqMsg = new HttpRequestMessage(HttpMethod.Get, fullUrl);
-                        if (!string.IsNullOrEmpty(effectiveTenant))
-                        {
-                            reqMsg.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
-                            reqMsg.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
-                            reqMsg.Headers.TryAddWithoutValidation("tenant-code", effectiveTenant);
-                        }
-                        if (!string.IsNullOrEmpty(effectiveAuth))
-                        {
-                            reqMsg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveAuth);
-                        }
-
-                        using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(8));
-                        var testClient = _clientFactory != null ? _clientFactory.CreateClient() : new HttpClient();
-                        var resp = await testClient.SendAsync(reqMsg, cts.Token);
-                        if (resp.IsSuccessStatusCode)
-                        {
-                            response = resp;
-                            rawJson = await resp.Content.ReadAsStringAsync();
-                            break;
-                        }
-                        else
-                        {
-                            Console.WriteLine($"[HmsBillingService] Paymode request to {fullUrl} returned {resp.StatusCode}");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[HmsBillingService] Error calling {bUrl}: {ex.Message}");
-                    }
+                    rawJson = await response.Content.ReadAsStringAsync();
+                }
+                else
+                {
+                    Console.WriteLine($"[HmsBillingService] Paymode request to {fullUrl} returned {response.StatusCode}");
                 }
 
                 if (response != null && response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(rawJson))
@@ -1406,6 +1381,106 @@ namespace Booking.Services
             }
             return null;
         }
+
+        public async Task<HmsOpCategoryCollectionResponse?> GetOpCategoryCollectionReportAsync(
+            DateTime fromDate,
+            DateTime toDate,
+            int? bhCode = null,
+            int? cntCode = null,
+            int? dCode = null,
+            string? tenantCode = null,
+            string? authToken = null)
+        {
+            try
+            {
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                var effectiveAuth = !string.IsNullOrWhiteSpace(authToken) ? authToken : _session?.AuthToken;
+                var client = GetClient(effectiveTenant);
+
+                string fromStr = fromDate.ToString("yyyy-MM-dd");
+                string toStr = toDate.ToString("yyyy-MM-dd");
+                var queryParams = new List<string>
+                {
+                    $"fromdate={fromStr}",
+                    $"todate={toStr}"
+                };
+                if (bhCode.HasValue && bhCode.Value > 0)
+                {
+                    queryParams.Add($"bhcode={bhCode.Value}");
+                }
+                if (cntCode.HasValue && cntCode.Value > 0)
+                {
+                    queryParams.Add($"cntcode={cntCode.Value}");
+                }
+                if (dCode.HasValue && dCode.Value > 0)
+                {
+                    queryParams.Add($"dcode={dCode.Value}");
+                }
+
+                string url = $"api/HmsBilling/reports/op-category-collection?{string.Join("&", queryParams)}";
+                Console.WriteLine($"[HmsBillingService] Calling op category collection: {url}");
+
+                var baseAddress = client.BaseAddress?.ToString().TrimEnd('/') ?? "";
+                var fullUrl = !string.IsNullOrEmpty(baseAddress) ? $"{baseAddress}/{url.TrimStart('/')}" : url;
+                Console.WriteLine($"[HmsBillingService] Calling op category collection on {fullUrl}");
+
+                using var reqMsg = new HttpRequestMessage(HttpMethod.Get, fullUrl);
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                {
+                    reqMsg.Headers.TryAddWithoutValidation("tenant_code", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenantcode", effectiveTenant);
+                    reqMsg.Headers.TryAddWithoutValidation("tenant-code", effectiveTenant);
+                }
+                if (!string.IsNullOrEmpty(effectiveAuth))
+                {
+                    reqMsg.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveAuth);
+                }
+
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(15));
+                var response = await client.SendAsync(reqMsg, cts.Token);
+                string? rawJson = null;
+                if (response.IsSuccessStatusCode)
+                {
+                    rawJson = await response.Content.ReadAsStringAsync();
+                }
+                else
+                {
+                    Console.WriteLine($"[HmsBillingService] OP category collection request to {fullUrl} returned {response.StatusCode}");
+                }
+
+                if (response != null && response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(rawJson))
+                {
+                    var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                    var result = System.Text.Json.JsonSerializer.Deserialize<HmsOpCategoryCollectionResponse>(rawJson, options);
+                    if (result != null)
+                    {
+                        if (result.total_visits <= 0 && result.visits != null && result.visits.Any())
+                        {
+                            result.total_visits = result.visits.Count;
+                        }
+                        if (result.total_net <= 0 && result.categories != null && result.categories.Any())
+                        {
+                            result.total_net = result.categories.Sum(c => c.net_amount);
+                        }
+                        if (result.total_collected <= 0 && result.categories != null && result.categories.Any())
+                        {
+                            result.total_collected = result.categories.Sum(c => c.collected_amount);
+                        }
+                        if (result.total_due <= 0 && result.categories != null && result.categories.Any())
+                        {
+                            result.total_due = result.categories.Sum(c => c.due_amount);
+                        }
+                        return result;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[HmsBillingService] Error fetching op category collection report: {ex.Message}");
+            }
+            return null;
+        }
     }
 }
+
 

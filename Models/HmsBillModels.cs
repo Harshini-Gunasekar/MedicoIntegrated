@@ -258,5 +258,83 @@ namespace Booking.Models
         public int total_receipts { get; set; }
         public List<HmsPayModeCollectionRow> items { get; set; } = new();
     }
+
+    public class HmsOpCategoryAmountRow
+    {
+        public string category { get; set; } = "";
+        public int visit_count { get; set; }
+        public int bill_count { get; set; }
+        public int item_count { get; set; }
+        public double gross_amount { get; set; }
+        public double discount_amount { get; set; }
+        public double net_amount { get; set; }
+        public double collected_amount { get; set; }
+        public double due_amount { get; set; }
+    }
+
+    public class HmsOpServiceAmountRow
+    {
+        public int? service_id { get; set; }
+        public string service_name { get; set; } = "";
+        public int visit_count { get; set; }
+        public int item_count { get; set; }
+        public string tokens { get; set; } = "";
+        public double net_amount { get; set; }
+        public double collected_amount { get; set; }
+        public double due_amount { get; set; }
+    }
+
+    public class HmsOpVisitCategoryRow
+    {
+        public string op_id { get; set; } = "";
+        public string? op_no { get; set; }
+        public string? token_no { get; set; }
+        public DateTime? visit_date { get; set; }
+        public decimal? custid { get; set; }
+        public string? patient_name { get; set; }
+        public string bill_nos { get; set; } = "";
+        public Dictionary<string, double> net_by_category { get; set; } = new();
+        public Dictionary<string, double> collected_by_category { get; set; } = new();
+        public double net_amount { get; set; }
+        public double collected_amount { get; set; }
+        public double due_amount { get; set; }
+    }
+
+    public class HmsOpCategoryCollectionResponse
+    {
+        public DateTime fromdate { get; set; }
+        public DateTime todate { get; set; }
+        public int? bhcode { get; set; }
+        public int? cntcode { get; set; }
+        public int? dcode { get; set; }
+        public int total_visits { get; set; }
+        public double total_net { get; set; }
+        public double total_collected { get; set; }
+        public double total_due { get; set; }
+        public List<HmsOpCategoryAmountRow> categories { get; set; } = new();
+        public List<HmsOpServiceAmountRow> services { get; set; } = new();
+        public List<HmsOpVisitCategoryRow> visits { get; set; } = new();
+    }
+
+    // internal row used by the query
+    public class HmsOpCategoryLine
+    {
+        public string op_id { get; set; } = "";
+        public string? op_no { get; set; }
+        public string? token_no { get; set; }
+        public DateTime? visit_date { get; set; }
+        public string? patient_name { get; set; }
+        public decimal? custid { get; set; }
+        public string requestguid { get; set; } = "";
+        public string? bill_no { get; set; }
+        public string? item_name { get; set; }
+        public int? service_id { get; set; }
+        public string? service_name { get; set; }
+        public string category { get; set; } = "";
+        public double gross { get; set; }
+        public double net { get; set; }
+        public double paid { get; set; }
+    }
 }
+
 
