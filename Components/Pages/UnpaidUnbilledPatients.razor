@@ -1682,24 +1682,20 @@
                     }
                 }
 
-                // If already billed, ignore any leftover initial consultation / zero amount charges
-                if (isBilledOp)
-                {
-                    matchedCharges = matchedCharges.Where(c => c.billedstatus != true && (c.amount ?? 0) > 0).ToList();
-                }
-                else
-                {
-                    matchedCharges = matchedCharges.Where(c => c.billedstatus != true).ToList();
-                }
+                // Only active unbilled charges with amount > 0 count as unbilled
+                matchedCharges = matchedCharges.Where(c => c.billedstatus != true && (c.amount ?? 0) > 0).ToList();
 
                 bool hasUnbilledCharges = matchedCharges.Any();
+                decimal unbilledTotal = (decimal)matchedCharges.Sum(c => c.amount ?? 0);
+                decimal billBal = (decimal)(bill?.balance_amount ?? 0);
+                decimal totalOutstanding = (hasUnpaidBill ? billBal : 0) + unbilledTotal;
 
-                // An item is unbilled if it has active unbilled charges (billedstatus != true) OR the OP registration hasn't been billed yet
-                bool isUnbilled = isBilledOp ? hasUnbilledCharges : (hasUnbilledCharges || op.unbilled_status != true);
-                bool isUnpaid = isBilledOp ? (hasUnpaidBill || hasUnbilledCharges) : (hasUnbilledCharges || op.paid_status != true || isUnbilled);
+                // An item is unbilled only if it actually has active unbilled charges > 0
+                bool isUnbilled = hasUnbilledCharges && unbilledTotal > 0;
+                bool isUnpaid = (hasUnpaidBill && billBal > 0) || isUnbilled;
 
-                // If the OP was already billed (bill exists or billed_status is BILLED) and has NO unbilled charges and NO unpaid balance, DO NOT DISPLAY!
-                if (isBilledOp && !hasUnbilledCharges && !hasUnpaidBill)
+                // If total outstanding is 0 (no unbilled charges and no unpaid bill balance), DO NOT DISPLAY!
+                if (totalOutstanding <= 0)
                 {
                     continue;
                 }
@@ -1802,23 +1798,20 @@
                     }
                 }
 
-                if (isBilledIp)
-                {
-                    matchedCharges = matchedCharges.Where(c => c.billedstatus != true && (c.amount ?? 0) > 0).ToList();
-                }
-                else
-                {
-                    matchedCharges = matchedCharges.Where(c => c.billedstatus != true).ToList();
-                }
+                // Only active unbilled charges with amount > 0 count as unbilled
+                matchedCharges = matchedCharges.Where(c => c.billedstatus != true && (c.amount ?? 0) > 0).ToList();
 
                 bool hasUnbilledCharges = matchedCharges.Any();
+                decimal unbilledTotal = (decimal)matchedCharges.Sum(c => c.amount ?? 0);
+                decimal billBal = (decimal)(bill?.balance_amount ?? 0);
+                decimal totalOutstanding = (hasUnpaidBill ? billBal : 0) + unbilledTotal;
 
-                // An IP registration is unbilled if no final bill has been generated OR active unbilled charges exist
-                bool isUnbilled = !isBilledIp || hasUnbilledCharges;
-                bool isUnpaid = isBilledIp ? (hasUnpaidBill || hasUnbilledCharges) : true;
+                // An IP registration is unbilled only if it actually has active unbilled charges > 0
+                bool isUnbilled = hasUnbilledCharges && unbilledTotal > 0;
+                bool isUnpaid = (hasUnpaidBill && billBal > 0) || isUnbilled;
 
-                // If the IP registration was already billed and has NO unbilled charges and NO unpaid balance, DO NOT DISPLAY!
-                if (isBilledIp && !hasUnbilledCharges && !hasUnpaidBill)
+                // If the IP registration has NO unbilled charges and NO unpaid balance (total outstanding is 0), DO NOT DISPLAY!
+                if (totalOutstanding <= 0)
                 {
                     continue;
                 }
@@ -1902,11 +1895,16 @@
         // 3. Category Filter
         if (selectedCategory == "UNBILLED")
         {
-            query = query.Where(x => x.IsUnbilled);
+            query = query.Where(x => x.IsUnbilled && x.OutstandingAmount > 0);
         }
         else if (selectedCategory == "UNPAID")
         {
-            query = query.Where(x => x.IsUnpaid);
+            query = query.Where(x => x.IsUnpaid && x.OutstandingAmount > 0);
+        }
+        else
+        {
+            // Category == "ALL": Only show records with outstanding amount > 0
+            query = query.Where(x => x.OutstandingAmount > 0);
         }
 
         // 4. Patient Type Filter (ALL, OP, IP)
@@ -2324,9 +2322,10 @@
         {
             get
             {
-                if (HasBill && !UnbilledCharges.Any()) return "Billed";
-                if (HasBill && UnbilledCharges.Any()) return "Partially Billed";
-                return "Unbilled";
+                if (HasBill && !UnbilledCharges.Any(c => (c.amount ?? 0) > 0)) return "Billed";
+                if (HasBill && UnbilledCharges.Any(c => (c.amount ?? 0) > 0)) return "Partially Billed";
+                if (UnbilledCharges.Any(c => (c.amount ?? 0) > 0)) return "Unbilled";
+                return "Billed";
             }
         }
 
@@ -2334,17 +2333,10 @@
         {
             get
             {
-                if (HasBill)
-                {
-                    if (BillPaidAmount > 0 && OutstandingAmount <= 0) return "Paid";
-                    if (BillPaidAmount > 0 && OutstandingAmount > 0) return "Partially Paid";
-                    if (BillBalanceAmount <= 0 && OutstandingAmount <= 0) return "Paid";
-                    return "Unpaid";
-                }
-                else
-                {
-                    return "Unpaid";
-                }
+                if (OutstandingAmount <= 0) return "Paid";
+                if (HasBill && BillPaidAmount > 0 && OutstandingAmount > 0) return "Partially Paid";
+                if (HasBill && BillBalanceAmount <= 0 && OutstandingAmount <= 0) return "Paid";
+                return "Unpaid";
             }
         }
 
