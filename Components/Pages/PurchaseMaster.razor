@@ -12,6 +12,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject Booking.Services.LabSettingService LabSettingService
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <style>
     @@keyframes blinker {
@@ -1927,6 +1928,41 @@
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
 
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(590) || RoleService.HasAction("Inventory", "Purchase", "View") || RoleService.HasRight("Inventory", "Purchase");
+            hasCreateRight = RoleService.HasRoleId(591) || RoleService.HasAction("Inventory", "Purchase", "Create");
+            hasEditRight = RoleService.HasRoleId(592) || RoleService.HasAction("Inventory", "Purchase", "Edit");
+            hasDeleteRight = RoleService.HasRoleId(593) || RoleService.HasAction("Inventory", "Purchase", "Delete");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Purchase", "Purchase Master", "Purchase_Master", "Purchases", "Purchase Order");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -1934,72 +1970,24 @@
             var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
             DefaultTenant = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
             
-            try
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
             {
-                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                 try
                 {
-                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userResult.Success && userResult.Value != null)
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
                     {
-                        currentUser = userResult.Value;
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                     }
                 }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error checking user details: {ex.Message}");
-                }
-
-                bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
-
-                if (isAdmin)
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
-                    try
-                    {
-                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
-                        {
-                            rightsList = rightsResult.Value;
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error reading rights from session: {ex.Message}");
-                    }
-
-                    var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Purchase", "Purchase_Purchase", "Purchase Purchase", "Purchase Order", "Receive Stock");
-                    hasViewRight = r.View;
-                    hasCreateRight = r.Add;
-                    hasEditRight = r.Edit;
-                    hasDeleteRight = r.Delete;
-                }
+                catch { }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error checking Purchase_Purchase rights: {ex.Message}");
-                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    hasViewRight = false;
-                    hasCreateRight = false;
-                    hasEditRight = false;
-                    hasDeleteRight = false;
-                }
-            }
+
+            EvaluateRights();
 
             if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
             {
@@ -2011,7 +1999,7 @@
 
             if (!hasViewRight)
             {
-                ToastService.ShowError("You do not have permission to access Purchase Purchase.");
+                ToastService.ShowError("You do not have permission to access Purchase.");
                 Nav.NavigateTo("/home");
                 return;
             }

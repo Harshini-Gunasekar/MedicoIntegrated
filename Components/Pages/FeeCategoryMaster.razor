@@ -11,6 +11,7 @@
 @inject IJSRuntime JSRuntime
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Fee Category Master — Medico</PageTitle>
 
@@ -49,10 +50,13 @@
                 }
             </div>
             
-            <button class="btn-new-entry" @onclick="OpenAddModal">
-                <i class="bi bi-plus-lg"></i>
-                <span>Add Fee Category</span>
-            </button>
+            @if (hasCreateRight)
+            {
+                <button class="btn-new-entry" @onclick="OpenAddModal">
+                    <i class="bi bi-plus-lg"></i>
+                    <span>Add Fee Category</span>
+                </button>
+            }
         </div>
     </div>
 
@@ -164,12 +168,22 @@
                                 </td>
                                 <td class="col-actions">
                                     <div class="d-flex justify-content-center gap-2">
-                                        <button type="button" class="lc-circle-btn-32 edit-btn" @onclick="() => OpenEditModal(item)" title="Edit Category">
-                                            <span class="material-symbols-outlined font-18">edit</span>
-                                        </button>
-                                        <button type="button" class="lc-circle-btn-32 delete-btn" @onclick="() => PromptDelete(item)" title="Delete Category">
-                                            <span class="material-symbols-outlined font-18">delete</span>
-                                        </button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button type="button" class="lc-circle-btn-32 edit-btn" @onclick="() => OpenEditModal(item)" title="Edit Category">
+                                                <span class="material-symbols-outlined font-18">edit</span>
+                                            </button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button type="button" class="lc-circle-btn-32 delete-btn" @onclick="() => PromptDelete(item)" title="Delete Category">
+                                                <span class="material-symbols-outlined font-18">delete</span>
+                                            </button>
+                                        }
+                                        @if (!hasEditRight && !hasDeleteRight)
+                                        {
+                                            <span class="text-slate-400 font-semibold" style="font-size: 0.75rem;">View Only</span>
+                                        }
                                     </div>
                                 </td>
                             </tr>
@@ -760,9 +774,70 @@
     private bool showDeleteConfirm = false;
     private OtFeeSplitMasterModel? deleteTarget = null;
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(485) || RoleService.HasAction("Operation Theatre", "Fee Categories", "View") || RoleService.HasRight("Operation Theatre", "Fee Categories");
+            hasCreateRight = RoleService.HasRoleId(486) || RoleService.HasAction("Operation Theatre", "Fee Categories", "Create");
+            hasEditRight = RoleService.HasRoleId(487) || RoleService.HasAction("Operation Theatre", "Fee Categories", "Edit");
+            hasDeleteRight = RoleService.HasRoleId(488) || RoleService.HasAction("Operation Theatre", "Fee Categories", "Delete");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Fee Categories", "Fee_Categories", "Operation Theatres", "Fee Category Master");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
     protected override async Task OnInitializedAsync()
     {
+        EvaluateRights();
         await LoadCategoriesAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+                catch { }
+            }
+            EvaluateRights();
+            StateHasChanged();
+        }
     }
 
     private void ToggleActiveStatus()
@@ -819,6 +894,11 @@
 
     private void OpenAddModal()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowWarning("You do not have permission to add fee categories.");
+            return;
+        }
         isEditMode = false;
         isSubmitted = false;
         formFeeTypeId = Guid.Empty;
@@ -829,6 +909,11 @@
 
     private void OpenEditModal(OtFeeSplitMasterModel item)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowWarning("You do not have permission to edit fee categories.");
+            return;
+        }
         isEditMode = true;
         isSubmitted = false;
         formFeeTypeId = item.fee_type_id;
@@ -839,6 +924,17 @@
 
     private async Task SaveCategoryAsync()
     {
+        if (isEditMode && !hasEditRight)
+        {
+            ToastService.ShowWarning("You do not have permission to edit fee categories.");
+            return;
+        }
+        if (!isEditMode && !hasCreateRight)
+        {
+            ToastService.ShowWarning("You do not have permission to create fee categories.");
+            return;
+        }
+
         isSubmitted = true;
         if (string.IsNullOrWhiteSpace(formLabel))
         {
@@ -894,12 +990,22 @@
 
     private void PromptDelete(OtFeeSplitMasterModel item)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowWarning("You do not have permission to delete fee categories.");
+            return;
+        }
         deleteTarget = item;
         showDeleteConfirm = true;
     }
 
     private async Task ExecuteDeleteAsync()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowWarning("You do not have permission to delete fee categories.");
+            return;
+        }
         if (deleteTarget == null) return;
         try
         {

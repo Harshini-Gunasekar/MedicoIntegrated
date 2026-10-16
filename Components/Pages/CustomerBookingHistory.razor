@@ -7,6 +7,8 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Booking.Services.LabSettingService LabSettingService
 @inject IHttpClientFactory ClientFactory
+@inject Booking.Services.RoleMasterService RoleService
+@implements IDisposable
 
 <div class="animated-background">
     <div class="floating-blob blob-1"></div>
@@ -183,13 +185,13 @@
                                                 <div class="action-buttons-cell" style="justify-content: center;">
                                                     @if (book.booking_status == "BOOKED")
                                                     {
-                                                        @if (TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))
+                                                        @if (canEditBooking)
                                                         {
                                                             <button class="btn-table-action reschedule" title="Reschedule Single Slot" @onclick="() => OpenRescheduleModal(book)">
                                                                 <i class="bi bi-calendar2-range"></i>
                                                             </button>
                                                         }
-                                                        @if (TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Delete"))
+                                                        @if (canCancelBooking)
                                                         {
                                                             <button class="btn-table-action cancel" title="Cancel Appointment" @onclick="() => OpenCancelModal(book)">
                                                                 <i class="bi bi-trash"></i>
@@ -631,8 +633,13 @@
     private string rescheduleReason = string.Empty;
     private bool loadingRescheduleSlots = false;
 
+    private bool canEditBooking = true;
+    private bool canCancelBooking = true;
+
     protected override async Task OnInitializedAsync()
     {
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        EvaluateRights();
         await LoadDoctorsAsync();
 
         if (CustIdParam.HasValue && CustIdParam.Value > 0)
@@ -754,6 +761,11 @@
     // Cancellation logic
     private void OpenCancelModal(AppointmentBookingModel booking)
     {
+        if (!canCancelBooking)
+        {
+            ToastService.ShowError("You do not have permission to cancel appointments.");
+            return;
+        }
         selectedBookingToCancel = booking;
         cancelReason = string.Empty;
         showCancelModal = true;
@@ -801,6 +813,11 @@
     // Rescheduling logic
     private async Task OpenRescheduleModal(AppointmentBookingModel booking)
     {
+        if (!canEditBooking)
+        {
+            ToastService.ShowError("You do not have permission to reschedule appointments.");
+            return;
+        }
         selectedBookingToReschedule = booking;
         rescheduleDcode = booking.dcode;
         rescheduleDate = booking.appointment_date.ToDateTime(TimeOnly.MinValue);
@@ -899,5 +916,38 @@
         {
             bookingInProgress = false;
         }
+    }
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = Booking.Helpers.UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            canEditBooking = true;
+            canCancelBooking = true;
+            return;
+        }
+
+        canEditBooking = RoleService.HasPermission(369) ||
+                         TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit") ||
+                         TenantState.HasActionRight("Configuration", "General", "Edit");
+
+        canCancelBooking = RoleService.HasPermission(370, 377) ||
+                           TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Delete") ||
+                           TenantState.HasActionRight("Configuration", "General", "Delete");
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        InvokeAsync(() =>
+        {
+            EvaluateRights();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
     }
 }

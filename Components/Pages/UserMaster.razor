@@ -20,6 +20,7 @@
 @inject LabCare.Services.UserService UserService
 @inject Booking.Services.RoleMasterService RoleService
 @inject Booking.Services.CounterMasterService CounterService
+@inject NavigationManager NavigationManager
 
 @if (!showForm)
 {
@@ -49,7 +50,7 @@
             </div>
 
             <div class="search-controls">
-                @if (TenantState.HasActionRight("Configuration", "General", "Create")) { <button class="btn-new-entry" @onclick="NewUser">+ Add New</button> }
+                @if (hasCreateRight) { <button class="btn-new-entry" @onclick="NewUser">+ Add New</button> }
             </div>
         </div>
     </div>
@@ -154,7 +155,7 @@
                                 </td>
                                 <td><span class="td-narration">@u.description</span></td>
                                 <td class="text-center">
-                                    @if (TenantState.HasActionRight("Configuration", "General", "Edit")) {
+                                    @if (hasEditRight) {
                                     <button type="button" class="btn-action btn-edit" @onclick="() => EditUser(u)" title="Edit User">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
                                             <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5z" />
@@ -164,7 +165,7 @@
                                         <span class="material-symbols-outlined" style="font-size: 15px;">shield_person</span>
                                     </button>
                                     }
-                                    @if (TenantState.HasActionRight("Configuration", "General", "Delete")) {
+                                    @if (hasDeleteRight) {
                                     <button type="button" class="btn-action btn-delete-action" @onclick="() => SoftDeleteUser(u.user_code)" title="Delete">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16">
                                             <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5m3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z" />
@@ -335,7 +336,7 @@ else
                     <span class="material-symbols-outlined">shield_person</span>
                     <span>Role Rights</span>
                     <span class="user-tab-badge @(userSelectedRoleIds.Count > 0 ? "has-count" : "")">
-                        @userSelectedRoleIds.Count / @(masterCatalog.Count > 0 ? masterCatalog.Count : 364)
+                        @userSelectedRoleIds.Count / @(masterCatalog.Count > 0 ? masterCatalog.Count : 376)
                     </span>
                 </button>
 
@@ -726,7 +727,7 @@ else
                             <span class="material-symbols-outlined">verified</span>
                             <div>
                                 <span class="umr-counter-val">@SelectedCount</span>
-                                <span class="umr-counter-max">/ @(masterCatalog.Count > 0 ? masterCatalog.Count : 364)</span>
+                                <span class="umr-counter-max">/ @(masterCatalog.Count > 0 ? masterCatalog.Count : 376)</span>
                                 <span class="umr-counter-lbl">(@SelectedPercent%)</span>
                             </div>
                         </div>
@@ -1043,7 +1044,7 @@ else
     private bool isAllExpanded = true;
 
     private int SelectedCount => userSelectedRoleIds.Count;
-    private double SelectedPercent => Math.Round((double)SelectedCount / Math.Max(1, masterCatalog.Count > 0 ? masterCatalog.Count : 364) * 100, 1);
+    private double SelectedPercent => Math.Round((double)SelectedCount / Math.Max(1, masterCatalog.Count > 0 ? masterCatalog.Count : 376) * 100, 1);
 
     // ── Branch Rights State & Helpers ─────────────────────────────────────────
     private List<Booking.Models.BranchModel> allBranches = new();
@@ -1392,8 +1393,9 @@ else
     {
         try
         {
-            var catalogTask = RoleService.GetMasterCatalogAsync();
-            var rolesTask = RoleService.GetRolesAsync();
+            var effectiveTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : TenantState.TenantCode;
+            var catalogTask = RoleService.GetMasterCatalogAsync(effectiveTenant);
+            var rolesTask = RoleService.GetRolesAsync(effectiveTenant);
             await Task.WhenAll(catalogTask, rolesTask);
 
             if (catalogTask.Result != null && catalogTask.Result.Any())
@@ -1522,6 +1524,56 @@ else
         hierarchyTree = RoleService.BuildHierarchy(masterCatalog, userSelectedRoleIds);
     }
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+
+    private async Task EvaluateRights()
+    {
+        try
+        {
+            if (await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+                hasEditRight = true;
+                hasDeleteRight = true;
+                return;
+            }
+
+            hasViewRight = RoleService.HasRoleId(709) ||
+                           RoleService.HasAction("Admin Portal", "User Master", "View") ||
+                           RoleService.HasAction("User Master", "View") ||
+                           RoleService.HasRight("Admin Portal", "User Master") ||
+                           TenantState.HasActionRight("Admin Portal", "User Master", "View") ||
+                           TenantState.HasActionRight("Admin", "User Master", "View") ||
+                           TenantState.HasActionRight("Configuration", "General", "View");
+
+            hasCreateRight = RoleService.HasRoleId(710) ||
+                             RoleService.HasAction("Admin Portal", "User Master", "Create") ||
+                             RoleService.HasAction("User Master", "Create") ||
+                             TenantState.HasActionRight("Admin Portal", "User Master", "Create") ||
+                             TenantState.HasActionRight("Admin", "User Master", "Create") ||
+                             TenantState.HasActionRight("Configuration", "General", "Create");
+
+            hasEditRight = RoleService.HasRoleId(711) ||
+                           RoleService.HasAction("Admin Portal", "User Master", "Edit") ||
+                           RoleService.HasAction("User Master", "Edit") ||
+                           TenantState.HasActionRight("Admin Portal", "User Master", "Edit") ||
+                           TenantState.HasActionRight("Admin", "User Master", "Edit") ||
+                           TenantState.HasActionRight("Configuration", "General", "Edit");
+
+            hasDeleteRight = RoleService.HasRoleId(712) ||
+                             RoleService.HasAction("Admin Portal", "User Master", "Delete") ||
+                             RoleService.HasAction("User Master", "Delete") ||
+                             TenantState.HasActionRight("Admin Portal", "User Master", "Delete") ||
+                             TenantState.HasActionRight("Admin", "User Master", "Delete") ||
+                             TenantState.HasActionRight("Configuration", "General", "Delete");
+        }
+        catch { }
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -1540,6 +1592,15 @@ else
                 if (!string.IsNullOrEmpty(AuthToken))
                 {
                     TenantState.SetSession(TenantCode, AuthToken, TenantName);
+                    await EvaluateRights();
+
+                    if (!hasViewRight && !(await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+                    {
+                        Toast.ShowError("You do not have permission to view User Master.");
+                        NavigationManager.NavigateTo("/home");
+                        return;
+                    }
+
                     await LoadBranches();
                     await LoadCounters();
                     await LoadUsers();
@@ -1699,6 +1760,12 @@ else
         previewSignatureImageBase64 = "";
         authorizedGroups.Clear();
         selectedGroupCodeToAuthorize = 0;
+        selectedBranchCodes.Clear();
+        userSelectedRoleIds.Clear();
+        selectedTemplateGuid = null;
+        selectedRoleTemplateName = "";
+        permissionSearchQuery = "";
+        SyncHierarchySelections();
         
         try
         {
@@ -2038,11 +2105,27 @@ else
 
             if (response.IsSuccessStatusCode)
             {
-                if (isEditMode && current.user_code > 0)
+                int targetUserCode = current.user_code;
+                if (!isEditMode)
                 {
                     try
                     {
-                        await RoleService.SaveUserRolesAsync(current.user_code, userSelectedRoleIds.ToList());
+                        var respContent = await response.Content.ReadAsStringAsync();
+                        using var doc = JsonDocument.Parse(respContent);
+                        if (doc.RootElement.TryGetProperty("user_code", out var uc) || doc.RootElement.TryGetProperty("usercode", out uc))
+                        {
+                            targetUserCode = uc.GetInt32();
+                        }
+                    }
+                    catch { }
+                }
+
+                if (targetUserCode > 0 && userSelectedRoleIds.Any())
+                {
+                    try
+                    {
+                        var effectiveTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : TenantState.TenantCode;
+                        await RoleService.SaveUserRolesAsync(targetUserCode, userSelectedRoleIds.ToList(), effectiveTenant);
                     }
                     catch (Exception ex)
                     {
@@ -2702,25 +2785,46 @@ else
         selectedTemplateGuid = null;
         selectedRoleTemplateName = current.role ?? "";
 
-        // First check if role_ids came with the user from GetAllUsers
-        var getUserResult = AllUsersRaw.FirstOrDefault(x => x.user?.user_code == usercode);
-        if (getUserResult != null && getUserResult.role_ids != null && getUserResult.role_ids.Any())
+        var targetTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : TenantState.TenantCode;
+
+        // 1. Fetch live effective permissions for the specific user and tenant
+        try
         {
-            userSelectedRoleIds = new HashSet<long>(getUserResult.role_ids);
-        }
-        else
-        {
-            try
+            var perms = await RoleService.GetUserEffectivePermissionsAsync(usercode, targetTenant);
+            if (perms != null && perms.Any())
             {
-                var roles = await RoleService.GetUserRolesAsync(usercode);
-                if (roles != null && roles.Any())
+                userSelectedRoleIds = new HashSet<long>(perms.Select(p => p.Role_id));
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[UserMaster] Error loading user effective permissions: {ex.Message}");
+        }
+
+        // 2. Always merge any direct user_roles from GetUserRolesAsync
+        try
+        {
+            var directRoles = await RoleService.GetUserRolesAsync(usercode, targetTenant);
+            if (directRoles != null && directRoles.Any())
+            {
+                foreach (var rId in directRoles)
                 {
-                    userSelectedRoleIds = new HashSet<long>(roles);
+                    userSelectedRoleIds.Add(rId);
                 }
             }
-            catch (Exception ex)
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[UserMaster] Error loading direct user roles: {ex.Message}");
+        }
+
+        // 3. Fallback to user role IDs from raw users if still empty
+        if (!userSelectedRoleIds.Any())
+        {
+            var getUserResult = AllUsersRaw.FirstOrDefault(x => x.user?.user_code == usercode);
+            if (getUserResult != null && getUserResult.role_ids != null && getUserResult.role_ids.Any())
             {
-                Console.WriteLine($"[UserMaster] Error loading user roles: {ex.Message}");
+                userSelectedRoleIds = new HashSet<long>(getUserResult.role_ids);
             }
         }
 

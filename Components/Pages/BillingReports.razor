@@ -2,7 +2,7 @@
 @page "/billingreports"
 @page "/billing/reports"
 @page "/reports"
-@rendermode InteractiveServer
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 
 @using System.Net.Http.Json
 @using System.Text.Json
@@ -18,6 +18,7 @@
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
 @inject Booking.Services.HmsBillingService HmsBillingService
 @inject Booking.Services.CounterMasterService CounterMasterService
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Billing Reports</PageTitle>
 
@@ -181,15 +182,18 @@
                 </div>
 
                 <div class="preview-header-actions">
-                    <button type="button" class="btn-save-pdf" disabled="@(isGeneratingReport || !hasLoadedReport)" @onclick="DownloadCurrentReport">
-                        <i class="bi bi-download me-1"></i>
-                        <span>Save PDF</span>
-                    </button>
+                    @if (hasPrintRight)
+                    {
+                        <button type="button" class="btn-save-pdf" disabled="@(isGeneratingReport || !hasLoadedReport)" @onclick="DownloadCurrentReport">
+                            <i class="bi bi-download me-1"></i>
+                            <span>Save PDF</span>
+                        </button>
 
-                    <button type="button" class="btn-print-report" disabled="@(isGeneratingReport || !hasLoadedReport)" @onclick="PrintCurrentReport">
-                        <i class="bi bi-printer me-1"></i>
-                        <span>Print</span>
-                    </button>
+                        <button type="button" class="btn-print-report" disabled="@(isGeneratingReport || !hasLoadedReport)" @onclick="PrintCurrentReport">
+                            <i class="bi bi-printer me-1"></i>
+                            <span>Print</span>
+                        </button>
+                    }
 
                     <button type="button" class="btn-close-preview" @onclick="ClosePreviewModal" title="Close Preview">
                         <i class="bi bi-x-lg"></i>
@@ -699,11 +703,59 @@
     private List<Medico_Backend.Model.CounterMasterModel> counters = new();
     private string currentLoadedHtml = "";
 
+    private bool hasViewRight = true;
+    private bool hasPrintRight = false;
+
+    private async Task EvaluateRights()
+    {
+        try
+        {
+            if (await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+            {
+                hasViewRight = true;
+                hasPrintRight = true;
+                return;
+            }
+
+            hasViewRight = RoleService.HasRoleId(727) ||
+                           RoleService.HasAction("Billing Portal", "Reports", "Preview Report") ||
+                           RoleService.HasAction("Billing Portal", "Reports", "View") ||
+                           RoleService.HasRight("Billing Portal", "Reports") ||
+                           RoleService.HasRight("Reports") ||
+                           TenantState.HasActionRight("Billing Portal", "Reports", "Preview Report") ||
+                           TenantState.HasActionRight("Billing Portal", "Reports", "View") ||
+                           TenantState.HasActionRight("Billing", "Reports", "View");
+
+            hasPrintRight = RoleService.HasRoleId(728) ||
+                            RoleService.HasAction("Billing Portal", "Reports", "Print Report") ||
+                            RoleService.HasAction("Billing Portal", "Reports", "Print") ||
+                            TenantState.HasActionRight("Billing Portal", "Reports", "Print Report") ||
+                            TenantState.HasActionRight("Billing Portal", "Reports", "Print") ||
+                            TenantState.HasActionRight("Billing", "Reports", "Print");
+        }
+        catch { }
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await LoadSessionAndTenant();
         await LoadBranches();
         await LoadCounters();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await EvaluateRights();
+            if (!hasViewRight && !(await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                ToastService.ShowError("You do not have permission to view Billing Reports.");
+                Nav.NavigateTo("/home");
+                return;
+            }
+            StateHasChanged();
+        }
     }
 
     private async Task LoadSessionAndTenant()
@@ -846,6 +898,12 @@
 
     private async Task OpenReportPreview(string reportKey)
     {
+        if (!hasViewRight)
+        {
+            ToastService.ShowError("You do not have permission to preview reports.");
+            return;
+        }
+
         selectedReportKey = reportKey;
         showPreviewModal = true;
         isGeneratingReport = true;
@@ -914,6 +972,12 @@
 
     private async Task DownloadCurrentReport()
     {
+        if (!hasPrintRight)
+        {
+            ToastService.ShowError("You do not have permission to download reports.");
+            return;
+        }
+
         string cleanTitle = GetReportDisplayName(selectedReportKey).Replace(" ", "_");
         string fileName = $"{cleanTitle}_{selectedFromDate:ddMMyyyy}_{selectedToDate:ddMMyyyy}.pdf";
 
@@ -940,6 +1004,12 @@
 
     private async Task PrintCurrentReport()
     {
+        if (!hasPrintRight)
+        {
+            ToastService.ShowError("You do not have permission to print reports.");
+            return;
+        }
+
         if (!string.IsNullOrWhiteSpace(currentLoadedBase64) || !string.IsNullOrWhiteSpace(currentLoadedHtml))
         {
             await JS.InvokeVoidAsync("printIframePdf", "billingReportModalFrame", currentLoadedBase64 ?? "");

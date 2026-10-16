@@ -11,6 +11,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject NavigationManager NavigationManager
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 
 
@@ -78,33 +79,42 @@
 
                 <!-- Right Aligned Compact Action Buttons -->
                 <div class="d-flex align-items-center gap-2 ms-auto">
-                    <a href="/openingstock" class="btn-report-preview text-decoration-none" title="Opening Stock Import" style="display: inline-flex; align-items: center;">
-                        <i class="bi bi-file-earmark-spreadsheet me-1"></i> <span>Opening Stock</span>
-                    </a>
+                    @if (hasCreateRight)
+                    {
+                        <a href="/openingstock" class="btn-report-preview text-decoration-none" title="Opening Stock Import" style="display: inline-flex; align-items: center;">
+                            <i class="bi bi-file-earmark-spreadsheet me-1"></i> <span>Opening Stock</span>
+                        </a>
+                    }
 
-                    <button class="btn-report-preview" @onclick="() => PreviewStockReport(selectedReportWarehouseCode)" disabled="@isPrinting" title="Preview Stock Report">
-                        @if (isPrinting)
-                        {
-                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                            <span>Loading...</span>
-                        }
-                        else
-                        {
-                            <i class="bi bi-printer me-1"></i> <span>Stock Report</span>
-                        }
-                    </button>
+                    @if (hasPreviewRight)
+                    {
+                        <button class="btn-report-preview" @onclick="() => PreviewStockReport(selectedReportWarehouseCode)" disabled="@isPrinting" title="Preview Stock Report">
+                            @if (isPrinting)
+                            {
+                                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                                <span>Loading...</span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-printer me-1"></i> <span>Stock Report</span>
+                            }
+                        </button>
+                    }
 
-                    <button class="btn-report-download" @onclick="() => PrintStockReportDirect(selectedReportWarehouseCode)" disabled="@isPrintingPdf" title="Print Stock Report">
-                        @if (isPrintingPdf)
-                        {
-                            <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
-                            <span>Printing...</span>
-                        }
-                        else
-                        {
-                            <i class="bi bi-printer me-1"></i> <span>Print Report</span>
-                        }
-                    </button>
+                    @if (hasPrintRight)
+                    {
+                        <button class="btn-report-download" @onclick="() => PrintStockReportDirect(selectedReportWarehouseCode)" disabled="@isPrintingPdf" title="Print Stock Report">
+                            @if (isPrintingPdf)
+                            {
+                                <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
+                                <span>Printing...</span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-printer me-1"></i> <span>Print Report</span>
+                            }
+                        </button>
+                    }
                 </div>
             </div>
 
@@ -453,6 +463,49 @@
     private bool hasCreateRight = true;
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
+    private bool hasPreviewRight = true;
+    private bool hasPrintRight = true;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            hasPreviewRight = true;
+            hasPrintRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(604) || RoleService.HasAction("Inventory", "Stock", "View") || RoleService.HasRight("Inventory", "Stock");
+            hasPreviewRight = RoleService.HasRoleId(605) || RoleService.HasAction("Inventory", "Stock", "Preview Report") || RoleService.HasAction("Inventory", "Stock", "Preview");
+            hasPrintRight = RoleService.HasRoleId(606) || RoleService.HasAction("Inventory", "Stock", "Print Report") || RoleService.HasAction("Inventory", "Stock", "Print");
+            hasCreateRight = RoleService.HasRoleId(607) || RoleService.HasRoleId(608) || RoleService.HasRight("Inventory", "Stock Adjustment");
+            hasEditRight = false;
+            hasDeleteRight = false;
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Stock", "Stock_Stock", "Opening Stock", "Stock Adjustment");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+            hasPreviewRight = r.View;
+            hasPrintRight = r.View && (rightsList?.Any(x => (x.ModuleName?.Contains("Stock", StringComparison.OrdinalIgnoreCase) == true) && x.ToExport) ?? r.View);
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -474,71 +527,28 @@
             
             try
             {
-                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
-                try
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
                 {
-                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userResult.Success && userResult.Value != null)
-                    {
-                        currentUser = userResult.Value;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error checking user details: {ex.Message}");
-                }
-
-                bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
-
-                if (isAdmin)
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
                     try
                     {
-                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
                         {
-                            rightsList = rightsResult.Value;
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                         }
                     }
                     catch { }
-
-                    if (rightsList == null || rightsList.Count == 0)
-                    {
-                        rightsList = TenantState?.UserRightsList?.ToList();
-                    }
-
-                    var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Stock", "Stock_Stock", "Opening Stock", "Stock Adjustment");
-                    hasViewRight = r.View;
-                    hasCreateRight = r.Add;
-                    hasEditRight = r.Edit;
-                    hasDeleteRight = r.Delete;
                 }
+
+                EvaluateRights();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error checking Stock_Stock rights: {ex.Message}");
-                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    hasViewRight = false;
-                    hasCreateRight = false;
-                    hasEditRight = false;
-                    hasDeleteRight = false;
-                }
+                Console.WriteLine($"Error checking Stock rights: {ex.Message}");
             }
 
             if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
@@ -547,6 +557,8 @@
                 hasCreateRight = true;
                 hasEditRight = true;
                 hasDeleteRight = true;
+                hasPreviewRight = true;
+                hasPrintRight = true;
             }
 
             if (!hasViewRight)
@@ -1037,6 +1049,12 @@
 
     private async Task PreviewStockReport(long? warehouseCode)
     {
+        if (!hasPreviewRight)
+        {
+            ToastService.ShowError("You do not have permission to preview stock reports.");
+            return;
+        }
+
         try
         {
             isPrinting = true;
@@ -1066,6 +1084,12 @@
 
     private async Task PrintStockReportDirect(long? warehouseCode)
     {
+        if (!hasPrintRight)
+        {
+            ToastService.ShowError("You do not have permission to print stock reports.");
+            return;
+        }
+
         try
         {
             isPrintingPdf = true;

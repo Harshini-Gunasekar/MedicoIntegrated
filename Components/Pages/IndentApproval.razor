@@ -12,6 +12,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject NavigationManager NavigationManager
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <style>
     @@keyframes blinker {
@@ -450,6 +451,41 @@
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
 
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(602) || RoleService.HasAction("Inventory", "Indent Approval", "View") || RoleService.HasRight("Inventory", "Indent Approval");
+            hasCreateRight = RoleService.HasRoleId(603) || RoleService.HasAction("Inventory", "Indent Approval", "Create");
+            hasEditRight = RoleService.HasRoleId(603) || RoleService.HasAction("Inventory", "Indent Approval", "Create");
+            hasDeleteRight = false;
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Indent Approval", "IndentApproval", "Indent_Approval");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -459,79 +495,43 @@
             
             try
             {
-                bool isAdmin = false;
-                try
+                var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (userResult.Success && userResult.Value != null)
                 {
-                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userResult.Success && userResult.Value != null)
-                    {
-                        LoggedInUserName = userResult.Value.UserName ?? "";
-                        LoggedInUserCode = userResult.Value.UserCode;
-                        if ((!LoggedInUserCode.HasValue || LoggedInUserCode.Value <= 0) && TenantState?.UserCode > 0)
-                        {
-                            LoggedInUserCode = TenantState.UserCode;
-                        }
-                    }
-                    else if (TenantState?.UserCode > 0)
+                    LoggedInUserName = userResult.Value.UserName ?? "";
+                    LoggedInUserCode = userResult.Value.UserCode;
+                    if ((!LoggedInUserCode.HasValue || LoggedInUserCode.Value <= 0) && TenantState?.UserCode > 0)
                     {
                         LoggedInUserCode = TenantState.UserCode;
                     }
-                    isAdmin = await UserPermissionHelper.IsAdminAsync(userResult.Success ? userResult.Value : null, TenantState, _sessionStorage);
                 }
-                catch (Exception ex)
+                else if (TenantState?.UserCode > 0)
                 {
-                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                    LoggedInUserCode = TenantState.UserCode;
                 }
 
-                if (isAdmin)
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
                 {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
                     try
                     {
-                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
                         {
-                            rightsList = rightsResult.Value;
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                         }
                     }
                     catch { }
-
-                    if (rightsList == null || rightsList.Count == 0)
-                    {
-                        rightsList = TenantState?.UserRightsList?.ToList();
-                    }
-
-                    var r = await UserPermissionHelper.GetRightsAsync(null, TenantState, _sessionStorage, rightsList, "Indent Approval", "Indent_Approval");
-                    hasViewRight = r.View;
-                    hasCreateRight = r.Add;
-                    hasEditRight = r.Edit;
-                    hasDeleteRight = r.Delete;
                 }
+
+                EvaluateRights();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error checking Indent_Approval rights: {ex.Message}");
-                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    hasViewRight = false;
-                    hasCreateRight = false;
-                    hasEditRight = false;
-                    hasDeleteRight = false;
-                }
+                Console.WriteLine($"Error checking user details / rights: {ex.Message}");
             }
 
             if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))

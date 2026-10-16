@@ -11,6 +11,7 @@
 @inject Booking.Services.ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Purchase Return</PageTitle>
 
@@ -776,6 +777,41 @@
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
 
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(594) || RoleService.HasAction("Inventory", "Purchase Return", "View") || RoleService.HasRight("Inventory", "Purchase Return");
+            hasCreateRight = RoleService.HasRoleId(595) || RoleService.HasAction("Inventory", "Purchase Return", "Create");
+            hasEditRight = false;
+            hasDeleteRight = false;
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Purchase Return", "PurchaseReturn", "Purchase_Return");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
+
     // Typeahead search tracking per row
     private ReturnItemRow? ActiveSearchRow = null;
     private Dictionary<ReturnItemRow, string> ItemSearchTexts = new();
@@ -793,74 +829,38 @@
             
             try
             {
-                bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
-                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
-                try
+                var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (userResult.Success && userResult.Value != null)
                 {
-                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userResult.Success && userResult.Value != null)
-                    {
-                        currentUser = userResult.Value;
-                        CurrentUserCode = currentUser.UserCode.HasValue && currentUser.UserCode.Value > 0 ? (long)currentUser.UserCode.Value : (TenantState.UserCode > 0 ? TenantState.UserCode : 1);
-                    }
-                    else if (TenantState?.UserCode > 0)
-                    {
-                        CurrentUserCode = TenantState.UserCode;
-                    }
-                    isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
+                    CurrentUserCode = userResult.Value.UserCode.HasValue && userResult.Value.UserCode.Value > 0 ? (long)userResult.Value.UserCode.Value : (TenantState.UserCode > 0 ? TenantState.UserCode : 1);
                 }
-                catch (Exception ex)
+                else if (TenantState?.UserCode > 0)
                 {
-                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                    CurrentUserCode = TenantState.UserCode;
                 }
 
-                if (isAdmin)
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
                 {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
                     try
                     {
-                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
                         {
-                            rightsList = rightsResult.Value;
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                         }
                     }
                     catch { }
-
-                    if (rightsList == null || rightsList.Count == 0)
-                    {
-                        rightsList = TenantState?.UserRightsList?.ToList();
-                    }
-
-                    var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Purchase Return", "Purchase_Return");
-                    hasViewRight = r.View;
-                    hasCreateRight = r.Add;
-                    hasEditRight = r.Edit;
-                    hasDeleteRight = r.Delete;
                 }
+
+                EvaluateRights();
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error checking Purchase_Return rights: {ex.Message}");
-                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    hasViewRight = false;
-                    hasCreateRight = false;
-                }
+                Console.WriteLine($"Error checking user details / rights: {ex.Message}");
             }
 
             if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))

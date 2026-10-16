@@ -17,6 +17,8 @@
 @inject Booking.Services.AppointmentBookingService BookingService
 @inject Booking.Services.IpRegistrationService IpService
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
+@inject Booking.Services.RoleMasterService RoleService
+@implements IDisposable
 @using medico_backend.Model
 
 <div class="bills-wrapper">
@@ -150,18 +152,30 @@
 
         <div class="filter-actions-inline">
             <div class="filter-actions-left">
-                <button class="btn btn-outline" @onclick='() => PrintStatementReport("getop")' disabled="@isPrintingReport" title="Consolidated OP Report">
-                    <i class="bi bi-person-lines-fill" style="color: #4f46e5;"></i> Consolidated OP
-                </button>
-                <button class="btn btn-outline" @onclick='() => PrintStatementReport("getip")' disabled="@isPrintingReport" title="Consolidated IP Report">
-                    <i class="bi bi-hospital" style="color: #9333ea;"></i> Consolidated IP
-                </button>
-                <button class="btn btn-outline" @onclick="PrintLabReportList" disabled="@isPrintingReport" title="Lab Report List">
-                    <i class="bi bi-file-earmark-medical" style="color: #0284c7;"></i> Lab Report List
-                </button>
-                <button class="btn btn-outline" @onclick="PrintOverallConsolidatedReport" disabled="@isPrintingReport" title="Overall Consolidated Bill Report">
-                    <i class="bi bi-receipt" style="color: #059669;"></i> Overall Consolidated Bill
-                </button>
+                @if (canPrintConsolidatedOp)
+                {
+                    <button class="btn btn-outline" @onclick='() => PrintStatementReport("getop")' disabled="@isPrintingReport" title="Consolidated OP Report">
+                        <i class="bi bi-person-lines-fill" style="color: #4f46e5;"></i> Consolidated OP
+                    </button>
+                }
+                @if (canPrintConsolidatedIp)
+                {
+                    <button class="btn btn-outline" @onclick='() => PrintStatementReport("getip")' disabled="@isPrintingReport" title="Consolidated IP Report">
+                        <i class="bi bi-hospital" style="color: #9333ea;"></i> Consolidated IP
+                    </button>
+                }
+                @if (canPrintLabReportList)
+                {
+                    <button class="btn btn-outline" @onclick="PrintLabReportList" disabled="@isPrintingReport" title="Lab Report List">
+                        <i class="bi bi-file-earmark-medical" style="color: #0284c7;"></i> Lab Report List
+                    </button>
+                }
+                @if (canPrintOverallConsolidated)
+                {
+                    <button class="btn btn-outline" @onclick="PrintOverallConsolidatedReport" disabled="@isPrintingReport" title="Overall Consolidated Bill Report">
+                        <i class="bi bi-receipt" style="color: #059669;"></i> Overall Consolidated Bill
+                    </button>
+                }
 
                 <!-- Counts for OP, Dressing, Other Services, and IP for Selected Date Range -->
                 <div class="category-count-container">
@@ -273,25 +287,28 @@
                                                     <i class="bi bi-eye text-primary"></i>
                                                     <span>View Details</span>
                                                 </button>
-                                                <button type="button" class="dropdown-item" @onclick="() => RunAction(() => PrintBillAsync(bill.requestguid, bill))" disabled="@(printingGuid == bill.requestguid)">
-                                                    @if (printingGuid == bill.requestguid)
-                                                    {
-                                                        <span class="spinner-border spinner-border-sm text-success" role="status" style="width: 14px; height: 14px; border-width: 2px; margin-right: 0.5rem; display: inline-block;"></span>
-                                                    }
-                                                    else
-                                                    {
-                                                        <i class="bi bi-printer text-success"></i>
-                                                    }
-                                                    <span>Print Bill</span>
-                                                </button>
-                                                @if (TenantState.HasActionRight("Lab", "Print Lab Result", "Edit"))
+                                                @if (canPrintBill)
+                                                {
+                                                    <button type="button" class="dropdown-item" @onclick="() => RunAction(() => PrintBillAsync(bill.requestguid, bill))" disabled="@(printingGuid == bill.requestguid)">
+                                                        @if (printingGuid == bill.requestguid)
+                                                        {
+                                                            <span class="spinner-border spinner-border-sm text-success" role="status" style="width: 14px; height: 14px; border-width: 2px; margin-right: 0.5rem; display: inline-block;"></span>
+                                                        }
+                                                        else
+                                                        {
+                                                            <i class="bi bi-printer text-success"></i>
+                                                        }
+                                                        <span>Print Bill</span>
+                                                    </button>
+                                                }
+                                                @if (canEditBill)
                                                 {
                                                     <button type="button" class="dropdown-item" @onclick="() => RunAction(() => EditBill(bill.requestguid))">
                                                         <i class="bi bi-pencil text-info"></i>
                                                         <span>Edit Bill</span>
                                                     </button>
                                                 }
-                                                @if (TenantState.HasActionRight("Lab", "Print Lab Result", "Delete"))
+                                                @if (canCancelBill)
                                                 {
                                                     <button type="button" class="dropdown-item" @onclick="() => RunAction(() => CancelBill(bill.requestguid))">
                                                         <i class="bi bi-x-circle text-danger"></i>
@@ -606,6 +623,12 @@
     private HmsBillListResponse? billsList;
     private bool isLoading = false;
     private bool canPrintBill = true;
+    private bool canEditBill = true;
+    private bool canCancelBill = true;
+    private bool canPrintConsolidatedOp = true;
+    private bool canPrintConsolidatedIp = true;
+    private bool canPrintOverallConsolidated = true;
+    private bool canPrintLabReportList = true;
 
     // Totals logic
     private double totalNetAll = 0;
@@ -673,8 +696,11 @@
 
     protected override async Task OnInitializedAsync()
     {
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        EvaluateRights();
         await LoadLoggedInUserAsync();
         await LoadUserPermissionsAsync();
+        EvaluateRights();
         await LoadDoctorsAsync();
         await LoadUsersAsync();
         await LoadOpRegistrationsLookupAsync();
@@ -1442,6 +1468,11 @@
 
     private void EditBill(string? guid)
     {
+        if (!canEditBill)
+        {
+            ToastService.ShowError("You do not have permission to edit bills.");
+            return;
+        }
         if (!string.IsNullOrEmpty(guid))
         {
             Navigation.NavigateTo($"/billing/{guid}");
@@ -1450,6 +1481,11 @@
 
     private async Task CancelBill(string? guid)
     {
+        if (!canCancelBill)
+        {
+            ToastService.ShowError("You do not have permission to cancel bills.");
+            return;
+        }
         if (string.IsNullOrEmpty(guid)) return;
         
         bool confirmed = await JS.InvokeAsync<bool>("confirm", "Are you sure you want to cancel this bill?");
@@ -1457,6 +1493,76 @@
         
         var result = await HmsBillingService.CancelBillAsync(guid, 10, "Cancelled from view bills page");
         await LoadBillsAsync();
+    }
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            canEditBill = true;
+            canCancelBill = true;
+            canPrintConsolidatedOp = true;
+            canPrintConsolidatedIp = true;
+            canPrintOverallConsolidated = true;
+            canPrintLabReportList = true;
+            canPrintBill = true;
+            return;
+        }
+
+        canEditBill = RoleService.HasPermission(500) ||
+                      TenantState.HasActionRight("Billing Portal", "Bill List", "Edit") ||
+                      TenantState.HasActionRight("Lab", "Print Lab Result", "Edit");
+
+        canCancelBill = RoleService.HasPermission(501) ||
+                        TenantState.HasActionRight("Billing Portal", "Bill List", "Delete") ||
+                        TenantState.HasActionRight("Lab", "Print Lab Result", "Delete");
+
+        canPrintConsolidatedOp = RoleService.HasPermission(502) ||
+                                 TenantState.HasActionRight("Billing Portal", "Bill List", "Export") ||
+                                 TenantState.HasActionRight("Billing Portal", "Bill List", "View") ||
+                                 TenantState.HasActionRight("Billing Portal", "Reports", "Print Report") ||
+                                 TenantState.HasActionRight("Lab", "Print Lab Result", "Export") ||
+                                 !RoleService.IsPermissionsLoaded;
+
+        canPrintConsolidatedIp = RoleService.HasPermission(503) ||
+                                 TenantState.HasActionRight("Billing Portal", "Bill List", "Export") ||
+                                 TenantState.HasActionRight("Billing Portal", "Bill List", "View") ||
+                                 TenantState.HasActionRight("Billing Portal", "Reports", "Print Report") ||
+                                 TenantState.HasActionRight("Lab", "Print Lab Result", "Export") ||
+                                 !RoleService.IsPermissionsLoaded;
+
+        canPrintOverallConsolidated = RoleService.HasPermission(504) ||
+                                      TenantState.HasActionRight("Billing Portal", "Bill List", "Export") ||
+                                      TenantState.HasActionRight("Billing Portal", "Bill List", "View") ||
+                                      TenantState.HasActionRight("Billing Portal", "Reports", "Print Report") ||
+                                      TenantState.HasActionRight("Lab", "Print Lab Result", "Export") ||
+                                      !RoleService.IsPermissionsLoaded;
+
+        canPrintLabReportList = RoleService.HasPermission(499, 728) ||
+                                TenantState.HasActionRight("Billing Portal", "Bill List", "Export") ||
+                                TenantState.HasActionRight("Lab", "Print Lab Result", "Export") ||
+                                !RoleService.IsPermissionsLoaded;
+
+        canPrintBill = canPrintBill && (RoleService.HasPermission(499, 502, 503, 504, 728) ||
+                       TenantState.HasActionRight("Billing Portal", "Bill List", "Export") ||
+                       TenantState.HasActionRight("Billing Portal", "Bill List", "View") ||
+                       TenantState.HasActionRight("Lab", "Print Lab Result", "Export") ||
+                       !RoleService.IsPermissionsLoaded);
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        InvokeAsync(() =>
+        {
+            EvaluateRights();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
     }
 
     private void ToggleReportsModal()

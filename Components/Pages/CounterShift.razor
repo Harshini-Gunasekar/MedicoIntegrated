@@ -14,9 +14,37 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Booking.Services.LabSettingService LabSettingService
 @inject NavigationManager Nav
+@inject Booking.Services.RoleMasterService RoleService
 @implements IDisposable
 
 <div class="cm-page">
+    @if (!hasViewRight)
+    {
+        <!-- Access Denied Header Card -->
+        <div class="cm-header-card">
+            <div class="cm-header-left">
+                <div class="cm-header-brand">
+                    <div class="cm-header-icon-box" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+                        <i class="bi bi-shield-x"></i>
+                    </div>
+                    <div class="cm-header-text">
+                        <h1 class="cm-title">Counter Shift Management</h1>
+                        <span class="cm-subtitle" style="color: #ef4444; font-weight: 600;"><span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; margin-right: 4px;"></span> ACCESS RESTRICTED</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="alert alert-danger d-flex align-items-center mt-3 p-4 shadow-sm" style="border-radius: 8px;">
+            <i class="bi bi-shield-lock-fill me-3 fs-1 text-danger"></i>
+            <div>
+                <h5 class="alert-heading mb-1 font-bold">Permission Denied</h5>
+                <p class="mb-0 text-muted">You do not have permission to view Counter Shift Management. Please contact your system administrator to assign Role 509 (Billing Portal &gt; Counter Shift &gt; View).</p>
+            </div>
+        </div>
+    }
+    else
+    {
     <!-- Header Card -->
     <div class="cm-header-card">
         <div class="cm-header-left">
@@ -41,8 +69,16 @@
                     <i class="bi bi-plus-circle-fill me-1"></i> Open New Shift
                 </button>
             }
+            else
+            {
+                <button class="cm-btn-new" disabled style="opacity: 0.6; cursor: not-allowed; background: #94a3b8;" title="Permission denied: Role 510 (Billing Portal > Counter Shift > Create) is required to open counter shifts.">
+                    <i class="bi bi-shield-lock-fill me-1"></i> Open New Shift
+                </button>
+            }
         </div>
     </div>
+
+
 
     <!-- Table Card -->
     <div class="cm-table-card">
@@ -125,9 +161,10 @@
             </tbody>
         </table>
     </div>
+    }
 </div>
 
-@if (showCloseConfirmModal && pendingShiftToClose != null)
+@if (showCloseConfirmModal && pendingShiftToClose != null && hasDeleteRight)
 {
     var counterName = counters.FirstOrDefault(c => c.cntcode == pendingShiftToClose.cntcode)?.name ?? $"Counter {pendingShiftToClose.cntcode}";
     <div class="cm-backdrop" style="z-index: 1200; backdrop-filter: blur(4px);" @onclick="CancelCloseModal"></div>
@@ -170,7 +207,7 @@
     </div>
 }
 
-@if (showOpenModal)
+@if (showOpenModal && hasCreateRight)
 {
     <div class="cm-backdrop">
         <div class="cm-modal" style="max-width: 520px;">
@@ -293,6 +330,11 @@
 
     private void OpenOpenModal()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("Permission denied: Role 510 (Billing Portal > Counter Shift > Create) is required to open counter shifts.");
+            return;
+        }
         openRequestDate = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime().Date);
         showOpenModal = true;
     }
@@ -302,110 +344,86 @@
         showOpenModal = false;
     }
 
+    private void EvaluateRights()
+    {
+        bool isAdmin = Booking.Helpers.UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        hasViewRight = RoleService.HasPermission(509) ||
+                       RoleService.HasRight("Billing Portal", "Counter Shift") ||
+                       TenantState.HasActionRight("Billing Portal", "Counter Shift", "View") ||
+                       TenantState.HasActionRight("Billing", "Counter Shift", "View");
+
+        hasCreateRight = RoleService.HasPermission(510) ||
+                         RoleService.HasAction("Billing Portal", "Counter Shift", "Create") ||
+                         TenantState.HasActionRight("Billing Portal", "Counter Shift", "Create") ||
+                         TenantState.HasActionRight("Billing", "Counter Shift", "Create");
+
+        hasDeleteRight = RoleService.HasPermission(511) ||
+                         RoleService.HasAction("Billing Portal", "Counter Shift", "Delete") ||
+                         TenantState.HasActionRight("Billing Portal", "Counter Shift", "Delete") ||
+                         TenantState.HasActionRight("Billing", "Counter Shift", "Delete");
+    }
+
+    protected override void OnInitialized()
+    {
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        EvaluateRights();
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            bool prevCanView = hasViewRight;
+            EvaluateRights();
+            if (prevCanView != hasViewRight && hasViewRight)
+            {
+                await Task.WhenAll(LoadBranchesAsync(), LoadCountersAsync());
+                await LoadOpenCountersAsync(showWarningIfEmpty: false);
+            }
+            StateHasChanged();
+        });
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
         {
-            try
+            if (!RoleService.IsPermissionsLoaded && !Booking.Helpers.UserPermissionHelper.IsAdmin(null, TenantState))
             {
-                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                 try
                 {
-                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userResult.Success && userResult.Value != null)
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
                     {
-                        currentUser = userResult.Value;
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                     }
                 }
-                catch (Exception ex)
+                catch
                 {
-                    Console.WriteLine($"Error checking user details: {ex.Message}");
-                }
-
-                bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
-
-                if (isAdmin)
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    bool hasTenantRight = TenantState.HasActionRight("Billing Portal", "Counter Shift", "View") ||
-                                          TenantState.HasActionRight("Billing", "Counter Shift", "View");
-
-                    if (hasTenantRight)
+                    if (TenantState.UserCode > 0)
                     {
-                        hasViewRight = true;
-                        hasCreateRight = true;
-                        hasDeleteRight = true;
-                    }
-                    else
-                    {
-                        List<SharedComponents.Rcl.Models.User_Rights>? rightsList = TenantState.UserRightsList as List<SharedComponents.Rcl.Models.User_Rights>;
-                        if (rightsList == null || !rightsList.Any())
-                        {
-                            try
-                            {
-                                var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                                if (rightsResult.Success && rightsResult.Value != null)
-                                {
-                                    rightsList = rightsResult.Value;
-                                }
-                            }
-                            catch { }
-                        }
-
-                        if (rightsList != null && rightsList.Any())
-                        {
-                            var pageRight = rightsList.FirstOrDefault(r => 
-                                r.ModuleName != null && 
-                                (r.ModuleName.Trim().Equals("Counter_Shift", StringComparison.OrdinalIgnoreCase) ||
-                                 r.ModuleName.Trim().Equals("Counter Shift", StringComparison.OrdinalIgnoreCase) ||
-                                 r.ModuleName.Trim().Replace(" ", "").Replace("_", "").Equals("countershift", StringComparison.OrdinalIgnoreCase)));
-                            
-                            if (pageRight != null)
-                            {
-                                hasViewRight = pageRight.ToView;
-                                hasCreateRight = pageRight.ToAdd || true;
-                                hasDeleteRight = pageRight.ToDelete || true;
-                            }
-                            else
-                            {
-                                hasViewRight = true;
-                                hasCreateRight = true;
-                                hasDeleteRight = true;
-                            }
-                        }
-                        else
-                        {
-                            hasViewRight = true;
-                            hasCreateRight = true;
-                            hasDeleteRight = true;
-                        }
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                     }
                 }
             }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error checking Counter_Shift rights: {ex.Message}");
-                hasViewRight = true;
-                hasCreateRight = true;
-                hasDeleteRight = true;
-            }
 
-            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
-            {
-                hasViewRight = true;
-                hasCreateRight = true;
-                hasDeleteRight = true;
-            }
+            EvaluateRights();
 
             if (!hasViewRight)
             {
-                ToastService.ShowError("You do not have permission to access Counter Shift.");
-                Nav.NavigateTo("/home");
+                StateHasChanged();
                 return;
             }
 
@@ -483,6 +501,7 @@
     {
         isDisposed = true;
         _refreshTimer?.Dispose();
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
     }
 
     private async Task LoadBranchesAsync()
@@ -615,6 +634,12 @@
 
     private async Task OpenShift()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("Permission denied: Role 510 (Billing Portal > Counter Shift > Create) is required to open counter shifts.");
+            return;
+        }
+
         if (openRequest.bhcode == 0 || openRequest.cntcode == 0)
         {
             ToastService.ShowError("Please select a valid Branch and Counter.");
@@ -693,6 +718,12 @@
 
     private void CloseShiftInPlace(Booking.Models.CounterTimingDto item)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("Permission denied: Role 511 (Billing Portal > Counter Shift > Delete) is required to close counter shifts.");
+            return;
+        }
+
         bool isFixed = string.Equals(cachedLabSetting?.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase)
                        || string.Equals(item.shift_mode, "FIXED", StringComparison.OrdinalIgnoreCase);
 
@@ -714,6 +745,12 @@
 
     private async Task ConfirmCloseShiftAsync()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("Permission denied: Role 511 (Billing Portal > Counter Shift > Delete) is required to close counter shifts.");
+            return;
+        }
+
         if (pendingShiftToClose == null) return;
         var item = pendingShiftToClose;
         var counterName = counters.FirstOrDefault(c => c.cntcode == item.cntcode)?.name ?? $"Counter {item.cntcode}";

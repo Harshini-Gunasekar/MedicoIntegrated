@@ -14,6 +14,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject Microsoft.Extensions.Configuration.IConfiguration Configuration
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Issue Stock - Inventory Transfer</PageTitle>
 
@@ -883,10 +884,13 @@
                         <button type="button" class="@(IsCardView ? "active" : string.Empty)" @onclick="() => SetView(true)"><i class="bi bi-grid-3x3-gap"></i></button>
                     </div>
 
-                    <button class="add-item-btn" @onclick="AddNewIssue">
-                        <i class="bi bi-plus-lg"></i>
-                        <span class="ms-1">New Issue</span>
-                    </button>
+                    @if (hasCreateRight)
+                    {
+                        <button class="add-item-btn" @onclick="AddNewIssue">
+                            <i class="bi bi-plus-lg"></i>
+                            <span class="ms-1">New Issue</span>
+                        </button>
+                    }
                 </div>
             </div>
 
@@ -947,10 +951,19 @@
                                             <button class="action-btn btn-view" @onclick="() => ViewTransferSlip(trf)" title="View Slip"><i class="bi bi-eye"></i></button>
                                             @if (trf.status == "DRAFT" || trf.status == "PENDING")
                                             {
-                                                <button class="action-btn btn-dispatch" @onclick="() => PromptDispatch(trf)" title="Dispatch Transfer"><i class="bi bi-send-fill"></i></button>
-                                                <button class="action-btn btn-edit" @onclick="() => EditDraft(trf)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                                @if (hasCreateRight)
+                                                {
+                                                    <button class="action-btn btn-dispatch" @onclick="() => PromptDispatch(trf)" title="Dispatch Transfer"><i class="bi bi-send-fill"></i></button>
+                                                }
+                                                @if (hasEditRight)
+                                                {
+                                                    <button class="action-btn btn-edit" @onclick="() => EditDraft(trf)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                                }
                                             }
-                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(trf)" title="Delete"><i class="bi bi-trash"></i></button>
+                                            @if (hasDeleteRight)
+                                            {
+                                                <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(trf)" title="Delete"><i class="bi bi-trash"></i></button>
+                                            }
                                         </td>
                                     </tr>
                                 }
@@ -970,10 +983,19 @@
                                         <button class="action-btn btn-view" @onclick="() => ViewTransferSlip(trf)" title="View Slip"><i class="bi bi-eye"></i></button>
                                         @if (trf.status == "DRAFT" || trf.status == "PENDING")
                                         {
-                                            <button class="action-btn btn-dispatch" @onclick="() => PromptDispatch(trf)" title="Dispatch Transfer"><i class="bi bi-send-fill"></i></button>
-                                            <button class="action-btn btn-edit" @onclick="() => EditDraft(trf)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                            @if (hasCreateRight)
+                                            {
+                                                <button class="action-btn btn-dispatch" @onclick="() => PromptDispatch(trf)" title="Dispatch Transfer"><i class="bi bi-send-fill"></i></button>
+                                            }
+                                            @if (hasEditRight)
+                                            {
+                                                <button class="action-btn btn-edit" @onclick="() => EditDraft(trf)" title="Edit"><i class="bi bi-pencil-square"></i></button>
+                                            }
                                         }
-                                        <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(trf)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button class="action-btn btn-delete" @onclick="() => ConfirmDelete(trf)" title="Delete"><i class="bi bi-trash"></i></button>
+                                        }
                                     </div>
                                 </div>
                                 <div class="item-card-body">
@@ -1558,6 +1580,45 @@
 }
 
 @code {
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+    private bool hasEditRight = true;
+    private bool hasDeleteRight = true;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(609) || RoleService.HasAction("Inventory", "Issue Stock", "View") || RoleService.HasRight("Inventory", "Issue Stock");
+            hasCreateRight = RoleService.HasRoleId(610) || RoleService.HasAction("Inventory", "Issue Stock", "Create");
+            hasEditRight = RoleService.HasRoleId(611) || RoleService.HasAction("Inventory", "Issue Stock", "Edit");
+            hasDeleteRight = RoleService.HasRoleId(612) || RoleService.HasAction("Inventory", "Issue Stock", "Delete");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Issue Stock", "IssueStock", "Issue_Stock");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
     private string DefaultTenant = "TNT001";
     private bool IsLoading = false;
     private bool IsSaving = false;
@@ -1744,6 +1805,47 @@
         IsLoading = false;
     }
 
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+                catch { }
+            }
+
+            EvaluateRights();
+
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+                hasEditRight = true;
+                hasDeleteRight = true;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Issue Stock.");
+                Nav.NavigateTo("/home");
+                return;
+            }
+            StateHasChanged();
+        }
+    }
+
     private HttpClient CreateClient()
     {
         var client = ClientFactory.CreateClient("DoctorApi");
@@ -1761,6 +1863,12 @@
 
     private void AddNewIssue()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to issue stock.");
+            return;
+        }
+
         IsEdit = false;
         InitNewTransfer();
         ShowModal = true;
@@ -1773,12 +1881,24 @@
 
     private void ConfirmDelete(stock_transfer_master trf)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete stock transfers.");
+            return;
+        }
+
         TransferToDelete = trf;
         ShowDeleteConfirm = true;
     }
 
     private void PerformDelete()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete stock transfers.");
+            return;
+        }
+
         if (TransferToDelete != null)
         {
             TransferList.Remove(TransferToDelete);

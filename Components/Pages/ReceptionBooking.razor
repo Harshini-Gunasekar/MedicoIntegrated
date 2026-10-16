@@ -1,4 +1,4 @@
-@page "/booking/reception"
+﻿@page "/booking/reception"
 @rendermode InteractiveServer
 @inject Booking.Services.DoctorService DoctorService
 @inject Booking.Services.AppointmentBookingService BookingService
@@ -9,8 +9,10 @@
 @inject Booking.Services.LabSettingService LabSettingService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject Booking.Services.WalkinStateService WalkinStateSvc
+@inject Booking.Services.RoleMasterService RoleService
 @implements IDisposable
 @using Booking.Helpers
+@using Booking.Models
 @using Medico_Backend.Model
 
 <div class="animated-background">
@@ -39,15 +41,18 @@
             <button class="btn-header-action secondary" @onclick="LoadBookingsAsync" disabled="@loading" style="height: 38px;">
                 <i class="bi bi-arrow-clockwise"></i> Refresh Queue
             </button>
-            @if (labSetting.is_slot_required != false && TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))
+            @if (labSetting.is_slot_required != false && canEditBooking)
             {
                 <button class="btn-header-action secondary" @onclick="OpenRescheduleWholeSlotModal" style="height: 38px;">
                     <i class="bi bi-arrow-left-right"></i> Move Whole Slot
                 </button>
             }
-            <button class="btn-header-action" @onclick="OpenWalkinModal" style="height: 38px;">
-                <i class="bi bi-plus-circle"></i> Add Walk-in
-            </button>
+            @if (canCreateWalkin)
+            {
+                <button class="btn-header-action" @onclick="OpenWalkinModal" style="height: 38px;">
+                    <i class="bi bi-plus-circle"></i> Add Walk-in
+                </button>
+            }
 
             @if (showStatsPopover)
             {
@@ -269,7 +274,7 @@
                                         <select class="status-dropdown @book.booking_status.ToLower()" 
                                                 @key="@($"{book.booking_id}_{selectRefreshKey}")"
                                                 value="@book.booking_status"
-                                                disabled='@(book.booking_status == "CANCELLED" || book.booking_status == "CONFIRMED" || book.booking_status == "RESCHEDULED" || !TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))'
+                                                disabled='@(book.booking_status == "CANCELLED" || book.booking_status == "CONFIRMED" || book.booking_status == "RESCHEDULED" || !canEditBooking)'
                                                 @onchange='(e) => UpdateBookingStatus(book, e.Value?.ToString() ?? "")'>
                                             <option value="BOOKED">Booked</option>
                                             <option value="CONFIRMED">Confirm</option>
@@ -278,7 +283,7 @@
                                             {
                                                 <option value="RESCHEDULED">Rescheduled</option>
                                             }
-                                            @if (book.booking_status == "CANCELLED")
+                                            @if (canCancelBooking || book.booking_status == "CANCELLED")
                                             {
                                                 <option value="CANCELLED">Cancelled</option>
                                             }
@@ -288,13 +293,13 @@
                                         <div class="action-buttons-cell" style="justify-content: center;">
                                             @if (book.booking_status == "BOOKED")
                                             {
-                                                @if (TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit"))
+                                                @if (canEditBooking)
                                                 {
                                                     <button class="btn-table-action reschedule" title="Reschedule Single Slot" @onclick="() => OpenRescheduleModal(book)">
                                                         <i class="bi bi-calendar2-range"></i>
                                                     </button>
                                                 }
-                                                @if (TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Delete"))
+                                                @if (canCancelBooking)
                                                 {
                                                     <button class="btn-table-action cancel" title="Cancel Appointment" @onclick="() => OpenCancelModal(book)">
                                                         <i class="bi bi-trash"></i>
@@ -1052,6 +1057,111 @@
             .ToList();
     }
 
+    // Permission rights
+    private bool hasViewRight = true;
+    private bool canCreateWalkin = true;
+    private bool canEditBooking = true;
+    private bool canCancelBooking = true;
+
+    private bool IsAdmin()
+    {
+        return UserPermissionHelper.IsAdmin(TenantState?.UserData, TenantState);
+    }
+
+    private void EvaluateRights()
+    {
+        if (IsAdmin())
+        {
+            hasViewRight = true;
+            canCreateWalkin = true;
+            canEditBooking = true;
+            canCancelBooking = true;
+            return;
+        }
+
+        // Role 367 / 371: View walkin
+        hasViewRight = RoleService.HasRoleId(367) ||
+                       RoleService.HasRoleId(371) ||
+                       RoleService.HasAction("OP Portal", "Patient check-in", "View walkin") ||
+                       RoleService.HasRight("OP Portal", "Patient check-in") ||
+                       TenantState.HasActionRight("Reception", "Refferal Case & Collection", "View");
+
+        // Role 368 / 372: Create walkin
+        canCreateWalkin = RoleService.HasRoleId(368) ||
+                          RoleService.HasRoleId(372) ||
+                          RoleService.HasAction("OP Portal", "Patient check-in", "Create walkin") ||
+                          TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Create");
+
+        // Role 369: Edit walkin / Reschedule
+        canEditBooking = RoleService.HasRoleId(369) ||
+                         RoleService.HasAction("OP Portal", "Patient check-in", "Edit walkin") ||
+                         TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Edit");
+
+        // Role 370: Delete walkin / Cancel
+        canCancelBooking = RoleService.HasRoleId(370) ||
+                           RoleService.HasAction("OP Portal", "Patient check-in", "Delete walkin") ||
+                           TenantState.HasActionRight("Reception", "Refferal Case & Collection", "Delete");
+    }
+
+    private async Task InitializePermissionsAsync()
+    {
+        try
+        {
+            if (currentUserCode <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+
+            if (!RoleService.IsPermissionsLoaded && !IsAdmin())
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                    }
+                }
+                catch
+                {
+                    await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ReceptionBooking] Error initializing permissions: {ex.Message}");
+        }
+
+        EvaluateRights();
+    }
+
+    private void OnPermissionsChangedHandler()
+    {
+        InvokeAsync(async () =>
+        {
+            bool previousViewRight = hasViewRight;
+            EvaluateRights();
+            if (!previousViewRight && hasViewRight && allBookings.Count == 0)
+            {
+                await LoadBookingsAsync();
+            }
+            StateHasChanged();
+        });
+    }
+
     // Dashboard Statistics Counters
     private int statsTotal = 0;
     private int statsConfirmed = 0;
@@ -1345,6 +1455,15 @@
         {
             currentUserCode = TenantState.UserCode;
         }
+
+        await InitializePermissionsAsync();
+        RoleService.OnPermissionsChanged += OnPermissionsChangedHandler;
+
+        if (!hasViewRight)
+        {
+            return;
+        }
+
         try
         {
             labSetting = await LabSettingService.GetLabSettingAsync() ?? new LabSettingModel();
@@ -1360,9 +1479,11 @@
         {
             if (currentUserCode <= 0)
             {
-                _ = await GetResolvedUserCodeAsync();
+                currentUserCode = await GetResolvedUserCodeAsync();
             }
+            await InitializePermissionsAsync();
             await RestoreWalkinDraftAsync();
+            StateHasChanged();
         }
     }
 
@@ -1646,6 +1767,20 @@
 
     private async Task UpdateBookingStatus(AppointmentBookingModel booking, string newStatus)
     {
+        if (newStatus == "CANCELLED" && !canCancelBooking)
+        {
+            ToastService.ShowWarning("You do not have permission to cancel appointments.");
+            selectRefreshKey++;
+            return;
+        }
+
+        if (!canEditBooking)
+        {
+            ToastService.ShowWarning("You do not have permission to modify appointment status.");
+            selectRefreshKey++;
+            return;
+        }
+
         if (newStatus == "CONFIRMED")
         {
             var today = DateOnly.FromDateTime(DateTime.UtcNow.ToIndianTime());
@@ -1714,6 +1849,8 @@
 
     public void Dispose()
     {
+        RoleService.OnPermissionsChanged -= OnPermissionsChangedHandler;
+
         if (showWalkinModal)
         {
             WalkinStateSvc.ShowWalkinModal = showWalkinModal;
@@ -1905,6 +2042,12 @@
 
     private void OpenWalkinModal()
     {
+        if (!canCreateWalkin)
+        {
+            ToastService.ShowWarning("You do not have permission to create walk-in registrations.");
+            return;
+        }
+
         if (WalkinStateSvc.HasActiveDraft)
         {
             showWalkinModal = true;
@@ -1998,6 +2141,12 @@
 
     private async Task BookWalkinAsync()
     {
+        if (!canCreateWalkin)
+        {
+            ToastService.ShowWarning("You do not have permission to create walk-in registrations.");
+            return;
+        }
+
         if (walkinCustid <= 0 || walkinDcode <= 0) return;
         if (labSetting.is_slot_required != false && selectedWalkinSlot == null)
         {
@@ -2129,6 +2278,12 @@
     // Modal 2: Cancellation logic
     private void OpenCancelModal(AppointmentBookingModel booking)
     {
+        if (!canCancelBooking)
+        {
+            ToastService.ShowWarning("You do not have permission to cancel appointments.");
+            return;
+        }
+
         selectedBookingToCancel = booking;
         cancelReason = string.Empty;
         showCancelModal = true;
@@ -2141,6 +2296,12 @@
 
     private async Task CancelBookingAsync()
     {
+        if (!canCancelBooking)
+        {
+            ToastService.ShowWarning("You do not have permission to cancel appointments.");
+            return;
+        }
+
         if (selectedBookingToCancel == null || string.IsNullOrWhiteSpace(cancelReason)) return;
         bookingInProgress = true;
         try
@@ -2176,6 +2337,12 @@
     // Modal 3: Reschedule single appointment
     private async Task OpenRescheduleModal(AppointmentBookingModel booking)
     {
+        if (!canEditBooking)
+        {
+            ToastService.ShowWarning("You do not have permission to reschedule appointments.");
+            return;
+        }
+
         selectedBookingToReschedule = booking;
         rescheduleDcode = booking.dcode; // Initialize to the original booking's doctor!
         var doc = doctors.FirstOrDefault(d => d.dcode == rescheduleDcode);
@@ -2316,6 +2483,12 @@
     // Modal 4: Reschedule Whole Slot Master (doctor leave or slot migration)
     private void OpenRescheduleWholeSlotModal()
     {
+        if (!canEditBooking)
+        {
+            ToastService.ShowWarning("You do not have permission to move whole slots.");
+            return;
+        }
+
         wholeSourceDcode = 0;
         wholeSrcDoctorSearch = string.Empty;
         showWholeSrcDoctorDropdown = false;

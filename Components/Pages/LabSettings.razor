@@ -9,7 +9,10 @@
 @inject ToastService ToastService
 @inject IJSRuntime JSRuntime
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
-@rendermode InteractiveServer
+@inject Booking.Services.RoleMasterService RoleService
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject NavigationManager NavigationManager
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
 
 <div class="ls-viewport">
     <!-- Top Executive Header Banner -->
@@ -25,18 +28,21 @@
                 </div>
             </div>
             <div class="flex-shrink-0">
-                <button type="button" class="ls-btn-save-hero" @onclick="SaveSettings" disabled="@isSaving">
-                    @if (isSaving)
-                    {
-                        <span class="spinner-border spinner-border-sm me-2" role="status"></span>
-                        <span>Saving Changes...</span>
-                    }
-                    else
-                    {
-                        <i class="bi bi-check2-circle me-2 fs-5"></i>
-                        <span>Save All Changes</span>
-                    }
-                </button>
+                @if (hasEditRight)
+                {
+                    <button type="button" class="ls-btn-save-hero" @onclick="SaveSettings" disabled="@isSaving">
+                        @if (isSaving)
+                        {
+                            <span class="spinner-border spinner-border-sm me-2" role="status"></span>
+                            <span>Saving Changes...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check2-circle me-2 fs-5"></i>
+                            <span>Save All Changes</span>
+                        }
+                    </button>
+                }
             </div>
         </div>
     </header>
@@ -2339,9 +2345,50 @@
     private IBrowserFile? cultureAuth2SigFile;
     private IBrowserFile? cultureAuth3SigFile;
 
-    protected override async Task OnInitializedAsync()
+    private bool hasViewRight = true;
+    private bool hasEditRight = false;
+
+    private async Task EvaluateRights()
     {
-        await LoadSettings();
+        try
+        {
+            if (await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+            {
+                hasViewRight = true;
+                hasEditRight = true;
+                return;
+            }
+
+            hasViewRight = RoleService.HasRoleId(723) ||
+                           RoleService.HasAction("Admin Portal", "Settings", "View") ||
+                           RoleService.HasAction("Settings", "View") ||
+                           RoleService.HasRight("Admin Portal", "Settings") ||
+                           TenantState.HasActionRight("Admin Portal", "Settings", "View") ||
+                           TenantState.HasActionRight("Admin", "Settings", "View") ||
+                           TenantState.HasActionRight("Configuration", "General", "View");
+
+            hasEditRight = RoleService.HasRoleId(724) ||
+                           RoleService.HasAction("Admin Portal", "Settings", "Create") ||
+                           RoleService.HasAction("Admin Portal", "Settings", "Edit") ||
+                           RoleService.HasAction("Settings", "Create") ||
+                           RoleService.HasAction("Settings", "Edit") ||
+                           TenantState.HasActionRight("Admin Portal", "Settings", "Create") ||
+                           TenantState.HasActionRight("Admin Portal", "Settings", "Edit") ||
+                           TenantState.HasActionRight("Admin", "Settings", "Create") ||
+                           TenantState.HasActionRight("Admin", "Settings", "Edit") ||
+                           TenantState.HasActionRight("Configuration", "General", "Create") ||
+                           TenantState.HasActionRight("Configuration", "General", "Edit");
+        }
+        catch { }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadSettings();
+            StateHasChanged();
+        }
     }
 
     private void OnHeaderSelected(InputFileChangeEventArgs e) => headerFile = e.File;
@@ -2398,6 +2445,14 @@
                 }
             }
             catch { }
+
+            await EvaluateRights();
+            if (!hasViewRight && !(await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                ToastService.ShowError("You do not have permission to view Settings.");
+                NavigationManager.NavigateTo("/home");
+                return;
+            }
 
             setting = await LabSettingService.GetLabSettingAsync(forceRefresh: true) ?? new LabSettingModel();
             await LoadTenantLogo();
@@ -2485,6 +2540,12 @@
 
     private async Task SaveSettings()
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to save settings.");
+            return;
+        }
+
         isSaving = true;
         try
         {

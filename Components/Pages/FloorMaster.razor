@@ -15,6 +15,7 @@
 @inject IHttpClientFactory ClientFactory
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -91,6 +92,10 @@
                                             <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => PromptDelete(f.flrcode)" title="Delete">
                                                 <span class="material-symbols-outlined font-18 text-slate-400">delete</span>
                                             </button>
+                                        }
+                                        @if (!hasEditRight && !hasDeleteRight)
+                                        {
+                                            <span class="text-slate-400" style="font-size: 0.75rem; font-weight: 600;">View Only</span>
                                         }
                                     </div>
                                 </td>
@@ -232,9 +237,10 @@
     private string SearchQuery = "";
     private bool showDeleteConfirm = false;
     private int deleteFlrCode = 0;
-    private bool hasCreateRight = true;
-    private bool hasEditRight = true;
-    private bool hasDeleteRight = true;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+    private bool hasViewRight = true;
 
     private IEnumerable<FloorMasterModel> FilteredFloors =>
         floors.Where(f => !f.deleted);
@@ -448,6 +454,36 @@
     private string TenantCode = "";
     private string AuthToken = "";
 
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(448) || RoleService.HasAction("IP Portal", "Floor Master", "View") || RoleService.HasRight("IP Portal", "Floor Master");
+            hasCreateRight = RoleService.HasRoleId(449) || RoleService.HasAction("IP Portal", "Floor Master", "Create");
+            hasEditRight = RoleService.HasRoleId(450) || RoleService.HasAction("IP Portal", "Floor Master", "Edit");
+            hasDeleteRight = RoleService.HasRoleId(451) || RoleService.HasAction("IP Portal", "Floor Master", "Delete");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Floor Master", "Floor_Master", "Floors");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -460,72 +496,29 @@
                 var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
                 AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
 
-                await LoadBranchesAsync();
-
-                try
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
                 {
-                    SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                     try
                     {
-                        var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                        if (userResult.Success && userResult.Value != null)
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
                         {
-                            currentUser = userResult.Value;
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error checking user details: {ex.Message}");
-                    }
-
-                    bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
-
-                    if (isAdmin)
-                    {
-                        hasCreateRight = true;
-                        hasEditRight = true;
-                        hasDeleteRight = true;
-                    }
-                    else
-                    {
-                        List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
-                        try
-                        {
-                            var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                            if (rightsResult.Success && rightsResult.Value != null)
-                            {
-                                rightsList = rightsResult.Value;
-                            }
-                        }
-                        catch { }
-
-                        if (rightsList == null || !rightsList.Any())
-                        {
-                            rightsList = TenantState?.UserRightsList?.ToList();
-                        }
-
-                        var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Floor Master", "Floor_Master", "Floors");
-                        hasCreateRight = r.Add;
-                        hasEditRight = r.Edit;
-                        hasDeleteRight = r.Delete;
-
-                        if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                        {
-                            hasCreateRight = true;
-                            hasEditRight = true;
-                            hasDeleteRight = true;
-                        }
-                    }
+                    catch { }
                 }
-                catch (Exception ex)
+
+                EvaluateRights();
+
+                await LoadBranchesAsync();
+                if (hasViewRight)
                 {
-                    Console.WriteLine($"Error checking Floor_Master rights: {ex.Message}");
-                    if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                    {
-                        hasCreateRight = true;
-                        hasEditRight = true;
-                        hasDeleteRight = true;
-                    }
+                    await LoadFloors();
                 }
 
                 StateHasChanged();

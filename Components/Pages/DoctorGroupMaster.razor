@@ -7,6 +7,9 @@
 @inject DoctorGroupMasterService DoctorGroupService
 @inject ToastService Toast
 @inject NavigationManager NavigationManager
+@inject Booking.Services.RoleMasterService RoleService
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 
 <PageTitle>Doctor Group Master</PageTitle>
 
@@ -37,11 +40,14 @@
                        @bind:event="oninput" 
                        class="lc-rounded-pill-input lc-w-280" />
             </div>
-            <div>
-                <button type="button" class="btn-new-entry" @onclick="CreateNew">
-                    + Add New Group
-                </button>
-            </div>
+            @if (hasCreateRight)
+            {
+                <div>
+                    <button type="button" class="btn-new-entry" @onclick="CreateNew">
+                        + Add New Group
+                    </button>
+                </div>
+            }
         </div>
     </div>
 
@@ -97,12 +103,18 @@
                                 </td>
                                 <td class="text-center">
                                     <div class="flex justify-center gap-8" style="display: flex; justify-content: center; gap: 8px;">
-                                        <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditGroup(group)" title="Edit Group">
-                                            <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
-                                        </button>
-                                        <button type="button" class="lc-btn lc-circle-btn-32 text-red-500" @onclick="() => PromptDelete(group)" title="Delete Group">
-                                            <span class="material-symbols-outlined font-18 text-red-500">delete</span>
-                                        </button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => EditGroup(group)" title="Edit Group">
+                                                <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
+                                            </button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32 text-red-500" @onclick="() => PromptDelete(group)" title="Delete Group">
+                                                <span class="material-symbols-outlined font-18 text-red-500">delete</span>
+                                            </button>
+                                        }
                                     </div>
                                 </td>
                             </tr>
@@ -182,9 +194,12 @@
 
                 <div class="modal-footer-bar">
                     <button type="button" class="btn-action-outline" @onclick="CancelEdit">Cancel</button>
-                    <button type="button" class="btn-new-entry" style="border-radius: 8px; padding: 8px 24px;" @onclick="SaveGroup">
-                        <span>@(isEditing ? "Save Changes" : "+ Add Group")</span>
-                    </button>
+                    @if ((isEditing && hasEditRight) || (!isEditing && hasCreateRight))
+                    {
+                        <button type="button" class="btn-new-entry" style="border-radius: 8px; padding: 8px 24px;" @onclick="SaveGroup">
+                            <span>@(isEditing ? "Save Changes" : "+ Add Group")</span>
+                        </button>
+                    }
                 </div>
             </div>
         </div>
@@ -200,9 +215,62 @@
     private List<DoctorGroupMasterModel> groupList = new();
     private DoctorGroupMasterModel currentGroup = new();
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+
+    private async Task EvaluateRights()
+    {
+        try
+        {
+            if (await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+                hasEditRight = true;
+                hasDeleteRight = true;
+                return;
+            }
+
+            hasViewRight = RoleService.HasRoleId(705) ||
+                           RoleService.HasAction("Vitals", "Doctor Group Master", "View") ||
+                           RoleService.HasRight("Vitals", "Doctor Group Master") ||
+                           TenantState.HasActionRight("Vitals", "Doctor Group Master", "View");
+
+            hasCreateRight = RoleService.HasRoleId(706) ||
+                             RoleService.HasAction("Vitals", "Doctor Group Master", "Create") ||
+                             TenantState.HasActionRight("Vitals", "Doctor Group Master", "Create");
+
+            hasEditRight = RoleService.HasRoleId(707) ||
+                           RoleService.HasAction("Vitals", "Doctor Group Master", "Edit") ||
+                           TenantState.HasActionRight("Vitals", "Doctor Group Master", "Edit");
+
+            hasDeleteRight = RoleService.HasRoleId(708) ||
+                             RoleService.HasAction("Vitals", "Doctor Group Master", "Delete") ||
+                             TenantState.HasActionRight("Vitals", "Doctor Group Master", "Delete");
+        }
+        catch { }
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await LoadGroupsAsync();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await EvaluateRights();
+            if (!hasViewRight && !(await Booking.Helpers.UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                Toast.ShowError("You do not have permission to view Doctor Group Master.");
+                NavigationManager.NavigateTo("/home");
+                return;
+            }
+            StateHasChanged();
+        }
     }
 
     private async Task LoadGroupsAsync()
@@ -237,6 +305,12 @@
 
     private void CreateNew()
     {
+        if (!hasCreateRight)
+        {
+            Toast.ShowError("You do not have permission to create doctor groups.");
+            return;
+        }
+
         isEditing = false;
         currentGroup = new DoctorGroupMasterModel
         {
@@ -251,6 +325,12 @@
 
     private void EditGroup(DoctorGroupMasterModel item)
     {
+        if (!hasEditRight)
+        {
+            Toast.ShowError("You do not have permission to edit doctor groups.");
+            return;
+        }
+
         isEditing = true;
         currentGroup = new DoctorGroupMasterModel
         {
@@ -273,6 +353,17 @@
 
     private async Task SaveGroup()
     {
+        if (isEditing && !hasEditRight)
+        {
+            Toast.ShowError("You do not have permission to edit doctor groups.");
+            return;
+        }
+        if (!isEditing && !hasCreateRight)
+        {
+            Toast.ShowError("You do not have permission to create doctor groups.");
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(currentGroup.group_name))
         {
             Toast.ShowWarning("Please enter Group Name.");
@@ -323,6 +414,12 @@
 
     private async Task PromptDelete(DoctorGroupMasterModel item)
     {
+        if (!hasDeleteRight)
+        {
+            Toast.ShowError("You do not have permission to delete doctor groups.");
+            return;
+        }
+
         isLoading = true;
         bool success = await DoctorGroupService.DeleteDoctorGroupAsync(item.group_id);
         if (success)

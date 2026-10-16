@@ -27,6 +27,7 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject LabSettingService LabSettingService
 @inject OtService OtService
+@inject Booking.Services.RoleMasterService RoleService
 
 @implements IDisposable
 
@@ -1654,12 +1655,52 @@
     private string activeTab = "OP";
     private string initialCaseSheetTab = "notes";
 
-    // User Permissions for IP Admissions module
+    // User Permissions for Doctor Patient List and Clinical modules
     private bool hasViewRight = true;
     private bool hasCreateRight = true;
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
     private bool hasDischargeViewRight = true;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasCaseSheetViewRight = true;
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            hasDischargeViewRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(654) || RoleService.HasAction("Doctor Portal", "Doctor Patient List", "View") || RoleService.HasRight("Doctor Portal", "Doctor Patient List") || RoleService.HasRoleId(412) || RoleService.HasRight("IP Portal", "IP Registration");
+            hasCreateRight = RoleService.HasRoleId(655) || RoleService.HasAction("Doctor Portal", "Doctor Patient List", "Create") || RoleService.HasRoleId(413);
+            hasEditRight = RoleService.HasRoleId(656) || RoleService.HasRoleId(414);
+            hasDeleteRight = RoleService.HasRoleId(415);
+            hasCaseSheetViewRight = RoleService.HasRoleId(375) || RoleService.HasRoleId(656) || RoleService.HasRoleId(657) || RoleService.HasRight("Doctor Portal", "Doctor Patient List") || RoleService.HasRight("OP Portal", "Preview Casesheet");
+            hasDischargeViewRight = RoleService.HasRoleId(428) || RoleService.HasRight("IP Portal", "Discharge Summary");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var dplRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Doctor Patient List", "Doctor_Patient_List", "DoctorPatientList", "Patient List", "Doctor Appointments");
+            var csRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "View CaseSheet", "View_CaseSheet", "CaseSheet", "Case Sheet", "Preview Casesheet");
+            var ipRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Admission IP", "Admission_IP", "Ip Registration", "Ip_Registration", "IP Registration");
+            var dsRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Discharge Summary", "DischargeSummary", "Discharge_Summary", "Discharge_Summery");
+
+            hasViewRight = dplRight.View || ipRight.View;
+            hasCreateRight = dplRight.Add || ipRight.Add;
+            hasEditRight = dplRight.Edit || ipRight.Edit;
+            hasDeleteRight = dplRight.Delete || ipRight.Delete;
+            hasCaseSheetViewRight = csRight.View || dplRight.View;
+            hasDischargeViewRight = dsRight.View;
+        }
+    }
 
     // IP Admissions lists
     private List<IPRegistrationModel.IpRegistrationModel> admissionsList = new();
@@ -1765,22 +1806,26 @@
                 AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
 
                 SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
-                try
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
                 {
-                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userResult.Success && userResult.Value != null)
+                    try
                     {
-                        currentUser = userResult.Value;
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                        {
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                        }
                     }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error checking user details: {ex.Message}");
+                    catch { }
                 }
 
-                bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
+                EvaluateRights();
 
-                if (isAdmin)
+                if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
                 {
                     hasCaseSheetViewRight = true;
                     hasViewRight = true;
@@ -1789,45 +1834,12 @@
                     hasDeleteRight = true;
                     hasDischargeViewRight = true;
                 }
-                else
+
+                if (!hasViewRight)
                 {
-                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
-                    try
-                    {
-                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
-                        {
-                            rightsList = rightsResult.Value;
-                        }
-                    }
-                    catch { }
-
-                    if (rightsList == null || !rightsList.Any())
-                    {
-                        rightsList = TenantState?.UserRightsList?.ToList();
-                    }
-
-                    var csRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "View CaseSheet", "View_CaseSheet", "CaseSheet", "Case Sheet");
-                    hasCaseSheetViewRight = csRight.View;
-
-                    var ipRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Admission IP", "Admission_IP", "Ip Registration", "Ip_Registration", "IP Registration");
-                    hasViewRight = ipRight.View;
-                    hasCreateRight = ipRight.Add;
-                    hasEditRight = ipRight.Edit;
-                    hasDeleteRight = ipRight.Delete;
-
-                    var dsRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Discharge Summary", "DischargeSummary", "Discharge_Summary", "Discharge_Summery");
-                    hasDischargeViewRight = dsRight.View;
-
-                    if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                    {
-                        hasCaseSheetViewRight = true;
-                        hasViewRight = true;
-                        hasCreateRight = true;
-                        hasEditRight = true;
-                        hasDeleteRight = true;
-                        hasDischargeViewRight = true;
-                    }
+                    ToastService.ShowError("You do not have permission to access Doctor Patient List.");
+                    Navigation.NavigateTo("/home");
+                    return;
                 }
                 
                 try

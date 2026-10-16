@@ -7,6 +7,8 @@
 @inject IJSRuntime JsRuntime
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
+@implements IDisposable
 @using Booking.Models
 @using Newtonsoft.Json
 
@@ -26,7 +28,7 @@
             </div>
         </div>
         <div class="display-flex align-center gap-12">
-            @if (TenantState.HasActionRight("Lab", "Print Lab Result", "Create"))
+            @if (canCreateSequence)
             {
                 <button class="btn-new-entry" @onclick="OpenCreateModal">+ Add New Sequence</button>
             }
@@ -101,15 +103,18 @@
                                 <td class="text-slate-500 font-bold">@(seq.sequence_rows_in_use ?? 0)</td>
                                 <td class="text-center">
                                     <div style="display: flex; justify-content: center; gap: 6px;">
-                                        @if (TenantState.HasActionRight("Lab", "Print Lab Result", "Edit"))
+                                        @if (canEditSequence)
                                         {
                                             <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => OpenEditModal(seq)" title="Edit">
                                                 <span class="material-symbols-outlined font-18 text-slate-400">edit</span>
                                             </button>
                                         }
-                                        <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => PromptDeleteSequence(seq)" title="Delete" style="color: #ef4444;">
-                                            <span class="material-symbols-outlined font-18" style="color: #ef4444;">delete</span>
-                                        </button>
+                                        @if (canDeleteSequence)
+                                        {
+                                            <button type="button" class="lc-btn lc-circle-btn-32" @onclick="() => PromptDeleteSequence(seq)" title="Delete" style="color: #ef4444;">
+                                                <span class="material-symbols-outlined font-18" style="color: #ef4444;">delete</span>
+                                            </button>
+                                        }
                                     </div>
                                 </td>
                             </tr>
@@ -216,7 +221,7 @@
             </div>
 
             <div class="modal-footer-bar" style="display: flex; justify-content: space-between; align-items: center;">
-                @if (isEditMode)
+                @if (isEditMode && canDeleteSequence)
                 {
                     <button type="button" class="btn-delete-seq" @onclick="() => PromptDeleteSequence(currentConfig)" disabled="@isSaving">
                         <span class="material-symbols-outlined" style="font-size:16px; margin-right:6px;">delete</span>
@@ -311,8 +316,14 @@
     private List<Medico_Backend.Model.CounterMasterModel> counters = new();
     private List<Medico_Backend.Model.CounterMasterModel> filteredCounters = new();
 
+    private bool canCreateSequence = true;
+    private bool canEditSequence = true;
+    private bool canDeleteSequence = true;
+
     protected override async Task OnInitializedAsync()
     {
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        EvaluateRights();
         await LoadListAsync();
         await LoadCountersAsync();
     }
@@ -514,6 +525,11 @@
 
     private void OpenCreateModal()
     {
+        if (!canCreateSequence)
+        {
+            ToastService.ShowError("You do not have permission to create sequences.");
+            return;
+        }
         isEditMode = false;
         currentConfig = new BillNoConfig
         {
@@ -544,6 +560,11 @@
 
     private async Task OpenEditModal(BillNoConfig seq)
     {
+        if (!canEditSequence)
+        {
+            ToastService.ShowError("You do not have permission to edit sequences.");
+            return;
+        }
         var detail = await HmsBillingService.GetBillNoConfigAsync(seq.bncode ?? 0);
         if (detail != null)
         {
@@ -748,8 +769,51 @@
 
     private void PromptDeleteSequence(BillNoConfig seq)
     {
+        if (!canDeleteSequence)
+        {
+            ToastService.ShowError("You do not have permission to delete sequences.");
+            return;
+        }
         sequenceToDelete = seq;
         showDeleteModal = true;
+    }
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = Booking.Helpers.UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            canCreateSequence = true;
+            canEditSequence = true;
+            canDeleteSequence = true;
+            return;
+        }
+
+        canCreateSequence = RoleService.HasPermission(513) ||
+                            TenantState.HasActionRight("Billing Portal", "Bill No Sequence", "Create") ||
+                            TenantState.HasActionRight("Billing", "Bill No Sequence", "Create");
+
+        canEditSequence = RoleService.HasPermission(514) ||
+                          TenantState.HasActionRight("Billing Portal", "Bill No Sequence", "Edit") ||
+                          TenantState.HasActionRight("Billing", "Bill No Sequence", "Edit");
+
+        canDeleteSequence = RoleService.HasPermission(515) ||
+                            TenantState.HasActionRight("Billing Portal", "Bill No Sequence", "Delete") ||
+                            TenantState.HasActionRight("Billing", "Bill No Sequence", "Delete");
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        InvokeAsync(() =>
+        {
+            EvaluateRights();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
     }
 
     private void CancelDeleteModal()

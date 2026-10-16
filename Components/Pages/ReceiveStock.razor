@@ -14,6 +14,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject IConfiguration Configuration
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Receive Stock - Inventory Inward Receipt</PageTitle>
 
@@ -933,7 +934,7 @@
 
                     <!-- Inward Action Buttons (Clean & Non-repetitive) -->
                     <div style="display: flex !important; align-items: center !important; gap: 10px !important;">
-                        @if (IsDispatchedOrPending(SelectedTransfer.status))
+                        @if (hasCreateRight && IsDispatchedOrPending(SelectedTransfer.status))
                         {
                             @if (GetTotalAcceptedQty() > 0)
                             {
@@ -1207,6 +1208,37 @@
 }
 
 @code {
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(613) || RoleService.HasAction("Inventory", "Receive Stock", "View") || RoleService.HasRight("Inventory", "Receive Stock");
+            hasCreateRight = RoleService.HasRoleId(614) || RoleService.HasAction("Inventory", "Receive Stock", "Create");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Receive Stock", "ReceiveStock", "Receive_Stock");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
     private string DefaultTenant = "TNT001";
     private string ActiveTab = "PENDING"; // PENDING, COMPLETED, REJECTED, ALL
     private string SearchText = "";
@@ -1423,6 +1455,45 @@
         catch { }
 
         await Task.WhenAll(LoadWarehouses(), LoadStocks(), LoadItems(), LoadTransfers());
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+                catch { }
+            }
+
+            EvaluateRights();
+
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Receive Stock.");
+                Nav.NavigateTo("/home");
+                return;
+            }
+            StateHasChanged();
+        }
     }
 
     private HttpClient CreateClient()
@@ -2142,6 +2213,12 @@
 
     private async Task ExecuteConfirmReceipt()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to receive stock.");
+            return;
+        }
+
         if (SelectedTransfer == null) return;
 
         IsProcessing = true;
@@ -2246,6 +2323,12 @@
 
     private async Task ExecuteRejectTransfer()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to reject stock.");
+            return;
+        }
+
         if (SelectedTransfer == null) return;
 
         IsProcessing = true;

@@ -26,6 +26,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject NavigationManager NavigationManager
+@inject Booking.Services.RoleMasterService RoleService
 @implements IDisposable
 
 <PageTitle>IP Nurse Notes — @(isChartView ? (selectedPatient?.patient_name ?? "Bedside Chart") : "Inpatient Admissions")</PageTitle>
@@ -36,6 +37,23 @@
     <div class="floating-blob blob-2"></div>
 </div>
 
+@if (!hasViewRight)
+{
+    <div class="dashboard-container" style="padding-top: 2rem;">
+        <div class="empty-state" style="padding: 4rem 2rem; text-align: center; background: #ffffff; border-radius: 12px; margin: 2rem; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+            <i class="bi bi-shield-lock-fill" style="font-size: 3.5rem; color: #ef4444; margin-bottom: 1rem; display: block;"></i>
+            <h3 style="color: #1e293b; font-weight: 700; margin-bottom: 0.5rem;">Access Restricted</h3>
+            <p style="color: #64748b; font-size: 0.95rem; max-width: 480px; margin: 0 auto 1.5rem auto;">
+                You do not have permission to view Nurse Notes. Please contact your system administrator if you require access.
+            </p>
+            <button type="button" class="btn btn-primary" @onclick='() => NavigationManager.NavigateTo("/home")' style="font-weight: 600; padding: 0.5rem 1.5rem; border-radius: 8px;">
+                <i class="bi bi-arrow-left me-1"></i> Return to Home
+            </button>
+        </div>
+    </div>
+}
+else
+{
 <div class="dashboard-container" @onclick="HandlePageClick">
     <!-- ========================================================================= -->
     <!-- 1. DASHBOARD HEADER (OT CONSOLE & DOCTOR PATIENT LIST STYLE)               -->
@@ -3051,7 +3069,7 @@
         </div>
     </div>
 }
-
+}
 
 <style>
 /* ─────────────────────────────────────────────────────────────────────────────
@@ -8040,6 +8058,183 @@
     private string? savedIpId = null;
     private Dictionary<int, string> _cachedUserNames = new();
 
+    private bool hasViewRight = false;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+    private bool hasCasesheetRight = false;
+
+    private static bool IsAdminRole(string? role)
+    {
+        if (string.IsNullOrWhiteSpace(role)) return false;
+        var r = role.Trim();
+        return string.Equals(r, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "TenantAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Client Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "ClientAdmin", StringComparison.OrdinalIgnoreCase) ||
+               r.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsAdmin()
+    {
+        var role = TenantState?.UserData?.Role;
+        if (!string.IsNullOrEmpty(role) && IsAdminRole(role)) return true;
+
+        var uName = TenantState?.UserData?.UserName;
+        if (string.Equals(uName, "admin", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uName, "administrator", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (TenantState != null && Booking.Helpers.UserPermissionHelper.IsAdmin(TenantState.UserData, TenantState))
+            return true;
+
+        return false;
+    }
+
+    private bool HasUserRight(string moduleName, bool toView = false, bool toAdd = false, bool toEdit = false, bool toDelete = false)
+    {
+        var list = TenantState?.UserRightsList;
+        if (list == null || !list.Any()) return false;
+        var norm = moduleName.Replace(" ", "").Replace("_", "").ToLowerInvariant();
+        foreach (var r in list)
+        {
+            if (r == null) continue;
+            var rNorm = (r.ModuleName ?? "").Replace(" ", "").Replace("_", "").ToLowerInvariant();
+            bool isMatch = (rNorm == norm || rNorm == $"{norm}master" || norm == $"{rNorm}master");
+            if (!isMatch && (norm == "nursenotes" || norm == "nurse_notes"))
+            {
+                isMatch = (rNorm == "nursenotes" || rNorm == "nurse_notes" || rNorm == "nurse" || rNorm == "bedsidechart");
+            }
+            if (isMatch)
+            {
+                if (toView && r.ToView) return true;
+                if (toAdd && r.ToAdd) return true;
+                if (toEdit && r.ToEdit) return true;
+                if (toDelete && r.ToDelete) return true;
+            }
+        }
+        return false;
+    }
+
+    private void EvaluateRights()
+    {
+        if (IsAdmin())
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            hasCasesheetRight = true;
+            return;
+        }
+
+        // --- Role 431: View Nurse Notes ---
+        hasViewRight = RoleService.HasRoleId(431) ||
+                       RoleService.HasAction("IP Portal", "Nurse Notes", "View") ||
+                       RoleService.HasRight("IP Portal", "Nurse Notes") ||
+                       RoleService.HasRight("nursenotes") ||
+                       HasUserRight("Nurse Notes", toView: true) ||
+                       HasUserRight("Nurse_Notes", toView: true);
+
+        // --- Role 432: Create ---
+        hasCreateRight = RoleService.HasRoleId(432) ||
+                         RoleService.HasAction("IP Portal", "Nurse Notes", "Create") ||
+                         RoleService.HasAction("nursenotes", "Create") ||
+                         HasUserRight("Nurse Notes", toAdd: true) ||
+                         HasUserRight("Nurse_Notes", toAdd: true);
+
+        // --- Role 433: Edit ---
+        hasEditRight = RoleService.HasRoleId(433) ||
+                       RoleService.HasAction("IP Portal", "Nurse Notes", "Edit") ||
+                       RoleService.HasAction("nursenotes", "Edit") ||
+                       HasUserRight("Nurse Notes", toEdit: true) ||
+                       HasUserRight("Nurse_Notes", toEdit: true);
+
+        // --- Role 434: Delete ---
+        hasDeleteRight = RoleService.HasRoleId(434) ||
+                         RoleService.HasAction("IP Portal", "Nurse Notes", "Delete") ||
+                         RoleService.HasAction("nursenotes", "Delete") ||
+                         HasUserRight("Nurse Notes", toDelete: true) ||
+                         HasUserRight("Nurse_Notes", toDelete: true);
+
+        // --- Role 435: Preview Casesheet ---
+        hasCasesheetRight = RoleService.HasRoleId(435) ||
+                            RoleService.HasRoleId(418) ||
+                            RoleService.HasRoleId(375) ||
+                            RoleService.HasAction("IP Portal", "Nurse Notes", "Preview Casesheet") ||
+                            RoleService.HasAction("nursenotes", "Preview Casesheet");
+    }
+
+    private async Task InitializePermissionsAsync()
+    {
+        try
+        {
+            if (!currentUserCode.HasValue || currentUserCode.Value <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+
+            if (!RoleService.IsPermissionsLoaded && !IsAdmin())
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (currentUserCode.HasValue && currentUserCode.Value > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode.Value);
+                    }
+                }
+                catch
+                {
+                    if (currentUserCode.HasValue && currentUserCode.Value > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode.Value);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[NurseNotes] Error initializing permissions: {ex.Message}");
+        }
+
+        EvaluateRights();
+    }
+
+    private void OnPermissionsChangedHandler()
+    {
+        InvokeAsync(async () =>
+        {
+            bool previousViewRight = hasViewRight;
+            EvaluateRights();
+            if (!previousViewRight && hasViewRight && (admittedPatients == null || !admittedPatients.Any()))
+            {
+                await LoadAdmissionsAsync();
+                await LoadListReferenceDataAsync();
+            }
+            StateHasChanged();
+        });
+    }
+
     private int GetEffectiveUserCode() => (currentUserCode.HasValue && currentUserCode.Value > 0) ? currentUserCode.Value : 1;
 
     private bool isLoadingPatients = true;
@@ -8407,6 +8602,14 @@
             currentUserCode = TenantState.UserData.UserCode;
         }
 
+        await InitializePermissionsAsync();
+        RoleService.OnPermissionsChanged += OnPermissionsChangedHandler;
+
+        if (!hasViewRight)
+        {
+            return;
+        }
+
         if (!string.IsNullOrWhiteSpace(QueryTab) && IsValidTab(QueryTab))
         {
             activeTab = QueryTab.ToLower();
@@ -8427,6 +8630,27 @@
     {
         if (firstRender)
         {
+            if (!currentUserCode.HasValue || currentUserCode.Value <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+
+            await InitializePermissionsAsync();
+
+            if (!hasViewRight)
+            {
+                StateHasChanged();
+                return;
+            }
+
             _ = LoadSessionData();
             _ = LoadChartMastersAsync();
             _ = LoadAllIpVisitingDoctorStatusAsync();
@@ -12309,6 +12533,7 @@
 
     public void Dispose()
     {
+        RoleService.OnPermissionsChanged -= OnPermissionsChangedHandler;
         scheduleAlertTimer?.Dispose();
     }
 }

@@ -13,6 +13,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject NavigationManager NavigationManager
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Opening Stock Import - Stock Master</PageTitle>
 
@@ -167,18 +168,21 @@
                                 </label>
 
                                 <!-- Upload Button -->
-                                <button type="button" class="btn-upload-submit" disabled="@(isUploading || selectedFile == null || selectedWarehouseCode <= 0)" @onclick="UploadOpeningStock">
-                                    @if (isUploading)
-                                    {
-                                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
-                                        <span>Uploading & Processing Excel...</span>
-                                    }
-                                    else
-                                    {
-                                        <i class="bi bi-cloud-arrow-up-fill" style="font-size: 1.1rem;"></i>
-                                        <span>Upload Opening Stock</span>
-                                    }
-                                </button>
+                                @if (hasCreateRight)
+                                {
+                                    <button type="button" class="btn-upload-submit" disabled="@(isUploading || selectedFile == null || selectedWarehouseCode <= 0)" @onclick="UploadOpeningStock">
+                                        @if (isUploading)
+                                        {
+                                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                            <span>Uploading & Processing Excel...</span>
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-cloud-arrow-up-fill" style="font-size: 1.1rem;"></i>
+                                            <span>Upload Opening Stock</span>
+                                        }
+                                    </button>
+                                }
                             </div>
                         </div>
                     </div>
@@ -585,6 +589,38 @@
     private string DefaultTenant = "";
     private string AuthToken = "";
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(604) || RoleService.HasRoleId(607) || RoleService.HasAction("Inventory", "Stock", "View") || RoleService.HasAction("Inventory", "Stock Adjustment", "View") || RoleService.HasRight("Inventory", "Stock");
+            hasCreateRight = RoleService.HasRoleId(607) || RoleService.HasRoleId(608) || RoleService.HasAction("Inventory", "Stock Adjustment", "Create");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Opening Stock", "Stock", "Stock Adjustment", "Stock_Stock");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -625,8 +661,40 @@
                 {
                     userCode = TenantState.UserCode;
                 }
+
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+                {
+                    try
+                    {
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                        {
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                        }
+                    }
+                    catch { }
+                }
+
+                EvaluateRights();
             }
             catch { }
+
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Opening Stock.");
+                NavigationManager.NavigateTo("/home");
+                return;
+            }
 
             await Task.WhenAll(LoadWarehouses(), LoadItems(), LoadStocks());
             StateHasChanged();
@@ -919,6 +987,12 @@
     // ─── Step 6: Upload Opening Stock ───
     private async Task UploadOpeningStock()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to import opening stock.");
+            return;
+        }
+
         if (selectedWarehouseCode <= 0)
         {
             ToastService.ShowWarning("Please select a valid Destination Warehouse.");

@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace Booking.Models
 {
     /// <summary>
-    /// Pre-compiled static catalog containing all 364 security permissions for MEDICO_APP.
+    /// Pre-compiled static catalog containing all 376 security permissions for MEDICO_APP.
     /// Enables instantaneous 0ms UI rendering with zero layout shift.
     /// </summary>
     public static class RoleCatalogDefaults
@@ -374,6 +374,24 @@ namespace Booking.Models
             new RolePermissionItem { Role_id = 726, Main_module = "Billing Portal", Sub_module = "Billing Portal", Module = "Edit Consession", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 727, Main_module = "Billing Portal", Sub_module = "Reports", Module = "Preview Report", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 728, Main_module = "Billing Portal", Sub_module = "Reports", Module = "Print Report", Product_id = "MEDICO_APP" },
+
+            // Inventory - Purchase Order (Roles 1035 - 1038)
+            new RolePermissionItem { Role_id = 1035, Main_module = "Inventory", Sub_module = "Purchase Order", Module = "View", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1036, Main_module = "Inventory", Sub_module = "Purchase Order", Module = "Create", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1037, Main_module = "Inventory", Sub_module = "Purchase Order", Module = "Edit", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1038, Main_module = "Inventory", Sub_module = "Purchase Order", Module = "Delete", Product_id = "MEDICO_APP" },
+
+            // Billing Portal - Auto Bill OP (Roles 1039 - 1042)
+            new RolePermissionItem { Role_id = 1039, Main_module = "Billing Portal", Sub_module = "Auto Bill OP", Module = "View", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1040, Main_module = "Billing Portal", Sub_module = "Auto Bill OP", Module = "Create", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1041, Main_module = "Billing Portal", Sub_module = "Auto Bill OP", Module = "Edit", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1042, Main_module = "Billing Portal", Sub_module = "Auto Bill OP", Module = "Delete", Product_id = "MEDICO_APP" },
+
+            // Billing Portal - Billing Categorization / Billing Categories (Roles 1043 - 1046)
+            new RolePermissionItem { Role_id = 1043, Main_module = "Billing Portal", Sub_module = "Billing Categorization", Module = "View", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1044, Main_module = "Billing Portal", Sub_module = "Billing Categorization", Module = "Create", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1045, Main_module = "Billing Portal", Sub_module = "Billing Categorization", Module = "Edit", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1046, Main_module = "Billing Portal", Sub_module = "Billing Categorization", Module = "Delete", Product_id = "MEDICO_APP" },
         };
     }
 }

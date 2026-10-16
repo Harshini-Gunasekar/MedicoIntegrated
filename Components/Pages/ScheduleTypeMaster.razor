@@ -9,6 +9,7 @@
 @inject ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -94,6 +95,10 @@
                                             <button type="button" class="lc-circle-btn-32" @onclick="() => PromptDelete(item.type_id)" title="Delete">
                                                 <span class="material-symbols-outlined font-18 text-slate-400">delete</span>
                                             </button>
+                                        }
+                                        @if (!hasEditRight && !hasDeleteRight)
+                                        {
+                                            <span class="text-slate-400" style="font-size: 0.75rem; font-weight: 600;">View Only</span>
                                         }
                                     </div>
                                 </td>
@@ -199,10 +204,41 @@
     private bool showDeleteConfirm = false;
     private int deleteTargetId = 0;
 
-    private bool hasCreateRight = true;
-    private bool hasEditRight = true;
-    private bool hasDeleteRight = true;
+    private bool hasViewRight = true;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
     private string DefaultTenant = "";
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(468) || RoleService.HasAction("IP Portal", "Schedule Type Master", "View") || RoleService.HasRight("IP Portal", "Schedule Type Master");
+            hasCreateRight = RoleService.HasRoleId(469) || RoleService.HasAction("IP Portal", "Schedule Type Master", "Create");
+            hasEditRight = RoleService.HasRoleId(470) || RoleService.HasAction("IP Portal", "Schedule Type Master", "Edit");
+            hasDeleteRight = RoleService.HasRoleId(471) || RoleService.HasAction("IP Portal", "Schedule Type Master", "Delete");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Schedule Type Master", "Schedule_Type_Master", "ScheduleTypes");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
 
     protected override async Task OnInitializedAsync()
     {
@@ -210,7 +246,6 @@
         {
             DefaultTenant = TenantState.TenantCode;
         }
-        await LoadRights();
         await LoadData();
     }
 
@@ -233,32 +268,31 @@
                 DefaultTenant = TenantState.TenantCode;
             }
 
-            await LoadRights();
-            await LoadData();
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+                catch { }
+            }
+
+            EvaluateRights();
+
+            if (hasViewRight)
+            {
+                await LoadData();
+            }
             StateHasChanged();
         }
-    }
-
-    private async Task LoadRights()
-    {
-        try
-        {
-            SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
-            var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-            if (userResult.Success && userResult.Value != null)
-            {
-                currentUser = userResult.Value;
-            }
-
-            if (await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage))
-            {
-                hasCreateRight = true;
-                hasEditRight = true;
-                hasDeleteRight = true;
-                return;
-            }
-        }
-        catch { }
     }
 
     private async Task LoadData()
@@ -289,6 +323,11 @@
 
     private void NewEntry()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add schedule types.");
+            return;
+        }
         selectedId = 0;
         formName = "";
         formIsActive = true;
@@ -299,6 +338,11 @@
 
     private void EditEntry(ScheduleTypeMasterModel item)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit schedule types.");
+            return;
+        }
         selectedId = item.type_id;
         formName = item.type_name;
         formIsActive = item.is_active;
@@ -309,6 +353,16 @@
 
     private async Task SaveEntry()
     {
+        if (isEditMode && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit schedule types.");
+            return;
+        }
+        if (!isEditMode && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add schedule types.");
+            return;
+        }
         isSubmitted = true;
         if (string.IsNullOrWhiteSpace(formName)) return;
 
@@ -367,6 +421,11 @@
 
     private void PromptDelete(int id)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete schedule types.");
+            return;
+        }
         deleteTargetId = id;
         showDeleteConfirm = true;
     }
@@ -379,6 +438,11 @@
 
     private async Task ExecuteDelete()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to delete schedule types.");
+            return;
+        }
         try
         {
             var success = await NotesMasterService.DeleteScheduleTypeAsync(deleteTargetId, DefaultTenant);

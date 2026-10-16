@@ -17,6 +17,7 @@
 @inject Booking.Services.PaymodeMasterService PaymodeService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Purchase Payment & Due Settlement</PageTitle>
 
@@ -860,10 +861,13 @@
                 </span>
 
                 <div class="d-flex align-items-center gap-2 ms-2 flex-wrap">
-                    <button type="button" class="btn-update-status" @onclick="OpenPaymentModal" title="Open payment settlement popup">
-                        <i class="bi bi-wallet2"></i>
-                        <span>Pay</span>
-                    </button>
+                    @if (hasCreateRight)
+                    {
+                        <button type="button" class="btn-update-status" @onclick="OpenPaymentModal" title="Open payment settlement popup">
+                            <i class="bi bi-wallet2"></i>
+                            <span>Pay</span>
+                        </button>
+                    }
 
                     <button type="button" class="btn-reset-filters-sm" style="height: 32px; padding: 0 8px;" @onclick="ClearSelection" title="Clear selection">
                         <i class="bi bi-x"></i> Clear
@@ -1243,6 +1247,38 @@
     private string DefaultTenant = "DEVELOPMENT";
     private long CurrentUserId = 0;
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(596) || RoleService.HasAction("Inventory", "Purchase Payments", "View") || RoleService.HasRight("Inventory", "Purchase Payments");
+            hasCreateRight = RoleService.HasRoleId(597) || RoleService.HasAction("Inventory", "Purchase Payments", "Create");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Purchase Payments", "PurchasePayments", "Purchase Payment", "PurchaseFilter");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
+
     private long GetEffectiveUserCode()
     {
         if (CurrentUserId > 0 && CurrentUserId != 1) return CurrentUserId;
@@ -1412,8 +1448,40 @@
                     }
                 }
                 catch { }
+
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+                {
+                    try
+                    {
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                        {
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                        }
+                    }
+                    catch { }
+                }
+
+                EvaluateRights();
             }
             catch { }
+
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Purchase Payments.");
+                Nav.NavigateTo("/home");
+                return;
+            }
 
             // Default period: Current Month
             ApplyPeriodPreset("This Month");
@@ -1623,6 +1691,12 @@
     // ─── POPUP PAYMENT SETTLEMENT MODAL ACTIONS ──────────────────────────────
     private void OpenPaymentModal()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to record purchase payments.");
+            return;
+        }
+
         if (!SelectedPurchaseCodes.Any())
         {
             ToastService.ShowWarning("Please select at least one purchase bill.");
@@ -1670,6 +1744,12 @@
 
     private async Task SubmitPaymentModal()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to record purchase payments.");
+            return;
+        }
+
         if (!SelectedModalBills.Any())
         {
             ToastService.ShowWarning("No bills selected for payment.");

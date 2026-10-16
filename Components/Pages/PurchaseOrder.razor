@@ -13,6 +13,8 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject Booking.Services.LabSettingService LabSettingService
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
+@implements IDisposable
 
 <style>
     .custom-typeahead-dropdown {
@@ -50,12 +52,27 @@
 <PageTitle>Purchase Order</PageTitle>
 
 <div class="items-page purchase-page pt-4 pb-3" style="@(IsCardView ? "" : "min-height: auto !important;")">
-    <div class="items-shell px-3">
-        <div class="items-content">
-            <!-- Header Card -->
-            <div class="premium-header-card mb-4">
-                <div class="header-card-left">
-                    <div class="header-card-icon">
+    @if (!hasViewRight)
+    {
+        <div class="d-flex flex-column align-items-center justify-content-center py-5">
+            <div class="card p-5 text-center shadow-sm" style="max-width: 520px; border-radius: 16px; border: 1px solid #fee2e2; background: #fff5f5;">
+                <i class="bi bi-shield-lock-fill text-danger mb-3" style="font-size: 3rem;"></i>
+                <h3 class="fw-bold text-danger">Access Denied</h3>
+                <p class="text-muted mt-2">You do not have permission to view Purchase Orders. Please contact your system administrator to assign the required user rights.</p>
+                <div class="mt-3">
+                    <a href="/" class="btn btn-primary px-4" style="border-radius: 8px;">Back to Home</a>
+                </div>
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="items-shell px-3">
+            <div class="items-content">
+                <!-- Header Card -->
+                <div class="premium-header-card mb-4">
+                    <div class="header-card-left">
+                        <div class="header-card-icon">
                         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
                             <polyline points="14 2 14 8 20 8" />
@@ -254,6 +271,7 @@
             </div>
         </div>
     </div>
+    }
 </div>
 
 <!-- ========================================================================= -->
@@ -858,6 +876,60 @@
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
 
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(1035) || RoleService.HasAction("Inventory", "Purchase Order", "View") || RoleService.HasRight("Inventory", "Purchase Order")
+                || RoleService.HasRoleId(590) || RoleService.HasAction("Inventory", "Purchase", "View");
+            hasCreateRight = RoleService.HasRoleId(1036) || RoleService.HasAction("Inventory", "Purchase Order", "Create")
+                || RoleService.HasRoleId(591) || RoleService.HasAction("Inventory", "Purchase", "Create");
+            hasEditRight = RoleService.HasRoleId(1037) || RoleService.HasAction("Inventory", "Purchase Order", "Edit")
+                || RoleService.HasRoleId(592) || RoleService.HasAction("Inventory", "Purchase", "Edit");
+            hasDeleteRight = RoleService.HasRoleId(1038) || RoleService.HasAction("Inventory", "Purchase Order", "Delete")
+                || RoleService.HasRoleId(593) || RoleService.HasAction("Inventory", "Purchase", "Delete");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Purchase Order", "Purchase_Order", "Purchase", "Purchase Master");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        EvaluateRights();
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        InvokeAsync(() =>
+        {
+            EvaluateRights();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
+    }
+
     private purchase_order_request CurrentRequest = new();
     private purchase_order_master? DeleteTargetOrder;
     private purchase_order_request? CurrentVoucherOrder;
@@ -905,51 +977,28 @@
                     CurrentUserCode = TenantState.UserCode;
                 }
 
-                // Check rights
-                bool isAdmin = await UserPermissionHelper.IsAdminAsync(userResult.Success ? userResult.Value : null, TenantState, _sessionStorage);
-
-                if (isAdmin)
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
                 {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
-                else
-                {
-                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
                     try
                     {
-                        var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
                         {
-                            rightsList = rightsResult.Value;
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
                         }
                     }
                     catch { }
-
-                    if (rightsList == null || rightsList.Count == 0)
-                    {
-                        rightsList = TenantState?.UserRightsList?.ToList();
-                    }
-
-                    var r = await UserPermissionHelper.GetRightsAsync(userResult.Success ? userResult.Value : null, TenantState, _sessionStorage, rightsList, "Purchase Order", "Purchase_Order", "Purchase_Purchase", "Purchase");
-                    hasViewRight = r.View;
-                    hasCreateRight = r.Add;
-                    hasEditRight = r.Edit;
-                    hasDeleteRight = r.Delete;
                 }
+
+                EvaluateRights();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error checking user details / rights: {ex.Message}");
-                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
             }
 
             if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))

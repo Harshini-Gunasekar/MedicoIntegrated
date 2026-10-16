@@ -25,6 +25,8 @@
 @inject NurseMasterService NurseService
 @inject IJSRuntime JSRuntime
 @inject LabSettingService LabSettingService
+@inject Booking.Services.RoleMasterService RoleService
+@implements IDisposable
 
 <PageTitle>Available Beds Visualizer</PageTitle>
 
@@ -43,6 +45,21 @@
 </div>
 
 <div class="dashboard-container">
+@if (!hasViewRight)
+{
+    <div class="empty-state" style="padding: 4rem 2rem; text-align: center; background: #ffffff; border-radius: 12px; margin: 2rem; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+        <i class="bi bi-shield-lock-fill" style="font-size: 3.5rem; color: #ef4444; margin-bottom: 1rem; display: block;"></i>
+        <h3 style="color: #1e293b; font-weight: 700; margin-bottom: 0.5rem;">Access Restricted</h3>
+        <p style="color: #64748b; font-size: 0.95rem; max-width: 480px; margin: 0 auto 1.5rem auto;">
+            You do not have permission to view Available Beds. Please contact your system administrator if you require access.
+        </p>
+        <button type="button" class="btn btn-primary" @onclick='() => Navigation.NavigateTo("/home")' style="font-weight: 600; padding: 0.5rem 1.5rem; border-radius: 8px;">
+            <i class="bi bi-arrow-left me-1"></i> Return to Home
+        </button>
+    </div>
+}
+else
+{
     @* --- HEADER --- *@
     <div class="dashboard-header">
         <div class="dashboard-title">
@@ -199,6 +216,7 @@
 
         @* Details Column was removed to stretch the bed layout, details are now shown as a popup modal *@
     </div>
+}
 </div>
 
 @* --- ADMIT PATIENT MODAL --- *@
@@ -482,7 +500,7 @@
 
                     <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 0.5rem;">
                         <button class="btn-modal cancel" style="padding: 0.5rem 1rem; font-size: 0.85rem;" @onclick="CloseDetails">Cancel</button>
-                        @if (hasEditRight)
+                        @if (hasCreateRight || hasEditRight)
                         {
                             @if (draftAdmission != null)
                             {
@@ -607,13 +625,195 @@
     private int selectedNonAcRmtCode = 0;
     private string pendingAdmissionType = "";
     private string currentAcRoomTypeName = "";
-    private bool hasViewRight = true;
-    private bool hasEditRight = true;
+    private int currentUserCode = 0;
+    private bool hasViewRight = false;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+
+    private static bool IsAdminRole(string? role)
+    {
+        if (string.IsNullOrWhiteSpace(role)) return false;
+        var r = role.Trim();
+        return string.Equals(r, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "TenantAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Client Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "ClientAdmin", StringComparison.OrdinalIgnoreCase) ||
+               r.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsAdmin()
+    {
+        var role = TenantState?.UserData?.Role;
+        if (!string.IsNullOrEmpty(role) && IsAdminRole(role)) return true;
+
+        var uName = TenantState?.UserData?.UserName;
+        if (string.Equals(uName, "admin", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uName, "administrator", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (TenantState != null && Booking.Helpers.UserPermissionHelper.IsAdmin(TenantState.UserData, TenantState))
+            return true;
+
+        return false;
+    }
+
+    private bool HasUserRight(string moduleName, bool toView = false, bool toAdd = false, bool toEdit = false, bool toDelete = false)
+    {
+        var list = TenantState?.UserRightsList;
+        if (list == null || !list.Any()) return false;
+        var norm = moduleName.Replace(" ", "").Replace("_", "").ToLowerInvariant();
+        foreach (var r in list)
+        {
+            if (r == null) continue;
+            var rNorm = (r.ModuleName ?? "").Replace(" ", "").Replace("_", "").ToLowerInvariant();
+            bool isMatch = (rNorm == norm || rNorm == $"{norm}master" || norm == $"{rNorm}master");
+            if (!isMatch && (norm == "availablebeds" || norm == "available_beds"))
+            {
+                isMatch = (rNorm == "availablebeds" || rNorm == "available_beds" || rNorm == "bed" || rNorm == "beds");
+            }
+            if (isMatch)
+            {
+                if (toView && r.ToView) return true;
+                if (toAdd && r.ToAdd) return true;
+                if (toEdit && r.ToEdit) return true;
+                if (toDelete && r.ToDelete) return true;
+            }
+        }
+        return false;
+    }
+
+    private void EvaluateRights()
+    {
+        if (IsAdmin())
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            return;
+        }
+
+        // --- Role 423: View Available Beds ---
+        hasViewRight = RoleService.HasRoleId(423) ||
+                       RoleService.HasAction("IP Portal", "Available Beds", "View") ||
+                       RoleService.HasRight("IP Portal", "Available Beds") ||
+                       RoleService.HasRight("availablebeds") ||
+                       HasUserRight("Available Beds", toView: true) ||
+                       HasUserRight("Available_Beds", toView: true);
+
+        // --- Role 424: Create (Admit Patient to Bed / Confirm Bed) ---
+        hasCreateRight = RoleService.HasRoleId(424) ||
+                         RoleService.HasRoleId(413) ||
+                         RoleService.HasAction("IP Portal", "Available Beds", "Create") ||
+                         RoleService.HasAction("availablebeds", "Create") ||
+                         HasUserRight("Available Beds", toAdd: true) ||
+                         HasUserRight("Available_Beds", toAdd: true);
+
+        // --- Role 425: Edit (Bed Status / Cleaning) ---
+        hasEditRight = RoleService.HasRoleId(425) ||
+                       RoleService.HasAction("IP Portal", "Available Beds", "Edit") ||
+                       RoleService.HasAction("availablebeds", "Edit") ||
+                       HasUserRight("Available Beds", toEdit: true) ||
+                       HasUserRight("Available_Beds", toEdit: true);
+    }
+
+    private async Task InitializePermissionsAsync()
+    {
+        try
+        {
+            if (currentUserCode <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+
+            if (!RoleService.IsPermissionsLoaded && !IsAdmin())
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (currentUserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                    }
+                }
+                catch
+                {
+                    if (currentUserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AvailableBeds] Error initializing permissions: {ex.Message}");
+        }
+
+        EvaluateRights();
+    }
+
+    private void OnPermissionsChangedHandler()
+    {
+        InvokeAsync(async () =>
+        {
+            bool previousViewRight = hasViewRight;
+            EvaluateRights();
+            if (!previousViewRight && hasViewRight && (allBeds == null || !allBeds.Any()))
+            {
+                await LoadDropdownDataAsync();
+                await RefreshDataAsync();
+            }
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= OnPermissionsChangedHandler;
+    }
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadDropdownDataAsync();
-        await RefreshDataAsync();
+        if (TenantState?.UserCode > 0)
+        {
+            currentUserCode = TenantState.UserCode;
+        }
+        else if (TenantState?.UserData != null && TenantState.UserData.UserCode.HasValue && TenantState.UserData.UserCode.Value > 0)
+        {
+            currentUserCode = TenantState.UserData.UserCode.Value;
+        }
+
+        await InitializePermissionsAsync();
+        RoleService.OnPermissionsChanged += OnPermissionsChangedHandler;
+
+        if (hasViewRight)
+        {
+            await LoadDropdownDataAsync();
+            await RefreshDataAsync();
+        }
+        else
+        {
+            loading = false;
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -634,83 +834,35 @@
                     draftAdmission = draftResult.Value;
                 }
 
-                await LoadCustomersAsync();
-                await RefreshDataAsync();
-
-                try
+                if (currentUserCode <= 0)
                 {
-                    SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                     try
                     {
                         var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                        if (userResult.Success && userResult.Value != null)
+                        if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
                         {
-                            currentUser = userResult.Value;
+                            currentUserCode = userResult.Value.UserCode.Value;
                         }
                     }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error checking user details: {ex.Message}");
-                    }
-
-                    bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
-
-                    if (isAdmin)
-                    {
-                        hasViewRight = true;
-                        hasEditRight = true;
-                    }
-                    else
-                    {
-                        List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
-                        try
-                        {
-                            var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                            if (rightsResult.Success && rightsResult.Value != null)
-                            {
-                                rightsList = rightsResult.Value;
-                            }
-                        }
-                        catch { }
-
-                        if (rightsList == null || !rightsList.Any())
-                        {
-                            rightsList = TenantState?.UserRightsList?.ToList();
-                        }
-
-                        var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Available Beds", "Available_Beds", "AvailableBeds");
-                        hasViewRight = r.View;
-                        hasEditRight = r.Edit;
-
-                        if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                        {
-                            hasViewRight = true;
-                            hasEditRight = true;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error checking Available_Beds rights: {ex.Message}");
-                    if (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage))
-                    {
-                        hasViewRight = true;
-                        hasEditRight = true;
-                    }
+                    catch { }
                 }
 
-                if (!hasViewRight && !(await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+                await InitializePermissionsAsync();
+
+                if (hasViewRight)
                 {
-                    ToastService.ShowError("You do not have permission to view available beds.");
-                    Navigation.NavigateTo("/home");
-                    return;
+                    await LoadCustomersAsync();
+                    if (allBeds == null || !allBeds.Any())
+                    {
+                        await RefreshDataAsync();
+                    }
                 }
 
                 StateHasChanged();
             }
             catch (Exception ex)
             {
-                ToastService.ShowError($"Error loading session details: {ex.Message}");
+                Console.WriteLine($"[AvailableBeds] Error in OnAfterRender: {ex.Message}");
             }
         }
     }

@@ -13,10 +13,28 @@
 @inject IJSRuntime JSRuntime
 @inject NavigationManager NavigationManager
 
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
+
 <PageTitle>In-Patient (IP) Dashboard - Medico Portal</PageTitle>
 
 <div class="dashboard-wrapper">
-
+@if (!hasViewRight)
+{
+    <div class="empty-state" style="padding: 4rem 2rem; text-align: center; background: #ffffff; border-radius: 12px; margin: 2rem; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+        <i class="bi bi-shield-lock-fill" style="font-size: 3.5rem; color: #ef4444; margin-bottom: 1rem; display: block;"></i>
+        <h3 style="color: #1e293b; font-weight: 700; margin-bottom: 0.5rem;">Access Restricted</h3>
+        <p style="color: #64748b; font-size: 0.95rem; max-width: 480px; margin: 0 auto 1.5rem auto;">
+            You do not have permission to view the In-Patient Dashboard. Please contact your system administrator if you require access.
+        </p>
+        <button type="button" class="btn btn-primary" @onclick='() => NavigationManager.NavigateTo("/home")' style="font-weight: 600; padding: 0.5rem 1.5rem; border-radius: 8px;">
+            <i class="bi bi-arrow-left me-1"></i> Return to Home
+        </button>
+    </div>
+}
+else
+{
     <!-- ═══ HEADER ═══ -->
     <div class="dashboard-header">
         <div class="header-title">
@@ -36,9 +54,12 @@
                 <i class="bi bi-arrow-clockwise @(isLoading ? "spin-anim" : "")"></i>
                 @(isLoading ? "Loading..." : "Refresh")
             </button>
-            <a href="/booking/ip-registration" class="btn btn-primary">
-                <i class="bi bi-plus-circle-fill"></i> Register Inpatient
-            </a>
+            @if (canRegisterInpatient)
+            {
+                <a href="/booking/ip-registration" class="btn btn-primary">
+                    <i class="bi bi-plus-circle-fill"></i> Register Inpatient
+                </a>
+            }
         </div>
     </div>
 
@@ -326,7 +347,7 @@
         <span class="qa-pill-dots"><i class="bi bi-grid-3x3-gap-fill"></i></span>
         <span class="qa-pill-label"><i class="bi bi-lightning-charge-fill"></i> Quick Access</span>
     </button>
-
+}
 </div>
 
 @code {
@@ -367,11 +388,181 @@
     private CancellationTokenSource? _liveCts;
     private PeriodicTimer? _liveTimer;
 
+    // ── Permissions ───────────────────────────────────────────────────────
+    private int currentUserCode = 0;
+    private bool hasViewRight = false;
+    private bool canRegisterInpatient = false;
+
+    private static bool IsAdminRole(string? role)
+    {
+        if (string.IsNullOrWhiteSpace(role)) return false;
+        var r = role.Trim();
+        return string.Equals(r, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "TenantAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Client Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "ClientAdmin", StringComparison.OrdinalIgnoreCase) ||
+               r.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsAdmin()
+    {
+        var role = TenantState?.UserData?.Role;
+        if (!string.IsNullOrEmpty(role) && IsAdminRole(role)) return true;
+
+        var uName = TenantState?.UserData?.UserName;
+        if (string.Equals(uName, "admin", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uName, "administrator", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (TenantState != null && Booking.Helpers.UserPermissionHelper.IsAdmin(TenantState.UserData, TenantState))
+            return true;
+
+        return false;
+    }
+
+    private bool HasUserRight(string moduleName, bool toView = false, bool toAdd = false)
+    {
+        var list = TenantState?.UserRightsList;
+        if (list == null || !list.Any()) return false;
+        var norm = moduleName.Replace(" ", "").Replace("_", "").ToLowerInvariant();
+        foreach (var r in list)
+        {
+            if (r == null) continue;
+            var rNorm = (r.ModuleName ?? "").Replace(" ", "").Replace("_", "").ToLowerInvariant();
+            bool isMatch = (rNorm == norm || rNorm == $"{norm}master" || norm == $"{rNorm}master");
+            if (!isMatch && norm == "ipdashboard")
+            {
+                isMatch = (rNorm == "ip" || rNorm == "inpatient" || rNorm == "ipdashboard" || rNorm == "ip_dashboard");
+            }
+            if (isMatch)
+            {
+                if (toView && r.ToView) return true;
+                if (toAdd && r.ToAdd) return true;
+            }
+        }
+        return false;
+    }
+
+    private void EvaluateRights()
+    {
+        if (IsAdmin())
+        {
+            hasViewRight = true;
+            canRegisterInpatient = true;
+            return;
+        }
+
+        // --- Role 411: IP Dashboard ---
+        hasViewRight = RoleService.HasRoleId(411) ||
+                       RoleService.HasAction("IP Portal", "IP Dashboard", "View") ||
+                       RoleService.HasRight("IP Portal", "IP Dashboard") ||
+                       RoleService.HasRight("ipdashboard") ||
+                       HasUserRight("IP Dashboard", toView: true) ||
+                       HasUserRight("ip_dashboard", toView: true);
+
+        // --- Role 413: Register Inpatient ---
+        canRegisterInpatient = RoleService.HasRoleId(413) ||
+                               RoleService.HasAction("IP Portal", "IP Registration", "Create") ||
+                               RoleService.HasAction("ipregistration", "Create") ||
+                               RoleService.HasAction("admissionip", "Create") ||
+                               HasUserRight("IP Registration", toAdd: true);
+    }
+
+    private async Task InitializePermissionsAsync()
+    {
+        try
+        {
+            if (currentUserCode <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+
+            if (!RoleService.IsPermissionsLoaded && !IsAdmin())
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (currentUserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                    }
+                }
+                catch
+                {
+                    if (currentUserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[IPDashboard] Error initializing permissions: {ex.Message}");
+        }
+
+        EvaluateRights();
+    }
+
+    private void OnPermissionsChangedHandler()
+    {
+        InvokeAsync(async () =>
+        {
+            bool previousViewRight = hasViewRight;
+            EvaluateRights();
+            if (!previousViewRight && hasViewRight)
+            {
+                await LoadDataAsync();
+                StartLiveStream();
+                await RenderChartsAsync();
+            }
+            StateHasChanged();
+        });
+    }
+
     // ── Lifecycle ──────────────────────────────────────────────────────────
     protected override async Task OnInitializedAsync()
     {
-        await LoadDataAsync();
-        StartLiveStream();
+        if (TenantState?.UserCode > 0)
+        {
+            currentUserCode = TenantState.UserCode;
+        }
+        else if (TenantState?.UserData != null && TenantState.UserData.UserCode.HasValue && TenantState.UserData.UserCode.Value > 0)
+        {
+            currentUserCode = TenantState.UserData.UserCode.Value;
+        }
+
+        await InitializePermissionsAsync();
+        RoleService.OnPermissionsChanged += OnPermissionsChangedHandler;
+
+        if (hasViewRight)
+        {
+            await LoadDataAsync();
+            StartLiveStream();
+        }
+        else
+        {
+            isLoading = false;
+        }
     }
 
     private void StartLiveStream()
@@ -415,6 +606,7 @@
 
     public async ValueTask DisposeAsync()
     {
+        RoleService.OnPermissionsChanged -= OnPermissionsChangedHandler;
         _liveCts?.Cancel();
         _liveTimer?.Dispose();
         _liveCts?.Dispose();
@@ -423,7 +615,29 @@
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        if (!isLoading && !_chartsRendered)
+        if (firstRender)
+        {
+            if (currentUserCode <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+            await InitializePermissionsAsync();
+            if (hasViewRight && (ipList == null || !ipList.Any()))
+            {
+                await LoadDataAsync();
+                StartLiveStream();
+            }
+        }
+
+        if (hasViewRight && !isLoading && !_chartsRendered)
         {
             _chartsRendered = true;
             await RenderChartsAsync();

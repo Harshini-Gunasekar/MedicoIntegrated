@@ -87,14 +87,12 @@ namespace Booking.Helpers
         {
             if (tenantState != null)
             {
-                if (tenantState.IsAdmin) return true;
-                if (tenantState.UserCode <= 1 && tenantState.UserCode >= 0 && tenantState.IsAuthenticated) return true;
                 if (tenantState.UserCode > 0 && _knownAdminUserCodes.ContainsKey(tenantState.UserCode)) return true;
 
                 if (tenantState.UserData != null)
                 {
                     if (tenantState.UserData.UserCode.HasValue && 
-                        (tenantState.UserData.UserCode.Value <= 1 || _knownAdminUserCodes.ContainsKey(tenantState.UserData.UserCode.Value)))
+                        _knownAdminUserCodes.ContainsKey(tenantState.UserData.UserCode.Value))
                     {
                         return true;
                     }
@@ -125,7 +123,7 @@ namespace Booking.Helpers
             if (userDetails != null)
             {
                 if (userDetails.UserCode.HasValue && 
-                    (userDetails.UserCode.Value <= 1 || _knownAdminUserCodes.ContainsKey(userDetails.UserCode.Value)))
+                    _knownAdminUserCodes.ContainsKey(userDetails.UserCode.Value))
                 {
                     return true;
                 }
@@ -155,7 +153,6 @@ namespace Booking.Helpers
             Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage? sessionStorage = null)
         {
             if (IsAdmin(userDetails, tenantState)) return true;
-            if (tenantState != null && tenantState.IsAdmin) return true;
 
             if (sessionStorage != null)
             {
@@ -327,7 +324,7 @@ namespace Booking.Helpers
             List<User_Rights>? userRights,
             params string[] moduleAliases)
         {
-            if (IsAdmin(userDetails, tenantState) || (tenantState != null && tenantState.IsAdmin))
+            if (IsAdmin(userDetails, tenantState))
             {
                 return (true, true, true, true);
             }

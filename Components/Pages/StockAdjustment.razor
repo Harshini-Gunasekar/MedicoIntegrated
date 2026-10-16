@@ -13,6 +13,7 @@
 @inject LabCare.Services.UserService UserService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Stock Adjustment</PageTitle>
 
@@ -1063,17 +1064,20 @@
                     <button type="button" class="btn-cancel-modal" @onclick="ResetForm" style="background: #ffffff; color: #334155; border: 1.5px solid #cbd5e1; padding: 0.55rem 1.6rem; border-radius: 10px; font-weight: 700; font-size: 0.85rem; transition: all 0.2s; cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,0.03);">
                         Reset
                     </button>
-                    <button type="button" class="btn-save-premium" @onclick="SubmitStockAdjustment" disabled="@IsSaving" style="min-width: 180px; height: 42px; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; border-radius: 10px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: 700; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3); transition: all 0.2s; cursor: pointer;">
-                        @if (IsSaving)
-                        {
-                            <span class="spinner-border spinner-border-sm me-2" style="width: 1rem; height: 1rem;"></span>
-                        }
-                        else
-                        {
-                            <i class="bi bi-check2-circle me-2" style="font-size: 1.1rem;"></i>
-                        }
-                        <span>Save Adjustment</span>
-                    </button>
+                    @if (hasCreateRight)
+                    {
+                        <button type="button" class="btn-save-premium" @onclick="SubmitStockAdjustment" disabled="@IsSaving" style="min-width: 180px; height: 42px; display: flex; align-items: center; justify-content: center; font-size: 0.85rem; border-radius: 10px; background: linear-gradient(135deg, #10b981 0%, #059669 100%); color: white; border: none; font-weight: 700; box-shadow: 0 4px 14px rgba(16, 185, 129, 0.3); transition: all 0.2s; cursor: pointer;">
+                            @if (IsSaving)
+                            {
+                                <span class="spinner-border spinner-border-sm me-2" style="width: 1rem; height: 1rem;"></span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-check2-circle me-2" style="font-size: 1.1rem;"></i>
+                            }
+                            <span>Save Adjustment</span>
+                        </button>
+                    }
                 </div>
             }
         </div>
@@ -1241,6 +1245,38 @@
         return loggedInUserCode > 0 ? loggedInUserCode : 1;
     }
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = true;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(607) || RoleService.HasAction("Inventory", "Stock Adjustment", "View") || RoleService.HasRight("Inventory", "Stock Adjustment");
+            hasCreateRight = RoleService.HasRoleId(608) || RoleService.HasAction("Inventory", "Stock Adjustment", "Create");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Stock Adjustment", "StockAdjustment", "Stock_Adjustment");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
+
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         if (firstRender)
@@ -1275,8 +1311,40 @@
                         loggedInUserCode = intRes.Value;
                     }
                 }
+
+                if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+                {
+                    try
+                    {
+                        var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                        if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                        {
+                            RoleService.SetUserPermissions(sessionPerms.Value);
+                        }
+                        else if (TenantState?.UserCode > 0)
+                        {
+                            await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                        }
+                    }
+                    catch { }
+                }
+
+                EvaluateRights();
             }
             catch { }
+
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
+            {
+                hasViewRight = true;
+                hasCreateRight = true;
+            }
+
+            if (!hasViewRight)
+            {
+                ToastService.ShowError("You do not have permission to access Stock Adjustment.");
+                Nav.NavigateTo("/home");
+                return;
+            }
 
             await Task.WhenAll(LoadItems(), LoadWarehouses(), LoadStocks(), LoadAdjustmentLogs(), LoadUsers());
             StateHasChanged();
@@ -1647,6 +1715,12 @@
 
     private async Task SubmitStockAdjustment()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to submit stock adjustments.");
+            return;
+        }
+
         if (!AdjustStockRows.Any())
         {
             ToastService.ShowWarning("No stock adjustments specified.");

@@ -9,6 +9,7 @@
 @inject ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -45,10 +46,13 @@
                 }
             </div>
             
-            <button class="btn-new-entry" @onclick="NewEntry">
-                <i class="bi bi-plus-lg"></i>
-                <span>Add Operation Theater</span>
-            </button>
+            @if (hasCreateRight)
+            {
+                <button class="btn-new-entry" @onclick="NewEntry">
+                    <i class="bi bi-plus-lg"></i>
+                    <span>Add Operation Theater</span>
+                </button>
+            }
         </div>
     </div>
 
@@ -191,12 +195,22 @@
                                 </td>
                                 <td class="text-center">
                                     <div class="action-btn-group">
-                                        <button type="button" class="lc-circle-btn-32 edit-btn" @onclick="() => EditEntry(item)" title="Edit Theater Details">
-                                            <i class="bi bi-pencil-square"></i>
-                                        </button>
-                                        <button type="button" class="lc-circle-btn-32 delete-btn" @onclick="() => PromptDelete(item)" title="Deactivate Theater">
-                                            <i class="bi bi-trash3"></i>
-                                        </button>
+                                        @if (hasEditRight)
+                                        {
+                                            <button type="button" class="lc-circle-btn-32 edit-btn" @onclick="() => EditEntry(item)" title="Edit Theater Details">
+                                                <i class="bi bi-pencil-square"></i>
+                                            </button>
+                                        }
+                                        @if (hasDeleteRight)
+                                        {
+                                            <button type="button" class="lc-circle-btn-32 delete-btn" @onclick="() => PromptDelete(item)" title="Deactivate Theater">
+                                                <i class="bi bi-trash3"></i>
+                                            </button>
+                                        }
+                                        @if (!hasEditRight && !hasDeleteRight)
+                                        {
+                                            <span class="text-slate-400" style="font-size: 0.75rem; font-weight: 600;">View Only</span>
+                                        }
                                     </div>
                                 </td>
                             </tr>
@@ -406,9 +420,76 @@
     private bool showDeleteConfirm = false;
     private OtMasterModel? deleteTarget = null;
 
+    private bool hasViewRight = true;
+    private bool hasCreateRight = false;
+    private bool hasEditRight = false;
+    private bool hasDeleteRight = false;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(481) || RoleService.HasAction("Operation Theatre", "Add OT", "View") || RoleService.HasRight("Operation Theatre", "Add OT");
+            hasCreateRight = RoleService.HasRoleId(482) || RoleService.HasAction("Operation Theatre", "Add OT", "Create");
+            hasEditRight = RoleService.HasRoleId(483) || RoleService.HasAction("Operation Theatre", "Add OT", "Edit");
+            hasDeleteRight = RoleService.HasRoleId(484) || RoleService.HasAction("Operation Theatre", "Add OT", "Delete");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Add OT", "Add_OT", "Operation Theatres", "OT Master");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
     protected override async Task OnInitializedAsync()
     {
         await LoadData();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+                catch { }
+            }
+
+            EvaluateRights();
+
+            if (hasViewRight)
+            {
+                await LoadData();
+            }
+
+            StateHasChanged();
+        }
     }
 
     private async Task LoadData()
@@ -469,6 +550,11 @@
 
     private void NewEntry()
     {
+        if (!hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add operation theaters.");
+            return;
+        }
         selectedId = Guid.Empty;
         formName = "";
         formLocation = "";
@@ -484,6 +570,11 @@
 
     private void EditEntry(OtMasterModel item)
     {
+        if (!hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit operation theaters.");
+            return;
+        }
         selectedId = item.ot_id;
         formName = item.ot_name;
         formLocation = item.location ?? "";
@@ -516,6 +607,16 @@
 
     private async Task SaveEntry()
     {
+        if (isEditMode && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to edit operation theaters.");
+            return;
+        }
+        if (!isEditMode && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to add operation theaters.");
+            return;
+        }
         isSubmitted = true;
         if (string.IsNullOrWhiteSpace(formName)) return;
 
@@ -583,6 +684,11 @@
 
     private void PromptDelete(OtMasterModel item)
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to deactivate operation theaters.");
+            return;
+        }
         deleteTarget = item;
         showDeleteConfirm = true;
     }
@@ -595,6 +701,11 @@
 
     private async Task ExecuteDelete()
     {
+        if (!hasDeleteRight)
+        {
+            ToastService.ShowError("You do not have permission to deactivate operation theaters.");
+            return;
+        }
         if (deleteTarget == null) return;
         isSaving = true;
         StateHasChanged();

@@ -8,8 +8,13 @@
 @inject Booking.Services.WardMasterService WardMasterService
 @inject ToastService ToastService
 @inject NavigationManager NavigationManager
+@inject Booking.Services.RoleMasterService RoleService
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
+@implements IDisposable
 
 <PageTitle>Discharge Summary Management</PageTitle>
+
 
 <div class="animated-background">
     <div class="floating-blob blob-1"></div>
@@ -17,18 +22,35 @@
 </div>
 
 <div class="dashboard-container">
-
+@if (!hasViewRight)
+{
+    <div class="empty-state" style="padding: 4rem 2rem; text-align: center; background: #ffffff; border-radius: 12px; margin: 2rem; box-shadow: 0 4px 12px rgba(0,0,0,0.05);">
+        <i class="bi bi-shield-lock-fill" style="font-size: 3.5rem; color: #ef4444; margin-bottom: 1rem; display: block;"></i>
+        <h3 style="color: #1e293b; font-weight: 700; margin-bottom: 0.5rem;">Access Restricted</h3>
+        <p style="color: #64748b; font-size: 0.95rem; max-width: 480px; margin: 0 auto 1.5rem auto;">
+            You do not have permission to view Inpatient Discharge Summaries. Please contact your system administrator if you require access.
+        </p>
+        <button type="button" class="btn btn-primary" @onclick='() => NavigationManager.NavigateTo("/home")' style="font-weight: 600; padding: 0.5rem 1.5rem; border-radius: 8px;">
+            <i class="bi bi-arrow-left me-1"></i> Return to Home
+        </button>
+    </div>
+}
+else
+{
     @* MASTER HEADER CARD *@
     <div class="dashboard-header">
         <div class="dashboard-title">
             <h1>Inpatient Discharge Summaries</h1>
             <p>Select IP Patient to Create, Edit or Print Discharge Summary</p>
         </div>
-        <div class="header-actions-group">
-            <button type="button" class="btn-header-action secondary" @onclick='() => NavigationManager.NavigateTo("/summary-templates")'>
-                <i class="bi bi-gear-fill me-1"></i> Summary Templates
-            </button>
-        </div>
+        @if (hasTemplateMasterRight)
+        {
+            <div class="header-actions-group">
+                <button type="button" class="btn-header-action secondary" @onclick='() => NavigationManager.NavigateTo("/summary-templates")'>
+                    <i class="bi bi-gear-fill me-1"></i> Summary Templates
+                </button>
+            </div>
+        }
     </div>
 
     @* SEARCH TOOLBAR BAR *@
@@ -135,7 +157,7 @@
                                 </td>
                                 <td class="text-center">
                                     <button type="button" class="btn-header-action primary" style="height: 30px; padding: 0.2rem 0.75rem; font-size: 0.78rem;" @onclick="() => OpenDischargeSummary(p)">
-                                        <i class="bi bi-file-earmark-medical me-1"></i> Discharge Summary
+                                        <i class="bi @(hasCreateRight ? "bi-file-earmark-medical" : "bi-eye-fill") me-1"></i> @(hasCreateRight ? "Discharge Summary" : "View Summary")
                                     </button>
                                 </td>
                             </tr>
@@ -145,13 +167,15 @@
             </table>
         </div>
     </div>
-
+}
 </div>
 
 @* DISCHARGE SUMMARY MODAL CONTAINER *@
 <DischargeSummaryComponent 
     Visible="@showSummaryModal"
     VisibleChanged="@OnVisibleChanged"
+    CanEdit="@hasCreateRight"
+    CanPrint="@hasPrintRight"
     IpId="@selectedIpId" 
     IpNo="@selectedIpNo"
     PatCode="@selectedPatCode"
@@ -182,9 +206,237 @@
     private DateTime? selectedAdmitDate = null;
     private DateTime? selectedDischargeDate = null;
 
+    private int currentUserCode = 0;
+    private bool hasViewRight = false;
+    private bool hasCreateRight = false;
+    private bool hasPrintRight = false;
+    private bool hasTemplateMasterRight = false;
+
+    private static bool IsAdminRole(string? role)
+    {
+        if (string.IsNullOrWhiteSpace(role)) return false;
+        var r = role.Trim();
+        return string.Equals(r, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Super Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "SuperAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Power User", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "PowerUser", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Tenant Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "TenantAdmin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "Client Admin", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(r, "ClientAdmin", StringComparison.OrdinalIgnoreCase) ||
+               r.Contains("Admin", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsAdmin()
+    {
+        var role = TenantState?.UserData?.Role;
+        if (!string.IsNullOrEmpty(role) && IsAdminRole(role)) return true;
+
+        var uName = TenantState?.UserData?.UserName;
+        if (string.Equals(uName, "admin", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(uName, "administrator", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (TenantState != null && Booking.Helpers.UserPermissionHelper.IsAdmin(TenantState.UserData, TenantState))
+            return true;
+
+        return false;
+    }
+
+    private bool HasUserRight(string moduleName, bool toView = false, bool toAdd = false, bool toPrint = false)
+    {
+        var list = TenantState?.UserRightsList;
+        if (list == null || !list.Any()) return false;
+        var norm = moduleName.Replace(" ", "").Replace("_", "").ToLowerInvariant();
+        foreach (var r in list)
+        {
+            if (r == null) continue;
+            var rNorm = (r.ModuleName ?? "").Replace(" ", "").Replace("_", "").ToLowerInvariant();
+            bool isMatch = (rNorm == norm || rNorm == $"{norm}master" || norm == $"{rNorm}master");
+            if (!isMatch && (norm == "dischargesummary" || norm == "discharge_summary"))
+            {
+                isMatch = (rNorm == "dischargesummary" || rNorm == "discharge_summary" || rNorm == "discharge");
+            }
+            if (!isMatch && (norm == "summarytemplates" || norm == "dischargetemplatemaster"))
+            {
+                isMatch = (rNorm == "summarytemplates" || rNorm == "summary_templates" || rNorm == "dischargetemplatemaster" || rNorm == "dischargetemplate");
+            }
+            if (isMatch)
+            {
+                if (toView && r.ToView) return true;
+                if (toAdd && r.ToAdd) return true;
+                if (toPrint && r.ToExport) return true;
+            }
+        }
+        return false;
+    }
+
+    private void EvaluateRights()
+    {
+        if (IsAdmin())
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasPrintRight = true;
+            hasTemplateMasterRight = true;
+            return;
+        }
+
+        // --- Role 428 / 420: View Discharge Summary ---
+        hasViewRight = RoleService.HasRoleId(428) ||
+                       RoleService.HasRoleId(420) ||
+                       RoleService.HasAction("IP Portal", "Discharge Summary", "View") ||
+                       RoleService.HasRight("IP Portal", "Discharge Summary") ||
+                       RoleService.HasRight("dischargesummary") ||
+                       HasUserRight("Discharge Summary", toView: true) ||
+                       HasUserRight("Discharge_Summary", toView: true);
+
+        // --- Role 429 / 421: Create Discharge Summary ---
+        hasCreateRight = RoleService.HasRoleId(429) ||
+                         RoleService.HasRoleId(421) ||
+                         RoleService.HasAction("IP Portal", "Discharge Summary", "Create") ||
+                         RoleService.HasAction("dischargesummary", "Create") ||
+                         HasUserRight("Discharge Summary", toAdd: true) ||
+                         HasUserRight("Discharge_Summary", toAdd: true);
+
+        // --- Role 430 / 422: Print Discharge Summary ---
+        hasPrintRight = RoleService.HasRoleId(430) ||
+                        RoleService.HasRoleId(422) ||
+                        RoleService.HasAction("IP Portal", "Discharge Summary", "Print") ||
+                        RoleService.HasAction("dischargesummary", "Print") ||
+                        HasUserRight("Discharge Summary", toPrint: true) ||
+                        HasUserRight("Discharge_Summary", toPrint: true);
+
+        // --- Role 472: Summary Templates (Discharge Template Master) ---
+        hasTemplateMasterRight = RoleService.HasRoleId(472) ||
+                                 RoleService.HasRight("IP Portal", "Summary Templates") ||
+                                 RoleService.HasRight("IP Portal", "Discharge Template Master") ||
+                                 RoleService.HasRight("summarytemplates") ||
+                                 RoleService.HasRight("dischargetemplatemaster") ||
+                                 HasUserRight("Summary Templates", toView: true) ||
+                                 HasUserRight("Discharge Template Master", toView: true);
+    }
+
+    private async Task InitializePermissionsAsync()
+    {
+        try
+        {
+            if (currentUserCode <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+
+            if (!RoleService.IsPermissionsLoaded && !IsAdmin())
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (currentUserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                    }
+                }
+                catch
+                {
+                    if (currentUserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(currentUserCode);
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DischargeSummaryPage] Error initializing permissions: {ex.Message}");
+        }
+
+        EvaluateRights();
+    }
+
+    private void OnPermissionsChangedHandler()
+    {
+        InvokeAsync(async () =>
+        {
+            bool previousViewRight = hasViewRight;
+            EvaluateRights();
+            if (!previousViewRight && hasViewRight && (patientsList == null || !patientsList.Any()))
+            {
+                await LoadData();
+            }
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= OnPermissionsChangedHandler;
+    }
+
     protected override async Task OnInitializedAsync()
     {
-        await LoadData();
+        if (TenantState?.UserCode > 0)
+        {
+            currentUserCode = TenantState.UserCode;
+        }
+        else if (TenantState?.UserData != null && TenantState.UserData.UserCode.HasValue && TenantState.UserData.UserCode.Value > 0)
+        {
+            currentUserCode = TenantState.UserData.UserCode.Value;
+        }
+
+        await InitializePermissionsAsync();
+        RoleService.OnPermissionsChanged += OnPermissionsChangedHandler;
+
+        if (hasViewRight)
+        {
+            await LoadData();
+        }
+        else
+        {
+            isLoading = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (currentUserCode <= 0)
+            {
+                try
+                {
+                    var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (userResult.Success && userResult.Value != null && userResult.Value.UserCode.HasValue)
+                    {
+                        currentUserCode = userResult.Value.UserCode.Value;
+                    }
+                }
+                catch { }
+            }
+
+            await InitializePermissionsAsync();
+
+            if (hasViewRight && (patientsList == null || !patientsList.Any()))
+            {
+                await LoadData();
+            }
+
+            StateHasChanged();
+        }
     }
 
     private async Task LoadData()
@@ -234,6 +486,11 @@
 
     private void OpenDischargeSummary(IPRegistrationModel.IpRegistrationModel patient)
     {
+        if (!hasViewRight && !hasCreateRight)
+        {
+            ToastService.ShowError("You do not have permission to access Discharge Summary.");
+            return;
+        }
         selectedIpId = patient.ip_id;
         selectedIpNo = patient.ip_no ?? "";
         selectedPatCode = patient.custid > 0 ? patient.custid.ToString() : "";

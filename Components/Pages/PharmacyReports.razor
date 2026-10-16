@@ -14,6 +14,7 @@
 @inject Booking.Services.ToastService ToastService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.RoleMasterService RoleService
 @inject IConfiguration Configuration
 
 <PageTitle>@(string.IsNullOrEmpty(selectedReportKey) ? "Pharmacy Reports" : GetReportDisplayName(selectedReportKey))</PageTitle>
@@ -135,23 +136,29 @@
                         </div>
 
                         <div class="filter-actions-wrap">
-                            <button type="button" class="btn-report-show" disabled="@isGeneratingReport" @onclick="LoadReportPreview">
-                                @if (isGeneratingReport)
-                                {
-                                    <span class="spinner-border spinner-border-sm me-1"></span>
-                                    <span>Loading...</span>
-                                }
-                                else
-                                {
-                                    <i class="bi bi-play-circle me-1"></i>
-                                    <span>Show</span>
-                                }
-                            </button>
+                            @if (hasPreviewReportRight)
+                            {
+                                <button type="button" class="btn-report-show" disabled="@isGeneratingReport" @onclick="LoadReportPreview">
+                                    @if (isGeneratingReport)
+                                    {
+                                        <span class="spinner-border spinner-border-sm me-1"></span>
+                                        <span>Loading...</span>
+                                    }
+                                    else
+                                    {
+                                        <i class="bi bi-play-circle me-1"></i>
+                                        <span>Show</span>
+                                    }
+                                </button>
+                            }
 
-                            <button type="button" class="btn-report-print" disabled="@isGeneratingReport" @onclick="PrintCurrentReport">
-                                <i class="bi bi-printer me-1"></i>
-                                <span>Print</span>
-                            </button>
+                            @if (hasPrintReportRight)
+                            {
+                                <button type="button" class="btn-report-print" disabled="@isGeneratingReport" @onclick="PrintCurrentReport">
+                                    <i class="bi bi-printer me-1"></i>
+                                    <span>Print</span>
+                                </button>
+                            }
                         </div>
                     </div>
 
@@ -580,10 +587,67 @@
 
     private List<warehouse_master> WarehouseList = new();
 
+    private bool hasViewRight = true;
+    private bool hasPreviewReportRight = false;
+    private bool hasPrintReportRight = false;
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasPreviewReportRight = true;
+            hasPrintReportRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(587) || RoleService.HasAction("Pharmacy", "Pharmacy Reports", "View") || RoleService.HasRight("Pharmacy", "Pharmacy Reports");
+            hasPreviewReportRight = RoleService.HasRoleId(588) || RoleService.HasAction("Pharmacy", "Pharmacy Reports", "Preview Report");
+            hasPrintReportRight = RoleService.HasRoleId(589) || RoleService.HasAction("Pharmacy", "Pharmacy Reports", "Print Report");
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Pharmacy Reports", "Pharmacy_Reports", "Pharmacy", "Sales Reports");
+            hasViewRight = r.View;
+            hasPreviewReportRight = r.View;
+            hasPrintReportRight = r.View;
+        }
+    }
+
     protected override async Task OnInitializedAsync()
     {
+        EvaluateRights();
         await LoadSessionAndTenant();
         await LoadWarehouses();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+                catch { }
+            }
+            EvaluateRights();
+            StateHasChanged();
+        }
     }
 
     private async Task LoadSessionAndTenant()
@@ -689,8 +753,11 @@
         currentLoadedBase64 = "";
         StateHasChanged();
 
-        // Auto trigger preview for smooth UX
-        _ = LoadReportPreview();
+        // Auto trigger preview for smooth UX if permitted
+        if (hasPreviewReportRight)
+        {
+            _ = LoadReportPreview();
+        }
     }
 
     private void CloseReportDetail()
@@ -842,6 +909,11 @@
     private async Task LoadReportPreview()
     {
         if (string.IsNullOrEmpty(selectedReportKey)) return;
+        if (!hasPreviewReportRight)
+        {
+            ToastService.ShowWarning("You do not have permission to preview pharmacy reports.");
+            return;
+        }
 
         isGeneratingReport = true;
         hasLoadedReport = false;
@@ -878,6 +950,12 @@
 
     private async Task PrintCurrentReport()
     {
+        if (!hasPrintReportRight)
+        {
+            ToastService.ShowWarning("You do not have permission to print pharmacy reports.");
+            return;
+        }
+
         if (string.IsNullOrWhiteSpace(currentLoadedBase64))
         {
             await LoadReportPreview();

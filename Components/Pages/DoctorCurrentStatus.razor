@@ -12,6 +12,7 @@
 @inject NavigationManager NavigationManager
 @inject TenantSessionState TenantState
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
+@inject Booking.Services.RoleMasterService RoleService
 
 <PageTitle>Doctor Availability & Current Status</PageTitle>
 
@@ -562,67 +563,72 @@
     private bool hasDeleteRight = false;
     private bool hasViewRight = true;
 
+    private void EvaluateRights()
+    {
+        bool isAdmin = UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            hasDeleteRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(658) || RoleService.HasAction("Doctor Portal", "Doctor Status", "View") || RoleService.HasRight("Doctor Portal", "Doctor Status");
+            hasCreateRight = RoleService.HasRoleId(659) || RoleService.HasAction("Doctor Portal", "Doctor Status", "Create");
+            hasEditRight = RoleService.HasRoleId(660) || RoleService.HasAction("Doctor Portal", "Doctor Status", "Edit");
+            hasDeleteRight = false;
+        }
+        else
+        {
+            var rightsList = TenantState?.UserRightsList?.ToList();
+            var r = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Doctor Status", "Doctor_Status", "DoctorCurrentStatus", "Doctor Current Status");
+            hasViewRight = r.View;
+            hasCreateRight = r.Add;
+            hasEditRight = r.Edit;
+            hasDeleteRight = r.Delete;
+        }
+    }
+
     protected override async Task OnInitializedAsync()
     {
         try
         {
-            SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
-            try
+            if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
             {
-                var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                if (userResult.Success && userResult.Value != null)
+                try
                 {
-                    currentUser = userResult.Value;
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState?.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
                 }
+                catch { }
             }
-            catch { }
 
-            bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, _sessionStorage);
+            EvaluateRights();
 
-            if (isAdmin)
+            if (!hasViewRight && (await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
             {
                 hasViewRight = true;
                 hasCreateRight = true;
                 hasEditRight = true;
                 hasDeleteRight = true;
             }
-            else
+
+            if (!hasViewRight)
             {
-                List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
-                try
-                {
-                    var rightsResult = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                    if (rightsResult.Success && rightsResult.Value != null)
-                    {
-                        rightsList = rightsResult.Value;
-                    }
-                }
-                catch { }
-
-                if (rightsList == null || rightsList.Count == 0)
-                {
-                    rightsList = TenantState?.UserRightsList?.ToList();
-                }
-
-                var r = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, _sessionStorage, rightsList, "Doctor Status", "Doctor_Status");
-                hasViewRight = r.View;
-                hasCreateRight = r.Add;
-                hasEditRight = r.Edit;
-                hasDeleteRight = r.Delete;
-
-                if (!hasViewRight && !(await UserPermissionHelper.IsAdminAsync(null, TenantState, _sessionStorage)))
-                {
-                    ToastService.ShowError("You do not have permission to access Doctor Status.");
-                    NavigationManager.NavigateTo("/home");
-                    return;
-                }
-                else if (!hasViewRight)
-                {
-                    hasViewRight = true;
-                    hasCreateRight = true;
-                    hasEditRight = true;
-                    hasDeleteRight = true;
-                }
+                ToastService.ShowError("You do not have permission to access Doctor Status.");
+                NavigationManager.NavigateTo("/home");
+                return;
             }
         }
         catch { }
@@ -632,22 +638,8 @@
 
     private bool IsUserAuthorized()
     {
-        if (!TenantState.IsAuthenticated) return true;
-        var user = TenantState.UserData;
-        if (user == null) return true;
-
-        var role = user.Role ?? "";
-        if (string.Equals(role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(role, "Admin", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(role, "Tenant", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(role, "Doctor", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(role, "Reception", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(role, "Receptionist", StringComparison.OrdinalIgnoreCase))
-        {
-            return true;
-        }
-
-        return true;
+        if (UserPermissionHelper.IsAdmin(null, TenantState)) return true;
+        return hasViewRight;
     }
 
     private async Task LoadDataAsync()
@@ -793,6 +785,12 @@
 
     private async Task SubmitStatusUpdateAsync()
     {
+        if (!hasEditRight && !hasCreateRight && !UserPermissionHelper.IsAdmin(null, TenantState))
+        {
+            ToastService.ShowError("You do not have permission to update doctor status.");
+            return;
+        }
+
         if (selectedDcode <= 0)
         {
             ToastService.ShowWarning("Please select a doctor to update status.");

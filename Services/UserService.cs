@@ -423,7 +423,12 @@ namespace LabCare.Services
                 {
                     content.Add(new StringContent(roleIds[i].ToString()), $"Profile.RoleIds[{i}]");
                     content.Add(new StringContent(roleIds[i].ToString()), $"roleIds[{i}]");
+                    content.Add(new StringContent(roleIds[i].ToString()), $"role_ids[{i}]");
+                    content.Add(new StringContent(roleIds[i].ToString()), $"Role_ids[{i}]");
+                    content.Add(new StringContent(roleIds[i].ToString()), $"RoleIds[{i}]");
                 }
+                content.Add(new StringContent(string.Join(",", roleIds)), "role_ids");
+                content.Add(new StringContent(string.Join(",", roleIds)), "Role_ids");
             }
 
             // Role Template

@@ -14,8 +14,35 @@
 @inject IHttpClientFactory ClientFactory
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
+@inject Booking.Services.RoleMasterService RoleService
+@implements IDisposable
 
 <div class="due-collection-wrapper">
+    @if (!canViewHistory)
+    {
+        <!-- Access Denied Card -->
+        <div class="due-header-card">
+            <div class="header-left-section">
+                <div class="header-icon-container" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+                    <i class="bi bi-shield-x"></i>
+                </div>
+                <div class="header-text-container">
+                    <h1>Due Collection History</h1>
+                    <p><span class="header-status-dot" style="background: #ef4444;"></span> ACCESS RESTRICTED</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="alert alert-danger d-flex align-items-center mt-3 p-4 shadow-sm" style="border-radius: 8px;">
+            <i class="bi bi-shield-lock-fill me-3 fs-1 text-danger"></i>
+            <div>
+                <h5 class="alert-heading mb-1 font-bold">Permission Denied</h5>
+                <p class="mb-0 text-muted">You do not have permission to view Due Collection History. Please contact your system administrator to assign Role 493 (Billing Portal &gt; Due Collection History &gt; View).</p>
+            </div>
+        </div>
+    }
+    else
+    {
     @if (!IsEmbedded)
     {
         <!-- Top Header Card -->
@@ -208,17 +235,34 @@
                                 </span>
                             </td>
                             <td class="text-center" style="white-space: nowrap;">
-                                <button class="btn-hist-action blue" title="Print Patient Receipt" @onclick="() => PrintPatientReceipt(row)">
-                                    <i class="bi bi-person-badge"></i>
-                                </button>
-                                <button class="btn-hist-action green" title="Print Referral Receipt" @onclick="() => PrintReferralReceipt(row)" style="margin-left: 4px;">
-                                    <i class="bi bi-person-lines-fill"></i>
-                                </button>
+                                @if (canPrintPatient)
+                                {
+                                    <button class="btn-hist-action blue" title="Print Patient Receipt" @onclick="() => PrintPatientReceipt(row)">
+                                        <i class="bi bi-person-badge"></i>
+                                    </button>
+                                }
+                                @if (canPrintReferral)
+                                {
+                                    <button class="btn-hist-action green" title="Print Referral Receipt" @onclick="() => PrintReferralReceipt(row)" style="margin-left: 4px;">
+                                        <i class="bi bi-person-lines-fill"></i>
+                                    </button>
+                                }
+                                @if (!canPrintPatient && !canPrintReferral)
+                                {
+                                    <span class="text-muted font-sm">-</span>
+                                }
                             </td>
                             <td class="text-center">
-                                <button class="btn-hist-action red" title="Cancel / Delete" @onclick="() => PromptCancelFromHistory(row)">
-                                    <i class="bi bi-trash3"></i>
-                                </button>
+                                @if (canCancelHistory)
+                                {
+                                    <button class="btn-hist-action red" title="Cancel / Delete" @onclick="() => PromptCancelFromHistory(row)">
+                                        <i class="bi bi-trash3"></i>
+                                    </button>
+                                }
+                                else
+                                {
+                                    <span class="text-muted font-sm" title="No delete permission">-</span>
+                                }
                             </td>
                         </tr>
                     }
@@ -264,6 +308,7 @@
             </div>
         </div>
     </div>
+    }
 </div>
 
 <!-- Modal Cancellation dialog -->
@@ -298,6 +343,11 @@
 
 @code {
     [Parameter] public bool IsEmbedded { get; set; } = false;
+
+    private bool canViewHistory = true;
+    private bool canPrintPatient = true;
+    private bool canPrintReferral = true;
+    private bool canCancelHistory = true;
 
     private bool showHistoryFilter = false;
     private HmsPaidHistoryFilterRequest histFilter = new();
@@ -335,6 +385,9 @@
 
     protected override async Task OnInitializedAsync()
     {
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        EvaluateRights();
+
         var today = DateTime.Today;
         histFilter.fromdate = today;
         histFilter.todate = today;
@@ -343,7 +396,71 @@
         histFilter.pagesize = 20;
         selectedPeriodPreset = "Today";
 
-        await RunHistoryFilter();
+        if (canViewHistory)
+        {
+            await RunHistoryFilter();
+        }
+    }
+
+    private void EvaluateRights()
+    {
+        bool isAdmin = Booking.Helpers.UserPermissionHelper.IsAdmin(null, TenantState);
+        if (isAdmin)
+        {
+            canViewHistory = true;
+            canPrintPatient = true;
+            canPrintReferral = true;
+            canCancelHistory = true;
+            return;
+        }
+
+        canViewHistory = RoleService.HasPermission(493) ||
+                         TenantState.HasActionRight("Billing Portal", "Due Collection History", "View") ||
+                         TenantState.HasActionRight("Billing", "Due Collection History", "View");
+
+        canPrintPatient = RoleService.HasPermission(494) ||
+                          TenantState.HasActionRight("Billing Portal", "Due Collection History", "Print Patient Report") ||
+                          TenantState.HasActionRight("Billing", "Due Collection History", "Print Patient Report") ||
+                          TenantState.HasActionRight("Billing Portal", "Due Collection History", "Export") ||
+                          TenantState.HasActionRight("Billing", "Due Collection History", "Export");
+
+        canPrintReferral = RoleService.HasPermission(495) ||
+                           TenantState.HasActionRight("Billing Portal", "Due Collection History", "Print Payment Report") ||
+                           TenantState.HasActionRight("Billing", "Due Collection History", "Print Payment Report") ||
+                           TenantState.HasActionRight("Billing Portal", "Due Collection History", "Export") ||
+                           TenantState.HasActionRight("Billing", "Due Collection History", "Export");
+
+        canCancelHistory = RoleService.HasPermission(496) ||
+                           TenantState.HasActionRight("Billing Portal", "Due Collection History", "Delete") ||
+                           TenantState.HasActionRight("Billing", "Due Collection History", "Delete");
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        InvokeAsync(async () =>
+        {
+            bool prevCanView = canViewHistory;
+            EvaluateRights();
+            if (prevCanView != canViewHistory)
+            {
+                if (canViewHistory)
+                {
+                    await RunHistoryFilter();
+                }
+                else
+                {
+                    historyReportRows.Clear();
+                    histTotalCount = 0;
+                    grandTotalCollected = 0;
+                }
+            }
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
     }
 
     public bool IsFilterOpen => showHistoryFilter;
@@ -369,6 +486,15 @@
 
     private async Task RunHistoryFilter()
     {
+        if (!canViewHistory)
+        {
+            loadingHistory = false;
+            historyReportRows.Clear();
+            histTotalCount = 0;
+            grandTotalCollected = 0;
+            return;
+        }
+
         loadingHistory = true;
         StateHasChanged();
 
@@ -508,6 +634,12 @@
 
     private async Task PrintPatientReceipt(HmsPaidHistoryRow row)
     {
+        if (!canPrintPatient)
+        {
+            ToastService.ShowError("You do not have permission to print patient receipts (Role 494 required).");
+            return;
+        }
+
         if (string.IsNullOrEmpty(row.receiptguid))
         {
             ToastService.ShowError("Receipt GUID is missing.");
@@ -523,6 +655,12 @@
 
     private async Task PrintReferralReceipt(HmsPaidHistoryRow row)
     {
+        if (!canPrintReferral)
+        {
+            ToastService.ShowError("You do not have permission to print payment receipts (Role 495 required).");
+            return;
+        }
+
         if (string.IsNullOrEmpty(row.receiptguid))
         {
             ToastService.ShowError("Receipt GUID is missing.");
@@ -538,6 +676,12 @@
 
     private void PromptCancelFromHistory(HmsPaidHistoryRow row)
     {
+        if (!canCancelHistory)
+        {
+            ToastService.ShowError("You do not have permission to cancel receipts (Role 496 required).");
+            return;
+        }
+
         receiptToCancel = row;
         cancelReason   = string.Empty;
         cancelUserCode = 10;
@@ -552,6 +696,12 @@
 
     private async Task SubmitCancelReceipt()
     {
+        if (!canCancelHistory)
+        {
+            ToastService.ShowError("You do not have permission to cancel receipts (Role 496 required).");
+            return;
+        }
+
         if (receiptToCancel == null || string.IsNullOrWhiteSpace(receiptToCancel.receiptguid)) return;
         cancelling = true;
         StateHasChanged();
@@ -585,10 +735,39 @@
     {
         if (firstRender)
         {
+            if (!RoleService.IsPermissionsLoaded && !Booking.Helpers.UserPermissionHelper.IsAdmin(null, TenantState))
+            {
+                try
+                {
+                    var sessionPerms = await _sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                    if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                    {
+                        RoleService.SetUserPermissions(sessionPerms.Value);
+                    }
+                    else if (TenantState.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+                catch
+                {
+                    if (TenantState.UserCode > 0)
+                    {
+                        await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                    }
+                }
+            }
+
+            EvaluateRights();
+
             await LoadBranchesAsync();
             await LoadCountersAsync();
             await LoadPaymodesAsync();
             await LoadDoctorsAsync();
+            if (canViewHistory && historyReportRows.Count == 0)
+            {
+                await RunHistoryFilter();
+            }
             StateHasChanged();
         }
     }
