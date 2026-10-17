@@ -616,8 +616,10 @@ namespace Booking.Services
             if (normSub == "doctorspecialitymaster" && (_permittedSubModules.Contains("doctorspecialtymaster") || _permittedSubModules.Contains("doctorspecialties"))) return true;
             if (normSub == "itemtypemaster" && (_permittedSubModules.Contains("subcategorymaster") || _permittedSubModules.Contains("categorymaster") || _permittedSubModules.Contains("itemtypemaster"))) return true;
             if (normSub == "subcategorymaster" && _permittedSubModules.Contains("itemtypemaster")) return true;
-            if ((normSub == "purchase" || normSub == "purchasemaster" || normSub == "purchaseorder") &&
-                (_permittedSubModules.Contains("purchase") || _permittedSubModules.Contains("purchasemaster") || _permittedSubModules.Contains("purchaseorder") || _permittedRoleIds.Contains(1035) || _permittedRoleIds.Contains(590) || _permittedActions.Contains("purchase"))) return true;
+            if ((normSub == "purchase" || normSub == "purchasemaster") &&
+                (_permittedSubModules.Contains("purchase") || _permittedSubModules.Contains("purchasemaster") || _permittedRoleIds.Contains(590) || _permittedActions.Contains("purchase"))) return true;
+            if ((normSub == "purchaseorder" || normSub == "purchaseorders" || normSub == "po") &&
+                (_permittedSubModules.Contains("purchaseorder") || _permittedSubModules.Contains("purchaseorders") || _permittedRoleIds.Contains(1035) || _permittedActions.Contains("purchaseorder"))) return true;
             if (normSub == "purchasereturn" && (_permittedSubModules.Contains("purchasereturn") || _permittedActions.Contains("purchasereturn"))) return true;
             if (normSub == "purchasepayment" && (_permittedSubModules.Contains("purchasepayments") || _permittedSubModules.Contains("purchasepayment") || _permittedSubModules.Contains("purchasefilter"))) return true;
             if (normSub == "purchasepayments" && (_permittedSubModules.Contains("purchasepayment") || _permittedSubModules.Contains("purchasefilter"))) return true;
@@ -644,9 +646,9 @@ namespace Booking.Services
             if (normSub == "billsummary" && (_permittedSubModules.Contains("billingsummary") || _permittedSubModules.Contains("billsummary"))) return true;
             if (normSub == "billingsummary" && (_permittedSubModules.Contains("billsummary") || _permittedSubModules.Contains("billingsummary"))) return true;
             if ((normSub == "billingcategorization" || normSub == "billingcategories" || normSub == "opcategorycollection" || normSub == "categorycollection") &&
-                (_permittedSubModules.Contains("billingcategorization") || _permittedSubModules.Contains("billingcategories") || _permittedSubModules.Contains("opcategorycollection") || _permittedRoleIds.Contains(1043) || _permittedSubModules.Contains("reports") || _permittedSubModules.Contains("billsummary") || _permittedSubModules.Contains("billingsummary") || _permittedSubModules.Contains("billingportal"))) return true;
+                (_permittedSubModules.Contains("billingcategorization") || _permittedSubModules.Contains("billingcategories") || _permittedSubModules.Contains("opcategorycollection") || _permittedRoleIds.Contains(1043) || _permittedRoleIds.Contains(1044) || _permittedRoleIds.Contains(1045) || _permittedRoleIds.Contains(1046))) return true;
             if ((normSub == "autobillop" || normSub == "autobilloprequest" || normSub == "autobill") &&
-                (_permittedSubModules.Contains("autobillop") || _permittedSubModules.Contains("autobilloprequest") || _permittedSubModules.Contains("autobill") || _permittedRoleIds.Contains(1039) || _permittedSubModules.Contains("billingportal") || _permittedSubModules.Contains("cashcounter"))) return true;
+                (_permittedSubModules.Contains("autobillop") || _permittedSubModules.Contains("autobilloprequest") || _permittedSubModules.Contains("autobill") || _permittedRoleIds.Contains(1039) || _permittedRoleIds.Contains(1040) || _permittedRoleIds.Contains(1041) || _permittedRoleIds.Contains(1042))) return true;
             if ((normSub == "cashcounter" || normSub == "cashcounterportal") && (_permittedSubModules.Contains("cashcounter") || _permittedSubModules.Contains("cashcounterportal"))) return true;
             if ((normSub == "countershift" || normSub == "countershifts") && (_permittedSubModules.Contains("countershift") || _permittedSubModules.Contains("countershifts"))) return true;
             if (normSub == "reimbursementco" && (_permittedSubModules.Contains("reimbursementcompanymaster") || _permittedSubModules.Contains("reimbursementcompany") || _permittedSubModules.Contains("reimbursements") || _permittedSubModules.Contains("reimbursementco"))) return true;
@@ -819,10 +821,10 @@ namespace Booking.Services
         private bool CheckInventoryRoleAction(string normSub, string normAct)
         {
             // Dedicated Purchase Order (1035 - 1038)
-            if (normSub == "purchaseorder" && (normAct == "view" || normAct == "list") && (_permittedRoleIds.Contains(1035) || _permittedRoleIds.Contains(590))) return true;
-            if (normSub == "purchaseorder" && (normAct == "create" || normAct == "add") && (_permittedRoleIds.Contains(1036) || _permittedRoleIds.Contains(591))) return true;
-            if (normSub == "purchaseorder" && (normAct == "edit" || normAct == "update") && (_permittedRoleIds.Contains(1037) || _permittedRoleIds.Contains(592))) return true;
-            if (normSub == "purchaseorder" && (normAct == "delete" || normAct == "cancel") && (_permittedRoleIds.Contains(1038) || _permittedRoleIds.Contains(593))) return true;
+            if ((normSub == "purchaseorder" || normSub == "purchaseorders" || normSub == "po") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(1035)) return true;
+            if ((normSub == "purchaseorder" || normSub == "purchaseorders" || normSub == "po") && (normAct == "create" || normAct == "add") && _permittedRoleIds.Contains(1036)) return true;
+            if ((normSub == "purchaseorder" || normSub == "purchaseorders" || normSub == "po") && (normAct == "edit" || normAct == "update") && _permittedRoleIds.Contains(1037)) return true;
+            if ((normSub == "purchaseorder" || normSub == "purchaseorders" || normSub == "po") && (normAct == "delete" || normAct == "cancel") && _permittedRoleIds.Contains(1038)) return true;
 
             if ((normSub == "purchase" || normSub == "purchasemaster") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(590)) return true;
             if ((normSub == "purchase" || normSub == "purchasemaster") && (normAct == "create" || normAct == "add") && _permittedRoleIds.Contains(591)) return true;
@@ -1640,50 +1642,41 @@ namespace Booking.Services
             }
 
             // 7a. Billing Portal / Auto Bill OP (Roles 1039 - 1042)
-            bool hasAutoBillOpPerm = isAdministrator || permList.Any(p =>
-                (p.Role_id >= 1039 && p.Role_id <= 1042) ||
-                string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(p.Sub_module, "AutoBillOpRequest", StringComparison.OrdinalIgnoreCase));
+            bool aboView = isAdministrator || permList.Any(p => p.Role_id == 1039 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBillOpRequest", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "View", StringComparison.OrdinalIgnoreCase)));
+            bool aboAdd = isAdministrator || permList.Any(p => p.Role_id == 1040 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBillOpRequest", StringComparison.OrdinalIgnoreCase)) && (string.Equals(p.Module, "Create", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Module, "Add", StringComparison.OrdinalIgnoreCase))));
+            bool aboEdit = isAdministrator || permList.Any(p => p.Role_id == 1041 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBillOpRequest", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Edit", StringComparison.OrdinalIgnoreCase)));
+            bool aboDel = isAdministrator || permList.Any(p => p.Role_id == 1042 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBillOpRequest", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Delete", StringComparison.OrdinalIgnoreCase)));
+            if (aboAdd || aboEdit || aboDel) aboView = true;
 
-            if (hasAutoBillOpPerm)
+            foreach (var bDept in new[] { "Billing Portal", "Billing" })
             {
-                bool aboView = isAdministrator || permList.Any(p => p.Role_id == 1039 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "View", StringComparison.OrdinalIgnoreCase)));
-                bool aboAdd = isAdministrator || permList.Any(p => p.Role_id == 1040 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Create", StringComparison.OrdinalIgnoreCase)));
-                bool aboEdit = isAdministrator || permList.Any(p => p.Role_id == 1041 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Edit", StringComparison.OrdinalIgnoreCase)));
-                bool aboDel = isAdministrator || permList.Any(p => p.Role_id == 1042 || ((string.Equals(p.Sub_module, "Auto Bill OP", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "AutoBill OP", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Delete", StringComparison.OrdinalIgnoreCase)));
-                if (aboAdd || aboEdit || aboDel) aboView = true;
-
-                foreach (var bDept in new[] { "Billing Portal", "Billing" })
+                foreach (var mod in new[] { "Auto Bill OP", "Auto_Bill_OP", "AutoBill OP", "AutoBillOP", "AutoBillOpRequest", "Auto Bill OP Request" })
                 {
-                    foreach (var mod in new[] { "Auto Bill OP", "Auto_Bill_OP", "AutoBill OP", "AutoBillOP", "AutoBillOpRequest", "Auto Bill OP Request" })
+                    var existing = result.FirstOrDefault(r => string.Equals(r.Department, bDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, mod, StringComparison.OrdinalIgnoreCase));
+                    if (existing != null)
                     {
-                        var existing = result.FirstOrDefault(r => string.Equals(r.Department, bDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, mod, StringComparison.OrdinalIgnoreCase));
-                        if (existing != null)
+                        existing.ToView = aboView;
+                        existing.ToAdd = aboAdd;
+                        existing.ToEdit = aboEdit;
+                        existing.ToDelete = aboDel;
+                        existing.ToExport = aboView;
+                    }
+                    else if (aboView || aboAdd || aboEdit || aboDel)
+                    {
+                        result.Add(new User_Rights
                         {
-                            existing.ToView = aboView;
-                            existing.ToAdd = aboAdd;
-                            existing.ToEdit = aboEdit;
-                            existing.ToDelete = aboDel;
-                            existing.ToExport = true;
-                        }
-                        else
-                        {
-                            result.Add(new User_Rights
-                            {
-                                UserModuleID = rightId,
-                                Sno = sno++,
-                                ModuleName = mod,
-                                Department = bDept,
-                                UserModuleRightsID = rightId++,
-                                UserCode = userCode,
-                                ToAdd = aboAdd,
-                                ToView = aboView,
-                                ToEdit = aboEdit,
-                                ToDelete = aboDel,
-                                ToExport = true
-                            });
-                        }
+                            UserModuleID = rightId,
+                            Sno = sno++,
+                            ModuleName = mod,
+                            Department = bDept,
+                            UserModuleRightsID = rightId++,
+                            UserCode = userCode,
+                            ToAdd = aboAdd,
+                            ToView = aboView,
+                            ToEdit = aboEdit,
+                            ToDelete = aboDel,
+                            ToExport = true
+                        });
                     }
                 }
             }
@@ -2129,10 +2122,10 @@ namespace Booking.Services
                     (p.Role_id >= 590 && p.Role_id <= 593) ||
                     p.Sub_module?.Equals("Purchase", StringComparison.OrdinalIgnoreCase) == true ||
                     p.Sub_module?.Equals("Purchase Master", StringComparison.OrdinalIgnoreCase) == true);
-                bool pView = isAdministrator || permList.Any(p => p.Role_id == 590 || (p.Sub_module?.Contains("Purchase", StringComparison.OrdinalIgnoreCase) == true && string.Equals(p.Module, "View", StringComparison.OrdinalIgnoreCase)));
-                bool pAdd = isAdministrator || permList.Any(p => p.Role_id == 591 || (p.Sub_module?.Contains("Purchase", StringComparison.OrdinalIgnoreCase) == true && string.Equals(p.Module, "Create", StringComparison.OrdinalIgnoreCase)));
-                bool pEdit = isAdministrator || permList.Any(p => p.Role_id == 592 || (p.Sub_module?.Contains("Purchase", StringComparison.OrdinalIgnoreCase) == true && string.Equals(p.Module, "Edit", StringComparison.OrdinalIgnoreCase)));
-                bool pDel = isAdministrator || permList.Any(p => p.Role_id == 593 || (p.Sub_module?.Contains("Purchase", StringComparison.OrdinalIgnoreCase) == true && string.Equals(p.Module, "Delete", StringComparison.OrdinalIgnoreCase)));
+                bool pView = isAdministrator || permList.Any(p => p.Role_id == 590 || ((string.Equals(p.Sub_module, "Purchase", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "Purchase Master", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "View", StringComparison.OrdinalIgnoreCase)));
+                bool pAdd = isAdministrator || permList.Any(p => p.Role_id == 591 || ((string.Equals(p.Sub_module, "Purchase", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "Purchase Master", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Create", StringComparison.OrdinalIgnoreCase)));
+                bool pEdit = isAdministrator || permList.Any(p => p.Role_id == 592 || ((string.Equals(p.Sub_module, "Purchase", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "Purchase Master", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Edit", StringComparison.OrdinalIgnoreCase)));
+                bool pDel = isAdministrator || permList.Any(p => p.Role_id == 593 || ((string.Equals(p.Sub_module, "Purchase", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Sub_module, "Purchase Master", StringComparison.OrdinalIgnoreCase)) && string.Equals(p.Module, "Delete", StringComparison.OrdinalIgnoreCase)));
                 if (pAdd || pEdit || pDel) pView = true;
 
                 if (hasPurchase)
@@ -2172,23 +2165,15 @@ namespace Booking.Services
                     }
                 }
 
-                // 9aa. Dedicated Inventory / Purchase Order (Roles 1035 - 1038, with fallback to general Purchase if not explicitly granted)
+                // 9aa. Dedicated Inventory / Purchase Order (Roles 1035 - 1038)
                 bool hasExplicitPO = permList.Any(p => (p.Role_id >= 1035 && p.Role_id <= 1038) || string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase));
-                bool hasPurchaseOrder = isAdministrator || hasExplicitPO || hasPurchase;
+                bool hasPurchaseOrder = isAdministrator || hasExplicitPO;
                 if (hasPurchaseOrder)
                 {
-                    bool poView = isAdministrator || (hasExplicitPO 
-                        ? permList.Any(p => p.Role_id == 1035 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "View", StringComparison.OrdinalIgnoreCase)))
-                        : pView);
-                    bool poAdd = isAdministrator || (hasExplicitPO 
-                        ? permList.Any(p => p.Role_id == 1036 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "Create", StringComparison.OrdinalIgnoreCase)))
-                        : pAdd);
-                    bool poEdit = isAdministrator || (hasExplicitPO 
-                        ? permList.Any(p => p.Role_id == 1037 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "Edit", StringComparison.OrdinalIgnoreCase)))
-                        : pEdit);
-                    bool poDel = isAdministrator || (hasExplicitPO 
-                        ? permList.Any(p => p.Role_id == 1038 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "Delete", StringComparison.OrdinalIgnoreCase)))
-                        : pDel);
+                    bool poView = isAdministrator || permList.Any(p => p.Role_id == 1035 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "View", StringComparison.OrdinalIgnoreCase)));
+                    bool poAdd = isAdministrator || permList.Any(p => p.Role_id == 1036 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "Create", StringComparison.OrdinalIgnoreCase)));
+                    bool poEdit = isAdministrator || permList.Any(p => p.Role_id == 1037 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "Edit", StringComparison.OrdinalIgnoreCase)));
+                    bool poDel = isAdministrator || permList.Any(p => p.Role_id == 1038 || (string.Equals(p.Sub_module, "Purchase Order", StringComparison.OrdinalIgnoreCase) && string.Equals(p.Module, "Delete", StringComparison.OrdinalIgnoreCase)));
                     if (poAdd || poEdit || poDel) poView = true;
 
                     foreach (var dept in invDepts)
