@@ -29,7 +29,11 @@ if (envSection != null)
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
-    .AddInteractiveServerComponents();
+    .AddInteractiveServerComponents(options =>
+    {
+        options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromHours(1);
+        options.DisconnectedCircuitMaxRetained = 500;
+    });
 
 builder.Services.AddCascadingAuthenticationState();
 builder.Services.AddScoped<JwtAuthenticationStateProvider>();
@@ -159,6 +163,7 @@ builder.Services.AddScoped<Booking.Services.AreaMasterService>();
 builder.Services.AddScoped<Booking.Services.CountryMasterService>();
 builder.Services.AddScoped<Booking.Services.StateMasterService>();
 builder.Services.AddScoped<Booking.Services.CityMasterService>();
+builder.Services.AddScoped<Booking.Services.OpStatusMasterService>();
 builder.Services.AddScoped<Booking.Services.PrefixMasterService>();
 builder.Services.AddScoped<Booking.Services.MasterTenantServices>();
 builder.Services.AddScoped<SharedComponents.Rcl.Services.NotificationService>();

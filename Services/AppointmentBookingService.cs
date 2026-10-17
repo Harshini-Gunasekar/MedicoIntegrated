@@ -732,7 +732,8 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.PostAsync($"api/OpRegistration/update-visit-status?op_id={opId}&visit_status={visitStatus}", null);
+                var encodedStatus = Uri.EscapeDataString(visitStatus ?? string.Empty);
+                var response = await _http.PostAsync($"api/OpRegistration/update-visit-status?op_id={opId}&visit_status={encodedStatus}", null);
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)

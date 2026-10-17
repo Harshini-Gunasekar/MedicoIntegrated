@@ -738,28 +738,7 @@ namespace Booking.Services
                 if (rawCounters != null && rawCounters.Any())
                 {
                     var unclosedShifts = rawCounters.Where(s => s.todate == null).ToList();
-                    if (returnAllUnclosed)
-                    {
-                        return unclosedShifts;
-                    }
-
-                    LabSettingModel? labSetting = await GetLabSettingInternalAsync();
-
-                    var nowUtc = DateTime.UtcNow;
-                    var nowIndian = nowUtc.ToIndianTime();
-
-                    var activeShifts = new List<CounterTimingDto>();
-
-                    foreach (var shift in unclosedShifts)
-                    {
-                        bool isExpired = IsShiftExpired(shift, labSetting, nowIndian, nowUtc);
-                        if (!isExpired)
-                        {
-                            activeShifts.Add(shift);
-                        }
-                    }
-
-                    return activeShifts;
+                    return unclosedShifts;
                 }
                 return new List<CounterTimingDto>();
             }
@@ -774,71 +753,6 @@ namespace Booking.Services
         {
             if (shift == null) return true;
             if (shift.todate != null) return true;
-
-            var shiftFromIndian = (shift.fromdate ?? shift.counterdate ?? nowIndian).ToIndianTime();
-            var shiftOpenDateIndian = shiftFromIndian.Date;
-
-            // 1. Check if planned_to is set on shift record
-            if (shift.planned_to.HasValue)
-            {
-                var planned = shift.planned_to.Value;
-                var plannedUtc = planned.Kind == DateTimeKind.Utc ? planned : DateTime.SpecifyKind(planned, DateTimeKind.Utc);
-                var plannedIndian = planned.ToIndianTime();
-
-                if (nowUtc >= plannedUtc || nowIndian >= plannedIndian)
-                {
-                    return true;
-                }
-            }
-
-            // 2. Check if LabSetting or shift is configured in FIXED mode
-            string shiftMode = shift.shift_mode ?? setting?.shift_timing_mode ?? "VARIABLE";
-            if (string.Equals(shiftMode, "FIXED", StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(setting?.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase))
-            {
-                string? endTimeStr = setting?.shift_end_time;
-                if (TryParseShiftEndTime(endTimeStr, out var endTime))
-                {
-                    var fixedEndDateTime = shiftOpenDateIndian.Add(endTime);
-
-                    if (shiftFromIndian < fixedEndDateTime)
-                    {
-                        // Shift opened before fixed end time -> ends at the fixed time
-                        if (nowIndian >= fixedEndDateTime)
-                        {
-                            return true;
-                        }
-                    }
-                    else
-                    {
-                        // Newly created shift opened at or after fixed end time -> ends at 12:00 AM midnight
-                        var midnight = shiftOpenDateIndian.AddDays(1).Date;
-                        if (nowIndian >= midnight)
-                        {
-                            return true;
-                        }
-                    }
-                }
-                else
-                {
-                    // If no fixed timing is set, the shift should close at 12:00 AM midnight
-                    var midnight = shiftOpenDateIndian.AddDays(1).Date;
-                    if (nowIndian >= midnight)
-                    {
-                        return true;
-                    }
-                }
-            }
-            else
-            {
-                // 3. Variable mode: ends at 12:00 AM midnight of the shift day
-                var universalMidnight = shiftOpenDateIndian.AddDays(1).Date;
-                if (nowIndian >= universalMidnight)
-                {
-                    return true;
-                }
-            }
-
             return false;
         }
 

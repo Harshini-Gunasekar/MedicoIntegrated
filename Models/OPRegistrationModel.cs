@@ -33,6 +33,7 @@ namespace Booking.Models
             public DateOnly visit_date { get; set; }
             public string? token_no { get; set; }   
             public int? queue_no { get; set; }
+            public string? walkin_time { get; set; }
             public string visit_status { get; set; } = "WAITING";
             public string? notes { get; set; }
             public string? tenant_code { get; set; }
@@ -199,6 +200,7 @@ namespace Booking.Models
             public int? serviceid { get; set; }
             public int? service_id { get; set; }
             public string? tenant_code { get; set; }
+            public string? walkin_time { get; set; }
             public int? usercode { get; set; }
         }
 
@@ -259,6 +261,7 @@ namespace Booking.Models
             [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
             public string? notes { get; set; }
+            public string? walkin_time { get; set; }
             public int? usercode { get; set; }
         }
 
@@ -286,6 +289,7 @@ namespace Booking.Models
             [JsonConverter(typeof(FlexibleNullableGuidConverter))]
             public Guid? slot_detail_id { get; set; }
             public string? notes { get; set; }
+            public string? walkin_time { get; set; }
             public int? usercode { get; set; }
         }
 
@@ -320,6 +324,7 @@ namespace Booking.Models
 
             // Everything else gets billed onto the SAME op_id, no separate token
             public List<ComboRegistrationItemRequest> additional_items { get; set; } = new();
+            public string? walkin_time { get; set; }
             public int? usercode { get; set; }
         }
 

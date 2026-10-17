@@ -1,4 +1,4 @@
-﻿@page "/booking/outpatient"
+@page "/booking/outpatient"
 @using Booking.Models
 @using Booking.Services
 @using Booking.Helpers
@@ -30,6 +30,7 @@
 @inject LabCare.Services.TestService LabCareTestSvc
 @inject LabCare.Services.UserService UserService
 @inject Booking.Services.RoleMasterService RoleService
+@inject Booking.Services.OpStatusMasterService StatusMasterService
 @implements IDisposable
 @using Microsoft.JSInterop
 
@@ -380,10 +381,12 @@
                     <table class="medico-table">
                         <thead>
                             <tr>
+                                <th style="width: 60px;">S.No</th>
                                 <th>Token No</th>
                                 <th>Patient Name</th>
                                 <th>OP No</th>
                                 <th>Reg Type</th>
+                                <th>Walk-in Time</th>
                                 @if (labSetting.is_slot_required != false)
                                 {
                                     <th>Time</th>
@@ -415,6 +418,9 @@
                                 var rowClassStr = string.Join(" ", rowClasses);
 
                                 <tr class="@rowClassStr" @ondblclick="() => NavigateToBilling(opData)" style="cursor: pointer;" title="Double-click row to open Billing page">
+                                    <td class="col-sno" style="font-weight: 700; color: #475569; width: 60px;">
+                                        @GetDayWiseSerialNumber(booking)
+                                    </td>
                                     <td>
                                         @if (opData != null && !string.IsNullOrWhiteSpace(opData.token_no))
                                         {
@@ -447,6 +453,11 @@
                                     <td>
                                         <span class="badge-type @displayType.ToLower()">@displayType</span>
                                     </td>
+                                    <td class="col-walkin-time" style="white-space: nowrap;">
+                                        <span class="walkin-time-badge" style="font-size: 0.8rem; font-weight: 600; color: #334155;">
+                                            <i class="bi bi-clock me-1 text-primary"></i>@GetFormattedWalkinTime(opData, booking)
+                                        </span>
+                                    </td>
                                     @if (labSetting.is_slot_required != false)
                                     {
                                         <td>
@@ -468,16 +479,30 @@
                                      <td>
                                           @if (isRegistered && opData != null)
                                           {
-                                              var currentStatus = string.IsNullOrWhiteSpace(opData.visit_status) ? "WAITING" : opData.visit_status.ToUpper();
-                                              <select class="status-select @currentStatus.ToLower()" 
+                                              var currentStatus = string.IsNullOrWhiteSpace(opData.visit_status) ? "Waiting" : opData.visit_status;
+                                              <select class="status-select @currentStatus.ToLower().Replace(" ", "-")" 
                                                       value="@currentStatus" 
                                                       @onchange="(e) => OnStatusSelectChanged(opData, e.Value?.ToString())">
-                                                  <option value="WAITING">Waiting</option>
-                                                  <option value="IN_CONSULTATION">In Consultation</option>
-                                                  <option value="COMPLETED">Completed</option>
-                                                  @if (canCancelWalkin || currentStatus == "CANCELLED")
+                                                  @if (activeOpStatuses != null && activeOpStatuses.Any())
                                                   {
-                                                      <option value="CANCELLED">Cancelled</option>
+                                                      @if (!activeOpStatuses.Any(s => s.status_name.Equals(currentStatus, StringComparison.OrdinalIgnoreCase)))
+                                                      {
+                                                          <option value="@currentStatus">@currentStatus</option>
+                                                      }
+                                                      @foreach (var st in activeOpStatuses)
+                                                      {
+                                                          <option value="@st.status_name">@st.status_name</option>
+                                                      }
+                                                  }
+                                                  else
+                                                  {
+                                                      <option value="WAITING">Waiting</option>
+                                                      <option value="IN_CONSULTATION">In Consultation</option>
+                                                      <option value="COMPLETED">Completed</option>
+                                                      @if (canCancelWalkin || currentStatus.Equals("CANCELLED", StringComparison.OrdinalIgnoreCase))
+                                                      {
+                                                          <option value="CANCELLED">Cancelled</option>
+                                                      }
                                                   }
                                               </select>
                                           }
@@ -2082,6 +2107,58 @@
     private List<UnbilledChargeSummary> unpaidChargesList = new();
     private string unpaidPatientName = "";
 
+    private List<OpStatusMasterModel> activeOpStatuses = new();
+    private Dictionary<Guid, int> _dayWiseSNoMap = new();
+
+    private void RecomputeDayWiseSNo()
+    {
+        _dayWiseSNoMap.Clear();
+        var groupedByDate = allBookings.GroupBy(b => b.appointment_date);
+
+        foreach (var group in groupedByDate)
+        {
+            var orderedDayList = group
+                .OrderBy(b => b.created_at)
+                .ThenBy(b => b.booking_id)
+                .ToList();
+
+            for (int i = 0; i < orderedDayList.Count; i++)
+            {
+                _dayWiseSNoMap[orderedDayList[i].booking_id] = i + 1;
+            }
+        }
+    }
+
+    private int GetDayWiseSerialNumber(AppointmentBookingModel booking)
+    {
+        if (_dayWiseSNoMap.TryGetValue(booking.booking_id, out int sNo))
+        {
+            return sNo;
+        }
+        var dayList = allBookings
+            .Where(b => b.appointment_date == booking.appointment_date)
+            .OrderBy(b => b.created_at)
+            .ThenBy(b => b.booking_id)
+            .ToList();
+        int idx = dayList.FindIndex(b => b.booking_id == booking.booking_id);
+        return idx >= 0 ? idx + 1 : 1;
+    }
+
+    private string GetFormattedWalkinTime(OPRegistrationModel.OpRegistrationModel? opData, AppointmentBookingModel booking)
+    {
+        if (!string.IsNullOrWhiteSpace(opData?.walkin_time))
+        {
+            return opData.walkin_time;
+        }
+
+        DateTime dt = opData?.created_at ?? booking.created_at;
+        if (dt == default || dt == DateTime.MinValue)
+        {
+            return "-";
+        }
+        return dt.ToIndianTime().ToString("hh:mm tt");
+    }
+
     // Filter states
     private DateTime? filterDate = DateTime.UtcNow.ToIndianTime().Date;
     private string filterStatus = "WAITING";
@@ -3261,13 +3338,15 @@
         loading = true;
         try
         {
-            // Fetch OP registrations and unbilled charges in parallel
+            // Fetch OP registrations, unbilled charges, and active statuses in parallel
             var regsTask = BookingService.GetAllOpRegistrationsAsync();
             var unbilledTask = HmsBillingService.GetAllUnbilledChargesAsync();
+            var statusTask = StatusMasterService.GetAllStatusesAsync(activeOnly: true);
 
-            await Task.WhenAll(regsTask, unbilledTask);
+            await Task.WhenAll(regsTask, unbilledTask, statusTask);
             var regs = (await regsTask) ?? new();
             var unbilledChargesList = (await unbilledTask) ?? new();
+            activeOpStatuses = (await statusTask) ?? new();
 
             visitUnbilledCharges.Clear();
             foreach (var uc in unbilledChargesList)
@@ -3339,6 +3418,7 @@
                 opRegistrations[r.op_id] = r;
             }
 
+            RecomputeDayWiseSNo();
             ApplyFilters();
         }
         catch (Exception ex)
