@@ -709,6 +709,32 @@ public class HmsDailyCollectionReportSummary
     public double total_advance_refund { get; set; }
     public double grand_total { get; set; }
 }
+
+/// <summary>
+/// Query parameters for Advance and Refund receipt print APIs:
+/// Advance: GET /api/report/getadvancereceipt
+/// Refund:  GET /api/report/getrefundreceipt
+/// </summary>
+public class ReceiptPrintOptions
+{
+    /// <summary>Receipt GUID or Receipt No (single receipt print)</summary>
+    public string? receiptguid { get; set; }
+
+    /// <summary>Patient ID (prints all receipts for patient, each on separate page)</summary>
+    public decimal? custid { get; set; }
+
+    /// <summary>IP Admission No</summary>
+    public string? admissionno { get; set; }
+
+    /// <summary>"A4" or "A5" (optional, default: "A4")</summary>
+    public string pageformat { get; set; } = "A4";
+
+    /// <summary>"pdf" for raw file download, or omit to get Base64 string (default)</summary>
+    public string? format { get; set; }
+
+    /// <summary>Hospital tenant code (optional, uses session if omitted)</summary>
+    public string? tenant_code { get; set; }
+}
 }
 
 

@@ -2460,19 +2460,20 @@
                                                                     <th>CUSTOMER</th>
                                                                     <th>TYPE</th>
                                                                     <th style="text-align:right;">AMOUNT</th>
+                                                                    <th style="text-align:center; width: 75px;">PRINT</th>
                                                                 </tr>
                                                             </thead>
                                                             <tbody>
                                                                 @if (loadingLedger)
                                                                 {
-                                                                    <tr><td colspan="5" style="text-align:center; padding: 2.5rem;">
+                                                                    <tr><td colspan="6" style="text-align:center; padding: 2.5rem;">
                                                                         <div class="spinner-border spinner-border-sm text-primary" role="status"></div>
                                                                         <span class="ms-2 text-muted" style="font-size:0.82rem;">Loading ledger...</span>
                                                                     </td></tr>
                                                                 }
                                                                 else if (advanceSummary.ledger == null || advanceSummary.ledger.Count == 0)
                                                                 {
-                                                                    <tr><td colspan="5" style="text-align:center; padding: 3rem 1rem; color:#94a3b8; font-size:0.84rem;">No transactions recorded yet.</td></tr>
+                                                                    <tr><td colspan="6" style="text-align:center; padding: 3rem 1rem; color:#94a3b8; font-size:0.84rem;">No transactions recorded yet.</td></tr>
                                                                 }
                                                                 else
                                                                 {
@@ -2480,6 +2481,7 @@
                                                                     {
                                                                         var typeDisplay = GetAdvanceTransactionType(row);
                                                                         advanceResolvedCustomerNames.TryGetValue(row, out var patientName);
+                                                                        var rowReceiptKey = !string.IsNullOrWhiteSpace(row.receiptguid) ? row.receiptguid : row.receiptsnoprint;
                                                                         <tr>
                                                                             <td>@(row.receiptdate.HasValue ? FormatIstDateTime(row.receiptdate.Value) : "-")</td>
                                                                             <td style="font-family: monospace; font-weight: 700; color: #4f46e5;">@row.receiptsnoprint</td>
@@ -2489,6 +2491,30 @@
                                                                             </td>
                                                                             <td style="text-align:right; font-weight: 700; font-family: monospace; color: @(typeDisplay == "DEPOSIT" ? "#16a34a" : typeDisplay == "USED" ? "#1d4ed8" : "#dc2626");">
                                                                                 ₹ @row.receiptamount.ToString("N2")
+                                                                            </td>
+                                                                            <td style="text-align:center; white-space: nowrap;">
+                                                                                @if (typeDisplay == "DEPOSIT")
+                                                                                {
+                                                                                    <button type="button" class="btn btn-sm btn-outline-success" 
+                                                                                            style="padding: 0.15rem 0.45rem; font-size: 0.72rem; font-weight: 700;"
+                                                                                            @onclick="() => PrintOtAdvanceReceiptAsync(rowReceiptKey)"
+                                                                                            title="Print Advance Receipt (A4)">
+                                                                                        <i class="bi bi-printer me-1"></i>Receipt
+                                                                                    </button>
+                                                                                }
+                                                                                else if (typeDisplay == "REFUND" || typeDisplay == "REFUNDED")
+                                                                                {
+                                                                                    <button type="button" class="btn btn-sm btn-outline-danger" 
+                                                                                            style="padding: 0.15rem 0.45rem; font-size: 0.72rem; font-weight: 700;"
+                                                                                            @onclick="() => PrintOtRefundReceiptAsync(rowReceiptKey)"
+                                                                                            title="Print Refund Receipt (A4)">
+                                                                                        <i class="bi bi-printer me-1"></i>Receipt
+                                                                                    </button>
+                                                                                }
+                                                                                else
+                                                                                {
+                                                                                    <span class="text-muted" style="font-size:0.75rem;">-</span>
+                                                                                }
                                                                             </td>
                                                                         </tr>
                                                                     }
@@ -6756,9 +6782,14 @@
             if (res != null)
             {
                 ToastService.ShowSuccess($"Deposited ₹{depositAmount:N2} advance successfully.");
+                var newReceiptKey = !string.IsNullOrWhiteSpace(res.receipt_guid) ? res.receipt_guid : res.receipt_no;
                 depositAmount = 0;
                 depositRemarks = string.Empty;
                 await LoadPatientAdvanceAsync(selectedRequest?.custid);
+                if (!string.IsNullOrEmpty(newReceiptKey))
+                {
+                    await PrintOtAdvanceReceiptAsync(newReceiptKey);
+                }
             }
             else
             {
@@ -6799,9 +6830,14 @@
             if (res != null)
             {
                 ToastService.ShowSuccess($"Refunded ₹{refundAmount:N2} successfully.");
+                var newReceiptKey = !string.IsNullOrWhiteSpace(res.receipt_guid) ? res.receipt_guid : res.receipt_no;
                 refundAmount = 0;
                 refundRemarks = string.Empty;
                 await LoadPatientAdvanceAsync(selectedRequest?.custid);
+                if (!string.IsNullOrEmpty(newReceiptKey))
+                {
+                    await PrintOtRefundReceiptAsync(newReceiptKey);
+                }
             }
             else
             {
@@ -6896,6 +6932,58 @@
             {
                 return utc.AddHours(5).AddMinutes(30).ToString("dd-MMM-yyyy hh:mm tt");
             }
+        }
+    }
+
+    private async Task PrintOtAdvanceReceiptAsync(string? receiptKey)
+    {
+        if (string.IsNullOrWhiteSpace(receiptKey)) return;
+        try
+        {
+            var base64 = await DueCollectionService.GetAdvanceReceiptBase64Async(
+                receiptguid: receiptKey,
+                pageformat: "A4",
+                tenant_code: TenantState.TenantCode);
+
+            if (!string.IsNullOrEmpty(base64))
+            {
+                await JSRuntime.InvokeVoidAsync("openBase64Pdf", base64, $"Advance Receipt - {receiptKey}");
+            }
+            else
+            {
+                ToastService.ShowError("Failed to fetch advance receipt PDF.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error printing OT advance receipt: {ex}");
+            ToastService.ShowError($"Error printing advance receipt: {ex.Message}");
+        }
+    }
+
+    private async Task PrintOtRefundReceiptAsync(string? receiptKey)
+    {
+        if (string.IsNullOrWhiteSpace(receiptKey)) return;
+        try
+        {
+            var base64 = await DueCollectionService.GetRefundReceiptBase64Async(
+                receiptguid: receiptKey,
+                pageformat: "A4",
+                tenant_code: TenantState.TenantCode);
+
+            if (!string.IsNullOrEmpty(base64))
+            {
+                await JSRuntime.InvokeVoidAsync("openBase64Pdf", base64, $"Refund Receipt - {receiptKey}");
+            }
+            else
+            {
+                ToastService.ShowError("Failed to fetch refund receipt PDF.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error printing OT refund receipt: {ex}");
+            ToastService.ShowError($"Error printing refund receipt: {ex.Message}");
         }
     }
 

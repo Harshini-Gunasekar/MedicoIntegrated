@@ -5,6 +5,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Booking.Models;
+using medico_backend.Model;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 
@@ -310,5 +311,229 @@ namespace Booking.Services
             }
             return null;
         }
+
+        #region Advance & Refund Receipt Print APIs
+
+        /// <summary>
+        /// Builds Advance Receipt Print API URL:
+        /// GET /api/report/getadvancereceipt?receiptguid={receiptguid}&pageformat=A4&tenant_code={tenant_code}
+        /// </summary>
+        public string BuildAdvanceReceiptUrl(
+            string? receiptguid = null,
+            decimal? custid = null,
+            string? admissionno = null,
+            string pageformat = "A4",
+            string? format = null,
+            string? tenant_code = null)
+        {
+            var qb = new List<string>();
+            if (!string.IsNullOrWhiteSpace(receiptguid))
+                qb.Add($"receiptguid={Uri.EscapeDataString(receiptguid)}");
+            if (custid.HasValue && custid.Value > 0)
+                qb.Add($"custid={custid.Value}");
+            if (!string.IsNullOrWhiteSpace(admissionno))
+                qb.Add($"admissionno={Uri.EscapeDataString(admissionno)}");
+            if (!string.IsNullOrWhiteSpace(pageformat))
+                qb.Add($"pageformat={Uri.EscapeDataString(pageformat)}");
+            if (!string.IsNullOrWhiteSpace(format))
+                qb.Add($"format={Uri.EscapeDataString(format)}");
+            if (!string.IsNullOrWhiteSpace(tenant_code))
+                qb.Add($"tenant_code={Uri.EscapeDataString(tenant_code)}");
+
+            var query = qb.Count > 0 ? "?" + string.Join("&", qb) : "";
+            return $"api/report/getadvancereceipt{query}";
+        }
+
+        public string BuildAdvanceReceiptUrl(ReceiptPrintOptions options)
+        {
+            if (options == null) return "api/report/getadvancereceipt?pageformat=A4";
+            return BuildAdvanceReceiptUrl(options.receiptguid, options.custid, options.admissionno, options.pageformat, options.format, options.tenant_code);
+        }
+
+        /// <summary>
+        /// Builds Refund Receipt Print API URL:
+        /// GET /api/report/getrefundreceipt?receiptguid={receiptguid}&pageformat=A4&tenant_code={tenant_code}
+        /// </summary>
+        public string BuildRefundReceiptUrl(
+            string? receiptguid = null,
+            decimal? custid = null,
+            string? admissionno = null,
+            string pageformat = "A4",
+            string? format = null,
+            string? tenant_code = null)
+        {
+            var qb = new List<string>();
+            if (!string.IsNullOrWhiteSpace(receiptguid))
+                qb.Add($"receiptguid={Uri.EscapeDataString(receiptguid)}");
+            if (custid.HasValue && custid.Value > 0)
+                qb.Add($"custid={custid.Value}");
+            if (!string.IsNullOrWhiteSpace(admissionno))
+                qb.Add($"admissionno={Uri.EscapeDataString(admissionno)}");
+            if (!string.IsNullOrWhiteSpace(pageformat))
+                qb.Add($"pageformat={Uri.EscapeDataString(pageformat)}");
+            if (!string.IsNullOrWhiteSpace(format))
+                qb.Add($"format={Uri.EscapeDataString(format)}");
+            if (!string.IsNullOrWhiteSpace(tenant_code))
+                qb.Add($"tenant_code={Uri.EscapeDataString(tenant_code)}");
+
+            var query = qb.Count > 0 ? "?" + string.Join("&", qb) : "";
+            return $"api/report/getrefundreceipt{query}";
+        }
+
+        public string BuildRefundReceiptUrl(ReceiptPrintOptions options)
+        {
+            if (options == null) return "api/report/getrefundreceipt?pageformat=A4";
+            return BuildRefundReceiptUrl(options.receiptguid, options.custid, options.admissionno, options.pageformat, options.format, options.tenant_code);
+        }
+
+        /// <summary>
+        /// Calls GET /api/report/getadvancereceipt and returns Base64-encoded PDF string.
+        /// </summary>
+        public async Task<string?> GetAdvanceReceiptBase64Async(
+            string? receiptguid = null,
+            decimal? custid = null,
+            string? admissionno = null,
+            string pageformat = "A4",
+            string? tenant_code = null)
+        {
+            try
+            {
+                var url = BuildAdvanceReceiptUrl(receiptguid, custid, admissionno, pageformat, format: null, tenant_code: tenant_code);
+                var response = await _http.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                {
+                    var bytes = await response.Content.ReadAsByteArrayAsync();
+                    if (bytes == null || bytes.Length == 0) return null;
+
+                    if (bytes.Length >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
+                    {
+                        return Convert.ToBase64String(bytes);
+                    }
+                    var str = System.Text.Encoding.UTF8.GetString(bytes).Trim().Trim('"').Trim();
+                    return str;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ReportService.GetAdvanceReceiptBase64Async] Exception: {ex.Message}");
+            }
+            return null;
+        }
+
+        public Task<string?> GetAdvanceReceiptBase64Async(ReceiptPrintOptions options)
+        {
+            if (options == null) return Task.FromResult<string?>(null);
+            return GetAdvanceReceiptBase64Async(options.receiptguid, options.custid, options.admissionno, options.pageformat, options.tenant_code);
+        }
+
+        /// <summary>
+        /// Calls GET /api/report/getrefundreceipt and returns Base64-encoded PDF string.
+        /// </summary>
+        public async Task<string?> GetRefundReceiptBase64Async(
+            string? receiptguid = null,
+            decimal? custid = null,
+            string? admissionno = null,
+            string pageformat = "A4",
+            string? tenant_code = null)
+        {
+            try
+            {
+                var url = BuildRefundReceiptUrl(receiptguid, custid, admissionno, pageformat, format: null, tenant_code: tenant_code);
+                var response = await _http.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                {
+                    var bytes = await response.Content.ReadAsByteArrayAsync();
+                    if (bytes == null || bytes.Length == 0) return null;
+
+                    if (bytes.Length >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
+                    {
+                        return Convert.ToBase64String(bytes);
+                    }
+                    var str = System.Text.Encoding.UTF8.GetString(bytes).Trim().Trim('"').Trim();
+                    return str;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ReportService.GetRefundReceiptBase64Async] Exception: {ex.Message}");
+            }
+            return null;
+        }
+
+        public Task<string?> GetRefundReceiptBase64Async(ReceiptPrintOptions options)
+        {
+            if (options == null) return Task.FromResult<string?>(null);
+            return GetRefundReceiptBase64Async(options.receiptguid, options.custid, options.admissionno, options.pageformat, options.tenant_code);
+        }
+
+        /// <summary>
+        /// Calls GET /api/report/getadvancereceipt with format=pdf and returns raw binary PDF bytes.
+        /// </summary>
+        public async Task<byte[]?> GetAdvanceReceiptPdfBytesAsync(
+            string? receiptguid = null,
+            decimal? custid = null,
+            string? admissionno = null,
+            string pageformat = "A4",
+            string? tenant_code = null)
+        {
+            try
+            {
+                var url = BuildAdvanceReceiptUrl(receiptguid, custid, admissionno, pageformat, format: "pdf", tenant_code: tenant_code);
+                var response = await _http.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                {
+                    var bytes = await response.Content.ReadAsByteArrayAsync();
+                    if (bytes == null || bytes.Length == 0) return null;
+
+                    if (bytes.Length >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
+                    {
+                        return bytes;
+                    }
+                    var str = System.Text.Encoding.UTF8.GetString(bytes).Trim().Trim('"').Trim();
+                    return Convert.FromBase64String(str);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ReportService.GetAdvanceReceiptPdfBytesAsync] Exception: {ex.Message}");
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Calls GET /api/report/getrefundreceipt with format=pdf and returns raw binary PDF bytes.
+        /// </summary>
+        public async Task<byte[]?> GetRefundReceiptPdfBytesAsync(
+            string? receiptguid = null,
+            decimal? custid = null,
+            string? admissionno = null,
+            string pageformat = "A4",
+            string? tenant_code = null)
+        {
+            try
+            {
+                var url = BuildRefundReceiptUrl(receiptguid, custid, admissionno, pageformat, format: "pdf", tenant_code: tenant_code);
+                var response = await _http.GetAsync(url);
+                if (response.IsSuccessStatusCode)
+                {
+                    var bytes = await response.Content.ReadAsByteArrayAsync();
+                    if (bytes == null || bytes.Length == 0) return null;
+
+                    if (bytes.Length >= 5 && bytes[0] == 0x25 && bytes[1] == 0x50 && bytes[2] == 0x44 && bytes[3] == 0x46 && bytes[4] == 0x2D)
+                    {
+                        return bytes;
+                    }
+                    var str = System.Text.Encoding.UTF8.GetString(bytes).Trim().Trim('"').Trim();
+                    return Convert.FromBase64String(str);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ReportService.GetRefundReceiptPdfBytesAsync] Exception: {ex.Message}");
+            }
+            return null;
+        }
+
+        #endregion
     }
 }

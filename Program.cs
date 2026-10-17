@@ -31,8 +31,13 @@ if (envSection != null)
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents(options =>
     {
-        options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromHours(1);
+        options.DetailedErrors = true;
+        options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(5);
         options.DisconnectedCircuitMaxRetained = 500;
+    })
+    .AddHubOptions(options =>
+    {
+        options.MaximumReceiveMessageSize = 10 * 1024 * 1024;
     });
 
 builder.Services.AddCascadingAuthenticationState();

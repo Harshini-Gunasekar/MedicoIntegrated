@@ -11,6 +11,7 @@
 @inject ToastService ToastService
 @inject IHttpClientFactory ClientFactory
 @inject ProtectedLocalStorage _sessionStorage
+@inject RoleMasterService RoleService
 
 <div class="cm-page">
     <!-- Header Card -->
@@ -24,7 +25,7 @@
                 <i class="bi bi-search cm-search-icon"></i>
                 <input type="text" class="cm-search-input" placeholder="Quick find..." @bind="searchQuery" @bind:event="oninput" />
             </div>
-            @if (TenantState.HasActionRight("Configuration", "General", "Create")) { <button class="cm-btn-new" @onclick="OpenNewCounterModal">
+            @if (canCreate) { <button class="cm-btn-new" @onclick="OpenNewCounterModal">
                 + New Counter Entry
             </button> }
         </div>
@@ -70,12 +71,12 @@
                                  <span class="date-line">@(FormatToIst(item.ibsdate))</span>
                              </td>
                             <td class="col-action">
-                                @if (TenantState.HasActionRight("Configuration", "General", "Edit")) {
+                                @if (canEdit) {
                                 <button class="cm-action-btn edit" title="Edit" @onclick="() => EditCounter(item)">
                                     <i class="bi bi-pencil"></i>
                                 </button>
                                 }
-                                @if (TenantState.HasActionRight("Configuration", "General", "Delete")) {
+                                @if (canDelete) {
                                 <button class="cm-action-btn delete" title="Delete" @onclick="() => DeleteCounter(item)">
                                     <i class="bi bi-trash"></i>
                                 </button>
@@ -176,7 +177,10 @@
             <div class="cm-modal-footer">
                 @if (isEditMode)
                 {
-                    <button class="cm-btn-delete" @onclick="() => DeleteCounter(currentCounter)">Delete</button>
+                    @if (canDelete)
+                    {
+                        <button class="cm-btn-delete" @onclick="() => DeleteCounter(currentCounter)">Delete</button>
+                    }
                 }
                 else
                 {
@@ -184,9 +188,12 @@
                 }
                 <div class="cm-footer-right-buttons" style="display: flex; gap: 0.75rem; align-items: center;">
                     <button class="cm-btn-cancel" @onclick="CloseModal">Cancel</button>
-                    <button class="cm-btn-save" @onclick="SaveCounter">
-                        <i class="bi bi-check2"></i> Save Counter
-                    </button>
+                    @if (isEditMode ? canEdit : canCreate)
+                    {
+                        <button class="cm-btn-save" @onclick="SaveCounter">
+                            <i class="bi bi-check2"></i> Save Counter
+                        </button>
+                    }
                 </div>
             </div>
         </div>
@@ -199,6 +206,11 @@
         if (dt == null || dt == DateTime.MinValue) return "-";
         return dt.ToIndianTime()?.ToString("dd-MM-yyyy hh:mm tt") ?? "-";
     }
+
+    private bool canView;
+    private bool canCreate;
+    private bool canEdit;
+    private bool canDelete;
 
     private List<CounterMasterModel> counters = new();
     private string searchQuery = "";
@@ -215,15 +227,25 @@
     }
 
     private IEnumerable<CounterMasterModel> FilteredCounters =>
-        string.IsNullOrWhiteSpace(searchQuery)
-            ? counters
-            : counters.Where(c => 
-                (c.name?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
-                (c.shortname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
+        !canView
+            ? Enumerable.Empty<CounterMasterModel>()
+            : (string.IsNullOrWhiteSpace(searchQuery)
+                ? counters
+                : counters.Where(c => 
+                    (c.name?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                    (c.shortname?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false)));
 
     protected override async Task OnInitializedAsync()
     {
-        await LoadCounters();
+        canView = RoleService.HasRoleId(520) || RoleService.HasAction("Billing Portal", "Counter Master", "View") || RoleService.HasRight("Billing Portal", "Counter Master");
+        canCreate = RoleService.HasRoleId(521) || RoleService.HasAction("Billing Portal", "Counter Master", "Create");
+        canEdit = RoleService.HasRoleId(522) || RoleService.HasAction("Billing Portal", "Counter Master", "Edit");
+        canDelete = RoleService.HasRoleId(523) || RoleService.HasAction("Billing Portal", "Counter Master", "Delete");
+
+        if (canView)
+        {
+            await LoadCounters();
+        }
     }
 
     private async Task LoadCounters()
@@ -252,6 +274,11 @@
 
     private void OpenNewCounterModal()
     {
+        if (!canCreate)
+        {
+            ToastService.ShowError("You do not have permission to create counters.");
+            return;
+        }
         currentCounter = new CounterMasterModel 
         { 
             orderno = 0, 
@@ -266,6 +293,11 @@
 
     private void EditCounter(CounterMasterModel counter)
     {
+        if (!canEdit)
+        {
+            ToastService.ShowError("You do not have permission to edit counters.");
+            return;
+        }
         currentCounter = new CounterMasterModel
         {
             cntcode = counter.cntcode,
@@ -295,6 +327,17 @@
 
     private async Task SaveCounter()
     {
+        if (isEditMode && !canEdit)
+        {
+            ToastService.ShowError("You do not have permission to edit counters.");
+            return;
+        }
+        if (!isEditMode && !canCreate)
+        {
+            ToastService.ShowError("You do not have permission to create counters.");
+            return;
+        }
+
         try
         {
             bool success;
@@ -333,6 +376,12 @@
 
     private async Task DeleteCounter(CounterMasterModel counter)
     {
+        if (!canDelete)
+        {
+            ToastService.ShowError("You do not have permission to delete counters.");
+            return;
+        }
+
         try
         {
             string result = await CounterService.DeleteCounterAsync(counter.cntcode);

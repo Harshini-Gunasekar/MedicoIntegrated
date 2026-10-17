@@ -1,13 +1,12 @@
-// ── AUTO PAGE RELOAD EVERY 60 SECONDS ─────────────────────────────────────
-// This ensures the display is always fresh (full browser reload every minute)
+// ── AUTO PAGE RELOAD NEUTRALIZED ─────────────────────────────────────
+// Disabled hard browser reloads to preserve session state and prevent circuit drops.
 window.hospitalDisplay = {
     startAutoReload: function (intervalMs) {
-        if (window._autoReloadTimer) clearInterval(window._autoReloadTimer);
-        window._autoReloadTimer = setInterval(function () {
-            console.log('[HospitalDisplay] Auto-reloading page...');
-            window.location.reload();
-        }, intervalMs || 60000);
-        console.log('[HospitalDisplay] Auto-reload armed: every ' + (intervalMs || 60000) / 1000 + 's');
+        if (window._autoReloadTimer) {
+            clearInterval(window._autoReloadTimer);
+            window._autoReloadTimer = null;
+        }
+        console.log('[HospitalDisplay] Auto-reload disabled to preserve session state and prevent circuit drops.');
     },
     stopAutoReload: function () {
         if (window._autoReloadTimer) {

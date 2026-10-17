@@ -542,6 +542,56 @@ namespace Booking.Services
             var normMain = NormalizeKey(main);
             var normSub = NormalizeKey(sub);
 
+            // Disambiguate colliding submodules across departments first
+            if (normSub == "slotmaster" || normSub == "slots" || normSub == "slot")
+            {
+                if (normMain == "doctorportal" || normMain == "doctor" || normMain == "doctors")
+                    return _permittedSubModules.Contains("doctorportal::slotmaster") || _permittedRoleIds.Contains(661);
+                if (normMain == "opportal" || normMain == "op" || normMain == "outpatient")
+                    return _permittedSubModules.Contains("opportal::slotmaster") || _permittedRoleIds.Contains(383);
+                return _permittedRoleIds.Contains(383) || _permittedRoleIds.Contains(661);
+            }
+            if (normSub == "optokendisplay")
+            {
+                if (!string.IsNullOrEmpty(normMain) && normMain != "opportal" && normMain != "op" && normMain != "outpatient")
+                    return false;
+                return _permittedRoleIds.Contains(382) || _permittedSubModules.Contains("opportal::optokendisplay") || _permittedSubModules.Contains("optokendisplay");
+            }
+            if (normSub == "tokendisplayscreen")
+            {
+                if (!string.IsNullOrEmpty(normMain) && normMain != "vitals" && normMain != "vital" && normMain != "vitalpage")
+                    return false;
+                return _permittedRoleIds.Contains(696) || _permittedSubModules.Contains("vitals::tokendisplayscreen") || _permittedSubModules.Contains("tokendisplayscreen");
+            }
+            if (normSub == "tokendisplay")
+            {
+                if (normMain == "opportal" || normMain == "op" || normMain == "outpatient")
+                    return _permittedRoleIds.Contains(382) || _permittedSubModules.Contains("opportal::optokendisplay");
+                if (normMain == "vitals" || normMain == "vital" || normMain == "vitalpage")
+                    return _permittedRoleIds.Contains(696) || _permittedSubModules.Contains("vitals::tokendisplayscreen");
+                return _permittedRoleIds.Contains(382) || _permittedRoleIds.Contains(696);
+            }
+            if (normSub == "testfeemaster" || normSub == "testfee")
+            {
+                if (normMain == "laboratory" || normMain == "lab" || normMain == "diagnostics")
+                    return _permittedRoleIds.Contains(550) || _permittedSubModules.Contains("laboratory::testfeemaster") || _permittedSubModules.Contains("lab::testfeemaster");
+                if (normMain == "billingportal" || normMain == "billing")
+                    return _permittedRoleIds.Contains(528) || _permittedSubModules.Contains("billingportal::testfeemaster") || _permittedSubModules.Contains("billing::testfeemaster");
+                return _permittedRoleIds.Contains(528) || _permittedRoleIds.Contains(550);
+            }
+            if (normSub == "feetypemaster" || normSub == "feetype" || normSub == "feetypes")
+            {
+                if (!string.IsNullOrEmpty(normMain) && normMain != "billingportal" && normMain != "billing" && normMain != "configuration")
+                    return false;
+                return _permittedRoleIds.Contains(516) || _permittedSubModules.Contains("billingportal::feetypemaster") || _permittedSubModules.Contains("billing::feetypemaster") || _permittedSubModules.Contains("feetypemaster");
+            }
+            if (normSub == "countermaster" || normSub == "counters" || normSub == "counter")
+            {
+                if (!string.IsNullOrEmpty(normMain) && normMain != "billingportal" && normMain != "billing" && normMain != "configuration")
+                    return false;
+                return _permittedRoleIds.Contains(520) || _permittedSubModules.Contains("billingportal::countermaster") || _permittedSubModules.Contains("billing::countermaster") || _permittedSubModules.Contains("countermaster");
+            }
+
             if (!string.IsNullOrEmpty(main) && !string.IsNullOrEmpty(sub))
             {
                 if (_permittedSubModules.Contains($"{main}::{sub}") || 
@@ -585,10 +635,6 @@ namespace Booking.Services
             if (normSub == "citymaster" && (_permittedSubModules.Contains("citymaster") || _permittedSubModules.Contains("city"))) return true;
             if (normSub == "areamaster" && (_permittedSubModules.Contains("areamaster") || _permittedSubModules.Contains("area"))) return true;
             if (normSub == "servicetypemaster" && (_permittedSubModules.Contains("servicetypemaster") || _permittedSubModules.Contains("servicetype"))) return true;
-            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (_permittedSubModules.Contains("slotmaster") || _permittedSubModules.Contains("slots") || _permittedSubModules.Contains("slot") || _permittedRoleIds.Contains(383) || _permittedRoleIds.Contains(661))) return true;
-            if (normSub == "optokendisplay" && (_permittedActions.Contains("viewtokendisplay") || _permittedSubModules.Contains("optokendisplay") || _permittedSubModules.Contains("tokendisplay") || _permittedSubModules.Contains("tokendisplayscreen") || _permittedMainModules.Contains("opportal") || _permittedMainModules.Contains("op"))) return true;
-            if (normSub == "tokendisplayscreen" && (_permittedSubModules.Contains("tokendisplay") || _permittedSubModules.Contains("tokendisplayscreen") || _permittedSubModules.Contains("optokendisplay") || _permittedActions.Contains("tokendisplay") || _permittedActions.Contains("viewtokendisplay"))) return true;
-            if (normSub == "tokendisplay" && (_permittedSubModules.Contains("tokendisplayscreen") || _permittedSubModules.Contains("tokendisplay") || _permittedSubModules.Contains("optokendisplay"))) return true;
 
             // IP Portal
             if (normSub == "ipregistration" && (_permittedSubModules.Contains("ipregistration") || _permittedSubModules.Contains("admissionip"))) return true;
@@ -761,12 +807,19 @@ namespace Booking.Services
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "casesheet" || normAct == "viewcasesheet") && (_permittedRoleIds.Contains(418) || _permittedRoleIds.Contains(419))) return true;
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "dischargesummary" || normAct == "viewdischargesummary") && (_permittedRoleIds.Contains(420) || _permittedRoleIds.Contains(421) || _permittedRoleIds.Contains(422) || _permittedRoleIds.Contains(428))) return true;
 
+                bool isDoctorMain = normMain == "doctorportal" || normMain == "doctor" || normMain == "doctors" || normMain == "clinical";
+                bool isVitalsMain = normMain == "vitals" || normMain == "vital" || normMain == "vitalpage";
+                bool isOpMain = normMain == "opportal" || normMain == "op" || normMain == "outpatient" || normMain == "reception";
+                bool isBillingMain = normMain == "billingportal" || normMain == "billing" || normMain == "cash" || normMain == "accounts";
+                bool isLabMain = normMain == "laboratory" || normMain == "lab" || normMain == "diagnostics";
+
+                if (isDoctorMain && CheckDoctorRoleAction(normSub, normAct)) return true;
+                if (isVitalsMain && CheckVitalsRoleAction(normSub, normAct)) return true;
+                if (isOpMain && CheckOPRoleAction(normSub, normAct)) return true;
+                if (isBillingMain && (CheckBillingRoleAction(normSub, normAct) || CheckBillingReportsRoleAction(normSub, normAct))) return true;
+                if (isLabMain && CheckLaboratoryRoleAction(normSub, normAct)) return true;
                 if (CheckInventoryRoleAction(normSub, normAct)) return true;
-                if (CheckDoctorRoleAction(normSub, normAct)) return true;
-                if (CheckVitalsRoleAction(normSub, normAct)) return true;
                 if (CheckAdminRoleAction(normSub, normAct)) return true;
-                if (CheckBillingReportsRoleAction(normSub, normAct)) return true;
-                if (CheckLaboratoryRoleAction(normSub, normAct)) return true;
 
                 // Submodule-level action match (with sub, without main)
                 if (_permittedActions.Contains($"{sub}::{act}") ||
@@ -796,11 +849,14 @@ namespace Booking.Services
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "casesheet" || normAct == "viewcasesheet") && (_permittedRoleIds.Contains(418) || _permittedRoleIds.Contains(419))) return true;
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "dischargesummary" || normAct == "viewdischargesummary") && (_permittedRoleIds.Contains(420) || _permittedRoleIds.Contains(421) || _permittedRoleIds.Contains(422) || _permittedRoleIds.Contains(428))) return true;
 
+                if (CheckOPRoleAction(normSub, normAct)) return true;
+                if (CheckBillingRoleAction(normSub, normAct)) return true;
                 if (CheckInventoryRoleAction(normSub, normAct)) return true;
                 if (CheckDoctorRoleAction(normSub, normAct)) return true;
                 if (CheckVitalsRoleAction(normSub, normAct)) return true;
                 if (CheckAdminRoleAction(normSub, normAct)) return true;
                 if (CheckBillingReportsRoleAction(normSub, normAct)) return true;
+                if (CheckLaboratoryRoleAction(normSub, normAct)) return true;
 
                 return false;
             }
@@ -932,11 +988,11 @@ namespace Booking.Services
             if ((normSub == "doctorstatus" || normSub == "doctorcurrentstatus") && (normAct == "create" || normAct == "add") && _permittedRoleIds.Contains(659)) return true;
             if ((normSub == "doctorstatus" || normSub == "doctorcurrentstatus") && (normAct == "edit" || normAct == "update") && _permittedRoleIds.Contains(660)) return true;
 
-            // 3. Slot Master (661 - 664, plus OP 383 - 386)
-            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "view" || normAct == "list" || normAct == "viewslot") && (_permittedRoleIds.Contains(661) || _permittedRoleIds.Contains(383))) return true;
-            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "create" || normAct == "add" || normAct == "createslot") && (_permittedRoleIds.Contains(662) || _permittedRoleIds.Contains(384))) return true;
-            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "edit" || normAct == "update" || normAct == "editslot") && (_permittedRoleIds.Contains(663) || _permittedRoleIds.Contains(385))) return true;
-            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "delete" || normAct == "cancel" || normAct == "deleteslot") && (_permittedRoleIds.Contains(664) || _permittedRoleIds.Contains(386))) return true;
+            // 3. Slot Master (Doctor Portal: 661 - 664 strictly)
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "view" || normAct == "list" || normAct == "viewslot") && _permittedRoleIds.Contains(661)) return true;
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "create" || normAct == "add" || normAct == "createslot") && _permittedRoleIds.Contains(662)) return true;
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "edit" || normAct == "update" || normAct == "editslot") && _permittedRoleIds.Contains(663)) return true;
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "delete" || normAct == "cancel" || normAct == "deleteslot") && _permittedRoleIds.Contains(664)) return true;
 
             // 4. Doctors Master (665 - 668)
             if ((normSub == "doctorsmaster" || normSub == "doctormaster" || normSub == "doctors") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(665)) return true;
@@ -971,6 +1027,42 @@ namespace Booking.Services
             return false;
         }
 
+        private bool CheckOPRoleAction(string normSub, string normAct)
+        {
+            // 1. OP Token Display (382)
+            if ((normSub == "optokendisplay" || normSub == "tokendisplay") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(382)) return true;
+
+            // 2. OP Slot Master (383 - 386 strictly)
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "view" || normAct == "list" || normAct == "viewslot") && _permittedRoleIds.Contains(383)) return true;
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "create" || normAct == "add" || normAct == "createslot") && _permittedRoleIds.Contains(384)) return true;
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "edit" || normAct == "update" || normAct == "editslot") && _permittedRoleIds.Contains(385)) return true;
+            if ((normSub == "slotmaster" || normSub == "slots" || normSub == "slot") && (normAct == "delete" || normAct == "cancel" || normAct == "deleteslot") && _permittedRoleIds.Contains(386)) return true;
+
+            return false;
+        }
+
+        private bool CheckBillingRoleAction(string normSub, string normAct)
+        {
+            // 1. Fee Type Master (516 - 519)
+            if ((normSub == "feetypemaster" || normSub == "feetype" || normSub == "feetypes") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(516)) return true;
+            if ((normSub == "feetypemaster" || normSub == "feetype" || normSub == "feetypes") && (normAct == "create" || normAct == "add" || normAct == "new") && _permittedRoleIds.Contains(517)) return true;
+            if ((normSub == "feetypemaster" || normSub == "feetype" || normSub == "feetypes") && (normAct == "edit" || normAct == "update" || normAct == "save") && _permittedRoleIds.Contains(518)) return true;
+            if ((normSub == "feetypemaster" || normSub == "feetype" || normSub == "feetypes") && (normAct == "delete" || normAct == "cancel" || normAct == "remove") && _permittedRoleIds.Contains(519)) return true;
+
+            // 2. Counter Master (520 - 523)
+            if ((normSub == "countermaster" || normSub == "counters" || normSub == "counter") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(520)) return true;
+            if ((normSub == "countermaster" || normSub == "counters" || normSub == "counter") && (normAct == "create" || normAct == "add" || normAct == "new") && _permittedRoleIds.Contains(521)) return true;
+            if ((normSub == "countermaster" || normSub == "counters" || normSub == "counter") && (normAct == "edit" || normAct == "update" || normAct == "save") && _permittedRoleIds.Contains(522)) return true;
+            if ((normSub == "countermaster" || normSub == "counters" || normSub == "counter") && (normAct == "delete" || normAct == "cancel" || normAct == "remove") && _permittedRoleIds.Contains(523)) return true;
+
+            // 3. Billing Test Fee Master (528 - 530)
+            if ((normSub == "testfeemaster" || normSub == "testfee") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(528)) return true;
+            if ((normSub == "testfeemaster" || normSub == "testfee") && (normAct == "create" || normAct == "add" || normAct == "edit" || normAct == "update" || normAct == "save") && _permittedRoleIds.Contains(529)) return true;
+            if ((normSub == "testfeemaster" || normSub == "testfee") && (normAct == "print" || normAct == "printreport" || normAct == "export") && _permittedRoleIds.Contains(530)) return true;
+
+            return false;
+        }
+
         private bool CheckVitalsRoleAction(string normSub, string normAct)
         {
             // 1. Vitals Dashboard (685)
@@ -992,8 +1084,8 @@ namespace Booking.Services
             if ((normSub == "scanresultentry" || normSub == "scanresult" || normSub == "scantestentry") && (normAct == "create" || normAct == "add") && _permittedRoleIds.Contains(694)) return true;
             if ((normSub == "scanresultentry" || normSub == "scanresult" || normSub == "scantestentry") && (normAct == "edit" || normAct == "update") && _permittedRoleIds.Contains(695)) return true;
 
-            // 5. Token Display Screen (696, plus OP 382)
-            if ((normSub == "tokendisplayscreen" || normSub == "tokendisplay" || normSub == "optokendisplay") && (normAct == "view" || normAct == "list") && (_permittedRoleIds.Contains(696) || _permittedRoleIds.Contains(382))) return true;
+            // 5. Token Display Screen (696 strictly under Vitals)
+            if ((normSub == "tokendisplayscreen" || normSub == "tokendisplay") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(696)) return true;
 
             // 6. Appointment Pre-Booking (697 - 700)
             if ((normSub == "appointmentprebooking" || normSub == "appointprebooking" || normSub == "prebooking") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(697)) return true;
@@ -1467,6 +1559,89 @@ namespace Booking.Services
                 }
             }
 
+            // 3b. OP Portal / Slot Master (Roles 383 - 386)
+            bool hasOpSlotPerm = isAdministrator || permList.Any(p =>
+                (p.Role_id >= 383 && p.Role_id <= 386) ||
+                (p.Main_module?.Contains("OP", StringComparison.OrdinalIgnoreCase) == true &&
+                 p.Sub_module?.IndexOf("Slot", StringComparison.OrdinalIgnoreCase) >= 0));
+            if (hasOpSlotPerm)
+            {
+                bool opSlotView = isAdministrator || permList.Any(p => p.Role_id == 383 || (p.Main_module?.Contains("OP", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.IndexOf("Slot", StringComparison.OrdinalIgnoreCase) >= 0 && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool opSlotAdd = isAdministrator || permList.Any(p => p.Role_id == 384 || (p.Main_module?.Contains("OP", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.IndexOf("Slot", StringComparison.OrdinalIgnoreCase) >= 0 && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Add", StringComparison.OrdinalIgnoreCase) >= 0)));
+                bool opSlotEdit = isAdministrator || permList.Any(p => p.Role_id == 385 || (p.Main_module?.Contains("OP", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.IndexOf("Slot", StringComparison.OrdinalIgnoreCase) >= 0 && (p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Update", StringComparison.OrdinalIgnoreCase) >= 0)));
+                bool opSlotDel = isAdministrator || permList.Any(p => p.Role_id == 386 || (p.Main_module?.Contains("OP", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.IndexOf("Slot", StringComparison.OrdinalIgnoreCase) >= 0 && (p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Cancel", StringComparison.OrdinalIgnoreCase) >= 0)));
+                if (opSlotAdd || opSlotEdit || opSlotDel) opSlotView = true;
+
+                foreach (var opDept in new[] { "OP Portal", "OP", "Outpatient" })
+                {
+                    foreach (var sMod in new[] { "Slot Master", "Slot_Master", "SlotMaster", "Slots" })
+                    {
+                        var existing = result.FirstOrDefault(r => string.Equals(r.Department, opDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, sMod, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
+                        {
+                            existing.ToView = opSlotView;
+                            existing.ToAdd = opSlotAdd;
+                            existing.ToEdit = opSlotEdit;
+                            existing.ToDelete = opSlotDel;
+                        }
+                        else
+                        {
+                            result.Add(new User_Rights
+                            {
+                                UserModuleID = rightId,
+                                Sno = sno++,
+                                ModuleName = sMod,
+                                Department = opDept,
+                                UserModuleRightsID = rightId++,
+                                UserCode = userCode,
+                                ToAdd = opSlotAdd,
+                                ToView = opSlotView,
+                                ToEdit = opSlotEdit,
+                                ToDelete = opSlotDel,
+                                ToExport = true
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 3c. OP Portal / OP Token Display (Role 382)
+            bool hasOpTokenPerm = isAdministrator || permList.Any(p =>
+                p.Role_id == 382 ||
+                (p.Main_module?.Contains("OP", StringComparison.OrdinalIgnoreCase) == true &&
+                 p.Sub_module?.IndexOf("Token Display", StringComparison.OrdinalIgnoreCase) >= 0));
+            if (hasOpTokenPerm)
+            {
+                foreach (var opDept in new[] { "OP Portal", "OP", "Outpatient" })
+                {
+                    foreach (var tMod in new[] { "OP Token Display", "OP_Token_Display", "OPTokenDisplay" })
+                    {
+                        var existing = result.FirstOrDefault(r => string.Equals(r.Department, opDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, tMod, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
+                        {
+                            existing.ToView = true;
+                        }
+                        else
+                        {
+                            result.Add(new User_Rights
+                            {
+                                UserModuleID = rightId,
+                                Sno = sno++,
+                                ModuleName = tMod,
+                                Department = opDept,
+                                UserModuleRightsID = rightId++,
+                                UserCode = userCode,
+                                ToAdd = false,
+                                ToView = true,
+                                ToEdit = false,
+                                ToDelete = false,
+                                ToExport = true
+                            });
+                        }
+                    }
+                }
+            }
+
             // 4. Lab / Print Lab Result (queried by BillNoSequence.razor & BillsList.razor)
             bool hasLabPerm = isAdministrator || permList.Any(p => p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true);
             if (hasLabPerm && !result.Any(r => string.Equals(r.Department, "Lab", StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, "Print Lab Result", StringComparison.OrdinalIgnoreCase)))
@@ -1724,6 +1899,146 @@ namespace Booking.Services
                                 ToEdit = bcEdit,
                                 ToDelete = bcDel,
                                 ToExport = true
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 7c. Billing Portal / Fee Type Master (Roles 516 - 519)
+            bool hasFtPerm = isAdministrator || permList.Any(p =>
+                (p.Role_id >= 516 && p.Role_id <= 519) ||
+                p.Sub_module?.IndexOf("Fee Type", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (hasFtPerm)
+            {
+                bool ftView = isAdministrator || permList.Any(p => p.Role_id == 516 || (p.Sub_module?.IndexOf("Fee Type", StringComparison.OrdinalIgnoreCase) >= 0 && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool ftAdd = isAdministrator || permList.Any(p => p.Role_id == 517 || (p.Sub_module?.IndexOf("Fee Type", StringComparison.OrdinalIgnoreCase) >= 0 && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Add", StringComparison.OrdinalIgnoreCase) >= 0)));
+                bool ftEdit = isAdministrator || permList.Any(p => p.Role_id == 518 || (p.Sub_module?.IndexOf("Fee Type", StringComparison.OrdinalIgnoreCase) >= 0 && p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool ftDel = isAdministrator || permList.Any(p => p.Role_id == 519 || (p.Sub_module?.IndexOf("Fee Type", StringComparison.OrdinalIgnoreCase) >= 0 && p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (ftAdd || ftEdit || ftDel) ftView = true;
+
+                foreach (var bDept in new[] { "Billing Portal", "Billing" })
+                {
+                    foreach (var mod in new[] { "Fee Type Master", "Fee_Type_Master", "FeeTypeMaster", "Fee Type", "Fee_Type", "FeeType", "Fee Types" })
+                    {
+                        var existing = result.FirstOrDefault(r => string.Equals(r.Department, bDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, mod, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
+                        {
+                            existing.ToView = ftView;
+                            existing.ToAdd = ftAdd;
+                            existing.ToEdit = ftEdit;
+                            existing.ToDelete = ftDel;
+                            existing.ToExport = true;
+                        }
+                        else
+                        {
+                            result.Add(new User_Rights
+                            {
+                                UserModuleID = rightId,
+                                Sno = sno++,
+                                ModuleName = mod,
+                                Department = bDept,
+                                UserModuleRightsID = rightId++,
+                                UserCode = userCode,
+                                ToAdd = ftAdd,
+                                ToView = ftView,
+                                ToEdit = ftEdit,
+                                ToDelete = ftDel,
+                                ToExport = true
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 7c-2. Billing Portal / Counter Master (Roles 520 - 523)
+            bool hasCtrPerm = isAdministrator || permList.Any(p =>
+                (p.Role_id >= 520 && p.Role_id <= 523) ||
+                p.Sub_module?.IndexOf("Counter Master", StringComparison.OrdinalIgnoreCase) >= 0);
+            if (hasCtrPerm)
+            {
+                bool ctrView = isAdministrator || permList.Any(p => p.Role_id == 520 || (p.Sub_module?.IndexOf("Counter Master", StringComparison.OrdinalIgnoreCase) >= 0 && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool ctrAdd = isAdministrator || permList.Any(p => p.Role_id == 521 || (p.Sub_module?.IndexOf("Counter Master", StringComparison.OrdinalIgnoreCase) >= 0 && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Add", StringComparison.OrdinalIgnoreCase) >= 0)));
+                bool ctrEdit = isAdministrator || permList.Any(p => p.Role_id == 522 || (p.Sub_module?.IndexOf("Counter Master", StringComparison.OrdinalIgnoreCase) >= 0 && p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool ctrDel = isAdministrator || permList.Any(p => p.Role_id == 523 || (p.Sub_module?.IndexOf("Counter Master", StringComparison.OrdinalIgnoreCase) >= 0 && p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (ctrAdd || ctrEdit || ctrDel) ctrView = true;
+
+                foreach (var bDept in new[] { "Billing Portal", "Billing" })
+                {
+                    foreach (var mod in new[] { "Counter Master", "Counter_Master", "CounterMaster", "Counters" })
+                    {
+                        var existing = result.FirstOrDefault(r => string.Equals(r.Department, bDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, mod, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
+                        {
+                            existing.ToView = ctrView;
+                            existing.ToAdd = ctrAdd;
+                            existing.ToEdit = ctrEdit;
+                            existing.ToDelete = ctrDel;
+                            existing.ToExport = true;
+                        }
+                        else
+                        {
+                            result.Add(new User_Rights
+                            {
+                                UserModuleID = rightId,
+                                Sno = sno++,
+                                ModuleName = mod,
+                                Department = bDept,
+                                UserModuleRightsID = rightId++,
+                                UserCode = userCode,
+                                ToAdd = ctrAdd,
+                                ToView = ctrView,
+                                ToEdit = ctrEdit,
+                                ToDelete = ctrDel,
+                                ToExport = true
+                            });
+                        }
+                    }
+                }
+            }
+
+            // 7d. Billing Portal / Test Fee Master (Roles 528 - 530 strictly)
+            bool hasBillTf = isAdministrator || permList.Any(p =>
+                (p.Role_id >= 528 && p.Role_id <= 530) ||
+                ((p.Main_module?.Contains("Bill", StringComparison.OrdinalIgnoreCase) == true || string.IsNullOrEmpty(p.Main_module)) &&
+                 p.Sub_module?.IndexOf("Test Fee", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                 p.Role_id < 550));
+            if (hasBillTf)
+            {
+                bool btfView = isAdministrator || permList.Any(p => p.Role_id == 528 || (p.Main_module?.Contains("Bill", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Contains("Test Fee") == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool btfAdd = isAdministrator || permList.Any(p => p.Role_id == 529 || (p.Main_module?.Contains("Bill", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Contains("Test Fee") == true && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Save", StringComparison.OrdinalIgnoreCase) >= 0)));
+                bool btfPrint = isAdministrator || permList.Any(p => p.Role_id == 530 || (p.Main_module?.Contains("Bill", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Contains("Test Fee") == true && p.Module?.IndexOf("Print", StringComparison.OrdinalIgnoreCase) >= 0));
+                if (btfAdd || btfPrint) btfView = true;
+
+                var tfAliases = new[] { "Test Fee Master", "Test_Fee_Master", "TestFeeMaster", "Test Fee", "Test_Fee", "TestFee" };
+                var tfDepts = new[] { "Billing Portal", "Billing" }; // Strictly Billing departments!
+                foreach (var dept in tfDepts)
+                {
+                    foreach (var aMod in tfAliases)
+                    {
+                        var existing = result.FirstOrDefault(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
+                        {
+                            existing.ToView = btfView;
+                            existing.ToAdd = btfAdd;
+                            existing.ToEdit = btfAdd;
+                            existing.ToExport = btfPrint;
+                        }
+                        else
+                        {
+                            result.Add(new User_Rights
+                            {
+                                UserModuleID = rightId,
+                                Sno = sno++,
+                                ModuleName = aMod,
+                                Department = dept,
+                                UserModuleRightsID = rightId++,
+                                UserCode = userCode,
+                                ToAdd = btfAdd,
+                                ToView = btfView,
+                                ToEdit = btfAdd,
+                                ToDelete = false,
+                                ToExport = btfPrint
                             });
                         }
                     }
@@ -2801,41 +3116,31 @@ namespace Booking.Services
 
                 foreach (var dm in docMasters)
                 {
-                    bool isSlotMaster = dm.baseRoleId == 661;
                     bool hasDmPerm = isAdministrator || permList.Any(p =>
                         (p.Role_id >= dm.baseRoleId && p.Role_id <= dm.baseRoleId + 3) ||
-                        (isSlotMaster && p.Role_id >= 383 && p.Role_id <= 386) ||
                         p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true);
 
                     if (hasDmPerm)
                     {
                         bool dmView = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId ||
-                            (isSlotMaster && p.Role_id == 383) ||
                             (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
 
                         bool dmAdd = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId + 1 ||
-                            (isSlotMaster && p.Role_id == 384) ||
                             (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Add", StringComparison.OrdinalIgnoreCase) >= 0)));
 
                         bool dmEdit = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId + 2 ||
-                            (isSlotMaster && p.Role_id == 385) ||
                             (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Update", StringComparison.OrdinalIgnoreCase) >= 0)));
 
                         bool dmDel = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId + 3 ||
-                            (isSlotMaster && p.Role_id == 386) ||
                             (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Cancel", StringComparison.OrdinalIgnoreCase) >= 0)));
 
                         if (dmAdd || dmEdit || dmDel) dmView = true;
 
-                        var targetDepts = isSlotMaster
-                            ? new[] { "Doctor Portal", "Doctor", "Clinical", "OP Portal", "OP", "Outpatient", "General" }
-                            : docDepts;
-
-                        foreach (var dept in targetDepts)
+                        foreach (var dept in docDepts)
                         {
                             foreach (var aMod in dm.extraAliases)
                             {
@@ -2908,11 +3213,12 @@ namespace Booking.Services
                 }
             }
 
-            // 11b. Token Display Screen (Role 696 / 382)
-            bool hasTd = isAdministrator || permList.Any(p => p.Role_id == 696 || p.Role_id == 382 || p.Sub_module?.IndexOf("Token Display", StringComparison.OrdinalIgnoreCase) >= 0);
+            // 11b. Token Display Screen (Role 696 strictly under Vitals)
+            bool hasTd = isAdministrator || permList.Any(p => p.Role_id == 696 ||
+                (p.Main_module?.Contains("Vital", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.IndexOf("Token Display", StringComparison.OrdinalIgnoreCase) >= 0));
             if (hasTd)
             {
-                var tdAliases = new[] { "Token Display Screen", "Token_Display_Screen", "TokenDisplayScreen", "Token Display", "Token_Display", "TokenDisplay", "OP Token Display", "OP_Token_Display", "OPTokenDisplay" };
+                var tdAliases = new[] { "Token Display Screen", "Token_Display_Screen", "TokenDisplayScreen", "Token Display", "Token_Display", "TokenDisplay" };
                 foreach (var dept in vitalsDepts)
                 {
                     foreach (var aMod in tdAliases)
@@ -3352,17 +3658,20 @@ namespace Booking.Services
                 }
             }
 
-            // 14c. Test Fee Master (Roles 550 - 552)
-            bool hasTf = isAdministrator || permList.Any(p => (p.Role_id >= 550 && p.Role_id <= 552) || p.Sub_module?.IndexOf("Test Fee Master", StringComparison.OrdinalIgnoreCase) >= 0 || p.Sub_module?.IndexOf("Test Fee", StringComparison.OrdinalIgnoreCase) >= 0);
+            // 14c. Laboratory Test Fee Master (Roles 550 - 552 strictly)
+            bool hasTf = isAdministrator || permList.Any(p => 
+                (p.Role_id >= 550 && p.Role_id <= 552) || 
+                (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && 
+                 p.Sub_module?.IndexOf("Test Fee", StringComparison.OrdinalIgnoreCase) >= 0));
             if (hasTf)
             {
-                bool tfView = isAdministrator || permList.Any(p => p.Role_id == 550 || (p.Sub_module?.Contains("Test Fee") == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
-                bool tfAdd = isAdministrator || permList.Any(p => p.Role_id == 551 || (p.Sub_module?.Contains("Test Fee") == true && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0)));
-                bool tfPrint = isAdministrator || permList.Any(p => p.Role_id == 552 || (p.Sub_module?.Contains("Test Fee") == true && p.Module?.IndexOf("Print", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool tfView = isAdministrator || permList.Any(p => p.Role_id == 550 || (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Contains("Test Fee") == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool tfAdd = isAdministrator || permList.Any(p => p.Role_id == 551 || (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Contains("Test Fee") == true && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0)));
+                bool tfPrint = isAdministrator || permList.Any(p => p.Role_id == 552 || (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Contains("Test Fee") == true && p.Module?.IndexOf("Print", StringComparison.OrdinalIgnoreCase) >= 0));
                 if (tfAdd || tfPrint) tfView = true;
 
                 var tfAliases = new[] { "Test Fee Master", "Test_Fee_Master", "TestFeeMaster", "Test Fee", "Test_Fee", "TestFee" };
-                var tfDepts = new[] { "Laboratory", "Lab", "Billing Portal", "Billing", "Configuration" };
+                var tfDepts = new[] { "Laboratory", "Lab" };
                 foreach (var dept in tfDepts)
                 {
                     foreach (var aMod in tfAliases)
@@ -3413,20 +3722,18 @@ namespace Booking.Services
             {
                 bool hasLmPerm = isAdministrator || permList.Any(p =>
                     (p.Role_id >= lm.baseRoleId && p.Role_id <= lm.baseRoleId + 3) ||
-                    p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true);
+                    (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true));
 
                 if (hasLmPerm)
                 {
-                    bool lmView = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId || (p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
-                    bool lmAdd = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId + 1 || (p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0));
-                    bool lmEdit = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId + 2 || (p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0));
-                    bool lmDel = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId + 3 || (p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool lmView = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId || (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool lmAdd = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId + 1 || (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool lmEdit = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId + 2 || (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool lmDel = isAdministrator || permList.Any(p => p.Role_id == lm.baseRoleId + 3 || (p.Main_module?.Contains("Lab", StringComparison.OrdinalIgnoreCase) == true && p.Sub_module?.Equals(lm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0));
 
                     if (lmAdd || lmEdit || lmDel) lmView = true;
 
-                    var targetDepts = lm.baseRoleId == 569 
-                        ? new[] { "Laboratory", "Lab", "Diagnostics", "Inventory", "Store", "Configuration" }
-                        : labDepts;
+                    var targetDepts = labDepts;
 
                     foreach (var dept in targetDepts)
                     {
@@ -3513,8 +3820,9 @@ namespace Booking.Services
                 if (normSub == "refferalcasecollection" || normSub == "walkin") subAliases.Add("Patient Check-In");
                 if (normSub == "patientcheckin") { subAliases.Add("Patient Check-in"); subAliases.Add("Walkin"); }
                 if (normSub == "outpatientvisiting" || normSub == "opdconsultation" || normSub == "casesheet" || normSub == "viewcasesheet") subAliases.Add("Outpatient Visiting");
-                if (normSub == "tokendisplay" || normSub == "tokendisplayscreen") { subAliases.Add("OP Token Display"); subAliases.Add("Token Display Screen"); }
-                if (normSub == "optokendisplay") { subAliases.Add("Token Display Screen"); subAliases.Add("OP Token Display"); }
+                if (normSub == "tokendisplay") { subAliases.Add("Token Display Screen"); subAliases.Add("OP Token Display"); }
+                if (normSub == "tokendisplayscreen") { subAliases.Add("Token Display Screen"); }
+                if (normSub == "optokendisplay") { subAliases.Add("OP Token Display"); }
                 if (normSub == "slots" || normSub == "slotmaster" || normSub == "slot") { subAliases.Add("Slot Master"); subAliases.Add("Slots"); }
                 if (normSub == "servicetypemaster" || normSub == "servicetype") subAliases.Add("Service Type Master");
                 if (normSub == "countrymaster" || normSub == "country") subAliases.Add("Country Master");
