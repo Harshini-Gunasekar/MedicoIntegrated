@@ -345,41 +345,49 @@ namespace LabCare.Services
         {
             EnsureBranchCountersSynced(user, branchModel);
             var content = new MultipartFormDataContent();
+            var addedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            Action<string, string> addPart = (key, val) =>
+            {
+                if (!string.IsNullOrEmpty(key) && addedKeys.Add(key))
+                {
+                    content.Add(new StringContent(val), key);
+                }
+            };
 
             Action<string, string> addField = (name, value) => {
-                // Add the exact explicit prefix requested for the backend API
-                content.Add(new StringContent(value), $"Profile.User.{name}");
-                
-                // Fallback aliases for model binding safety
-                content.Add(new StringContent(value), name);
-                content.Add(new StringContent(value), $"user.{name}");
-                if (name == "user_code")
+                // Canonical model binding prefix
+                addPart($"Profile.User.{name}", value);
+                addPart(name, value);
+                addPart($"user.{name}", value);
+
+                if (name.Equals("user_code", StringComparison.OrdinalIgnoreCase))
                 {
-                    content.Add(new StringContent(value), "usercode");
+                    addPart("Profile.User.usercode", value);
+                    addPart("usercode", value);
                 }
-                if (name == "bh_code" || name == "bhcode")
+                else if (name.Equals("bh_code", StringComparison.OrdinalIgnoreCase) || name.Equals("bhcode", StringComparison.OrdinalIgnoreCase))
                 {
-                    content.Add(new StringContent(value), "Profile.User.bhcode");
-                    content.Add(new StringContent(value), "Profile.User.bh_code");
-                    content.Add(new StringContent(value), "bhcode");
-                    content.Add(new StringContent(value), "bh_code");
-                    content.Add(new StringContent(value), "user.bhcode");
-                    content.Add(new StringContent(value), "user.bh_code");
+                    addPart("Profile.User.bhcode", value);
+                    addPart("Profile.User.bh_code", value);
+                    addPart("bhcode", value);
+                    addPart("bh_code", value);
                 }
-                if (name == "cnt_code" || name == "cntcode")
+                else if (name.Equals("cnt_code", StringComparison.OrdinalIgnoreCase) || name.Equals("cntcode", StringComparison.OrdinalIgnoreCase))
                 {
-                    content.Add(new StringContent(value), "Profile.User.cntcode");
-                    content.Add(new StringContent(value), "Profile.User.cnt_code");
-                    content.Add(new StringContent(value), "cntcode");
-                    content.Add(new StringContent(value), "cnt_code");
-                    content.Add(new StringContent(value), "user.cntcode");
-                    content.Add(new StringContent(value), "user.cnt_code");
+                    addPart("Profile.User.cntcode", value);
+                    addPart("Profile.User.cnt_code", value);
+                    addPart("cntcode", value);
+                    addPart("cnt_code", value);
                 }
             };
 
             foreach (var prop in user.GetType().GetProperties())
             {
                 if (prop.Name == "user_image" || prop.Name == "signature_image") continue;
+
+                // Skip calculated / redundant aliases on user_master that duplicate primary properties
+                if (prop.Name == "usercode" || prop.Name == "userCode" || prop.Name == "bhcode" || prop.Name == "cntcode") continue;
 
                 // When updating, do not send password if it is empty, null, whitespace, dummy placeholder, or already a bcrypt hash
                 if (isUpdate && prop.Name.Equals("password", StringComparison.OrdinalIgnoreCase))
@@ -419,28 +427,37 @@ namespace LabCare.Services
             // Role IDs
             if (roleIds != null && roleIds.Count > 0)
             {
+                // When <= 350 rights are selected, send both canonical Profile.RoleIds[{i}] and roleIds[{i}].
+                // When > 350 rights are selected, send canonical Profile.RoleIds[{i}] so the total form
+                // value count strictly stays well below ASP.NET Core's 1024 form value limit.
+                bool includeUnprefixed = roleIds.Count <= 350;
                 for (int i = 0; i < roleIds.Count; i++)
                 {
-                    content.Add(new StringContent(roleIds[i].ToString()), $"Profile.RoleIds[{i}]");
-                    content.Add(new StringContent(roleIds[i].ToString()), $"roleIds[{i}]");
-                    content.Add(new StringContent(roleIds[i].ToString()), $"role_ids[{i}]");
-                    content.Add(new StringContent(roleIds[i].ToString()), $"Role_ids[{i}]");
-                    content.Add(new StringContent(roleIds[i].ToString()), $"RoleIds[{i}]");
+                    string idStr = roleIds[i].ToString();
+                    addPart($"Profile.RoleIds[{i}]", idStr);
+                    if (includeUnprefixed)
+                    {
+                        addPart($"roleIds[{i}]", idStr);
+                    }
                 }
-                content.Add(new StringContent(string.Join(",", roleIds)), "role_ids");
-                content.Add(new StringContent(string.Join(",", roleIds)), "Role_ids");
+                
+                // Also provide comma-delimited list for any backend binders expecting a string
+                string csv = string.Join(",", roleIds);
+                addPart("Profile.RoleIds", csv);
+                addPart("role_ids", csv);
+                addPart("roleIds", csv);
             }
 
             // Role Template
             if (!string.IsNullOrEmpty(roleTemplateName))
             {
-                content.Add(new StringContent(roleTemplateName), "Profile.RoleTemplateName");
-                content.Add(new StringContent(roleTemplateName), "roleTemplateName");
+                addPart("Profile.RoleTemplateName", roleTemplateName);
+                addPart("roleTemplateName", roleTemplateName);
             }
             if (roleTemplateGuid.HasValue)
             {
-                content.Add(new StringContent(roleTemplateGuid.Value.ToString()), "Profile.RoleTemplateGuid");
-                content.Add(new StringContent(roleTemplateGuid.Value.ToString()), "roleTemplateGuid");
+                addPart("Profile.RoleTemplateGuid", roleTemplateGuid.Value.ToString());
+                addPart("roleTemplateGuid", roleTemplateGuid.Value.ToString());
             }
 
             // Branches
@@ -451,30 +468,26 @@ namespace LabCare.Services
                     var branch = branchModel[i];
                     if (branch.bhcode.HasValue)
                     {
-                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"Profile.Branches[{i}].bhcode");
-                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"branches[{i}].bhcode");
-                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"Profile.Branches[{i}].bh_code");
-                        content.Add(new StringContent(branch.bhcode.Value.ToString()), $"branches[{i}].bh_code");
+                        addPart($"Profile.Branches[{i}].bhcode", branch.bhcode.Value.ToString());
+                        addPart($"branches[{i}].bhcode", branch.bhcode.Value.ToString());
                     }
                     if (branch.cntcode.HasValue)
                     {
-                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"Profile.Branches[{i}].cntcode");
-                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"branches[{i}].cntcode");
-                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"Profile.Branches[{i}].cnt_code");
-                        content.Add(new StringContent(branch.cntcode.Value.ToString()), $"branches[{i}].cnt_code");
+                        addPart($"Profile.Branches[{i}].cntcode", branch.cntcode.Value.ToString());
+                        addPart($"branches[{i}].cntcode", branch.cntcode.Value.ToString());
                     }
                     if (branch.user_code.HasValue)
                     {
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"Profile.Branches[{i}].user_code");
-                        content.Add(new StringContent(branch.user_code.Value.ToString()), $"branches[{i}].user_code");
+                        addPart($"Profile.Branches[{i}].user_code", branch.user_code.Value.ToString());
+                        addPart($"branches[{i}].user_code", branch.user_code.Value.ToString());
                     }
                     if (!string.IsNullOrEmpty(branch.tenant_code))
                     {
-                        content.Add(new StringContent(branch.tenant_code), $"Profile.Branches[{i}].tenant_code");
-                        content.Add(new StringContent(branch.tenant_code), $"branches[{i}].tenant_code");
+                        addPart($"Profile.Branches[{i}].tenant_code", branch.tenant_code);
+                        addPart($"branches[{i}].tenant_code", branch.tenant_code);
                     }
-                    content.Add(new StringContent(branch.deleted.ToString().ToLower()), $"Profile.Branches[{i}].deleted");
-                    content.Add(new StringContent(branch.deleted.ToString().ToLower()), $"branches[{i}].deleted");
+                    addPart($"Profile.Branches[{i}].deleted", branch.deleted.ToString().ToLower());
+                    addPart($"branches[{i}].deleted", branch.deleted.ToString().ToLower());
                 }
             }
 
@@ -486,17 +499,21 @@ namespace LabCare.Services
                     var dept = departmentModel[i];
                     if (dept.dcode.HasValue)
                     {
-                        content.Add(new StringContent(dept.dcode.Value.ToString()), $"Profile.Departments[{i}].gcode"); // Map dcode -> gcode
+                        addPart($"Profile.Departments[{i}].gcode", dept.dcode.Value.ToString()); // Map dcode -> gcode
+                        addPart($"departments[{i}].gcode", dept.dcode.Value.ToString());
                     }
                     if (dept.user_code.HasValue)
                     {
-                        content.Add(new StringContent(dept.user_code.Value.ToString()), $"Profile.Departments[{i}].user_code");
+                        addPart($"Profile.Departments[{i}].user_code", dept.user_code.Value.ToString());
+                        addPart($"departments[{i}].user_code", dept.user_code.Value.ToString());
                     }
                     if (!string.IsNullOrEmpty(dept.tenant_code))
                     {
-                        content.Add(new StringContent(dept.tenant_code), $"Profile.Departments[{i}].tenant_code");
+                        addPart($"Profile.Departments[{i}].tenant_code", dept.tenant_code);
+                        addPart($"departments[{i}].tenant_code", dept.tenant_code);
                     }
-                    content.Add(new StringContent(dept.deleted.ToString().ToLower()), $"Profile.Departments[{i}].deleted");
+                    addPart($"Profile.Departments[{i}].deleted", dept.deleted.ToString().ToLower());
+                    addPart($"departments[{i}].deleted", dept.deleted.ToString().ToLower());
                 }
             }
 
@@ -515,6 +532,7 @@ namespace LabCare.Services
                 fileContent.Headers.ContentType = new MediaTypeHeaderValue(GetMimeType(signatureImageName));
                 content.Add(fileContent, "signatureImageFile", signatureImageName);
             }
+            Console.WriteLine($"=== TOTAL FORM VALUES COUNT: {addedKeys.Count} (limit is 1024) ===");
             Console.WriteLine("=== EXACT MULTIPART FORM DATA PAYLOAD ===");
             foreach (var p in content)
             {

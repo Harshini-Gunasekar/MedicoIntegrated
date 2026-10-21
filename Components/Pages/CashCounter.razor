@@ -290,7 +290,7 @@
                                 <tr>
                                     <td>@(sno++)</td>
                                     <td class="bill-no">@(string.IsNullOrWhiteSpace(s.billno) ? $"#SALES-{s.salescode}" : s.billno)</td>
-                                    <td>@s.billdate.ToString("dd-MMM-yyyy hh:mm tt")</td>
+                                    <td>@(s.billdate != default ? s.billdate.ToString("dd-MMM-yyyy") : "-")</td>
                                     <td class="patient-name">@(string.IsNullOrWhiteSpace(s.patientname) ? (!string.IsNullOrWhiteSpace(s.patientid) ? s.patientid : "Counter Patient") : s.patientname)</td>
                                     <td class="patient-phone">@(string.IsNullOrWhiteSpace(s.address) ? "-" : s.address)</td>
                                     <td>@GetDoctorName(null, s.consultant, null, (decimal?)s.customercode, s.billdate)</td>
@@ -316,7 +316,7 @@
                                             }
                                             else
                                             {
-                                                var isToday = IsTodayBill(s.billdate);
+                                                var isToday = IsTodayPharmacyBill(s);
                                                 @if (isToday)
                                                 {
                                                     <button type="button" class="cash-pay-btn" @onclick="() => OpenPharmacyPaymentModal(s)" title="Receive Payment">
@@ -825,8 +825,8 @@
     private List<sales_master> FilteredPharmacySales => PharmacySalesList
         .Where(s =>
             (string.IsNullOrEmpty(DefaultTenant) || string.IsNullOrEmpty(s.tenantcode) || string.Equals(s.tenantcode, DefaultTenant, StringComparison.OrdinalIgnoreCase)) &&
-            (!filter.fromdate.HasValue || s.billdate.Date >= filter.fromdate.Value.Date) &&
-            (!filter.todate.HasValue || s.billdate.Date <= filter.todate.Value.Date) &&
+            (!filter.fromdate.HasValue || s.billdate.Date >= filter.fromdate.Value.Date || (s.createddate != default && s.createddate.Date >= filter.fromdate.Value.Date)) &&
+            (!filter.todate.HasValue || s.billdate.Date <= filter.todate.Value.Date || (s.createddate != default && s.createddate.Date <= filter.todate.Value.Date)) &&
             (statusFilter == "ALL" ||
              (statusFilter == "PENDING" && !string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) && !string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase)) ||
              (statusFilter == "SETTLED" && (string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) || string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase)))) &&
@@ -1467,11 +1467,31 @@
 
     private bool IsTodayBill(DateTime? billDate)
     {
-        if (!billDate.HasValue) return false;
+        if (!billDate.HasValue || billDate.Value == default) return false;
         var istDate = DateTimeHelper.ConvertUtcToIst(billDate);
         var todayIst = DateTimeHelper.ConvertUtcToIst(DateTime.UtcNow)?.Date ?? DateTime.Today;
         if (istDate.HasValue && istDate.Value.Date == todayIst) return true;
+        if (billDate.Value.Date == todayIst) return true;
         if (billDate.Value.Date == DateTime.Today) return true;
+        return false;
+    }
+
+    private bool IsTodayPharmacyBill(sales_master? sale)
+    {
+        if (sale == null) return false;
+
+        // 1. Bill date is today
+        if (IsTodayBill(sale.billdate)) return true;
+
+        // 2. Entered / created date is today
+        if (sale.createddate != default && IsTodayBill(sale.createddate)) return true;
+
+        // 3. Modified / updated date is today
+        if (sale.modifieddate.HasValue && sale.modifieddate.Value != default && IsTodayBill(sale.modifieddate.Value)) return true;
+
+        // 4. Invoice date is today
+        if (sale.invoicedate.HasValue && sale.invoicedate.Value != default && IsTodayBill(sale.invoicedate.Value)) return true;
+
         return false;
     }
 
@@ -1690,7 +1710,7 @@
             return;
         }
 
-        if (!IsTodayBill(sale.billdate))
+        if (!IsTodayPharmacyBill(sale))
         {
             ToastService.ShowWarning("Payment can only be received for today's bills. Previous date bills are frozen.");
             return;
@@ -1998,7 +2018,11 @@
         }
 
         if (selectedBill == null) return;
-        if (!IsTodayBill(selectedBill.bill_date))
+        bool isTodayBillAllowed = selectedPharmacySale != null
+            ? IsTodayPharmacyBill(selectedPharmacySale)
+            : IsTodayBill(selectedBill.bill_date);
+
+        if (!isTodayBillAllowed)
         {
             ToastService.ShowWarning("Payment can only be received for today's bills. Previous date bills are frozen.");
             return;
@@ -2328,92 +2352,72 @@
     {
         if (sale == null) return null;
 
-        var ids = new List<string>();
-        if (sale.salescode > 0) ids.Add(sale.salescode.ToString());
-        if (!string.IsNullOrWhiteSpace(sale.billno)) ids.Add(sale.billno);
-        if (!string.IsNullOrWhiteSpace(sale.invoiceno)) ids.Add(sale.invoiceno);
-        ids = ids.Distinct().ToList();
-
-        var tenantCodes = new List<string>();
-        if (!string.IsNullOrWhiteSpace(sale.tenantcode)) tenantCodes.Add(sale.tenantcode);
-        if (!string.IsNullOrWhiteSpace(DefaultTenant)) tenantCodes.Add(DefaultTenant);
-        if (!string.IsNullOrWhiteSpace(TenantState?.TenantCode)) tenantCodes.Add(TenantState.TenantCode);
-        tenantCodes.Add("0010");
-        tenantCodes.Add("0004");
-        tenantCodes.Add("");
-        tenantCodes = tenantCodes.Distinct().ToList();
-
-        sales_request? bestFallback = null;
-
-        foreach (var id in ids)
+        long salesCode = sale.salescode;
+        if (salesCode <= 0 && !string.IsNullOrWhiteSpace(sale.billno))
         {
-            bool isNumeric = long.TryParse(id, out _);
+            var numStr = System.Text.RegularExpressions.Regex.Match(sale.billno, @"\d+").Value;
+            long.TryParse(numStr, out salesCode);
+        }
 
-            foreach (var tCode in tenantCodes)
+        if (salesCode <= 0)
+        {
+            Console.WriteLine("[CashCounter] Cannot fetch pharmacy sale: salescode is 0");
+            return null;
+        }
+
+        string tenantCode = !string.IsNullOrEmpty(sale.tenantcode)
+            ? sale.tenantcode
+            : (!string.IsNullOrEmpty(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? ""));
+
+        try
+        {
+            var client = CreateDoctorApiClient();
+            if (!string.IsNullOrEmpty(tenantCode))
             {
-                var variations = new List<string>();
-                string tParam = !string.IsNullOrEmpty(tCode) ? $"tenantcode={tCode}&tenant_code={tCode}" : "";
+                client.DefaultRequestHeaders.Remove("tenantcode");
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Remove("tenant-code");
+                client.DefaultRequestHeaders.Add("tenantcode", tenantCode);
+                client.DefaultRequestHeaders.Add("tenant_code", tenantCode);
+                client.DefaultRequestHeaders.Add("tenant-code", tenantCode);
+            }
 
-                if (isNumeric)
+            // Using the requested endpoint: api/ItemMaster/getsalesbycode?salescode
+            var urls = new List<string>
+            {
+                $"api/ItemMaster/getsalesbycode?salescode={salesCode}" + (!string.IsNullOrEmpty(tenantCode) ? $"&tenantcode={tenantCode}" : ""),
+                $"api/ItemMaster/getsalesbycode?salescode={salesCode}"
+            };
+
+            foreach (var url in urls.Distinct())
+            {
+                try
                 {
-                    variations.Add($"api/ItemMaster/getsalesbycode?salescode={id}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
-                    variations.Add($"api/ItemMaster/getsalesbycode?salesCode={id}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
-                    variations.Add($"api/ItemMaster/getsalesbycode/{id}" + (!string.IsNullOrEmpty(tParam) ? $"?{tParam}" : ""));
-                    variations.Add($"api/ItemMaster/getsales?salescode={id}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
+                    var response = await client.GetAsync(url);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        var json = await response.Content.ReadAsStringAsync();
+                        var loaded = ParsePharmacyRequestResponse(json, salesCode);
+                        if (loaded != null && loaded.master != null && loaded.master.salescode > 0)
+                        {
+                            Console.WriteLine($"[CashCounter] Successfully fetched sale #{salesCode} with {loaded.details?.Count ?? 0} items via {url}");
+                            return loaded;
+                        }
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[CashCounter] Endpoint '{url}' returned status {response.StatusCode}");
+                    }
                 }
-                variations.Add($"api/ItemMaster/getsalesbycode?billno={Uri.EscapeDataString(id)}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
-                variations.Add($"api/ItemMaster/getsales?billno={Uri.EscapeDataString(id)}" + (!string.IsNullOrEmpty(tParam) ? $"&{tParam}" : ""));
-
-                foreach (var url in variations)
+                catch (Exception ex)
                 {
-                    try
-                    {
-                        var client = CreateDoctorApiClient();
-                        if (!string.IsNullOrEmpty(tCode))
-                        {
-                            client.DefaultRequestHeaders.Remove("tenantcode");
-                            client.DefaultRequestHeaders.Remove("tenant_code");
-                            client.DefaultRequestHeaders.Remove("tenant-code");
-                            client.DefaultRequestHeaders.Add("tenantcode", tCode);
-                            client.DefaultRequestHeaders.Add("tenant_code", tCode);
-                            client.DefaultRequestHeaders.Add("tenant-code", tCode);
-                        }
-
-                        var response = await client.GetAsync(url);
-                        if (response.IsSuccessStatusCode)
-                        {
-                            var json = await response.Content.ReadAsStringAsync();
-                            var loaded = ParsePharmacyRequestResponse(json);
-                            if (loaded != null && loaded.master != null)
-                            {
-                                if (loaded.details != null && loaded.details.Any())
-                                {
-                                    Console.WriteLine($"[CashCounter] Successfully fetched sale #{id} with {loaded.details.Count} items via {url}");
-                                    return loaded;
-                                }
-                                else if (bestFallback == null)
-                                {
-                                    bestFallback = loaded;
-                                }
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"[CashCounter] Exception querying '{url}': {ex.Message}");
-                    }
+                    Console.WriteLine($"[CashCounter] Error trying '{url}': {ex.Message}");
                 }
             }
         }
-
-        if (bestFallback != null && (sale.netamount == 0 && sale.grossamount == 0))
+        catch (Exception ex)
         {
-            return bestFallback;
-        }
-
-        if (bestFallback != null && bestFallback.details != null && bestFallback.details.Any())
-        {
-            return bestFallback;
+            Console.WriteLine($"[CashCounter] Error fetching pharmacy sale #{salesCode} via getsalesbycode: {ex.Message}");
         }
 
         return null;
@@ -2433,7 +2437,7 @@
         {
             string tCode = !string.IsNullOrEmpty(req.master.tenantcode) 
                 ? req.master.tenantcode 
-                : (!string.IsNullOrEmpty(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? "0010"));
+                : (!string.IsNullOrEmpty(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? ""));
 
             foreach (var detail in req.details ?? Enumerable.Empty<sales_detail>())
             {
@@ -2531,8 +2535,15 @@
             var result = new List<sales_master>();
             foreach (var item in arrayElement.EnumerateArray())
             {
-                var m = ParsePharmacyMaster(item, options);
-                if (m != null) result.Add(m);
+                try
+                {
+                    var m = ParsePharmacyMaster(item, options);
+                    if (m != null) result.Add(m);
+                }
+                catch (Exception pEx)
+                {
+                    Console.WriteLine("[CashCounter] Error parsing single pharmacy sale: " + pEx.Message);
+                }
             }
             return result.OrderByDescending(x => x.salescode > 0 ? x.salescode : x.billdate.Ticks).ToList();
         }
@@ -2552,6 +2563,28 @@
         if (p.ValueKind == JsonValueKind.False) return "false";
         if (p.ValueKind == JsonValueKind.Null || p.ValueKind == JsonValueKind.Undefined) return null;
         return p.GetRawText();
+    }
+
+    private static DateTime? TryParseJsonDate(JsonElement p)
+    {
+        try
+        {
+            if (p.ValueKind == JsonValueKind.String)
+            {
+                var s = p.GetString();
+                if (!string.IsNullOrWhiteSpace(s) && DateTime.TryParse(s, out var dt))
+                {
+                    return dt;
+                }
+            }
+            else if (p.ValueKind == JsonValueKind.Number && p.TryGetInt64(out var val))
+            {
+                if (val > 1000000000000L) return DateTimeOffset.FromUnixTimeMilliseconds(val).LocalDateTime;
+                if (val > 1000000000L) return DateTimeOffset.FromUnixTimeSeconds(val).LocalDateTime;
+            }
+        }
+        catch { }
+        return null;
     }
 
     private sales_master? ParsePharmacyMaster(JsonElement el, System.Text.Json.JsonSerializerOptions options)
@@ -2596,17 +2629,70 @@
             {
                 if (TryGetPropertyIgnoreCase(target, key, out var p))
                 {
-                    if (p.ValueKind == JsonValueKind.String && DateTime.TryParse(p.GetString(), out var dt))
+                    var dt = TryParseJsonDate(p);
+                    if (dt.HasValue && dt.Value != default)
                     {
-                        m.billdate = dt;
-                        break;
-                    }
-                    else if (p.TryGetDateTime(out var dtVal))
-                    {
-                        m.billdate = dtVal;
+                        m.billdate = dt.Value;
                         break;
                     }
                 }
+            }
+        }
+        if (m.createddate == default)
+        {
+            foreach (var src in new[] { target, el })
+            {
+                foreach (var key in new[] { "createddate", "created_date", "createdon", "created_on", "inserteddate", "inserted_date", "entrydate", "entry_date", "created_at", "createdat", "bill_entered_date", "date_entered" })
+                {
+                    if (TryGetPropertyIgnoreCase(src, key, out var p))
+                    {
+                        var dt = TryParseJsonDate(p);
+                        if (dt.HasValue && dt.Value != default)
+                        {
+                            m.createddate = dt.Value;
+                            break;
+                        }
+                    }
+                }
+                if (m.createddate != default) break;
+            }
+        }
+        if (!m.modifieddate.HasValue || m.modifieddate.Value == default)
+        {
+            foreach (var src in new[] { target, el })
+            {
+                foreach (var key in new[] { "modifieddate", "modified_date", "updateddate", "updated_date", "modifiedon", "modified_on", "updatedon", "updated_on", "updated_at", "updatedat" })
+                {
+                    if (TryGetPropertyIgnoreCase(src, key, out var p))
+                    {
+                        var dt = TryParseJsonDate(p);
+                        if (dt.HasValue && dt.Value != default)
+                        {
+                            m.modifieddate = dt.Value;
+                            break;
+                        }
+                    }
+                }
+                if (m.modifieddate.HasValue && m.modifieddate.Value != default) break;
+            }
+        }
+        if (!m.invoicedate.HasValue || m.invoicedate.Value == default)
+        {
+            foreach (var src in new[] { target, el })
+            {
+                foreach (var key in new[] { "invoicedate", "invoice_date" })
+                {
+                    if (TryGetPropertyIgnoreCase(src, key, out var p))
+                    {
+                        var dt = TryParseJsonDate(p);
+                        if (dt.HasValue && dt.Value != default)
+                        {
+                            m.invoicedate = dt.Value;
+                            break;
+                        }
+                    }
+                }
+                if (m.invoicedate.HasValue && m.invoicedate.Value != default) break;
             }
         }
         if (string.IsNullOrEmpty(m.patientname))
@@ -2774,10 +2860,14 @@
         {
             foreach (var key in new[] { "expirydate", "expiry_date", "expdate", "exp_date" })
             {
-                if (TryGetPropertyIgnoreCase(el, key, out var p) && p.TryGetDateTime(out var dt))
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
                 {
-                    d.expirydate = dt;
-                    break;
+                    var dt = TryParseJsonDate(p);
+                    if (dt.HasValue && dt.Value != default)
+                    {
+                        d.expirydate = dt.Value;
+                        break;
+                    }
                 }
             }
         }
@@ -2798,7 +2888,7 @@
         return d;
     }
 
-    private sales_request? ParsePharmacyRequestResponse(string json)
+    private sales_request? ParsePharmacyRequestResponse(string json, long? targetSalesCode = null)
     {
         if (string.IsNullOrWhiteSpace(json)) return null;
         var options = new System.Text.Json.JsonSerializerOptions
@@ -2819,7 +2909,28 @@
 
             if (root.ValueKind == JsonValueKind.Array)
             {
-                if (root.GetArrayLength() > 0) root = root[0];
+                JsonElement? matchedElement = null;
+                foreach (var item in root.EnumerateArray())
+                {
+                    if (item.ValueKind == JsonValueKind.Object)
+                    {
+                        var m = ParsePharmacyMaster(item, options);
+                        if (m != null && targetSalesCode.HasValue && targetSalesCode.Value > 0 && m.salescode == targetSalesCode.Value)
+                        {
+                            matchedElement = item;
+                            break;
+                        }
+                    }
+                }
+
+                if (matchedElement.HasValue)
+                {
+                    root = matchedElement.Value;
+                }
+                else if (root.GetArrayLength() > 0)
+                {
+                    root = root[0];
+                }
                 else return null;
             }
 
@@ -2850,6 +2961,18 @@
                     }
                 }
 
+                if (!hasDetails && TryGetPropertyIgnoreCase(root, "master", out var mObj) && mObj.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var detailKey in new[] { "details", "detail", "salesdetail", "salesdetails", "sales_detail", "sales_details", "items", "itemlist" })
+                    {
+                        if (TryGetPropertyIgnoreCase(mObj, detailKey, out detailsProp) && detailsProp.ValueKind == JsonValueKind.Array)
+                        {
+                            hasDetails = true;
+                            break;
+                        }
+                    }
+                }
+
                 if (hasDetails && detailsProp.ValueKind == JsonValueKind.Array)
                 {
                     req.details = new List<sales_detail>();
@@ -2864,7 +2987,7 @@
                     req.details = new List<sales_detail>();
                 }
 
-                if (req.master != null)
+                if (req.master != null && req.master.salescode > 0)
                 {
                     return req;
                 }

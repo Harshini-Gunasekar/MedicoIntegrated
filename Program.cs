@@ -32,12 +32,15 @@ builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents(options =>
     {
         options.DetailedErrors = true;
-        options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(5);
-        options.DisconnectedCircuitMaxRetained = 500;
+        options.DisconnectedCircuitRetentionPeriod = TimeSpan.FromMinutes(60);
+        options.DisconnectedCircuitMaxRetained = 2000;
     })
     .AddHubOptions(options =>
     {
         options.MaximumReceiveMessageSize = 10 * 1024 * 1024;
+        options.ClientTimeoutInterval = TimeSpan.FromMinutes(2);
+        options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+        options.HandshakeTimeout = TimeSpan.FromSeconds(30);
     });
 
 builder.Services.AddCascadingAuthenticationState();

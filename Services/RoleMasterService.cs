@@ -387,6 +387,7 @@ namespace Booking.Services
         // ===================== PERMISSION STATE & EVALUATION =====================
 
         public List<RolePermissionItem> CurrentUserPermissions { get; private set; } = new();
+        public List<RolePermissionItem> UserPermissions => CurrentUserPermissions;
         public bool IsPermissionsLoaded { get; private set; } = false;
 
         private readonly HashSet<string> _permittedMainModules = new(StringComparer.OrdinalIgnoreCase);
@@ -806,6 +807,7 @@ namespace Booking.Services
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "download" || normAct == "downloadreport" || normAct == "downloadbill" || normAct == "downloadconsolidatedbillpdf" || normAct == "pdf") && _permittedRoleIds.Contains(417)) return true;
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "casesheet" || normAct == "viewcasesheet") && (_permittedRoleIds.Contains(418) || _permittedRoleIds.Contains(419))) return true;
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "dischargesummary" || normAct == "viewdischargesummary") && (_permittedRoleIds.Contains(420) || _permittedRoleIds.Contains(421) || _permittedRoleIds.Contains(422) || _permittedRoleIds.Contains(428))) return true;
+                if ((normSub == "nursenotes" || normSub == "nurse_notes" || normSub == "bedsidechart") && (normAct == "authorize" || normAct == "authorizechart" || normAct == "auth") && _permittedRoleIds.Contains(1051)) return true;
 
                 bool isDoctorMain = normMain == "doctorportal" || normMain == "doctor" || normMain == "doctors" || normMain == "clinical";
                 bool isVitalsMain = normMain == "vitals" || normMain == "vital" || normMain == "vitalpage";
@@ -848,6 +850,7 @@ namespace Booking.Services
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "download" || normAct == "downloadreport" || normAct == "downloadbill" || normAct == "downloadconsolidatedbillpdf" || normAct == "pdf") && _permittedRoleIds.Contains(417)) return true;
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "casesheet" || normAct == "viewcasesheet") && (_permittedRoleIds.Contains(418) || _permittedRoleIds.Contains(419))) return true;
                 if ((normSub == "ipregistration" || normSub == "admissionip") && (normAct == "dischargesummary" || normAct == "viewdischargesummary") && (_permittedRoleIds.Contains(420) || _permittedRoleIds.Contains(421) || _permittedRoleIds.Contains(422) || _permittedRoleIds.Contains(428))) return true;
+                if ((normSub == "nursenotes" || normSub == "nurse_notes" || normSub == "bedsidechart") && (normAct == "authorize" || normAct == "authorizechart" || normAct == "auth") && _permittedRoleIds.Contains(1051)) return true;
 
                 if (CheckOPRoleAction(normSub, normAct)) return true;
                 if (CheckBillingRoleAction(normSub, normAct)) return true;
@@ -1666,32 +1669,48 @@ namespace Booking.Services
                 });
             }
 
-            // 5. Billing / Billing Portal -> Counter Shift (queried by CounterShift.razor)
-            bool hasShiftPerm = isAdministrator || permList.Any(p => p.Sub_module?.Contains("Counter Shift", StringComparison.OrdinalIgnoreCase) == true || p.Main_module?.Contains("Billing", StringComparison.OrdinalIgnoreCase) == true);
+            // 5. Billing / Billing Portal -> Counter Shift (Roles 509 - 511)
+            bool hasShiftPerm = isAdministrator || permList.Any(p => 
+                (p.Role_id >= 509 && p.Role_id <= 511) ||
+                p.Sub_module?.Equals("Counter Shift", StringComparison.OrdinalIgnoreCase) == true ||
+                p.Sub_module?.Contains("Counter Shift", StringComparison.OrdinalIgnoreCase) == true);
+
             if (hasShiftPerm)
             {
                 bool shiftAdd = isAdministrator || permList.Any(p => p.Role_id == 510 || (p.Sub_module?.Contains("Counter Shift", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0));
                 bool shiftDel = isAdministrator || permList.Any(p => p.Role_id == 511 || (p.Sub_module?.Contains("Counter Shift", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0));
                 bool shiftView = isAdministrator || permList.Any(p => p.Role_id == 509 || (p.Sub_module?.Contains("Counter Shift", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0)) || shiftAdd || shiftDel;
 
-                foreach (var bDept in new[] { "Billing Portal", "Billing" })
+                if (shiftView || shiftAdd || shiftDel)
                 {
-                    if (!result.Any(r => string.Equals(r.Department, bDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, "Counter Shift", StringComparison.OrdinalIgnoreCase)))
+                    foreach (var bDept in new[] { "Billing Portal", "Billing" })
                     {
-                        result.Add(new User_Rights
+                        var existing = result.FirstOrDefault(r => string.Equals(r.Department, bDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, "Counter Shift", StringComparison.OrdinalIgnoreCase));
+                        if (existing != null)
                         {
-                            UserModuleID = rightId,
-                            Sno = sno++,
-                            ModuleName = "Counter Shift",
-                            Department = bDept,
-                            UserModuleRightsID = rightId++,
-                            UserCode = userCode,
-                            ToAdd = shiftAdd,
-                            ToView = shiftView,
-                            ToEdit = shiftAdd,
-                            ToDelete = shiftDel,
-                            ToExport = true
-                        });
+                            existing.ToView = shiftView;
+                            existing.ToAdd = shiftAdd;
+                            existing.ToEdit = shiftAdd;
+                            existing.ToDelete = shiftDel;
+                            existing.ToExport = shiftView;
+                        }
+                        else
+                        {
+                            result.Add(new User_Rights
+                            {
+                                UserModuleID = rightId,
+                                Sno = sno++,
+                                ModuleName = "Counter Shift",
+                                Department = bDept,
+                                UserModuleRightsID = rightId++,
+                                UserCode = userCode,
+                                ToAdd = shiftAdd,
+                                ToView = shiftView,
+                                ToEdit = shiftAdd,
+                                ToDelete = shiftDel,
+                                ToExport = shiftView
+                            });
+                        }
                     }
                 }
             }
@@ -2304,9 +2323,10 @@ namespace Booking.Services
                     }
                 }
 
-                // 8f. Nurse Notes (Roles 431 - 435)
+                // 8f. Nurse Notes (Roles 431 - 435, 1051)
                 bool hasNurse = isAdministrator || permList.Any(p => 
                     (p.Role_id >= 431 && p.Role_id <= 435) ||
+                    p.Role_id == 1051 ||
                     p.Sub_module?.Equals("Nurse Notes", StringComparison.OrdinalIgnoreCase) == true);
                 if (hasNurse)
                 {
@@ -2315,7 +2335,8 @@ namespace Booking.Services
                     bool nEdit = isAdministrator || permList.Any(p => p.Role_id == 433 || (p.Sub_module?.Equals("Nurse Notes", StringComparison.OrdinalIgnoreCase) == true && string.Equals(p.Module, "Edit", StringComparison.OrdinalIgnoreCase)));
                     bool nDel = isAdministrator || permList.Any(p => p.Role_id == 434 || (p.Sub_module?.Equals("Nurse Notes", StringComparison.OrdinalIgnoreCase) == true && string.Equals(p.Module, "Delete", StringComparison.OrdinalIgnoreCase)));
                     bool nPrev = isAdministrator || permList.Any(p => p.Role_id == 435 || (p.Sub_module?.Equals("Nurse Notes", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Preview", StringComparison.OrdinalIgnoreCase) >= 0));
-                    if (nAdd || nEdit || nDel || nPrev) nView = true;
+                    bool nAuth = isAdministrator || permList.Any(p => p.Role_id == 1051 || (p.Sub_module?.Equals("Nurse Notes", StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Authorize", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Auth", StringComparison.OrdinalIgnoreCase) >= 0)));
+                    if (nAdd || nEdit || nDel || nPrev || nAuth) nView = true;
 
                     foreach (var ipDept in new[] { "IP Portal", "IP" })
                     {
@@ -2346,6 +2367,38 @@ namespace Booking.Services
                                     ToDelete = nDel,
                                     ToExport = nPrev
                                 });
+                            }
+                        }
+
+                        if (nAuth)
+                        {
+                            foreach (var aMod in new[] { "Authorize Chart", "Authorize_Chart", "AuthorizeChart" })
+                            {
+                                var existingAuth = result.FirstOrDefault(r => string.Equals(r.Department, ipDept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
+                                if (existingAuth != null)
+                                {
+                                    existingAuth.ToView = true;
+                                    existingAuth.ToAdd = true;
+                                    existingAuth.ToEdit = true;
+                                    existingAuth.ToExport = true;
+                                }
+                                else
+                                {
+                                    result.Add(new User_Rights
+                                    {
+                                        UserModuleID = rightId,
+                                        Sno = sno++,
+                                        ModuleName = aMod,
+                                        Department = ipDept,
+                                        UserModuleRightsID = rightId++,
+                                        UserCode = userCode,
+                                        ToAdd = true,
+                                        ToView = true,
+                                        ToEdit = true,
+                                        ToDelete = false,
+                                        ToExport = true
+                                    });
+                                }
                             }
                         }
                     }
@@ -3016,88 +3069,97 @@ namespace Booking.Services
                 var docDepts = new[] { "Doctor Portal", "Doctor", "Clinical" };
 
                 // 10a. Doctor Patient List (Roles 654 - 657)
-                bool hasDpl = isAdministrator || permList.Any(p => (p.Role_id >= 654 && p.Role_id <= 657) || p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true);
+                bool hasDpl = isAdministrator || permList.Any(p => (p.Role_id >= 654 && p.Role_id <= 657) || 
+                    (p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && (p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0)));
                 if (hasDpl)
                 {
-                    bool dplView = isAdministrator || permList.Any(p => p.Role_id == 654 || (p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
-                    bool dplAdd = isAdministrator || permList.Any(p => p.Role_id == 655 || (p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0));
-                    bool dplEdit = isAdministrator || permList.Any(p => p.Role_id == 656 || (p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Finalize", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0)));
-                    bool dplPrint = isAdministrator || permList.Any(p => p.Role_id == 657 || (p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Print", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool dplView = isAdministrator || permList.Any(p => p.Role_id == 654 || ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool dplAdd = isAdministrator || permList.Any(p => p.Role_id == 655 || ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool dplEdit = isAdministrator || permList.Any(p => p.Role_id == 656 || ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Finalize", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0)));
+                    bool dplPrint = isAdministrator || permList.Any(p => p.Role_id == 657 || ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals("Doctor Patient List", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Print", StringComparison.OrdinalIgnoreCase) >= 0));
 
                     if (dplAdd || dplEdit || dplPrint) dplView = true;
 
-                    var dplAliases = new[] { "Doctor Patient List", "Doctor_Patient_List", "DoctorPatientList", "Patient List", "Doctor Appointments", "DoctorAppointments" };
-                    foreach (var dept in docDepts)
+                    if (dplView || dplAdd || dplEdit || dplPrint)
                     {
-                        foreach (var aMod in dplAliases)
+                        var dplAliases = new[] { "Doctor Patient List", "Doctor_Patient_List", "DoctorPatientList", "Patient List", "Doctor Appointments", "DoctorAppointments" };
+                        foreach (var dept in docDepts)
                         {
-                            var existing = result.FirstOrDefault(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
-                            if (existing != null)
+                            foreach (var aMod in dplAliases)
                             {
-                                existing.ToView = dplView;
-                                existing.ToAdd = dplAdd;
-                                existing.ToEdit = dplEdit;
-                                existing.ToExport = dplPrint;
-                            }
-                            else
-                            {
-                                result.Add(new User_Rights
+                                var existing = result.FirstOrDefault(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
+                                if (existing != null)
                                 {
-                                    UserModuleID = rightId,
-                                    Sno = sno++,
-                                    ModuleName = aMod,
-                                    Department = dept,
-                                    UserModuleRightsID = rightId++,
-                                    UserCode = userCode,
-                                    ToAdd = dplAdd,
-                                    ToView = dplView,
-                                    ToEdit = dplEdit,
-                                    ToDelete = false,
-                                    ToExport = dplPrint
-                                });
+                                    existing.ToView = dplView;
+                                    existing.ToAdd = dplAdd;
+                                    existing.ToEdit = dplEdit;
+                                    existing.ToExport = dplPrint;
+                                }
+                                else
+                                {
+                                    result.Add(new User_Rights
+                                    {
+                                        UserModuleID = rightId,
+                                        Sno = sno++,
+                                        ModuleName = aMod,
+                                        Department = dept,
+                                        UserModuleRightsID = rightId++,
+                                        UserCode = userCode,
+                                        ToAdd = dplAdd,
+                                        ToView = dplView,
+                                        ToEdit = dplEdit,
+                                        ToDelete = false,
+                                        ToExport = dplPrint
+                                    });
+                                }
                             }
                         }
                     }
                 }
 
                 // 10b. Doctor Status (Roles 658 - 660)
-                bool hasDs = isAdministrator || permList.Any(p => (p.Role_id >= 658 && p.Role_id <= 660) || p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true);
+                bool hasDs = isAdministrator || permList.Any(p => (p.Role_id >= 658 && p.Role_id <= 660) || 
+                    (p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true && (p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0)));
                 if (hasDs)
                 {
-                    bool dsView = isAdministrator || permList.Any(p => p.Role_id == 658 || (p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
-                    bool dsAdd = isAdministrator || permList.Any(p => p.Role_id == 659 || (p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0));
-                    bool dsEdit = isAdministrator || permList.Any(p => p.Role_id == 660 || (p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool dsView = isAdministrator || permList.Any(p => p.Role_id == 658 || ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool dsAdd = isAdministrator || permList.Any(p => p.Role_id == 659 || ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0));
+                    bool dsEdit = isAdministrator || permList.Any(p => p.Role_id == 660 || ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals("Doctor Status", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0));
 
                     if (dsAdd || dsEdit) dsView = true;
 
-                    var dsAliases = new[] { "Doctor Status", "Doctor_Status", "DoctorStatus", "Doctor Current Status", "Doctor_Current_Status", "DoctorCurrentStatus" };
-                    foreach (var dept in docDepts)
+                    if (dsView || dsAdd || dsEdit)
                     {
-                        foreach (var aMod in dsAliases)
+                        var dsAliases = new[] { "Doctor Status", "Doctor_Status", "DoctorStatus", "Doctor Current Status", "Doctor_Current_Status", "DoctorCurrentStatus" };
+                        foreach (var dept in docDepts)
                         {
-                            var existing = result.FirstOrDefault(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
-                            if (existing != null)
+                            foreach (var aMod in dsAliases)
                             {
-                                existing.ToView = dsView;
-                                existing.ToAdd = dsAdd;
-                                existing.ToEdit = dsEdit;
-                            }
-                            else
-                            {
-                                result.Add(new User_Rights
+                                var existing = result.FirstOrDefault(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
+                                if (existing != null)
                                 {
-                                    UserModuleID = rightId,
-                                    Sno = sno++,
-                                    ModuleName = aMod,
-                                    Department = dept,
-                                    UserModuleRightsID = rightId++,
-                                    UserCode = userCode,
-                                    ToAdd = dsAdd,
-                                    ToView = dsView,
-                                    ToEdit = dsEdit,
-                                    ToDelete = false,
-                                    ToExport = true
-                                });
+                                    existing.ToView = dsView;
+                                    existing.ToAdd = dsAdd;
+                                    existing.ToEdit = dsEdit;
+                                    existing.ToExport = dsView;
+                                }
+                                else
+                                {
+                                    result.Add(new User_Rights
+                                    {
+                                        UserModuleID = rightId,
+                                        Sno = sno++,
+                                        ModuleName = aMod,
+                                        Department = dept,
+                                        UserModuleRightsID = rightId++,
+                                        UserCode = userCode,
+                                        ToAdd = dsAdd,
+                                        ToView = dsView,
+                                        ToEdit = dsEdit,
+                                        ToDelete = false,
+                                        ToExport = dsView
+                                    });
+                                }
                             }
                         }
                     }
@@ -3118,56 +3180,60 @@ namespace Booking.Services
                 {
                     bool hasDmPerm = isAdministrator || permList.Any(p =>
                         (p.Role_id >= dm.baseRoleId && p.Role_id <= dm.baseRoleId + 3) ||
-                        p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true);
+                        (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0)));
 
                     if (hasDmPerm)
                     {
                         bool dmView = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId ||
-                            (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
+                            ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
 
                         bool dmAdd = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId + 1 ||
-                            (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Add", StringComparison.OrdinalIgnoreCase) >= 0)));
+                            ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Add", StringComparison.OrdinalIgnoreCase) >= 0)));
 
                         bool dmEdit = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId + 2 ||
-                            (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Update", StringComparison.OrdinalIgnoreCase) >= 0)));
+                            ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Edit", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Update", StringComparison.OrdinalIgnoreCase) >= 0)));
 
                         bool dmDel = isAdministrator || permList.Any(p =>
                             p.Role_id == dm.baseRoleId + 3 ||
-                            (p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Cancel", StringComparison.OrdinalIgnoreCase) >= 0)));
+                            ((p.Main_module?.IndexOf("Doctor", StringComparison.OrdinalIgnoreCase) >= 0 || p.Main_module?.IndexOf("Clinical", StringComparison.OrdinalIgnoreCase) >= 0) && p.Sub_module?.Equals(dm.name, StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Delete", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Cancel", StringComparison.OrdinalIgnoreCase) >= 0)));
 
                         if (dmAdd || dmEdit || dmDel) dmView = true;
 
-                        foreach (var dept in docDepts)
+                        if (dmView || dmAdd || dmEdit || dmDel)
                         {
-                            foreach (var aMod in dm.extraAliases)
+                            foreach (var dept in docDepts)
                             {
-                                var existing = result.FirstOrDefault(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
-                                if (existing != null)
+                                foreach (var aMod in dm.extraAliases)
                                 {
-                                    existing.ToView = dmView;
-                                    existing.ToAdd = dmAdd;
-                                    existing.ToEdit = dmEdit;
-                                    existing.ToDelete = dmDel;
-                                }
-                                else
-                                {
-                                    result.Add(new User_Rights
+                                    var existing = result.FirstOrDefault(r => string.Equals(r.Department, dept, StringComparison.OrdinalIgnoreCase) && string.Equals(r.ModuleName, aMod, StringComparison.OrdinalIgnoreCase));
+                                    if (existing != null)
                                     {
-                                        UserModuleID = rightId,
-                                        Sno = sno++,
-                                        ModuleName = aMod,
-                                        Department = dept,
-                                        UserModuleRightsID = rightId++,
-                                        UserCode = userCode,
-                                        ToAdd = dmAdd,
-                                        ToView = dmView,
-                                        ToEdit = dmEdit,
-                                        ToDelete = dmDel,
-                                        ToExport = true
-                                    });
+                                        existing.ToView = dmView;
+                                        existing.ToAdd = dmAdd;
+                                        existing.ToEdit = dmEdit;
+                                        existing.ToDelete = dmDel;
+                                        existing.ToExport = dmView;
+                                    }
+                                    else
+                                    {
+                                        result.Add(new User_Rights
+                                        {
+                                            UserModuleID = rightId,
+                                            Sno = sno++,
+                                            ModuleName = aMod,
+                                            Department = dept,
+                                            UserModuleRightsID = rightId++,
+                                            UserCode = userCode,
+                                            ToAdd = dmAdd,
+                                            ToView = dmView,
+                                            ToEdit = dmEdit,
+                                            ToDelete = dmDel,
+                                            ToExport = dmView
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -3833,7 +3899,12 @@ namespace Booking.Services
                 if (normSub == "availablebeds") { subAliases.Add("Available Beds"); subAliases.Add("Available Theaters"); }
                 if (normSub == "bedtransfer") subAliases.Add("Bed Transfer");
                 if (normSub == "dischargesummary" || normSub == "dischargesummery") subAliases.Add("Discharge Summary");
-                if (normSub == "nursenotes") subAliases.Add("Nurse Notes");
+                if (normSub == "nursenotes" || normSub == "nurse_notes") subAliases.Add("Nurse Notes");
+                if (normSub == "authorizechart" || normSub == "authorize_chart" || normSub == "authorize")
+                {
+                    subAliases.Add("Nurse Notes");
+                    subAliases.Add("Authorize Chart");
+                }
                 if (normSub == "summarytemplates" || normSub == "summerytemplates") subAliases.Add("Discharge Template Master");
                 if (normSub == "dischargetemplatemaster") subAliases.Add("Summary Templates");
                 if (normSub == "addot" || normSub == "otmaster") subAliases.Add("Add OT");
@@ -3880,6 +3951,11 @@ namespace Booking.Services
                         if (r.ToDelete)
                         {
                             list.Add(new RolePermissionItem { Role_id = roleId++, Main_module = m, Sub_module = s, Module = "Delete" });
+                        }
+                        if (string.Equals(s, "Authorize Chart", StringComparison.OrdinalIgnoreCase) || 
+                            (r.ModuleName?.IndexOf("Authorize", StringComparison.OrdinalIgnoreCase) >= 0 && (r.ToView || r.ToAdd || r.ToEdit || r.ToExport)))
+                        {
+                            list.Add(new RolePermissionItem { Role_id = 1051, Main_module = "IP Portal", Sub_module = "Nurse Notes", Module = "Authorize Chart" });
                         }
                     }
                 }

@@ -17,13 +17,18 @@ namespace Booking.Services
         private readonly IHttpClientFactory? _clientFactory;
         private readonly TenantSessionState? _session;
         private readonly LabSettingService? _labSettingService;
+        private readonly ToastService? _toastService;
+        private static List<CounterTimingDto>? _lastKnownActiveShifts = null;
+        private static DateTime _lastShiftFetchTime = DateTime.MinValue;
+        private static DateTime _lastNetworkWarningTime = DateTime.MinValue;
 
-        public HmsBillingService(HttpClient http, IHttpClientFactory? clientFactory = null, TenantSessionState? session = null, LabSettingService? labSettingService = null)
+        public HmsBillingService(HttpClient http, IHttpClientFactory? clientFactory = null, TenantSessionState? session = null, LabSettingService? labSettingService = null, ToastService? toastService = null)
         {
             _http = http;
             _clientFactory = clientFactory;
             _session = session;
             _labSettingService = labSettingService;
+            _toastService = toastService;
         }
 
         private HttpClient GetClient(string? tenantCode = null)
@@ -660,92 +665,101 @@ namespace Booking.Services
 
         public async Task<List<CounterTimingDto>> GetOpenCountersAsync(bool returnAllUnclosed = false, string? tenantCode = null)
         {
+            bool networkErrorOccurred = false;
             try
             {
                 var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
-                List<HttpClient> clientsToTry = new();
-                clientsToTry.Add(GetClient(effectiveTenant));
-                if (_clientFactory != null)
-                {
-                    try
-                    {
-                        var labClient = _clientFactory.CreateClient("LabCareUrl");
-                        labClient.DefaultRequestHeaders.Remove("tenant_code");
-                        labClient.DefaultRequestHeaders.Remove("tenantcode");
-                        if (!string.IsNullOrEmpty(effectiveTenant))
-                        {
-                            labClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
-                            labClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
-                        }
-                        if (!string.IsNullOrEmpty(_session?.AuthToken))
-                        {
-                            labClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
-                        }
-                        clientsToTry.Add(labClient);
-                    }
-                    catch { }
-                }
-                if (!clientsToTry.Contains(_http))
-                {
-                    clientsToTry.Add(_http);
-                }
+                var client = GetClient(effectiveTenant);
 
                 List<CounterTimingDto>? rawCounters = null;
-                string[] endpoints = new[] { "api/CounterTiming/get", "CounterTiming/get" };
                 var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
 
-                foreach (var client in clientsToTry)
+                try
                 {
-                    bool gotValidResponse = false;
-                    foreach (var ep in endpoints)
+                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(10));
+                    var response = await client.GetAsync("api/CounterTiming/get", cts.Token);
+                    if (response.IsSuccessStatusCode)
                     {
-                        try
+                        var rawJson = await response.Content.ReadAsStringAsync();
+                        if (!string.IsNullOrWhiteSpace(rawJson))
                         {
-                            using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(6));
-                            var response = await client.GetAsync(ep, cts.Token);
-                            if (response.IsSuccessStatusCode)
+                            using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                            if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
                             {
-                                var rawJson = await response.Content.ReadAsStringAsync();
-                                if (!string.IsNullOrWhiteSpace(rawJson))
-                                {
-                                    using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
-                                    if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Array)
-                                    {
-                                        rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(rawJson, options);
-                                        gotValidResponse = true;
-                                    }
-                                    else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
-                                    {
-                                        if (doc.RootElement.TryGetProperty("data", out var dataProp))
-                                            rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(dataProp.GetRawText(), options);
-                                        else if (doc.RootElement.TryGetProperty("value", out var valProp))
-                                            rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(valProp.GetRawText(), options);
-                                        gotValidResponse = true;
-                                    }
-
-                                    if (gotValidResponse)
-                                    {
-                                        break;
-                                    }
-                                }
+                                rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(rawJson, options);
+                            }
+                            else if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object)
+                            {
+                                if (doc.RootElement.TryGetProperty("data", out var dataProp))
+                                    rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(dataProp.GetRawText(), options);
+                                else if (doc.RootElement.TryGetProperty("value", out var valProp))
+                                    rawCounters = System.Text.Json.JsonSerializer.Deserialize<List<CounterTimingDto>>(valProp.GetRawText(), options);
                             }
                         }
-                        catch { }
                     }
-                    if (gotValidResponse) break;
+                }
+                catch (Exception ex)
+                {
+                    networkErrorOccurred = true;
+                    Console.WriteLine($"[GetOpenCountersAsync] Error fetching from api/CounterTiming/get: {ex.Message}");
+                }
+
+                if (networkErrorOccurred)
+                {
+                    if ((DateTime.UtcNow - _lastNetworkWarningTime).TotalSeconds > 15)
+                    {
+                        _lastNetworkWarningTime = DateTime.UtcNow;
+                        _toastService?.ShowWarning("Network connection error: Unable to connect to server. Please check your network connection.");
+                    }
+
+                    // Return cached active shifts if available so transient network errors do not falsely indicate counters are closed
+                    if (_lastKnownActiveShifts != null && (DateTime.UtcNow - _lastShiftFetchTime).TotalHours < 12)
+                    {
+                        return _lastKnownActiveShifts;
+                    }
+
+                    return new List<CounterTimingDto>();
                 }
 
                 if (rawCounters != null && rawCounters.Any())
                 {
                     var unclosedShifts = rawCounters.Where(s => s.todate == null).ToList();
-                    return unclosedShifts;
+
+                    LabSettingModel? labSetting = await GetLabSettingInternalAsync();
+
+                    var nowUtc = DateTime.UtcNow;
+                    var nowIndian = nowUtc.ToIndianTime();
+
+                    var activeShifts = new List<CounterTimingDto>();
+
+                    foreach (var shift in unclosedShifts)
+                    {
+                        bool isExpired = IsShiftExpired(shift, labSetting, nowIndian, nowUtc);
+                        if (!isExpired)
+                        {
+                            activeShifts.Add(shift);
+                        }
+                    }
+
+                    _lastKnownActiveShifts = activeShifts;
+                    _lastShiftFetchTime = DateTime.UtcNow;
+
+                    return activeShifts;
                 }
+
+                _lastKnownActiveShifts = new List<CounterTimingDto>();
+                _lastShiftFetchTime = DateTime.UtcNow;
                 return new List<CounterTimingDto>();
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error fetching open counters: {ex.Message}");
-                return new List<CounterTimingDto>();
+                if ((DateTime.UtcNow - _lastNetworkWarningTime).TotalSeconds > 15)
+                {
+                    _lastNetworkWarningTime = DateTime.UtcNow;
+                    _toastService?.ShowWarning("Network connection error: Please check your network connection.");
+                }
+                return _lastKnownActiveShifts ?? new List<CounterTimingDto>();
             }
         }
 
@@ -753,6 +767,77 @@ namespace Booking.Services
         {
             if (shift == null) return true;
             if (shift.todate != null) return true;
+
+            var shiftFromIndian = (shift.fromdate ?? shift.counterdate ?? nowIndian).ToIndianTime();
+            var shiftOpenDateIndian = shiftFromIndian.Date;
+
+            // 0. If the shift date is strictly in the past, it has expired (a past day's shift is never open today)
+            if (shiftOpenDateIndian < nowIndian.Date)
+            {
+                return true;
+            }
+
+            // 1. Check if planned_to is set on shift record
+            if (shift.planned_to.HasValue)
+            {
+                var planned = shift.planned_to.Value;
+                var plannedUtc = planned.Kind == DateTimeKind.Utc ? planned : DateTime.SpecifyKind(planned, DateTimeKind.Utc);
+                var plannedIndian = planned.ToIndianTime();
+
+                if (nowUtc >= plannedUtc || nowIndian >= plannedIndian)
+                {
+                    return true;
+                }
+            }
+
+            // 2. Check if LabSetting or shift is configured in FIXED mode
+            string shiftMode = shift.shift_mode ?? setting?.shift_timing_mode ?? "VARIABLE";
+            if (string.Equals(shiftMode, "FIXED", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(setting?.shift_timing_mode, "FIXED", StringComparison.OrdinalIgnoreCase))
+            {
+                string? endTimeStr = setting?.shift_end_time;
+                if (TryParseShiftEndTime(endTimeStr, out var endTime))
+                {
+                    var fixedEndDateTime = shiftOpenDateIndian.Add(endTime);
+
+                    if (shiftFromIndian < fixedEndDateTime)
+                    {
+                        // Shift opened before fixed end time -> ends at the fixed time
+                        if (nowIndian >= fixedEndDateTime)
+                        {
+                            return true;
+                        }
+                    }
+                    else
+                    {
+                        // Shift opened at or after fixed end time -> ends at 12:00 AM midnight
+                        var midnight = shiftOpenDateIndian.AddDays(1).Date;
+                        if (nowIndian >= midnight)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                else
+                {
+                    // If no fixed timing is set, the shift should close at 12:00 AM midnight
+                    var midnight = shiftOpenDateIndian.AddDays(1).Date;
+                    if (nowIndian >= midnight)
+                    {
+                        return true;
+                    }
+                }
+            }
+            else
+            {
+                // 3. Variable mode: ends at 12:00 AM midnight of the shift day
+                var universalMidnight = shiftOpenDateIndian.AddDays(1).Date;
+                if (nowIndian >= universalMidnight)
+                {
+                    return true;
+                }
+            }
+
             return false;
         }
 

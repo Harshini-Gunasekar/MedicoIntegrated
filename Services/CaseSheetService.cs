@@ -679,6 +679,128 @@ namespace Booking.Services
             return new List<category_master>();
         }
 
+        public async Task<List<parent_category_master>> GetAllParentCategoriesAsync(string? tenantCode = null)
+        {
+            try
+            {
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                
+                List<HttpClient> clientsToTry = new();
+                if (_clientFactory != null)
+                {
+                    try
+                    {
+                        var invClient = _clientFactory.CreateClient("InventoryApi");
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            invClient.DefaultRequestHeaders.Remove("tenantcode");
+                            invClient.DefaultRequestHeaders.Remove("tenant_code");
+                            invClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                            invClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            invClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
+                        clientsToTry.Add(invClient);
+                    }
+                    catch { }
+
+                    try
+                    {
+                        var docClient = _clientFactory.CreateClient("DoctorApi");
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            docClient.DefaultRequestHeaders.Remove("tenantcode");
+                            docClient.DefaultRequestHeaders.Remove("tenant_code");
+                            docClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                            docClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(_session?.AuthToken))
+                        {
+                            docClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", _session.AuthToken);
+                        }
+                        clientsToTry.Add(docClient);
+                    }
+                    catch { }
+                }
+                clientsToTry.Add(GetClient(effectiveTenant));
+                if (!clientsToTry.Contains(_http))
+                {
+                    clientsToTry.Add(_http);
+                }
+
+                string[] endpoints = new[] { "ItemMaster/getparentcategory", "api/ItemMaster/getparentcategory", "getparentcategory" };
+                var options = new System.Text.Json.JsonSerializerOptions 
+                { 
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                };
+
+                foreach (var client in clientsToTry)
+                {
+                    foreach (var ep in endpoints)
+                    {
+                        try
+                        {
+                            var response = await client.GetAsync(ep);
+                            if (response.IsSuccessStatusCode)
+                            {
+                                var rawJson = await response.Content.ReadAsStringAsync();
+                                if (!string.IsNullOrWhiteSpace(rawJson) && (rawJson.TrimStart().StartsWith("[") || rawJson.TrimStart().StartsWith("{")))
+                                {
+                                    List<parent_category_master> list = new();
+                                    if (rawJson.TrimStart().StartsWith("{"))
+                                    {
+                                        using var doc = System.Text.Json.JsonDocument.Parse(rawJson);
+                                        var root = doc.RootElement;
+                                        if (root.TryGetProperty("data", out var dataProp) && dataProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                        {
+                                            list = System.Text.Json.JsonSerializer.Deserialize<List<parent_category_master>>(dataProp.GetRawText(), options) ?? new();
+                                        }
+                                        else if (root.TryGetProperty("value", out var valProp) && valProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                        {
+                                            list = System.Text.Json.JsonSerializer.Deserialize<List<parent_category_master>>(valProp.GetRawText(), options) ?? new();
+                                        }
+                                        else if (root.TryGetProperty("Value", out var valCapProp) && valCapProp.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                        {
+                                            list = System.Text.Json.JsonSerializer.Deserialize<List<parent_category_master>>(valCapProp.GetRawText(), options) ?? new();
+                                        }
+                                        else
+                                        {
+                                            foreach (var prop in root.EnumerateObject())
+                                            {
+                                                if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                                                {
+                                                    list = System.Text.Json.JsonSerializer.Deserialize<List<parent_category_master>>(prop.Value.GetRawText(), options) ?? new();
+                                                    if (list.Count > 0) break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        list = System.Text.Json.JsonSerializer.Deserialize<List<parent_category_master>>(rawJson, options) ?? new();
+                                    }
+
+                                    if (list != null && list.Count > 0)
+                                    {
+                                        return list.Where(c => !c.deleted).ToList();
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting all parent categories: {ex.Message}");
+            }
+            return new List<parent_category_master>();
+        }
+
         public async Task<List<stock_master>> GetAllStocksAsync(string? tenantCode = null)
         {
             try

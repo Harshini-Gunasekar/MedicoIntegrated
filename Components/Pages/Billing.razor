@@ -38,8 +38,8 @@
 
     @if (showOpenShiftPromptModal)
     {
-        <div class="modal-backdrop" style="z-index: 1200; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px);" @onclick="CancelOpenShiftPrompt"></div>
-        <div class="confirm-card-modal" style="z-index: 1201; max-width: 460px;">
+        <div class="modal-backdrop" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 12000; background: rgba(15, 23, 42, 0.6); backdrop-filter: blur(4px);" @onclick="CancelOpenShiftPrompt"></div>
+        <div class="confirm-card-modal" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 12001; max-width: 460px;">
             <div class="confirm-card-header">
                 <div class="confirm-card-icon" style="background: #eff6ff; color: #2563eb;">
                     <i class="bi bi-door-open-fill"></i>
@@ -58,7 +58,7 @@
                     </label>
                     <select class="form-select" style="height: 40px; font-weight: 600; border-radius: 8px; border: 1.5px solid #cbd5e1; padding: 0.4rem 0.75rem; width: 100%; color: #0f172a;" 
                             @bind="promptModalBhCode" @bind:after="OnPromptModalBranchChanged">
-                        @foreach (var b in branchesList)
+                        @foreach (var b in GetModalOrderedBranches())
                         {
                             <option value="@b.bh_code">@b.name</option>
                         }
@@ -72,7 +72,7 @@
                     </label>
                     <select class="form-select" style="height: 40px; font-weight: 600; border-radius: 8px; border: 1.5px solid #cbd5e1; padding: 0.4rem 0.75rem; width: 100%; color: #0f172a;" 
                             @bind="promptModalCntCode">
-                        @foreach (var c in promptModalFilteredCounters)
+                        @foreach (var c in GetModalOrderedCounters())
                         {
                             <option value="@((int)c.cntcode)">@c.name</option>
                         }
@@ -228,19 +228,6 @@
                         </button>
                     </div>
                 </div>
-
-                @if (activeShiftInfo != null)
-                {
-                    <div class="active-shift-badge-top-right" style="height: 36px; margin-bottom: 1px;" title="Active Counter Shift">
-                        <span class="shift-live-pulse"></span>
-                        <i class="bi bi-clock-history shift-badge-icon"></i>
-                        <span class="shift-badge-text">
-                            <span class="shift-badge-branch">@activeShiftBranchName</span>
-                            <span class="shift-badge-sep">•</span>
-                            <span class="shift-badge-counter">@activeShiftCounterName</span>
-                        </span>
-                    </div>
-                }
             </div>
         </div>
 
@@ -821,7 +808,7 @@
                                         <td class="col-sno-charge">@row.sno</td>
                                         <td class="col-details-charge">@row.item_name</td>
                                         <td class="col-qty-charge">
-                                            <input type="number" step="any" class="charge-input text-center" @bind="row.qty" @bind:event="oninput" @bind:after="() => CalculateRow(row)" disabled="@(!canEditQty)" />
+                                            <input type="number" min="0.01" step="any" class="charge-input text-center" value="@row.qty" @oninput="(e) => OnQtyInput(row, e)" @onchange="(e) => OnQtyChange(row, e)" disabled="@(!canEditQty)" />
                                         </td>
                                         <td class="col-base-charge">
                                             <input type="number" class="charge-input" @bind="row.unit_rate" @bind:event="oninput" @bind:after="() => CalculateRow(row)" disabled="@(!canEditBill)" />
@@ -1107,6 +1094,7 @@
     private string promptBranchName = "";
     private bool isOpeningShiftInBilling = false;
     private bool pendingSaveAfterOpenShift = false;
+    private bool isInitialNavigationInBilling = true;
 
     // Dynamic Modal Dropdowns
     private int promptModalBhCode = 1;
@@ -1117,6 +1105,24 @@
     private CounterTimingDto? activeShiftInfo = null;
     private string activeShiftBranchName = "";
     private string activeShiftCounterName = "";
+
+    private IEnumerable<Booking.Models.BranchModel> GetModalOrderedBranches()
+    {
+        if (branchesList == null) return Enumerable.Empty<Booking.Models.BranchModel>();
+        return branchesList
+            .OrderBy(b => b.name != null && b.name.Contains("sample", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+            .ThenByDescending(b => b.name != null && b.name.Contains("main", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(b => b.bh_code);
+    }
+
+    private IEnumerable<CounterMasterModel> GetModalOrderedCounters()
+    {
+        if (promptModalFilteredCounters == null) return Enumerable.Empty<CounterMasterModel>();
+        return promptModalFilteredCounters
+            .OrderBy(c => c.name != null && c.name.Contains("sample", StringComparison.OrdinalIgnoreCase) ? 1 : 0)
+            .ThenByDescending(c => c.name != null && c.name.Contains("main", StringComparison.OrdinalIgnoreCase))
+            .ThenBy(c => c.cntcode);
+    }
 
     private void OnPromptModalBranchChanged()
     {
@@ -1138,30 +1144,154 @@
             };
         }
 
-        var firstCounter = promptModalFilteredCounters.FirstOrDefault();
+        var sorted = GetModalOrderedCounters().ToList();
+        var firstCounter = sorted.FirstOrDefault();
         promptModalCntCode = firstCounter != null ? (int)firstCounter.cntcode : 1;
         StateHasChanged();
+    }
+
+    private async Task<(int bhCode, int cntCode, CounterTimingDto? shift)> ResolveOpenShiftBranchAndCounterAsync(List<CounterTimingDto> activeShifts)
+    {
+        if (activeShifts == null || !activeShifts.Any())
+        {
+            var mainBranch = branchesList?.FirstOrDefault(b => b.name != null && b.name.Contains("main", StringComparison.OrdinalIgnoreCase) && !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                             ?? branchesList?.FirstOrDefault(b => b.bh_code == 1 && (b.name == null || !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase)))
+                             ?? branchesList?.FirstOrDefault(b => b.name == null || !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                             ?? branchesList?.FirstOrDefault();
+            int fallbackBh = mainBranch?.bh_code ?? 1;
+            var relatedCounter = countersList?.FirstOrDefault(c => c.bhcode == fallbackBh && c.name != null && c.name.Contains("main", StringComparison.OrdinalIgnoreCase) && !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                                 ?? countersList?.FirstOrDefault(c => c.bhcode == fallbackBh && (c.name == null || !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase)))
+                                 ?? countersList?.FirstOrDefault(c => c.name == null || !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                                 ?? countersList?.FirstOrDefault();
+            int fallbackCnt = (int)(relatedCounter?.cntcode ?? 1);
+            return (fallbackBh, fallbackCnt, null);
+        }
+
+        // 1. Check user assigned branch & counter from User Master / UserDetails
+        int? assignedBhCode = null;
+        int? assignedCntCode = null;
+        try
+        {
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null)
+            {
+                if (userDetailsResult.Value.BranchCode.HasValue && userDetailsResult.Value.BranchCode.Value > 0)
+                    assignedBhCode = userDetailsResult.Value.BranchCode.Value;
+                if (userDetailsResult.Value.CounterCode.HasValue && userDetailsResult.Value.CounterCode.Value > 0)
+                    assignedCntCode = userDetailsResult.Value.CounterCode.Value;
+            }
+        }
+        catch { }
+
+        if ((!assignedBhCode.HasValue || assignedBhCode.Value <= 0) && TenantState?.BranchCode.HasValue == true && TenantState.BranchCode.Value > 0)
+        {
+            assignedBhCode = TenantState.BranchCode.Value;
+        }
+        if ((!assignedCntCode.HasValue || assignedCntCode.Value <= 0) && TenantState?.CounterCode.HasValue == true && TenantState.CounterCode.Value > 0)
+        {
+            assignedCntCode = TenantState.CounterCode.Value;
+        }
+
+        int uCode = TenantState?.UserCode ?? activeUserCode;
+        if (uCode > 0 && UserService != null && (!assignedBhCode.HasValue || !assignedCntCode.HasValue))
+        {
+            try
+            {
+                var uMaster = await UserService.GetUserMasterAsync(uCode, TenantState?.AuthToken, TenantState?.TenantCode);
+                if (uMaster != null)
+                {
+                    if (!assignedBhCode.HasValue && uMaster.bh_code.HasValue && uMaster.bh_code.Value > 0)
+                        assignedBhCode = uMaster.bh_code.Value;
+                    if (!assignedCntCode.HasValue && uMaster.cnt_code.HasValue && uMaster.cnt_code.Value > 0)
+                        assignedCntCode = (int)uMaster.cnt_code.Value;
+                }
+            }
+            catch { }
+        }
+
+        // Check if assigned branch is non-sample
+        bool assignedIsSample = false;
+        if (assignedBhCode.HasValue && assignedBhCode.Value > 0)
+        {
+            var bObj = branchesList?.FirstOrDefault(b => b.bh_code == assignedBhCode.Value);
+            if (bObj != null && bObj.name != null && bObj.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+            {
+                assignedIsSample = true;
+            }
+        }
+
+        // Priority 1: Check the branch and counter assigned to the respective user in user master and prioritize that (if not sample)
+        if (assignedBhCode.HasValue && assignedBhCode.Value > 0 && !assignedIsSample)
+        {
+            var userBranchShifts = activeShifts.Where(s => s.bhcode == assignedBhCode.Value).ToList();
+            if (userBranchShifts.Any())
+            {
+                if (assignedCntCode.HasValue && assignedCntCode.Value > 0)
+                {
+                    var exactShift = userBranchShifts.FirstOrDefault(s => s.cntcode == assignedCntCode.Value);
+                    if (exactShift != null)
+                    {
+                        return (exactShift.bhcode!.Value, exactShift.cntcode!.Value, exactShift);
+                    }
+                }
+                var firstUserBranchShift = userBranchShifts.First();
+                return (firstUserBranchShift.bhcode!.Value, firstUserBranchShift.cntcode!.Value, firstUserBranchShift);
+            }
+        }
+
+        // Priority 2: If the respective branch assigned is not open (or is sample), prioritize main branch and main counter (related to other than sample branch)
+        var mainBr = branchesList?.FirstOrDefault(b => b.name != null && b.name.Contains("main", StringComparison.OrdinalIgnoreCase) && !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                     ?? branchesList?.FirstOrDefault(b => b.bh_code == 1 && (b.name == null || !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase)));
+        int targetMainBh = mainBr?.bh_code ?? 1;
+
+        var mainBranchShifts = activeShifts.Where(s => s.bhcode == targetMainBh || (s.bhcode == null || s.bhcode == 0)).ToList();
+        if (mainBranchShifts.Any())
+        {
+            var mainCounterShift = mainBranchShifts.FirstOrDefault(s =>
+                (countersList != null && countersList.Any(c => c.cntcode == s.cntcode && c.name != null && c.name.Contains("main", StringComparison.OrdinalIgnoreCase) && !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase))) ||
+                s.cntcode == 1);
+            var selectedShift = mainCounterShift ?? mainBranchShifts.First();
+            int selectedBh = selectedShift.bhcode.HasValue && selectedShift.bhcode.Value > 0 ? selectedShift.bhcode.Value : targetMainBh;
+            return (selectedBh, selectedShift.cntcode!.Value, selectedShift);
+        }
+
+        // Priority 3: Prioritize any other non-sample branch (never default to sample branch)
+        var nonSampleShifts = activeShifts.Where(s =>
+        {
+            var bObj = branchesList?.FirstOrDefault(b => b.bh_code == s.bhcode);
+            return bObj == null || string.IsNullOrEmpty(bObj.name) || !bObj.name.Contains("sample", StringComparison.OrdinalIgnoreCase);
+        }).ToList();
+
+        if (nonSampleShifts.Any())
+        {
+            var chosen = nonSampleShifts.First();
+            int bh = chosen.bhcode.HasValue && chosen.bhcode.Value > 0 ? chosen.bhcode.Value : targetMainBh;
+            return (bh, chosen.cntcode!.Value, chosen);
+        }
+
+        // Priority 4: First available open shift
+        var fallbackShift = activeShifts.First();
+        int fbBh = fallbackShift.bhcode.HasValue && fallbackShift.bhcode.Value > 0 ? fallbackShift.bhcode.Value : targetMainBh;
+        return (fbBh, fallbackShift.cntcode!.Value, fallbackShift);
     }
 
     private async Task RefreshActiveShiftStatusAsync()
     {
         try
         {
-            var openCounters = await HmsBillingService.GetOpenCountersAsync();
-            if (openCounters != null && openCounters.Any())
+            var openCounters = await HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true, tenantCode: TenantState?.TenantCode);
+            var activeShifts = openCounters?.Where(s => s.todate == null && s.cntcode.HasValue && s.cntcode.Value > 0).ToList() ?? new List<CounterTimingDto>();
+
+            var currentShift = activeShifts.FirstOrDefault(s => s.cntcode == billModel.cntcode && (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode));
+
+            if (currentShift != null)
             {
-                activeShiftInfo = openCounters.FirstOrDefault(s => s.cntcode == billModel.cntcode && (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode))
-                                  ?? openCounters.FirstOrDefault(s => billModel.enteredbhcode > 0 && s.bhcode == billModel.enteredbhcode)
-                                  ?? openCounters.FirstOrDefault();
+                activeShiftInfo = currentShift;
+                var bObj = branchesList?.FirstOrDefault(b => b.bh_code == (currentShift.bhcode ?? 0));
+                activeShiftBranchName = bObj?.name ?? (currentShift.bhcode > 0 ? $"Branch {currentShift.bhcode}" : "Main Branch");
 
-                if (activeShiftInfo != null)
-                {
-                    var bObj = branchesList?.FirstOrDefault(b => b.bh_code == (activeShiftInfo.bhcode ?? 0));
-                    activeShiftBranchName = bObj?.name ?? (activeShiftInfo.bhcode > 0 ? $"Branch {activeShiftInfo.bhcode}" : "Main Branch");
-
-                    var cObj = countersList?.FirstOrDefault(c => c.cntcode == activeShiftInfo.cntcode);
-                    activeShiftCounterName = cObj?.name ?? (activeShiftInfo.cntcode > 0 ? $"Counter {activeShiftInfo.cntcode}" : "Counter");
-                }
+                var cObj = countersList?.FirstOrDefault(c => c.cntcode == currentShift.cntcode);
+                activeShiftCounterName = cObj?.name ?? (currentShift.cntcode > 0 ? $"Counter {currentShift.cntcode}" : "Counter");
             }
             else
             {
@@ -1176,92 +1306,145 @@
         }
     }
 
+    private void ShowOpenShiftPrompt(string? customWarning = null)
+    {
+        var mainBr = branchesList?.FirstOrDefault(b => b.name != null && b.name.Contains("main", StringComparison.OrdinalIgnoreCase) && !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                     ?? branchesList?.FirstOrDefault(b => b.bh_code == 1 && (b.name == null || !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase)))
+                     ?? branchesList?.FirstOrDefault(b => b.name == null || !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                     ?? branchesList?.FirstOrDefault();
+
+        var curBranch = branchesList?.FirstOrDefault(b => b.bh_code == billModel.enteredbhcode);
+        bool curIsSample = curBranch != null && curBranch.name != null && curBranch.name.Contains("sample", StringComparison.OrdinalIgnoreCase);
+
+        promptModalBhCode = (billModel.enteredbhcode > 0 && !curIsSample)
+            ? billModel.enteredbhcode 
+            : (activeBranchCode > 0 ? activeBranchCode : (mainBr?.bh_code ?? 1));
+
+        OnPromptModalBranchChanged();
+
+        if (billModel.cntcode > 0 && promptModalFilteredCounters.Any(c => (int)c.cntcode == billModel.cntcode))
+        {
+            promptModalCntCode = billModel.cntcode;
+        }
+        else if (TenantState.CounterCode.HasValue && TenantState.CounterCode.Value > 0 && promptModalFilteredCounters.Any(c => (int)c.cntcode == TenantState.CounterCode.Value))
+        {
+            promptModalCntCode = TenantState.CounterCode.Value;
+        }
+        else if (promptModalFilteredCounters.Any())
+        {
+            var mainCnt = promptModalFilteredCounters.FirstOrDefault(c => c.name != null && c.name.Contains("main", StringComparison.OrdinalIgnoreCase) && !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                          ?? promptModalFilteredCounters.FirstOrDefault(c => c.cntcode == 1 && (c.name == null || !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase)))
+                          ?? promptModalFilteredCounters.FirstOrDefault(c => c.name == null || !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                          ?? promptModalFilteredCounters.First();
+            promptModalCntCode = (int)mainCnt.cntcode;
+        }
+
+        var counterObj = countersList?.FirstOrDefault(c => (int)c.cntcode == promptModalCntCode);
+        var branchObj = branchesList?.FirstOrDefault(b => b.bh_code == promptModalBhCode);
+
+        promptCounterName = counterObj?.name ?? (promptModalCntCode > 0 ? $"Counter {promptModalCntCode}" : "Main Counter");
+        promptBranchName = branchObj?.name ?? (promptModalBhCode > 0 ? $"Branch {promptModalBhCode}" : "Main Branch");
+
+        showOpenShiftPromptModal = true;
+
+        string messageToShow = !string.IsNullOrWhiteSpace(customWarning) 
+            ? customWarning 
+            : "No active shifts open. Please open the shift.";
+
+        ToastService.ShowWarning(messageToShow);
+        StateHasChanged();
+    }
+
     private async Task<bool> CheckCounterShiftOpenAsync(bool showPrompt = true)
     {
         try
         {
-            var openCounters = await HmsBillingService.GetOpenCountersAsync();
+            var openCounters = await HmsBillingService.GetOpenCountersAsync(returnAllUnclosed: true, tenantCode: TenantState?.TenantCode);
+            var activeShifts = openCounters?.Where(s => s.todate == null && s.cntcode.HasValue && s.cntcode.Value > 0).ToList() ?? new List<CounterTimingDto>();
 
-            if (openCounters != null && openCounters.Any())
+            // On initial page navigation:
+            if (isInitialNavigationInBilling)
             {
-                activeShiftInfo = openCounters.FirstOrDefault(s => s.cntcode == billModel.cntcode && (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode))
-                                  ?? openCounters.FirstOrDefault(s => billModel.enteredbhcode > 0 && s.bhcode == billModel.enteredbhcode)
-                                  ?? openCounters.FirstOrDefault();
-
-                if (activeShiftInfo != null)
+                isInitialNavigationInBilling = false;
+                if (activeShifts.Any())
                 {
-                    var bObj = branchesList?.FirstOrDefault(b => b.bh_code == (activeShiftInfo.bhcode ?? 0));
-                    activeShiftBranchName = bObj?.name ?? (activeShiftInfo.bhcode > 0 ? $"Branch {activeShiftInfo.bhcode}" : "Main Branch");
+                    bool wasManuallySwitched = isCounterManuallySwitched;
+                    try
+                    {
+                        var manualRes = await _sessionStorage.GetAsync<bool>("session_counter_manually_switched");
+                        if (manualRes.Success && manualRes.Value) wasManuallySwitched = true;
+                    }
+                    catch { }
 
-                    var cObj = countersList?.FirstOrDefault(c => c.cntcode == activeShiftInfo.cntcode);
-                    activeShiftCounterName = cObj?.name ?? (activeShiftInfo.cntcode > 0 ? $"Counter {activeShiftInfo.cntcode}" : "Counter");
+                    if (!wasManuallySwitched)
+                    {
+                        try
+                        {
+                            var cntRes = await _sessionStorage.GetAsync<string>("cntcode");
+                            if (cntRes.Success && !string.IsNullOrEmpty(cntRes.Value) && int.TryParse(cntRes.Value, out int sCnt) && sCnt > 0)
+                            {
+                                if (activeShifts.Any(s => s.cntcode == sCnt))
+                                {
+                                    wasManuallySwitched = true;
+                                    billModel.cntcode = sCnt;
+                                    activeCounterCode = sCnt;
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+
+                    bool initialIsOpen = activeShifts.Any(s => s.cntcode == billModel.cntcode && (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode));
+                    var currentBranchObj = branchesList?.FirstOrDefault(b => b.bh_code == billModel.enteredbhcode);
+                    bool currentIsSample = currentBranchObj != null && currentBranchObj.name != null && currentBranchObj.name.Contains("sample", StringComparison.OrdinalIgnoreCase);
+
+                    // If not manually switched or the current is not open or is sample or unassigned:
+                    if (!wasManuallySwitched || !initialIsOpen || currentIsSample || billModel.enteredbhcode <= 0 || billModel.cntcode <= 0)
+                    {
+                        var (bestBh, bestCnt, bestShift) = await ResolveOpenShiftBranchAndCounterAsync(activeShifts);
+                        billModel.enteredbhcode = bestBh;
+                        billModel.cntcode = bestCnt;
+                        activeBranchCode = bestBh;
+                        activeCounterCode = bestCnt;
+                        try
+                        {
+                            await _sessionStorage.SetAsync("bhcode", bestBh.ToString());
+                            await _sessionStorage.SetAsync("cntcode", bestCnt.ToString());
+                        }
+                        catch { }
+                    }
                 }
+            }
+
+            // Check if shift is open specifically for the CURRENTLY SELECTED counter
+            var currentShift = activeShifts.FirstOrDefault(s => s.cntcode == billModel.cntcode && (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode));
+
+            if (currentShift != null)
+            {
+                activeShiftInfo = currentShift;
+                var bObj = branchesList?.FirstOrDefault(b => b.bh_code == (currentShift.bhcode ?? 0));
+                activeShiftBranchName = bObj?.name ?? (currentShift.bhcode > 0 ? $"Branch {currentShift.bhcode}" : "Main Branch");
+
+                var cObj = countersList?.FirstOrDefault(c => c.cntcode == currentShift.cntcode);
+                activeShiftCounterName = cObj?.name ?? (currentShift.cntcode > 0 ? $"Counter {currentShift.cntcode}" : "Counter");
+
+                showOpenShiftPromptModal = false;
+                return true;
             }
             else
             {
                 activeShiftInfo = null;
                 activeShiftBranchName = "";
                 activeShiftCounterName = "";
-            }
-
-            if (openCounters == null || !openCounters.Any())
-            {
-                promptModalBhCode = billModel.enteredbhcode > 0 ? billModel.enteredbhcode : (branchesList.FirstOrDefault()?.bh_code ?? 1);
-                OnPromptModalBranchChanged();
-                if (billModel.cntcode > 0 && promptModalFilteredCounters.Any(c => (int)c.cntcode == billModel.cntcode))
-                {
-                    promptModalCntCode = billModel.cntcode;
-                }
 
                 if (showPrompt)
                 {
-                    var counterObj = countersList.FirstOrDefault(c => (int)c.cntcode == billModel.cntcode);
-                    var branchObj = branchesList.FirstOrDefault(b => b.bh_code == billModel.enteredbhcode);
-
-                    promptCounterName = counterObj?.name ?? (billModel.cntcode > 0 ? $"Counter {billModel.cntcode}" : "Main Counter");
-                    promptBranchName = branchObj?.name ?? (billModel.enteredbhcode > 0 ? $"Branch {billModel.enteredbhcode}" : "Main Branch");
-                    showOpenShiftPromptModal = true;
-                    ToastService.ShowWarning("No active shifts open. Please open the shift.");
-                    StateHasChanged();
+                    var cObj = countersList?.FirstOrDefault(c => (int)c.cntcode == billModel.cntcode);
+                    string cntLabel = cObj?.name ?? (billModel.cntcode > 0 ? $"Counter {billModel.cntcode}" : "Selected Counter");
+                    ShowOpenShiftPrompt($"Shift is closed for {cntLabel}. Please open the shift to continue billing.");
                 }
                 return false;
             }
-
-            if (billModel.enteredbhcode <= 0 || billModel.cntcode <= 0)
-            {
-                return true;
-            }
-
-            var activeShift = openCounters.FirstOrDefault(s => 
-                s.cntcode == billModel.cntcode && 
-                (billModel.enteredbhcode == 0 || s.bhcode == null || s.bhcode == 0 || s.bhcode == billModel.enteredbhcode));
-
-            if (activeShift != null)
-            {
-                showOpenShiftPromptModal = false;
-                return true;
-            }
-
-            promptModalBhCode = billModel.enteredbhcode > 0 ? billModel.enteredbhcode : (branchesList.FirstOrDefault()?.bh_code ?? 1);
-            OnPromptModalBranchChanged();
-            if (billModel.cntcode > 0 && promptModalFilteredCounters.Any(c => (int)c.cntcode == billModel.cntcode))
-            {
-                promptModalCntCode = billModel.cntcode;
-            }
-
-            if (showPrompt)
-            {
-                var counterObj = countersList.FirstOrDefault(c => (int)c.cntcode == billModel.cntcode);
-                var branchObj = branchesList.FirstOrDefault(b => b.bh_code == billModel.enteredbhcode);
-
-                promptCounterName = counterObj?.name ?? $"Counter {billModel.cntcode}";
-                promptBranchName = branchObj?.name ?? $"Branch {billModel.enteredbhcode}";
-                showOpenShiftPromptModal = true;
-                ToastService.ShowWarning("No active shifts open. Please open the shift.");
-                StateHasChanged();
-            }
-
-            return false;
         }
         catch (Exception ex)
         {
@@ -1274,6 +1457,7 @@
     {
         showOpenShiftPromptModal = false;
         pendingSaveAfterOpenShift = false;
+        savingInProgress = false;
     }
 
     private async Task ConfirmOpenShiftForSelectedCounterAsync()
@@ -1354,6 +1538,7 @@
                 {
                     await _sessionStorage.SetAsync("bhcode", promptModalBhCode.ToString());
                     await _sessionStorage.SetAsync("cntcode", promptModalCntCode.ToString());
+                    await _sessionStorage.SetAsync("session_counter_manually_switched", true);
                     TenantState.SetSession(
                         TenantState.TenantCode,
                         TenantState.AuthToken,
@@ -1580,7 +1765,11 @@
             return;
         }
 
+        int preserveBh = billModel.enteredbhcode;
+        int preserveCnt = billModel.cntcode;
         ClearForm();
+        if (preserveBh > 0) billModel.enteredbhcode = preserveBh;
+        if (preserveCnt > 0) billModel.cntcode = preserveCnt;
 
         // 1. Immediately set patient fields on billModel for instant UI display
         billModel.custid = (long)item.CustId;
@@ -1774,6 +1963,8 @@
     private List<CustomerModel> allCustomersCache = new();
     private bool isCustomersCacheLoaded = false;
     private int activeBranchCode = 0;
+    private int activeCounterCode = 0;
+    private bool isCounterManuallySwitched = false;
     private List<Booking.Models.BranchModel> branchesList = new();
     private List<CounterMasterModel> countersList = new();
     private List<PaymodeMasterModel> paymodesList = new()
@@ -1812,6 +2003,22 @@
                     else if (TenantState.UserCode > 0)
                     {
                         activeUserCode = TenantState.UserCode;
+                    }
+                }
+                catch { }
+
+                try
+                {
+                    var manualRes = await _sessionStorage.GetAsync<bool>("session_counter_manually_switched");
+                    if (manualRes.Success && manualRes.Value)
+                    {
+                        isCounterManuallySwitched = true;
+                    }
+                    var cntResult = await _sessionStorage.GetAsync<string>("cntcode");
+                    if (cntResult.Success && !string.IsNullOrEmpty(cntResult.Value) && int.TryParse(cntResult.Value, out int savedCnt) && savedCnt > 0)
+                    {
+                        activeCounterCode = savedCnt;
+                        billModel.cntcode = savedCnt;
                     }
                 }
                 catch { }
@@ -1894,18 +2101,6 @@
                 branchesList = branchesList.Where(b => !b.deleted).ToList();
             }
 
-            if (branchesList == null || !branchesList.Any())
-            {
-                using var doctorClient = CreateClient(false);
-                var docRes = await doctorClient.GetAsync("api/Branch/get");
-                if (docRes.IsSuccessStatusCode)
-                {
-                    var docJson = await docRes.Content.ReadAsStringAsync();
-                    branchesList = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(docJson) ?? new();
-                    branchesList = branchesList.Where(b => !b.deleted).ToList();
-                }
-            }
-
             await FilterBranchesByUserAccessAsync();
 
             if (branchesList == null || !branchesList.Any())
@@ -1943,7 +2138,11 @@
             }
             else if (branchesList.Any() && (billModel.enteredbhcode <= 0 || !branchesList.Any(b => b.bh_code == billModel.enteredbhcode)))
             {
-                billModel.enteredbhcode = branchesList.First().bh_code;
+                var mainBr = branchesList.FirstOrDefault(b => b.name != null && b.name.Contains("main", StringComparison.OrdinalIgnoreCase))
+                             ?? branchesList.FirstOrDefault(b => b.bh_code == 1)
+                             ?? branchesList.FirstOrDefault(b => b.name == null || !b.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                             ?? branchesList.First();
+                billModel.enteredbhcode = mainBr.bh_code;
             }
         }
         catch (Exception ex)
@@ -2023,6 +2222,11 @@
         var available = GetFilteredCounters().ToList();
         if (!available.Any()) return 1;
 
+        if (activeCounterCode > 0 && available.Any(c => c.cntcode == activeCounterCode))
+        {
+            return activeCounterCode;
+        }
+
         // 1. Try saved counter code from Session Storage
         try
         {
@@ -2031,6 +2235,7 @@
             {
                 if (available.Any(c => c.cntcode == savedCnt))
                 {
+                    activeCounterCode = savedCnt;
                     return savedCnt;
                 }
             }
@@ -2074,8 +2279,11 @@
         }
         catch { }
 
-        // 5. Fall back to first available counter for this branch
-        return (int)available.First().cntcode;
+        // 5. Fall back to main counter or first non-sample counter
+        var mainCnt = available.FirstOrDefault(c => c.name != null && c.name.Contains("main", StringComparison.OrdinalIgnoreCase))
+                      ?? available.FirstOrDefault(c => c.cntcode == 1)
+                      ?? available.First();
+        return (int)mainCnt.cntcode;
     }
 
     private async Task LoadCountersAsync()
@@ -2105,6 +2313,7 @@
             if (BillingStateSvc.HasState && billModel.cntcode > 0 && countersList.Any(c => c.cntcode == billModel.cntcode))
             {
                 // Keep restored counter code from BillingStateSvc
+                activeCounterCode = billModel.cntcode;
             }
             else
             {
@@ -2112,6 +2321,7 @@
                 if (defaultCnt > 0)
                 {
                     billModel.cntcode = defaultCnt;
+                    activeCounterCode = defaultCnt;
                     try
                     {
                         await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
@@ -2148,39 +2358,72 @@
 
     private async Task OnBranchSelectionChanged()
     {
-        var availableCounters = GetFilteredCounters();
+        activeBranchCode = billModel.enteredbhcode;
+        var availableCounters = GetFilteredCounters().ToList();
         if (availableCounters.Any())
         {
-            int defaultCnt = await GetDefaultCounterCodeAsync();
-            billModel.cntcode = defaultCnt;
+            if (!availableCounters.Any(c => (int)c.cntcode == billModel.cntcode))
+            {
+                var mainCnt = availableCounters.FirstOrDefault(c => c.name != null && c.name.Contains("main", StringComparison.OrdinalIgnoreCase) && !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                              ?? availableCounters.FirstOrDefault(c => c.cntcode == 1 && (c.name == null || !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase)))
+                              ?? availableCounters.FirstOrDefault(c => c.name == null || !c.name.Contains("sample", StringComparison.OrdinalIgnoreCase))
+                              ?? availableCounters.First();
+                billModel.cntcode = (int)mainCnt.cntcode;
+            }
+            activeCounterCode = billModel.cntcode;
+            isCounterManuallySwitched = true;
             try
             {
-                await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
+                await _sessionStorage.SetAsync("bhcode", billModel.enteredbhcode.ToString());
+                await _sessionStorage.SetAsync("cntcode", billModel.cntcode.ToString());
+                await _sessionStorage.SetAsync("session_counter_manually_switched", true);
+                TenantState.SetSession(
+                    TenantState.TenantCode,
+                    TenantState.AuthToken,
+                    TenantState.TenantName,
+                    TenantState.UserCode,
+                    billModel.enteredbhcode,
+                    billModel.cntcode,
+                    TenantState.UserData,
+                    TenantState.UserRightsList?.ToList() ?? new List<SharedComponents.Rcl.Models.User_Rights>());
             }
             catch { }
-            await CheckCounterShiftOpenAsync(showPrompt: true);
+
+            bool isOpen = await CheckCounterShiftOpenAsync(showPrompt: true);
         }
         else
         {
             billModel.cntcode = 0;
+            activeCounterCode = 0;
         }
         await CheckBillNoSequenceAsync();
     }
 
     private async Task OnCounterSelectionChanged()
     {
-        if (billModel.cntcode > 0)
-        {
-            try
-            {
-                await _sessionStorage.SetAsync("cntcode", billModel.cntcode.ToString());
-            }
-            catch { }
-        }
-
         if (billModel.cntcode > 0 && billModel.enteredbhcode > 0)
         {
-            await CheckCounterShiftOpenAsync(showPrompt: true);
+            activeCounterCode = billModel.cntcode;
+            activeBranchCode = billModel.enteredbhcode;
+            isCounterManuallySwitched = true;
+            try
+            {
+                await _sessionStorage.SetAsync("bhcode", billModel.enteredbhcode.ToString());
+                await _sessionStorage.SetAsync("cntcode", billModel.cntcode.ToString());
+                await _sessionStorage.SetAsync("session_counter_manually_switched", true);
+                TenantState.SetSession(
+                    TenantState.TenantCode,
+                    TenantState.AuthToken,
+                    TenantState.TenantName,
+                    TenantState.UserCode,
+                    billModel.enteredbhcode,
+                    billModel.cntcode,
+                    TenantState.UserData,
+                    TenantState.UserRightsList?.ToList() ?? new List<SharedComponents.Rcl.Models.User_Rights>());
+            }
+            catch { }
+
+            bool isOpen = await CheckCounterShiftOpenAsync(showPrompt: true);
         }
         await CheckBillNoSequenceAsync();
     }
@@ -2556,7 +2799,11 @@
         {
             if (clearFormFirst)
             {
+                int preserveBh = billModel.enteredbhcode;
+                int preserveCnt = billModel.cntcode;
                 ClearForm();
+                if (preserveBh > 0) billModel.enteredbhcode = preserveBh;
+                if (preserveCnt > 0) billModel.cntcode = preserveCnt;
             }
             _loadedOpIdStr = opIdStr;
 
@@ -3966,6 +4213,49 @@
     }
 
     // --- Calculations ---
+    private void OnQtyInput(HmsBillItemModel row, ChangeEventArgs e)
+    {
+        var str = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(str)) return;
+
+        if (decimal.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var val) && val > 0)
+        {
+            row.qty = val;
+            CalculateRowPreserveDiscount(row);
+        }
+        else if (decimal.TryParse(str, out var valLocal) && valLocal > 0)
+        {
+            row.qty = valLocal;
+            CalculateRowPreserveDiscount(row);
+        }
+    }
+
+    private void OnQtyChange(HmsBillItemModel row, ChangeEventArgs e)
+    {
+        var str = e.Value?.ToString();
+        if ((decimal.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var val) ||
+             decimal.TryParse(str, out val)) && val > 0)
+        {
+            row.qty = val;
+        }
+        else
+        {
+            row.qty = 1;
+        }
+        CalculateRowPreserveDiscount(row);
+    }
+
+    private void CalculateRowPreserveDiscount(HmsBillItemModel row)
+    {
+        if (row.qty <= 0) row.qty = 1;
+        if (row.discount < 0) row.discount = 0;
+
+        row.amount = Math.Round((row.unit_rate * row.qty) - row.discount, 2);
+        if (row.amount < 0) row.amount = 0;
+
+        RecalculateTotals(preserveDiscountAmounts: true);
+    }
+
     private void CalculateRow(HmsBillItemModel row)
     {
         if (row.qty <= 0) row.qty = 1;
@@ -4050,6 +4340,37 @@
             if (billModel.ourdispercentage > 0)
             {
                 billModel.ourdiscount = Math.Round((totalBaseAmount * billModel.ourdispercentage) / 100m, 2);
+            }
+        }
+        else
+        {
+            if (billModel.discountamount > totalBaseAmount) billModel.discountamount = totalBaseAmount;
+            if (billModel.ourdiscount > totalBaseAmount) billModel.ourdiscount = totalBaseAmount;
+
+            if (totalBaseAmount > 0)
+            {
+                if (billModel.discountamount > 0)
+                {
+                    billModel.discountper = Math.Round((billModel.discountamount / totalBaseAmount) * 100m, 2);
+                }
+                else
+                {
+                    billModel.discountper = 0;
+                }
+
+                if (billModel.ourdiscount > 0)
+                {
+                    billModel.ourdispercentage = Math.Round((billModel.ourdiscount / totalBaseAmount) * 100m, 2);
+                }
+                else
+                {
+                    billModel.ourdispercentage = 0;
+                }
+            }
+            else
+            {
+                billModel.discountper = 0;
+                billModel.ourdispercentage = 0;
             }
         }
 
@@ -4434,6 +4755,36 @@
 
             if (!string.IsNullOrEmpty(result))
             {
+                // Check if backend reported counter shift session is not open or closed
+                bool isShiftNotOpen = result.Contains("shift session is not open", StringComparison.OrdinalIgnoreCase) ||
+                                      (result.Contains("not open", StringComparison.OrdinalIgnoreCase) && result.Contains("shift", StringComparison.OrdinalIgnoreCase)) ||
+                                      result.Contains("shift is closed", StringComparison.OrdinalIgnoreCase);
+
+                if (isShiftNotOpen)
+                {
+                    string shiftMsg = "Selected billing counter shift session is not open.";
+                    try
+                    {
+                        var trimmed = result.Trim();
+                        if (trimmed.StartsWith("{") && trimmed.EndsWith("}"))
+                        {
+                            var jsonObj = Newtonsoft.Json.Linq.JObject.Parse(trimmed);
+                            if (jsonObj["message"] != null)
+                            {
+                                shiftMsg = jsonObj["message"].ToString();
+                            }
+                        }
+                    }
+                    catch { }
+
+                    isSuccess = false;
+                    displayMessage = shiftMsg;
+                    pendingSaveAfterOpenShift = true;
+                    savingInProgress = false;
+                    ShowOpenShiftPrompt(shiftMsg);
+                    return;
+                }
+
                 if (result.Contains("Error", StringComparison.OrdinalIgnoreCase))
                 {
                     isSuccess = false;
@@ -4448,13 +4799,14 @@
                         {
                             var msg = jsonObj["message"].ToString();
                             if (msg.Contains("not open", StringComparison.OrdinalIgnoreCase) || 
-                                msg.Contains("shift is closed", StringComparison.OrdinalIgnoreCase))
+                                msg.Contains("shift is closed", StringComparison.OrdinalIgnoreCase) ||
+                                msg.Contains("shift session is not open", StringComparison.OrdinalIgnoreCase))
                             {
                                 isSuccess = false;
                                 displayMessage = msg;
                                 pendingSaveAfterOpenShift = true;
-                                await CheckCounterShiftOpenAsync(showPrompt: true);
                                 savingInProgress = false;
+                                ShowOpenShiftPrompt(msg);
                                 return;
                             }
                             else if (msg.Contains("error", StringComparison.OrdinalIgnoreCase) || 
@@ -4592,6 +4944,16 @@
                     await CheckPatientAdvanceAsync(billModel.custid);
                 }
 
+                activeBranchCode = billModel.enteredbhcode;
+                activeCounterCode = billModel.cntcode;
+                try
+                {
+                    await _sessionStorage.SetAsync("bhcode", billModel.enteredbhcode.ToString());
+                    await _sessionStorage.SetAsync("cntcode", billModel.cntcode.ToString());
+                    await _sessionStorage.SetAsync("session_counter_manually_switched", true);
+                }
+                catch { }
+
                 SaveStateToService();
                 ToastService.ShowSuccess(!string.IsNullOrEmpty(displayMessage) ? displayMessage : "Bill Saved and Posted Successfully!");
                 StateHasChanged();
@@ -4624,15 +4986,24 @@
 
     private void ClearForm()
     {
-        int initialBranchCode = activeBranchCode > 0 && branchesList.Any(b => b.bh_code == activeBranchCode)
-            ? activeBranchCode
-            : (branchesList.FirstOrDefault()?.bh_code ?? 1);
+        int initialBranchCode = (billModel != null && billModel.enteredbhcode > 0)
+            ? billModel.enteredbhcode
+            : (activeBranchCode > 0 && branchesList.Any(b => b.bh_code == activeBranchCode)
+                ? activeBranchCode
+                : (branchesList.FirstOrDefault()?.bh_code ?? 1));
 
         int resolvedUserCode = activeUserCode > 0 ? activeUserCode : (TenantState.UserCode > 0 ? TenantState.UserCode : 1);
 
-        int initialCounterCode = 1;
-        var availableCounters = GetFilteredCounters().ToList();
-        if (availableCounters.Any())
+        int initialCounterCode = (billModel != null && billModel.cntcode > 0)
+            ? billModel.cntcode
+            : (activeCounterCode > 0
+                ? activeCounterCode
+                : (TenantState.CounterCode.HasValue && TenantState.CounterCode.Value > 0
+                    ? TenantState.CounterCode.Value
+                    : 1));
+
+        var availableCounters = countersList.Where(x => x.bhcode == initialBranchCode || x.bhcode == 0 || x.bhcode == null || initialBranchCode == 0).ToList();
+        if (availableCounters.Any() && !availableCounters.Any(c => c.cntcode == initialCounterCode))
         {
             initialCounterCode = (int)availableCounters.First().cntcode;
         }
@@ -4647,6 +5018,8 @@
             pmcode = 1,
             ctcode = 2
         };
+        activeBranchCode = initialBranchCode;
+        activeCounterCode = initialCounterCode;
 
         // Default first paymode to Cash if available
         var cashPaymode = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "CASH", StringComparison.OrdinalIgnoreCase)) ?? paymodesList.FirstOrDefault();
@@ -4704,15 +5077,23 @@
     private async Task ClearFormAsync()
     {
         ClearForm();
-        int defaultCnt = await GetDefaultCounterCodeAsync();
-        if (defaultCnt > 0)
+        if (activeCounterCode <= 0 || !countersList.Any(c => c.cntcode == activeCounterCode && (c.bhcode == billModel.enteredbhcode || c.bhcode == 0 || c.bhcode == null)))
         {
-            billModel.cntcode = defaultCnt;
-            try
+            int defaultCnt = await GetDefaultCounterCodeAsync();
+            if (defaultCnt > 0)
             {
-                await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
+                billModel.cntcode = defaultCnt;
+                activeCounterCode = defaultCnt;
+                try
+                {
+                    await _sessionStorage.SetAsync("cntcode", defaultCnt.ToString());
+                }
+                catch { }
             }
-            catch { }
+        }
+        else
+        {
+            billModel.cntcode = activeCounterCode;
         }
         StateHasChanged();
     }
@@ -4801,8 +5182,12 @@
     {
         savedRequestGuid = null;
         printWithLetterhead = true;
+        int preserveBh = billModel.enteredbhcode;
+        int preserveCnt = billModel.cntcode;
         BillingStateSvc?.Clear();
         await ClearFormAsync();
+        if (preserveBh > 0) billModel.enteredbhcode = preserveBh;
+        if (preserveCnt > 0) billModel.cntcode = preserveCnt;
         StateHasChanged();
     }
 

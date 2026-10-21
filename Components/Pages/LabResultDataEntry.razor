@@ -139,7 +139,7 @@
                     }
                 </div>
             </div>
-            @if (userCode == 1 || isauthorized1 || isauthorized2)
+            @if (userCode == 1 || isentered || isauthorized1 || isauthorized2)
             {
                 <div class="re-field-group">
                     <button class="@(isEditMode ? "re-btn-update active" : "re-btn-update")" @onclick="ToggleEditMode" style="padding: 6px 12px; font-weight: 600;">
@@ -219,6 +219,23 @@
             </button>
         </div>
     </div>
+
+    @if (isFilteredByIncomingTest)
+    {
+        <div style="background: #eef2ff; border: 1.5px solid #c7d2fe; border-radius: 8px; padding: 8px 16px; margin: 0 16px 12px; display: flex; align-items: center; justify-content: space-between; gap: 12px; box-shadow: 0 1px 3px rgba(79, 70, 229, 0.08);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+                <span style="background: #4f46e5; color: white; border-radius: 6px; padding: 4px 8px; font-size: 0.75rem; font-weight: 700; display: inline-flex; align-items: center; gap: 5px;">
+                    <i class="fas fa-filter"></i> SELECTED TEST VIEW
+                </span>
+                <span style="font-size: 0.85rem; font-weight: 700; color: #1e1b4b;">
+                    Showing results for: <strong style="color: #4338ca;">@activeFilteredTestDisplay</strong>
+                </span>
+            </div>
+            <button type="button" class="btn btn-sm" @onclick="ClearIncomingTestFilter" style="background: white; border: 1px solid #c7d2fe; color: #4338ca; font-weight: 700; font-size: 0.75rem; padding: 4px 12px; border-radius: 6px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+                <i class="fas fa-list"></i> Show All Tests
+            </button>
+        </div>
+    }
 
     <div class="re-main-content">
         <!-- Left Panel (Table) -->
@@ -1663,6 +1680,76 @@ else if (!string.IsNullOrEmpty(saveMessage))
     [SupplyParameterFromQuery(Name = "custcode")]
     public string CustCode { get; set; } = "";
 
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "tcode")]
+    public string? FilterTCode { get; set; }
+
+    [Parameter]
+    [SupplyParameterFromQuery(Name = "testname")]
+    public string? FilterTestName { get; set; }
+
+    private bool isFilteredByIncomingTest = false;
+    private string activeFilteredTestDisplay = "";
+
+    private void ApplyIncomingTestFilter()
+    {
+        var targetCodes = (FilterTCode ?? "")
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => long.TryParse(s, out var v) ? v : 0L)
+            .Where(v => v > 0)
+            .ToHashSet();
+
+        var targetNames = (FilterTestName ?? "")
+            .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(Uri.UnescapeDataString)
+            .Where(s => !string.IsNullOrWhiteSpace(s))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        if (!targetCodes.Any() && !targetNames.Any())
+        {
+            isFilteredByIncomingTest = false;
+            activeFilteredTestDisplay = "";
+            return;
+        }
+
+        if (billedTestSelections != null && billedTestSelections.Any())
+        {
+            bool anyMatched = false;
+            foreach (var b in billedTestSelections)
+            {
+                bool match = targetCodes.Contains(b.tcode) || targetNames.Contains(b.testname);
+                b.IsSelected = match;
+                if (match) anyMatched = true;
+            }
+
+            if (anyMatched)
+            {
+                isFilteredByIncomingTest = true;
+                var matchedNames = billedTestSelections.Where(b => b.IsSelected).Select(b => b.testname);
+                activeFilteredTestDisplay = string.Join(", ", matchedNames);
+            }
+            else
+            {
+                foreach (var b in billedTestSelections) b.IsSelected = true;
+                isFilteredByIncomingTest = false;
+                activeFilteredTestDisplay = "";
+            }
+        }
+    }
+
+    private void ClearIncomingTestFilter()
+    {
+        FilterTCode = null;
+        FilterTestName = null;
+        isFilteredByIncomingTest = false;
+        activeFilteredTestDisplay = "";
+        if (billedTestSelections != null)
+        {
+            foreach (var b in billedTestSelections) b.IsSelected = true;
+        }
+        ApplyUnifiedFilter();
+    }
+
     // Top Bar properties
     private int SelectedGroupCode { get; set; } = 0;   // 0 = All Groups
 
@@ -1737,7 +1824,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 .Select(b => b.tcode)
                 .ToHashSet();
 
-            if (selectedCodes.Any() && selectedCodes.Count < billedTestSelections.Count)
+            if (selectedCodes.Any() && (isFilteredByIncomingTest || selectedCodes.Count < billedTestSelections.Count))
             {
                 scope = scope.Where(x => selectedCodes.Contains(x.tcode));
             }
@@ -1795,10 +1882,6 @@ else if (!string.IsNullOrEmpty(saveMessage))
     
     private void ToggleEditMode()
     {
-        if (userCode != 1 && !isauthorized1 && !isauthorized2)
-        {
-            return;
-        }
         isEditMode = !isEditMode;
         StateHasChanged();
     }
@@ -3214,6 +3297,9 @@ else if (!string.IsNullOrEmpty(saveMessage))
         // Headers are never editable
         if (row.resultvaluetype == "Title" || row.resultvaluetype == "SubTitle") return false;
 
+        // If Edit Mode is explicitly enabled, allow row editing
+        if (isEditMode) return true;
+
         // Escalation check
         if (IsRowEscalated(row))
         {
@@ -3425,19 +3511,35 @@ else if (!string.IsNullOrEmpty(saveMessage))
             Console.WriteLine($"[FETCH-REPORT] api/labresult/loadtestresultentry fetch notice: {loadEx.Message}");
         }
 
+        string selectedTcodes = "";
+        if (billedTestSelections != null && billedTestSelections.Any())
+        {
+            var selCodes = billedTestSelections.Where(b => b.IsSelected).Select(b => b.tcode.ToString()).ToList();
+            if (selCodes.Any() && (isFilteredByIncomingTest || selCodes.Count < billedTestSelections.Count))
+            {
+                selectedTcodes = string.Join(",", selCodes);
+            }
+        }
+        else if (!string.IsNullOrEmpty(FilterTCode))
+        {
+            selectedTcodes = FilterTCode;
+        }
+
+        string tcodeQuery = !string.IsNullOrEmpty(selectedTcodes) ? $"&tcode={selectedTcodes}" : "";
+
         var reportPayload = new
         {
             ClientID = effectiveTenantCode,
             DataSource = "DataSet3",
             ReportName = "LabReport.rdlc",
             RequestGUID = activeGuid,
-            TCode = "",
+            TCode = selectedTcodes,
             IsAuthorized2Finished = isAuth2Finished,
             QueryString = $"SampleID={activeGuid}",
             Parameters = new List<ReportParameterDto>
             {
                 new ReportParameterDto { Name = "RequestGUID", Values = new List<string> { activeGuid } },
-                new ReportParameterDto { Name = "tcode", Values = new List<string> { "" } },
+                new ReportParameterDto { Name = "tcode", Values = new List<string> { selectedTcodes } },
                 new ReportParameterDto { Name = "IsLetterHead", Values = new List<string> { isLetterHead ? "true" : "false" } },
                 new ReportParameterDto { Name = "EnteredBy", Values = new List<string> { nameEnt } },
                 new ReportParameterDto { Name = "AuthorizedBy1", Values = new List<string> { nameAuth1 } },
@@ -3449,7 +3551,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
         // Attempt 1: GET api/report/labreport?requestguid={activeGuid}
         try
         {
-            string url1 = $"api/report/labreport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            string url1 = $"api/report/labreport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}{tcodeQuery}";
             var req1 = new HttpRequestMessage(HttpMethod.Get, url1);
             AttachHeaders(req1);
             var res1 = await ClientFactory.CreateClient("Medico").SendAsync(req1);
@@ -3468,7 +3570,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
         // Attempt 2: GET api/Report/LabReport?requestguid={activeGuid}
         try
         {
-            string url2 = $"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            string url2 = $"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}{tcodeQuery}";
             var req2 = new HttpRequestMessage(HttpMethod.Get, url2);
             AttachHeaders(req2);
             var res2 = await ClientFactory.CreateClient("Medico").SendAsync(req2);
@@ -3508,7 +3610,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
         // Attempt 4: GET api/Report/LabReport with activeGuid
         try
         {
-            string url3 = $"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            string url3 = $"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}{tcodeQuery}";
             var req3 = new HttpRequestMessage(HttpMethod.Get, url3);
             AttachHeaders(req3);
             var res3 = await ClientFactory.CreateClient("Medico").SendAsync(req3);
@@ -3527,7 +3629,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
         // Attempt 5: GET api/report/labreport?op_id=...
         try
         {
-            string url4 = $"api/report/labreport?op_id={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}";
+            string url4 = $"api/report/labreport?op_id={activeGuid}&isletterhead={isLetterHead.ToString().ToLower()}{tcodeQuery}";
             var req4 = new HttpRequestMessage(HttpMethod.Get, url4);
             AttachHeaders(req4);
             var res4 = await ClientFactory.CreateClient("Medico").SendAsync(req4);
@@ -3627,8 +3729,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
 
             await EnsureSampleCollectionAndReceive();
 
-            bool isAdminUser = userCode == 1 || (isentered && isauthorized1 && isauthorized2);
-            int saveLevel = (isauthorized1 || isauthorized2 || isAdminUser) ? 1 : 0;
+            int saveLevel = lre1 != null && lre1.Any(x => x.isauthorized2) ? 2 : (lre1 != null && lre1.Any(x => x.isauthorized1) ? 1 : 0);
             await SaveResults(saveLevel);
 
             if (saveError)
@@ -3676,8 +3777,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
             saveMessage = "";
             StateHasChanged();
 
-            bool isAdminUser = userCode == 1 || (isentered && isauthorized1 && isauthorized2);
-            int saveLevel = (isauthorized1 || isauthorized2 || isAdminUser) ? 1 : 0;
+            int saveLevel = lre1 != null && lre1.Any(x => x.isauthorized2) ? 2 : (lre1 != null && lre1.Any(x => x.isauthorized1) ? 1 : 0);
             await SaveResults(saveLevel);
 
             if (saveError)
@@ -3728,8 +3828,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
 
             try
             {
-                bool isAdminUser = userCode == 1 || (isentered && isauthorized1 && isauthorized2);
-                int saveLevel = (isauthorized1 || isauthorized2 || isAdminUser) ? 1 : 0;
+                int saveLevel = lre1 != null && lre1.Any(x => x.isauthorized2) ? 2 : (lre1 != null && lre1.Any(x => x.isauthorized1) ? 1 : 0);
                 await SaveResults(saveLevel);
             }
             catch { }
@@ -3785,13 +3884,39 @@ else if (!string.IsNullOrEmpty(saveMessage))
     }
 
     private string _lastLoadedGuid = "";
+    private string? _lastFilterTCode = null;
+    private string? _lastFilterTestName = null;
+    private bool _isAfterRenderDone = false;
 
     protected override async Task OnParametersSetAsync()
     {
-        if (!string.IsNullOrEmpty(RequestGuid) && _lastLoadedGuid != RequestGuid)
+        if (_isAfterRenderDone && !string.IsNullOrEmpty(RequestGuid))
         {
-            _lastLoadedGuid = RequestGuid;
-            await LoadResults();
+            if (_lastLoadedGuid != RequestGuid)
+            {
+                _lastLoadedGuid = RequestGuid;
+                _lastFilterTCode = FilterTCode;
+                _lastFilterTestName = FilterTestName;
+                isLoading = true;
+                StateHasChanged();
+                await LoadResults();
+                isLoading = false;
+                StateHasChanged();
+            }
+            else if (_lastFilterTCode != FilterTCode || _lastFilterTestName != FilterTestName)
+            {
+                _lastFilterTCode = FilterTCode;
+                _lastFilterTestName = FilterTestName;
+                if (!string.IsNullOrWhiteSpace(FilterTCode) || !string.IsNullOrWhiteSpace(FilterTestName))
+                {
+                    ApplyIncomingTestFilter();
+                }
+                else
+                {
+                    ClearIncomingTestFilter();
+                }
+                ApplyUnifiedFilter();
+            }
         }
     }
 
@@ -3799,6 +3924,8 @@ else if (!string.IsNullOrEmpty(saveMessage))
     {
         if(firstRender)
         {
+            _isAfterRenderDone = true;
+            _lastLoadedGuid = RequestGuid ?? "";
             try 
             {
                 if (_isDisposed) return;
@@ -3976,10 +4103,8 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 /* Console.WriteLine($"Error in OnAfterRenderAsync: {ex.Message}") */;
             }
 
-            await this.LoadResults();
             if (_isDisposed) return;
             isLoading = false;
-            /* Console.WriteLine($"Delta Check Info: Request={RequestGuid}, custcode={CustCode}") */;
             UpdateUserNames();
             StateHasChanged();
 
@@ -4025,13 +4150,18 @@ else if (!string.IsNullOrEmpty(saveMessage))
     /// from the UomMaster service. Result-entry units take precedence for matching ucodes;
     /// any additional master units are appended so the dropdown always shows all available units.
     /// </summary>
+    private static IList<Booking.Models.UomMasterModel>? _cachedMasterUnits;
     private async Task<IList<Booking.Models.UomMasterModel>> LoadAndMergeUomAsync(
         IList<Booking.Models.UomMasterModel>? resultUnits)
     {
         var merged = new List<Booking.Models.UomMasterModel>(resultUnits ?? new List<Booking.Models.UomMasterModel>());
         try
         {
-            var masterUnits = await UomSvc.GetUomMastersAsync();
+            if (_cachedMasterUnits == null || !_cachedMasterUnits.Any())
+            {
+                _cachedMasterUnits = await UomSvc.GetUomMastersAsync();
+            }
+            var masterUnits = _cachedMasterUnits;
             if (masterUnits != null)
             {
                 foreach (var mu in masterUnits)
@@ -4097,11 +4227,18 @@ else if (!string.IsNullOrEmpty(saveMessage))
 
         showBilledTestsDropdown = false;
     }
+    private static List<User_Master>? _cachedUserMaster;
     private async Task UserMasterAsync()
     {
         isentered = true;
         isauthorized1 = true;
         isauthorized2 = true;
+        if (_cachedUserMaster != null && _cachedUserMaster.Any())
+        {
+            usermaster = _cachedUserMaster;
+            UpdateUserNames();
+            return;
+        }
         try
         {
             var req = new HttpRequestMessage(HttpMethod.Get, "api/User/allstaff");
@@ -4117,6 +4254,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 var list = JsonConvert.DeserializeObject<List<User_Master>>(json);
                 if (list != null && list.Any())
                 {
+                    _cachedUserMaster = list;
                     usermaster = list;
                     UpdateUserNames();
                     StateHasChanged();
@@ -4309,29 +4447,46 @@ else if (!string.IsNullOrEmpty(saveMessage))
         var ct = SafeToken;
         var effectiveTenantCode = !string.IsNullOrEmpty(tenantCode) ? tenantCode : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010");
         
-        string resolvedGuid = await ResolveBilledRequestGuidAsync();
-        string activeLoadGuid = !string.IsNullOrEmpty(resolvedGuid) ? resolvedGuid : RequestGuid;
-
-        var loadUrls = new List<string>();
-        if (!string.IsNullOrEmpty(resolvedGuid) && resolvedGuid != RequestGuid)
-        {
-            loadUrls.Add($"api/labresult/loadtestresultentry?requestguid={resolvedGuid}&custcode={CustCode}");
-            loadUrls.Add($"api/LabResult/LoadResultEntry?requestguid={resolvedGuid}&custcode={CustCode}");
-        }
-        loadUrls.Add($"api/labresult/loadtestresultentry?requestguid={RequestGuid}&custcode={CustCode}");
-        loadUrls.Add($"api/LabResult/LoadResultEntry?requestguid={RequestGuid}&custcode={CustCode}");
-        loadUrls.Add($"labresult/loadresultentry?requestGuid={RequestGuid}&custcode={CustCode}&t={DateTime.Now.Ticks}");
+        string activeLoadGuid = RequestGuid;
 
         HttpResponseMessage res = new HttpResponseMessage(System.Net.HttpStatusCode.BadRequest);
-        foreach (var lUrl in loadUrls)
-        {
-            var req = new HttpRequestMessage(HttpMethod.Get, lUrl);
-            if (!string.IsNullOrEmpty(token))
-                req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-            req.Headers.Add("tenant_code", effectiveTenantCode);
 
-            res = await ClientFactory.CreateClient("Medico").SendAsync(req, ct);
-            if (res.IsSuccessStatusCode) break;
+        // Fast Path: Try direct primary endpoint first (matches 99% of requests without billing search delay)
+        try
+        {
+            var directUrl = $"api/labresult/loadtestresultentry?requestguid={RequestGuid}&custcode={CustCode}";
+            var directReq = new HttpRequestMessage(HttpMethod.Get, directUrl);
+            if (!string.IsNullOrEmpty(token))
+                directReq.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            directReq.Headers.Add("tenant_code", effectiveTenantCode);
+
+            res = await ClientFactory.CreateClient("Medico").SendAsync(directReq, ct);
+        }
+        catch { }
+
+        // Fallback Path: Only if direct attempt failed, resolve billed requestguid or alternate endpoints
+        if (!res.IsSuccessStatusCode)
+        {
+            string resolvedGuid = await ResolveBilledRequestGuidAsync();
+            var loadUrls = new List<string>();
+            if (!string.IsNullOrEmpty(resolvedGuid) && resolvedGuid != RequestGuid)
+            {
+                loadUrls.Add($"api/labresult/loadtestresultentry?requestguid={resolvedGuid}&custcode={CustCode}");
+                loadUrls.Add($"api/LabResult/LoadResultEntry?requestguid={resolvedGuid}&custcode={CustCode}");
+            }
+            loadUrls.Add($"api/LabResult/LoadResultEntry?requestguid={RequestGuid}&custcode={CustCode}");
+            loadUrls.Add($"labresult/loadresultentry?requestGuid={RequestGuid}&custcode={CustCode}&t={DateTime.Now.Ticks}");
+
+            foreach (var lUrl in loadUrls)
+            {
+                var req = new HttpRequestMessage(HttpMethod.Get, lUrl);
+                if (!string.IsNullOrEmpty(token))
+                    req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+                req.Headers.Add("tenant_code", effectiveTenantCode);
+
+                res = await ClientFactory.CreateClient("Medico").SendAsync(req, ct);
+                if (res.IsSuccessStatusCode) break;
+            }
         }
         if (res.IsSuccessStatusCode)
         {
@@ -4489,7 +4644,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
             }
 
-            // Pre-load test configurations (including sub-parameter fromtcodes) to get units, normal values, and methods
+            // Pre-load test configurations (including sub-parameter fromtcodes) in parallel with static caching
             if (lre1 != null && lre1.Any())
             {
                 var distinctTCodes = lre1.Select(x => (long)x.tcode)
@@ -4497,22 +4652,36 @@ else if (!string.IsNullOrEmpty(saveMessage))
                     .Where(tc => tc > 0)
                     .Distinct()
                     .ToList();
-                foreach (var tcode in distinctTCodes)
+
+                var missingTCodes = distinctTCodes.Where(tc => !_staticTestConfigs.ContainsKey(tc)).ToList();
+
+                if (missingTCodes.Any())
                 {
-                    if (!_testConfigs.ContainsKey(tcode))
+                    var configTasks = missingTCodes.Select(async tc =>
                     {
                         try
                         {
-                            var config = await TestSvc.GetTestResultAsync(tcode);
-                            if (config != null)
-                            {
-                                _testConfigs[tcode] = config;
-                            }
+                            var cfg = await TestSvc.GetTestResultAsync(tc);
+                            return (tc, cfg);
                         }
-                        catch (Exception ex)
+                        catch { return (tc, (LabCare.Models.TestInsertDto?)null); }
+                    });
+
+                    var loadedConfigs = await Task.WhenAll(configTasks);
+                    foreach (var (tc, cfg) in loadedConfigs)
+                    {
+                        if (cfg != null)
                         {
-                            /* Console.WriteLine($"Error fetching config for test {tcode}: {ex.Message}") */;
+                            _staticTestConfigs[tc] = cfg;
                         }
+                    }
+                }
+
+                foreach (var tc in distinctTCodes)
+                {
+                    if (_staticTestConfigs.TryGetValue(tc, out var cfg))
+                    {
+                        _testConfigs[tc] = cfg;
                     }
                 }
             }
@@ -4900,11 +5069,6 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
             }
 
-            uom = await LoadAndMergeUomAsync(re.units);
-            sample = re.samples ?? new List<Booking.Models.SampleMasterModel>();
-            machine = re.machines ?? new List<Medico_Backend.Model.MachineMasterModel>();
-            method = re.methods ?? new List<Booking.Models.ReportMethodModel>();
-
             // Build group list â€” distinct gcode + groupname from lre1
             groupList = lre1
                 .Where(x => x.gcode > 0 && !string.IsNullOrWhiteSpace(x.groupname))
@@ -4915,6 +5079,12 @@ else if (!string.IsNullOrEmpty(saveMessage))
 
             // Build billed test list scoped to current group (default: All Groups)
             billedTestSelections = BuildBilledTestSelections(SelectedGroupCode);
+
+            // Apply incoming query filter if specified
+            if (!string.IsNullOrWhiteSpace(FilterTCode) || !string.IsNullOrWhiteSpace(FilterTestName))
+            {
+                ApplyIncomingTestFilter();
+            }
 
             // Apply active filters to the newly loaded data
             ApplyUnifiedFilter();
@@ -5203,6 +5373,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
     }
 
 
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<long, LabCare.Models.TestInsertDto> _staticTestConfigs = new();
     private Dictionary<long, LabCare.Models.TestInsertDto> _testConfigs = new();
 
     private bool IsRowEscalated(LabResultEntry row)
@@ -5429,8 +5600,8 @@ else if (!string.IsNullOrEmpty(saveMessage))
                                          string.Equals(row.resulttype, "H", StringComparison.OrdinalIgnoreCase) ||
                                          string.Equals(row.resulttype, "S", StringComparison.OrdinalIgnoreCase);
 
-                // Determine editability â€” admin bypass, per-row rights, or header rows
-                bool rowEditable = isAdmin || IsRowEditable(row) || isTitleOrSubTitle;
+                // Determine editability — admin bypass, edit mode, per-row rights, or header rows
+                bool rowEditable = isAdmin || isEditMode || IsRowEditable(row) || isTitleOrSubTitle;
                 bool hasResult = !string.IsNullOrWhiteSpace(row.enteredresult?.Trim());
                 
                 /* Console.WriteLine($"[SAVE] Row tcode={row.tcode} col2='{row.col2}' rowEditable={rowEditable} hasResult={hasResult}") */;
@@ -5455,7 +5626,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
                         row.status = hasResult || isTitleOrSubTitle;
                         if (row.resultenteredby == 0 && (hasResult || isTitleOrSubTitle)) row.resultenteredby = userCode;
                     }
-                    else if (level == 0 && (isentered || isAdmin))
+                    else if (level == 0 && (isentered || isauthorized1 || isauthorized2 || isAdmin || isEditMode))
                     {
                         canProceed = true;
                         if (hasResult || isTitleOrSubTitle)
@@ -5469,9 +5640,20 @@ else if (!string.IsNullOrEmpty(saveMessage))
                             row.status = false;
                         }
 
-                        // Preserve existing authorization status if previously authorized
-                        if (row.resultauthorizedby > 0) row.isauthorized1 = true;
-                        if (row.resultauthorizedby2 > 0) row.isauthorized2 = true;
+                        if (isEditMode)
+                        {
+                            // In edit mode with Save (Level 0), treat as result entry edit without stamping or retaining authorization
+                            row.isauthorized1 = false;
+                            row.isauthorized2 = false;
+                            row.resultauthorizedby = 0;
+                            row.resultauthorizedby2 = 0;
+                        }
+                        else
+                        {
+                            // Preserve existing authorization status if previously authorized
+                            if (row.resultauthorizedby > 0) row.isauthorized1 = true;
+                            if (row.resultauthorizedby2 > 0) row.isauthorized2 = true;
+                        }
                     }
                 }
             }
@@ -5605,8 +5787,8 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 bool isDetailedNVActive = hasValidEditedDetailNV || hasValidDetailNV;
 
                 int userCodeVal = row.resultenteredby > 0 ? row.resultenteredby : (userCode > 0 ? userCode : 1);
-                int auth1ByVal = row.resultauthorizedby > 0 ? row.resultauthorizedby : (row.isauthorized1 ? userCodeVal : 0);
-                int auth2ByVal = row.resultauthorizedby2 > 0 ? row.resultauthorizedby2 : (row.isauthorized2 ? userCodeVal : 0);
+                int auth1ByVal = row.isauthorized1 ? (row.resultauthorizedby > 0 ? row.resultauthorizedby : userCodeVal) : 0;
+                int auth2ByVal = row.isauthorized2 ? (row.resultauthorizedby2 > 0 ? row.resultauthorizedby2 : userCodeVal) : 0;
                 string nowIso = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss");
 
                 // Resolve conclusion & footer text as entered on the row
@@ -6115,15 +6297,17 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                     content.Add(new StringContent(row.samplename ?? "Serum"), $"{p}.samplename");
                     content.Add(new StringContent(row.rtmcode.ToString()), $"{p}.rtmcode");
                     content.Add(new StringContent(row.fixedvalues ?? ""), $"{p}.fixedvalues");
-                    content.Add(new StringContent((row.resultenteredby > 0 ? row.resultenteredby : (userCode > 0 ? userCode : 100)).ToString()), $"{p}.resultenteredby");
+                    content.Add(new StringContent((row.resultenteredby > 0 ? row.resultenteredby : (userCode > 0 ? userCode : 1)).ToString()), $"{p}.resultenteredby");
                     content.Add(new StringContent(row.isauthorized1.ToString().ToLower()), $"{p}.isauthorized1");
                     content.Add(new StringContent(row.isauthorized2.ToString().ToLower()), $"{p}.isauthorized2");
-                    content.Add(new StringContent((row.resultauthorizedby > 0 ? row.resultauthorizedby : (userCode > 0 ? userCode : 100)).ToString()), $"{p}.resultauthorizedby");
-                    content.Add(new StringContent((row.resultauthorizedby2 > 0 ? row.resultauthorizedby2 : (userCode > 0 ? userCode : 100)).ToString()), $"{p}.resultauthorizedby2");
+                    int formAuth1By = row.isauthorized1 ? (row.resultauthorizedby > 0 ? row.resultauthorizedby : (userCode > 0 ? userCode : 1)) : 0;
+                    int formAuth2By = row.isauthorized2 ? (row.resultauthorizedby2 > 0 ? row.resultauthorizedby2 : (userCode > 0 ? userCode : 1)) : 0;
+                    content.Add(new StringContent(formAuth1By.ToString()), $"{p}.resultauthorizedby");
+                    content.Add(new StringContent(formAuth2By.ToString()), $"{p}.resultauthorizedby2");
                     
                     string nowIso = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss");
-                    content.Add(new StringContent(nowIso), $"{p}.firstauthorizedate");
-                    content.Add(new StringContent(nowIso), $"{p}.secondauthorizedate");
+                    content.Add(new StringContent(row.isauthorized1 ? nowIso : ""), $"{p}.firstauthorizedate");
+                    content.Add(new StringContent(row.isauthorized2 ? nowIso : ""), $"{p}.secondauthorizedate");
                     content.Add(new StringContent(nowIso), $"{p}.resultentereddate");
                     content.Add(new StringContent(""), $"{p}.estylecode");
 
@@ -6594,16 +6778,19 @@ agerangetype = "-", tenant_code = tenantCode ?? "", mccode = 1, performedcount =
                 // Reload latest saved data from backend DB using the billed requestguid
                 await LoadResults();
 
-                // Restore any backed up manual results if reload returned empty strings for them
+                // Restore any backed up manual results if reload returned empty strings for them or if in edit mode
                 if (enteredBackup.Any() && lre1 != null)
                 {
                     foreach (var row in lre1)
                     {
                         string key = row.testresultid != Guid.Empty ? row.testresultid.ToString() : (row.tcode > 0 ? row.tcode.ToString() : row.col2 ?? "");
-                        if (string.IsNullOrWhiteSpace(row.enteredresult) && enteredBackup.TryGetValue(key, out var bVal) && !string.IsNullOrWhiteSpace(bVal))
+                        if (enteredBackup.TryGetValue(key, out var bVal) && !string.IsNullOrWhiteSpace(bVal))
                         {
-                            row.enteredresult = bVal;
-                            row.status = true;
+                            if (string.IsNullOrWhiteSpace(row.enteredresult) || isEditMode)
+                            {
+                                row.enteredresult = bVal;
+                                row.status = true;
+                            }
                         }
                     }
                 }

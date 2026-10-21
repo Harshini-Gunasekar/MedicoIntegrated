@@ -2253,6 +2253,77 @@ else
         catch { }
     }
 
+    private static string NormalizeMobileForComparison(string? m)
+    {
+        if (string.IsNullOrWhiteSpace(m)) return "";
+        var digits = new string(m.Where(char.IsDigit).ToArray());
+        if (digits.Length >= 10)
+        {
+            return digits.Substring(digits.Length - 10);
+        }
+        return digits;
+    }
+
+    private static string CleanNameForComparison(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "";
+        var s = name.Trim().ToLowerInvariant();
+        string[] titles = { "mr.", "mr ", "mrs.", "mrs ", "ms.", "ms ", "dr.", "dr ", "master.", "master ", "baby.", "baby ", "selvi.", "selvi " };
+        foreach (var t in titles)
+        {
+            if (s.StartsWith(t))
+            {
+                s = s.Substring(t.Length).Trim();
+                break;
+            }
+        }
+        return System.Text.RegularExpressions.Regex.Replace(s.Replace(".", " "), @"\s+", " ").Trim();
+    }
+
+    private static bool IsSamePatientName(string? n1, string? n2, string? init1 = null, string? init2 = null)
+    {
+        if (string.IsNullOrWhiteSpace(n1) || string.IsNullOrWhiteSpace(n2)) return false;
+        var s1 = CleanNameForComparison(n1);
+        var s2 = CleanNameForComparison(n2);
+        if (string.IsNullOrEmpty(s1) || string.IsNullOrEmpty(s2)) return false;
+        if (s1.Equals(s2, StringComparison.OrdinalIgnoreCase)) return true;
+
+        var i1 = (init1 ?? "").Trim().ToLowerInvariant();
+        var i2 = (init2 ?? "").Trim().ToLowerInvariant();
+
+        if (!string.IsNullOrEmpty(i1) && CleanNameForComparison($"{i1} {s1}").Equals(s2, StringComparison.OrdinalIgnoreCase))
+            return true;
+        if (!string.IsNullOrEmpty(i2) && CleanNameForComparison($"{i2} {s2}").Equals(s1, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsDuplicatePatientRecord(CustomerModel c, CustomerModel cur)
+    {
+        if (c == null || cur == null) return false;
+        if (c.custid > 0 && cur.custid > 0 && c.custid == cur.custid) return false;
+        if (!string.IsNullOrEmpty(c.custcode) && !string.IsNullOrEmpty(cur.custcode) &&
+            c.custcode.Equals(cur.custcode, StringComparison.OrdinalIgnoreCase)) return false;
+
+        var m1 = NormalizeMobileForComparison(c.mobile);
+        var m2 = NormalizeMobileForComparison(cur.mobile);
+        if (string.IsNullOrEmpty(m1) || string.IsNullOrEmpty(m2) || m1.Length < 5 || m2.Length < 5)
+            return false;
+        if (m1.All(ch => ch == '0') || m2.All(ch => ch == '0'))
+            return false;
+        if (!m1.Equals(m2, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        // Both have same mobile, now check if name matches
+        if (IsSamePatientName(c.name, cur.name, c.initial, cur.initial)) return true;
+        if (IsSamePatientName(c.namewithinitials, cur.name, null, cur.initial)) return true;
+        if (IsSamePatientName(c.name, cur.namewithinitials, c.initial, null)) return true;
+        if (IsSamePatientName(c.namewithinitials, cur.namewithinitials)) return true;
+
+        return false;
+    }
+
     private async Task SaveCustomer()
     {
         if (isEditMode && !hasEditRight)
@@ -2290,47 +2361,34 @@ else
             return;
         }
 
-        if (!string.IsNullOrWhiteSpace(current.mobile) && !string.IsNullOrWhiteSpace(current.name))
+        if (!isEditMode && !string.IsNullOrWhiteSpace(current.mobile) && !string.IsNullOrWhiteSpace(current.name))
         {
             var trimmedMobile = current.mobile.Trim();
             var trimmedName = current.name.Trim();
 
             // 1. Check in local cache / loaded list
-            var duplicate = allMyCustomers?.FirstOrDefault(c => 
-                c.custid != current.custid && 
-                !string.IsNullOrWhiteSpace(c.mobile) && 
-                c.mobile.Trim().Equals(trimmedMobile, StringComparison.OrdinalIgnoreCase) && 
-                ((c.name != null && c.name.Trim().Equals(trimmedName, StringComparison.OrdinalIgnoreCase)) ||
-                 (c.namewithinitials != null && c.namewithinitials.Trim().Equals(trimmedName, StringComparison.OrdinalIgnoreCase))));
+            var duplicate = allMyCustomers?.FirstOrDefault(c => IsDuplicatePatientRecord(c, current));
 
             if (duplicate == null && customers != null)
             {
-                duplicate = customers.FirstOrDefault(c => 
-                    c.custid != current.custid && 
-                    !string.IsNullOrWhiteSpace(c.mobile) && 
-                    c.mobile.Trim().Equals(trimmedMobile, StringComparison.OrdinalIgnoreCase) && 
-                    ((c.name != null && c.name.Trim().Equals(trimmedName, StringComparison.OrdinalIgnoreCase)) ||
-                     (c.namewithinitials != null && c.namewithinitials.Trim().Equals(trimmedName, StringComparison.OrdinalIgnoreCase))));
+                duplicate = customers.FirstOrDefault(c => IsDuplicatePatientRecord(c, current));
             }
 
-            // 2. Query API search to verify across all records in database
+            // 2. Query API search to verify across all records in database by mobile
             if (duplicate == null)
             {
                 try
                 {
                     using var verifyClient = CreateClient(true);
-                    var searchUrl = $"{BaseUrl}Customer/search?key={Uri.EscapeDataString(trimmedMobile)}";
+                    var digitsMobile = NormalizeMobileForComparison(trimmedMobile);
+                    var searchKey = !string.IsNullOrEmpty(digitsMobile) ? digitsMobile : trimmedMobile;
+                    var searchUrl = $"{BaseUrl}Customer/search?key={Uri.EscapeDataString(searchKey)}";
                     var searchRes = await verifyClient.GetAsync(searchUrl);
                     if (searchRes.IsSuccessStatusCode)
                     {
                         var json = await searchRes.Content.ReadAsStringAsync();
                         var searchList = JsonConvert.DeserializeObject<List<CustomerModel>>(json);
-                        duplicate = searchList?.FirstOrDefault(c => 
-                            c.custid != current.custid && 
-                            !string.IsNullOrWhiteSpace(c.mobile) && 
-                            c.mobile.Trim().Equals(trimmedMobile, StringComparison.OrdinalIgnoreCase) && 
-                            ((c.name != null && c.name.Trim().Equals(trimmedName, StringComparison.OrdinalIgnoreCase)) ||
-                             (c.namewithinitials != null && c.namewithinitials.Trim().Equals(trimmedName, StringComparison.OrdinalIgnoreCase))));
+                        duplicate = searchList?.FirstOrDefault(c => IsDuplicatePatientRecord(c, current));
                     }
                 }
                 catch (Exception ex)
@@ -2339,9 +2397,30 @@ else
                 }
             }
 
+            // 3. Fallback search by name if not found by mobile
+            if (duplicate == null)
+            {
+                try
+                {
+                    using var verifyClient = CreateClient(true);
+                    var searchUrl = $"{BaseUrl}Customer/search?key={Uri.EscapeDataString(trimmedName)}";
+                    var searchRes = await verifyClient.GetAsync(searchUrl);
+                    if (searchRes.IsSuccessStatusCode)
+                    {
+                        var json = await searchRes.Content.ReadAsStringAsync();
+                        var searchList = JsonConvert.DeserializeObject<List<CustomerModel>>(json);
+                        duplicate = searchList?.FirstOrDefault(c => IsDuplicatePatientRecord(c, current));
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[PatientMaster] Duplicate check search by name error: {ex.Message}");
+                }
+            }
+
             if (duplicate != null)
             {
-                Toast.ShowError($"A patient with the same name '{current.name.Trim()}' and mobile number '{current.mobile.Trim()}' already exists.");
+                Toast.ShowWarning("Patient already registered with same name and mobile no");
                 return;
             }
         }
@@ -2465,11 +2544,22 @@ else
                 {
                     customerImagesBase64.Remove(current.custid);
                 }
+                Toast.ShowSuccess(isEditMode ? "Patient updated successfully!" : "Patient registered successfully!");
                 StateHasChanged();
             }
             else
             {
-                Toast.ShowError($"Save failed: {await response.Content.ReadAsStringAsync()}");
+                if (responseString.Contains("already exists", StringComparison.OrdinalIgnoreCase) ||
+                    responseString.Contains("already registered", StringComparison.OrdinalIgnoreCase) ||
+                    responseString.Contains("duplicate", StringComparison.OrdinalIgnoreCase) ||
+                    responseString.Contains("unique constraint", StringComparison.OrdinalIgnoreCase))
+                {
+                    Toast.ShowWarning("Patient already registered with same name and mobile no");
+                }
+                else
+                {
+                    Toast.ShowError($"Save failed: {responseString}");
+                }
                 StateHasChanged();
             }
         }
