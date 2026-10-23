@@ -116,7 +116,7 @@ namespace Booking.Services
                     }
                 }
                 var client = CreateClient();
-                var response = await client.PostAsJsonAsync("api/labresult/saveresultentry", request);
+                var response = await client.PostAsJsonAsync("api/LabResult/saveresult", request);
                 return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
