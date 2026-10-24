@@ -331,7 +331,18 @@
                                     </div>
                                     <div class="field-group col-3">
                                         <label class="field-label">Invoice No</label>
-                                        <InputText class="form-control premium-input" @bind-Value="CurrentRequest.master.invoiceno" autocomplete="off" />
+                                        <InputText class="@(invoiceNoAlreadyExists ? "form-control premium-input is-invalid" : "form-control premium-input")" 
+                                                   style="@(invoiceNoAlreadyExists ? "border-color: #ef4444 !important; background: #fff5f5 !important;" : "")"
+                                                   @bind-Value="CurrentRequest.master.invoiceno" 
+                                                   @bind-Value:after="OnInvoiceNoChanged"
+                                                   @onblur="OnInvoiceNoBlur" 
+                                                   autocomplete="off" />
+                                        @if (invoiceNoAlreadyExists)
+                                        {
+                                            <span style="color: #ef4444; font-size: 0.75rem; font-weight: 600; margin-top: 2px; display: flex; align-items: center; gap: 4px;">
+                                                <i class="bi bi-exclamation-circle-fill"></i> Invoice no already exists
+                                            </span>
+                                        }
                                     </div>
                                     <div class="field-group col-3">
                                         <label class="field-label">Entered Date</label>
@@ -1651,6 +1662,7 @@
     private bool ShowBillMatchPopup = false;
     private bool IsBillMatched = false;
     private PurchaseMasterModel? PendingDelete;
+    private bool invoiceNoAlreadyExists = false;
     
     private decimal ManualGross = 0;
     private decimal ManualDiscount = 0;
@@ -2331,6 +2343,19 @@
             }
         }
 
+        // 14. Fuzzy map Invoice No (invoiceno)
+        if (string.IsNullOrEmpty(m.invoiceno)) {
+            foreach(var key in new[] { "invoiceno", "invoice_no", "prminvoiceno", "invoicenumber", "invoice_number" }) {
+                if (TryGetPropertyIgnoreCase(target, key, out var p)) {
+                    var val = p.ValueKind == System.Text.Json.JsonValueKind.Number ? p.ToString() : p.GetString();
+                    if (!string.IsNullOrEmpty(val)) {
+                        m.invoiceno = val;
+                        break;
+                    }
+                }
+            }
+        }
+
         return m;
     }
 
@@ -2561,6 +2586,7 @@
             return;
         }
         IsEdit = false;
+        invoiceNoAlreadyExists = false;
         
         // Calculate GRN / bill number based on total number of bills for the respective tenant (Format: #YYYYXXXX)
         int currentYear = DateTime.Now.Year;
@@ -2634,6 +2660,7 @@
                 return;
             }
             IsEdit = true;
+            invoiceNoAlreadyExists = false;
 
             bool fetchSuccess = false;
 
@@ -3267,6 +3294,52 @@
         CurrentRequest.master.totalamount = roundedTotal;
     }
 
+    private bool IsInvoiceNoAlreadyExists()
+    {
+        var currentInv = CurrentRequest.master?.invoiceno?.Trim();
+        if (string.IsNullOrWhiteSpace(currentInv)) return false;
+
+        bool exists = PurchaseList.Any(p => 
+            (!IsEdit || p.purchasecode != CurrentRequest.master.purchasecode) &&
+            !string.IsNullOrWhiteSpace(p.invoiceno) && 
+            string.Equals(p.invoiceno.Trim(), currentInv, StringComparison.OrdinalIgnoreCase)
+        );
+
+        if (!exists && FullPurchaseRequests != null && FullPurchaseRequests.Any())
+        {
+            exists = FullPurchaseRequests.Any(p =>
+                p.master != null &&
+                (!IsEdit || p.master.purchasecode != CurrentRequest.master.purchasecode) &&
+                !string.IsNullOrWhiteSpace(p.master.invoiceno) &&
+                string.Equals(p.master.invoiceno.Trim(), currentInv, StringComparison.OrdinalIgnoreCase)
+            );
+        }
+
+        return exists;
+    }
+
+    private void OnInvoiceNoBlur()
+    {
+        if (IsInvoiceNoAlreadyExists())
+        {
+            invoiceNoAlreadyExists = true;
+            ToastService.ShowWarning("Invoice no already exists");
+        }
+        else
+        {
+            invoiceNoAlreadyExists = false;
+        }
+    }
+
+    private void OnInvoiceNoChanged()
+    {
+        if (invoiceNoAlreadyExists && !IsInvoiceNoAlreadyExists())
+        {
+            invoiceNoAlreadyExists = false;
+            StateHasChanged();
+        }
+    }
+
     private async Task SavePurchase()
     {
         if (IsEdit && !hasEditRight)
@@ -3283,6 +3356,13 @@
 
         if ((CurrentRequest.master.vendorcode ?? 0) <= 0) {
             ToastService.ShowWarning("Please select a vendor");
+            return;
+        }
+
+        if (IsInvoiceNoAlreadyExists())
+        {
+            invoiceNoAlreadyExists = true;
+            ToastService.ShowWarning("Invoice no already exists");
             return;
         }
         CurrentRequest.details = CurrentRequest.details.Where(d => (d.itemcode > 0) && (d.quantity > 0 || d.freequantity > 0)).ToList();
@@ -3641,6 +3721,7 @@
     {
         isBranchDropdownOpen = false;
         ShowModal = false;
+        invoiceNoAlreadyExists = false;
     }
     private void SetView(bool card)
     {

@@ -238,6 +238,56 @@ namespace Booking.Services
             return list;
         }
 
+        public async Task<LastVisitPrescriptionViewModel?> GetLastVisitPrescriptionAsync(decimal custId, Guid? excludeOpId = null, string? tenantCode = null)
+        {
+            try
+            {
+                var client = GetClient(tenantCode);
+                var url = $"api/CaseSheet/prescription/last-visit?custid={custId}";
+                if (excludeOpId.HasValue && excludeOpId.Value != Guid.Empty)
+                {
+                    url += $"&exclude_op_id={excludeOpId.Value}";
+                }
+
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                var effectiveTenant = !string.IsNullOrWhiteSpace(tenantCode) ? tenantCode : _session?.TenantCode;
+                if (!string.IsNullOrWhiteSpace(effectiveTenant))
+                {
+                    request.Headers.Remove("tenant_code");
+                    request.Headers.Add("tenant_code", effectiveTenant);
+                }
+
+                var response = await client.SendAsync(request);
+                if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                {
+                    return null;
+                }
+                response.EnsureSuccessStatusCode();
+
+                var options = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var vm = await response.Content.ReadFromJsonAsync<LastVisitPrescriptionViewModel>(options);
+                if (vm != null)
+                {
+                    if (vm.visit_date.HasValue)
+                        vm.visit_date = ConvertToIst(vm.visit_date.Value);
+
+                    if (vm.prescription_list != null)
+                    {
+                        foreach (var rx in vm.prescription_list)
+                        {
+                            AdjustPrescriptionDatesToIst(rx);
+                        }
+                    }
+                }
+                return vm;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error getting last visit prescription: {ex.Message}");
+                return null;
+            }
+        }
+
         public async Task<List<CaseSheetViewModel>> GetPatientHistoryAsync(decimal custid, int pageNo = 1, int pageSize = 10)
         {
             try
