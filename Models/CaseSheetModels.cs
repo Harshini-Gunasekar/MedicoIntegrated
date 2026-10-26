@@ -174,6 +174,7 @@ namespace medico_backend.Model
 
 
         public string? notes { get; set; }
+        public string? instructions { get => notes; set => notes = value; }
         public string? tenant_code { get; set; }
         public bool isdeleted { get; set; } = false;
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
@@ -328,6 +329,7 @@ namespace medico_backend.Model
 
     public class CaseSheetPrescriptionRequest
     {
+        public string? pr_id { get; set; }
         /// <summary>null = new. Provide pr_code to update existing.</summary>
         public string? pr_code { get; set; }
         public string? topremarks { get; set; }
@@ -362,6 +364,7 @@ namespace medico_backend.Model
         public decimal? rate { get; set; }
         public decimal? mrp { get; set; }
         public string? notes { get; set; }
+        public string? instructions { get => notes; set => notes = value; }
     }
 
 

@@ -119,52 +119,7 @@ namespace Booking.Handlers
                 }
             }
 
-            HttpResponseMessage response = null;
-            try
-            {
-                response = await base.SendAsync(request, cancellationToken);
-                
-                // Log the request and response details
-                try
-                {
-                    var logDir = @"d:\Iscan\Medico";
-                    if (!System.IO.Directory.Exists(logDir))
-                    {
-                        System.IO.Directory.CreateDirectory(logDir);
-                    }
-                    var respBody = response.Content != null ? await response.Content.ReadAsStringAsync() : "";
-                    var logStr = $"[{DateTime.Now}] Intercepted:\n" +
-                                 $"  Method: {request.Method}\n" +
-                                 $"  Original URL: {originalUrl}\n" +
-                                 $"  Rewritten URL: {request.RequestUri}\n" +
-                                 $"  Headers:\n" +
-                                 string.Join("\n", request.Headers.Select(h => $"    {h.Key}: {string.Join(", ", h.Value)}")) + "\n" +
-                                 $"  Response: {response.StatusCode}\n" +
-                                 $"  Response Body: {respBody}\n\n";
-                    System.IO.File.AppendAllText(System.IO.Path.Combine(logDir, "route_debug.txt"), logStr);
-                }
-                catch { /* Ignore log file write errors */ }
-            }
-            catch (Exception ex)
-            {
-                try
-                {
-                    var logDir = @"d:\Iscan\Medico";
-                    if (!System.IO.Directory.Exists(logDir))
-                    {
-                        System.IO.Directory.CreateDirectory(logDir);
-                    }
-                    var logStr = $"[{DateTime.Now}] Failed:\n" +
-                                 $"  Method: {request.Method}\n" +
-                                 $"  Original URL: {originalUrl}\n" +
-                                 $"  Rewritten URL: {request.RequestUri}\n" +
-                                 $"  Exception: {ex}\n\n";
-                    System.IO.File.AppendAllText(System.IO.Path.Combine(logDir, "route_debug.txt"), logStr);
-                }
-                catch { /* Ignore log file write errors */ }
-                throw;
-            }
-            return response;
+            return await base.SendAsync(request, cancellationToken);
         }
     }
 }

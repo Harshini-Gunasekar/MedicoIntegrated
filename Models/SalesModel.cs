@@ -154,6 +154,10 @@ public class sales_detail
 
     public string? dosage { get; set; }
 
+    public string? instructions { get; set; }
+
+    public string? notes { get => instructions; set => instructions = value; }
+
     public int? bh_code { get; set; }
 
     public decimal? cntcode { get; set; }
