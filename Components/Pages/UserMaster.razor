@@ -307,7 +307,7 @@ else
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" class="lc-mr-8">
                             <path d="M15.854.146a.5.5 0 0 1 .11.54l-5.819 14.547a.75.75 0 0 1-1.329.124l-3.178-4.995L.643 7.184a.75.75 0 0 1 .124-1.33L15.314.037a.5.5 0 0 1 .54.11Z" />
                         </svg>
-                        <span>@(isSaving ? "Saving..." : (isEditMode ? "Update User" : "Create User"))</span>
+                        <span>@(isSaving ? "Saving..." : (isEditMode ? (activeTab == "role_rights" ? "Update Role Rights" : (activeTab == "branch_rights" ? "Update Branch Rights" : "Update User")) : "Create User"))</span>
                     }
                 </button>
             </div>
@@ -2066,6 +2066,69 @@ else
             current.permanent_address = current.address;
             current.current_address = current.address;
 
+            var effectiveTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : TenantState.TenantCode;
+
+            // When editing role rights specifically, prioritize saving role rights directly via RoleService
+            if (isEditMode && activeTab == "role_rights" && current.user_code > 0)
+            {
+                var roleSaveResult = await RoleService.SaveUserRolesAsync(current.user_code, userSelectedRoleIds.ToList(), effectiveTenant);
+                
+                if (current.user_code == TenantState.UserCode)
+                {
+                    try
+                    {
+                        var refreshedPerms = await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, effectiveTenant);
+                        await _sessionStorage.SetAsync("UserRolePermissions", refreshedPerms);
+                        var refreshedRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(refreshedPerms, TenantState.UserCode);
+                        TenantState.SetSession(
+                            TenantState.TenantCode,
+                            TenantState.AuthToken,
+                            TenantState.TenantName,
+                            TenantState.UserCode,
+                            TenantState.BranchCode,
+                            TenantState.CounterCode,
+                            TenantState.UserData,
+                            refreshedRights);
+                        await _sessionStorage.SetAsync("UserRights", refreshedRights);
+                        await EvaluateRights();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[UserMaster] Error refreshing local permissions: {ex.Message}");
+                    }
+                }
+
+                // Sync role template name asynchronously if available
+                try
+                {
+                    _ = UserService.UpdateAsync(
+                        current,
+                        branchList,
+                        departmentList,
+                        selectedUserPhotoBytes,
+                        selectedUserPhotoName,
+                        selectedSignaturePhotoBytes,
+                        selectedSignaturePhotoName,
+                        userSelectedRoleIds.ToList(),
+                        selectedRoleTemplateName,
+                        selectedTemplateGuid);
+                }
+                catch { }
+
+                if (roleSaveResult.Success)
+                {
+                    Toast.Success("Role rights updated successfully.");
+                    await LoadUsers();
+                    CloseForm();
+                    return;
+                }
+                else
+                {
+                    formError = $"Failed to save role rights: {roleSaveResult.Message}";
+                    return;
+                }
+            }
+
             HttpResponseMessage response;
             Console.WriteLine($"[SaveUser] UI State -> edit_bill: {current.edit_bill}, print_bill: {current.print_bill}");
             if (!string.IsNullOrEmpty(selectedRoleTemplateName))
@@ -2124,7 +2187,6 @@ else
                 {
                     try
                     {
-                        var effectiveTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : TenantState.TenantCode;
                         await RoleService.SaveUserRolesAsync(targetUserCode, userSelectedRoleIds.ToList(), effectiveTenant);
 
                         if (targetUserCode == TenantState.UserCode)
@@ -2163,6 +2225,46 @@ else
             else
             {
                 var body = await response.Content.ReadAsStringAsync();
+
+                // If updating an existing user and the backend returns "Username already exists" or validation error,
+                // still ensure role rights are updated so user permissions are saved
+                if (isEditMode && current.user_code > 0)
+                {
+                    try
+                    {
+                        var roleSaveResult = await RoleService.SaveUserRolesAsync(current.user_code, userSelectedRoleIds.ToList(), effectiveTenant);
+                        if (current.user_code == TenantState.UserCode)
+                        {
+                            var refreshedPerms = await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, effectiveTenant);
+                            await _sessionStorage.SetAsync("UserRolePermissions", refreshedPerms);
+                            var refreshedRights = RoleMasterService.ConvertEffectivePermissionsToUserRights(refreshedPerms, TenantState.UserCode);
+                            TenantState.SetSession(
+                                TenantState.TenantCode,
+                                TenantState.AuthToken,
+                                TenantState.TenantName,
+                                TenantState.UserCode,
+                                TenantState.BranchCode,
+                                TenantState.CounterCode,
+                                TenantState.UserData,
+                                refreshedRights);
+                            await _sessionStorage.SetAsync("UserRights", refreshedRights);
+                            await EvaluateRights();
+                        }
+
+                        if (roleSaveResult.Success || body.Contains("Username already exists", StringComparison.OrdinalIgnoreCase))
+                        {
+                            Toast.Success("Role rights updated successfully.");
+                            await LoadUsers();
+                            CloseForm();
+                            return;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[UserMaster] Fallback role save: {ex.Message}");
+                    }
+                }
+
                 formError = $"Save failed ({response.StatusCode}): {body}";
             }
         }

@@ -289,7 +289,9 @@ namespace LabCare.Services
             EnsureBranchCountersSynced(user, branchModel);
             LogPayloadToTerminal("Update", user, branchModel, userImageFileName, signatureImageFileName);
             using var content = BuildUserFormData(user, branchModel, departmentModel, userImageFile, userImageFileName, signatureImageFile, signatureImageFileName, isUpdate: true, roleIds, roleTemplateName, roleTemplateGuid);
-            return await _http.PostAsync("api/user/update", content);
+            int uCode = user.user_code > 0 ? user.user_code : user.usercode;
+            string url = uCode > 0 ? $"api/user/update?user_code={uCode}&usercode={uCode}" : "api/user/update";
+            return await _http.PostAsync(url, content);
         }
 
         public async Task<HttpResponseMessage> SoftDeleteAsync(int userCode)
@@ -360,11 +362,14 @@ namespace LabCare.Services
                 addPart($"Profile.User.{name}", value);
                 addPart(name, value);
                 addPart($"user.{name}", value);
+                addPart($"User.{name}", value);
 
                 if (name.Equals("user_code", StringComparison.OrdinalIgnoreCase))
                 {
                     addPart("Profile.User.usercode", value);
                     addPart("usercode", value);
+                    addPart("User.usercode", value);
+                    addPart("User.user_code", value);
                 }
                 else if (name.Equals("bh_code", StringComparison.OrdinalIgnoreCase) || name.Equals("bhcode", StringComparison.OrdinalIgnoreCase))
                 {

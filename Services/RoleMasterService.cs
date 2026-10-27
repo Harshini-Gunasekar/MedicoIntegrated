@@ -492,7 +492,27 @@ namespace Booking.Services
 
             var permissions = await GetUserEffectivePermissionsAsync(usercode, tenantCode);
             SetUserPermissions(permissions);
+
+            // Also ensure any direct role IDs from GetUserRolesAsync are directly in _permittedRoleIds
+            try
+            {
+                var roleIds = await GetUserRolesAsync(usercode, tenantCode);
+                if (roleIds != null && roleIds.Any())
+                {
+                    foreach (var rId in roleIds)
+                    {
+                        _permittedRoleIds.Add(rId);
+                    }
+                }
+            }
+            catch { }
+
             return permissions;
+        }
+
+        public void GrantDirectRoleId(long roleId)
+        {
+            _permittedRoleIds.Add(roleId);
         }
 
         public bool HasMainModule(string mainModule)
@@ -1172,10 +1192,11 @@ namespace Booking.Services
             if ((normSub == "resultsearch" || normSub == "labresultsearch") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(535)) return true;
             if ((normSub == "resultsearch" || normSub == "labresultsearch") && (normAct == "print" || normAct == "printreport") && _permittedRoleIds.Contains(536)) return true;
 
-            // 2. Result Entry (537 - 541)
+            // 2. Result Entry (537 - 541, 1053)
             if ((normSub == "resultentry" || normSub == "labresultentry" || normSub == "labresultdataentry") && (normAct == "view" || normAct == "list") && _permittedRoleIds.Contains(537)) return true;
             if ((normSub == "resultentry" || normSub == "labresultentry" || normSub == "labresultdataentry") && (normAct == "create" || normAct == "add" || normAct == "save") && _permittedRoleIds.Contains(538)) return true;
-            if ((normSub == "resultentry" || normSub == "labresultentry" || normSub == "labresultdataentry") && (normAct == "authorize" || normAct == "auth") && _permittedRoleIds.Contains(539)) return true;
+            if ((normSub == "resultentry" || normSub == "labresultentry" || normSub == "labresultdataentry") && (normAct == "authorize" || normAct == "auth" || normAct == "verified" || normAct == "verify" || normAct == "auth1" || normAct == "authorize1") && _permittedRoleIds.Contains(539)) return true;
+            if ((normSub == "resultentry" || normSub == "labresultentry" || normSub == "labresultdataentry") && (normAct == "authorize2" || normAct == "auth2" || normAct == "approved" || normAct == "approve" || normAct == "authorize 2") && _permittedRoleIds.Contains(1053)) return true;
             if ((normSub == "resultentry" || normSub == "labresultentry" || normSub == "labresultdataentry") && (normAct == "preview" || normAct == "previewreport") && _permittedRoleIds.Contains(540)) return true;
             if ((normSub == "resultentry" || normSub == "labresultentry" || normSub == "labresultdataentry") && (normAct == "print" || normAct == "printreport") && _permittedRoleIds.Contains(541)) return true;
 
@@ -1234,6 +1255,8 @@ namespace Booking.Services
 
             return false;
         }
+
+        public bool HasAnyRole() => _permittedRoleIds.Count > 0;
 
         public bool HasRoleId(long roleId)
         {
@@ -3679,16 +3702,17 @@ namespace Booking.Services
                 }
             }
 
-            // 14b. Result Entry (Roles 537 - 541)
-            bool hasRe = isAdministrator || permList.Any(p => (p.Role_id >= 537 && p.Role_id <= 541) || p.Sub_module?.IndexOf("Result Entry", StringComparison.OrdinalIgnoreCase) >= 0);
+            // 14b. Result Entry (Roles 537 - 541, 1053)
+            bool hasRe = isAdministrator || permList.Any(p => (p.Role_id >= 537 && p.Role_id <= 541) || p.Role_id == 1053 || p.Sub_module?.IndexOf("Result Entry", StringComparison.OrdinalIgnoreCase) >= 0);
             if (hasRe)
             {
                 bool reView = isAdministrator || permList.Any(p => p.Role_id == 537 || (p.Sub_module?.Equals("Result Entry", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("View", StringComparison.OrdinalIgnoreCase) >= 0));
                 bool reAdd = isAdministrator || permList.Any(p => p.Role_id == 538 || (p.Sub_module?.Equals("Result Entry", StringComparison.OrdinalIgnoreCase) == true && (p.Module?.IndexOf("Create", StringComparison.OrdinalIgnoreCase) >= 0 || p.Module?.IndexOf("Save", StringComparison.OrdinalIgnoreCase) >= 0)));
-                bool reAuth = isAdministrator || permList.Any(p => p.Role_id == 539 || (p.Sub_module?.Equals("Result Entry", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Authorize", StringComparison.OrdinalIgnoreCase) >= 0));
+                bool reAuth = isAdministrator || permList.Any(p => p.Role_id == 539 || (p.Sub_module?.Equals("Result Entry", StringComparison.OrdinalIgnoreCase) == true && string.Equals(p.Module?.Trim(), "Authorize", StringComparison.OrdinalIgnoreCase)));
+                bool reAuth2 = isAdministrator || permList.Any(p => p.Role_id == 1053 || (p.Sub_module?.Equals("Result Entry", StringComparison.OrdinalIgnoreCase) == true && (string.Equals(p.Module?.Trim(), "Authorize 2", StringComparison.OrdinalIgnoreCase) || string.Equals(p.Module?.Trim(), "Approve", StringComparison.OrdinalIgnoreCase))));
                 bool rePrev = isAdministrator || permList.Any(p => p.Role_id == 540 || (p.Sub_module?.Equals("Result Entry", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Preview", StringComparison.OrdinalIgnoreCase) >= 0));
                 bool rePrint = isAdministrator || permList.Any(p => p.Role_id == 541 || (p.Sub_module?.Equals("Result Entry", StringComparison.OrdinalIgnoreCase) == true && p.Module?.IndexOf("Print", StringComparison.OrdinalIgnoreCase) >= 0));
-                if (reAdd || reAuth || rePrev || rePrint) reView = true;
+                if (reAdd || reAuth || reAuth2 || rePrev || rePrint) reView = true;
 
                 var reAliases = new[] { "Result Entry", "Result_Entry", "ResultEntry", "Lab Result Entry", "Lab_Result_Entry", "LabResultEntry", "Lab Result Data Entry", "LabResultDataEntry", "Print Lab Result" };
                 foreach (var dept in labDepts)

@@ -190,6 +190,7 @@ namespace Booking.Models
             new RolePermissionItem { Role_id = 537, Main_module = "Laboratory", Sub_module = "Result Entry", Module = "View", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 538, Main_module = "Laboratory", Sub_module = "Result Entry", Module = "Create", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 539, Main_module = "Laboratory", Sub_module = "Result Entry", Module = "Authorize", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1053, Main_module = "Laboratory", Sub_module = "Result Entry", Module = "Authorize 2", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 540, Main_module = "Laboratory", Sub_module = "Result Entry", Module = "Preview Report", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 541, Main_module = "Laboratory", Sub_module = "Result Entry", Module = "Print Report", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 542, Main_module = "Laboratory", Sub_module = "Test Master", Module = "View", Product_id = "MEDICO_APP" },
