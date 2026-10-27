@@ -4,7 +4,7 @@ namespace Booking.Models
 {
     public class LabSettingModel
     {
-        public Guid lsid { get; set; } = Guid.NewGuid();
+        public Guid lsid { get; set; } = Guid.Empty;
 
         public bool? ls_common_normal_values { get; set; } = false;
         public bool? ls_select_normal_values { get; set; } = false;

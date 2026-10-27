@@ -42,7 +42,10 @@ namespace Booking.Services
             try { OnSettingsChanged?.Invoke(); } catch { }
         }
 
-        public async Task<LabSettingModel?> GetLabSettingAsync(int? bhCode = null, bool forceRefresh = false)
+        public async Task<LabSettingModel?> GetLabSettingAsync(
+            int? bhCode = null,
+            bool forceRefresh = false,
+            bool throwOnError = false)
         {
             var currentTenant = _session?.TenantCode;
             if (!forceRefresh && _cachedSetting != null && _cachedTenantCode == currentTenant && _cachedBhCode == bhCode)
@@ -78,6 +81,11 @@ namespace Booking.Services
             catch (Exception ex)
             {
                 Console.WriteLine($"Error fetching LabSetting: {ex.Message}");
+                if (throwOnError)
+                {
+                    throw;
+                }
+
                 return new LabSettingModel
                 {
                     show_all_customers = true,
@@ -98,7 +106,7 @@ namespace Booking.Services
             {
                 ClearCache();
                 var url = isUpdate ? "api/LabSetting/update" : "api/LabSetting/insert";
-                var response = await _http.PostAsync(url, content);
+                using var response = await _http.PostAsync(url, content);
                 var errStr = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"[LabSettingService] Multipart Post to '{url}' ({response.StatusCode}): {errStr}");
                 return response.IsSuccessStatusCode;
