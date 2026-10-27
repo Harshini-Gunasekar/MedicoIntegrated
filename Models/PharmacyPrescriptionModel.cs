@@ -32,6 +32,7 @@ public class PharmacyPrescriptionQueueRow
     public string? duration { get; set; }
     public string? route { get; set; }
     public string? notes { get; set; }
+    public string? instructions { get => notes; set => notes = value; }
 
     public string status { get; set; } = "PENDING";
     public bool billed_status { get; set; } = false;
@@ -77,6 +78,7 @@ public class PrescriptionQueueItem
     public string? duration { get; set; }
     public string? route { get; set; }
     public string? notes { get; set; }
+    public string? instructions { get => notes; set => notes = value; }
 }
 public class MatchQueueItemRequest
 {

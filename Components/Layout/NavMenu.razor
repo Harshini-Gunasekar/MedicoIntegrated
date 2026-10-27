@@ -1152,9 +1152,17 @@
 
         <!-- Ultra-Compact Bottom Action Bar: Logout Button + Version -->
         <div class="sidebar-footer-actions">
-            <button type="button" class="btn-sidebar-shift btn-sidebar-logout" @onclick="HandleLogout" title="Logout of Medico Portal">
-                <i class="bi bi-box-arrow-right"></i>
-                <span>Logout</span>
+            <button type="button" class="btn-sidebar-shift btn-sidebar-logout" @onclick="HandleLogout" disabled="@_isLoggingOut" title="Logout of Medico Portal">
+                @if (_isLoggingOut)
+                {
+                    <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true" style="width: 0.82rem; height: 0.82rem; border-width: 0.15em;"></span>
+                    <span>Logging out...</span>
+                }
+                else
+                {
+                    <i class="bi bi-box-arrow-right"></i>
+                    <span>Logout</span>
+                }
             </button>
 
             <div class="sidebar-version-badge" title="Medico Portal v@(AppVersionInfo.Version)">
@@ -1380,6 +1388,7 @@
     private bool isSidebarCollapsed = false;
     private bool isDarkMode = false;
     private bool isDisposed = false;
+    private bool _isLoggingOut = false;
 
     private string displayUserName = "";
     private string displayUserRole = "";
@@ -1724,7 +1733,7 @@
     {
         _ = InvokeAsync(() =>
         {
-            if (isDisposed) return Task.CompletedTask;
+            if (isDisposed || _isLoggingOut) return Task.CompletedTask;
             SyncUserProfile();
             if (IsAdmin())
             {
@@ -1784,6 +1793,7 @@
     {
         isDisposed = true;
         _shiftExpirationTimer?.Dispose();
+        _shiftExpirationTimer = null;
         NavigationManager.LocationChanged -= OnLocationChanged;
         TenantState.OnSessionChanged -= HandleSessionChanged;
         RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
@@ -2839,6 +2849,29 @@
 
     private async Task HandleLogout()
     {
+        if (_isLoggingOut) return;
+        _isLoggingOut = true;
+        await InvokeAsync(StateHasChanged);
+
+        // 1. Immediately dispose background shift timers
+        try
+        {
+            _shiftExpirationTimer?.Dispose();
+            _shiftExpirationTimer = null;
+        }
+        catch { }
+
+        // 2. Unsubscribe events to avoid cascade of handlers during tear-down
+        try
+        {
+            NavigationManager.LocationChanged -= OnLocationChanged;
+            TenantState.OnSessionChanged -= HandleSessionChanged;
+            RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
+            LabSettingService.OnSettingsChanged -= HandleLabSettingsChanged;
+        }
+        catch { }
+
+        // 3. Clear all browser storage & broadcast logout to all open tabs in one fast JS call
         try
         {
             await JS.InvokeVoidAsync("medicoAllowBack");
@@ -2855,28 +2888,7 @@
         }
         catch { }
 
-        // Comprehensive ProtectedLocalStorage cleanup
-        var keysToDelete = new[]
-        {
-            "authToken", "auth_token", "tenant_code", "tenant_name",
-            "UserDetails", "UserRights", "UserRolePermissions",
-            "bhcode", "session_branch_confirmed", "UserBranches", "UserBranchCodes",
-            "user_name", "login_input", "user_role", "user_description",
-            "user_code", "IsTenantAdmin", "cntcode",
-            "sales_draft_tabs", "sales_billed_prescriptions",
-            "sales_draft_patient_id", "sales_draft_bill_items",
-            "active_nav_group", "PurchaseFilterDraft"
-        };
-
-        foreach (var key in keysToDelete)
-        {
-            try
-            {
-                await _sessionStorage.DeleteAsync(key);
-            }
-            catch { }
-        }
-
+        // 4. In-memory clean up
         RoleService.ClearPermissions();
         LabSettingService.ClearCache();
         _isAdminSession = false;
@@ -2884,12 +2896,14 @@
         displayUserRole = "";
         displayUserDescription = "";
         TenantState.Clear();
+
+        // 5. Navigate to login
         NavigationManager.NavigateTo("/user-login", forceLoad: true);
     }
 
     private async Task RefreshActiveShiftStatusAsync()
     {
-        if (isDisposed || !TenantState.IsAuthenticated) return;
+        if (isDisposed || _isLoggingOut || !TenantState.IsAuthenticated) return;
         try
         {
             var openCountersTask = HmsBillingService.GetOpenCountersAsync();
@@ -2964,9 +2978,11 @@
 
     private void StartShiftMonitorTimer()
     {
+        if (_isLoggingOut || isDisposed) return;
         _shiftExpirationTimer?.Dispose();
         _shiftExpirationTimer = new System.Threading.Timer(async _ =>
         {
+            if (_isLoggingOut || isDisposed) return;
             await RefreshActiveShiftStatusAsync();
         }, null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(15));
     }

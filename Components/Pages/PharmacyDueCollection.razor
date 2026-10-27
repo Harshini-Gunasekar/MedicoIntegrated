@@ -1,0 +1,2220 @@
+@page "/pharmacy-due-collection"
+@rendermode InteractiveServer
+@using Booking.Models
+@using medico_backend.Model
+@using Medico_Backend.Model
+@using Newtonsoft.Json
+@inject Booking.Services.PharmacyDueCollectionService DueService
+@inject Booking.Services.CounterMasterService CounterService
+@inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.PaymodeMasterService PaymodeService
+@inject Booking.Services.ToastService ToastService
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Booking.Services.LabSettingService LabSettingService
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
+@inject IHttpClientFactory ClientFactory
+@inject Booking.Services.RoleMasterService RoleService
+@implements IDisposable
+
+<div class="due-collection-wrapper">
+    <!-- Top Header Card -->
+    <div class="due-header-card">
+        <div class="header-left-section" style="display: flex; align-items: center; gap: 1.25rem;">
+            <div class="header-icon-container">
+                <i class="bi bi-wallet2"></i>
+            </div>
+            <div class="header-text-container">
+                <h1>Pharmacy Due Collection</h1>
+                <p><span class="header-status-dot"></span> PHARMACY PAYMENT MANAGEMENT</p>
+            </div>
+        </div>
+
+        <div class="header-right-section">
+            <div class="header-summary-cards">
+                <div class="header-summary-card balance">
+                    <span class="header-summary-label">TOTAL BALANCE</span>
+                    <span class="header-summary-value text-balance">₹ @HeaderTotalBalance.ToString("N2")</span>
+                </div>
+                <div class="header-summary-card count">
+                    <span class="header-summary-label">@(activeTab == "history" ? "HISTORY COUNT" : "BILL COUNT")</span>
+                    <span class="header-summary-value text-count">@HeaderBillCount</span>
+                </div>
+                <div class="header-summary-card collected">
+                    <span class="header-summary-label">COLLECTED AMT</span>
+                    <span class="header-summary-value text-collected">₹ @HeaderCollectedAmount.ToString("N2")</span>
+                </div>
+                <div class="header-summary-card remaining">
+                    <span class="header-summary-label">REMAINING BAL</span>
+                    <span class="header-summary-value text-remaining">₹ @HeaderRemainingBalance.ToString("N2")</span>
+                </div>
+            </div>
+
+            <button class="btn-history-filter-trigger @(showCollectFilter ? "active" : "")" @onclick="ToggleCollectFilter">
+                <i class="bi bi-funnel"></i> Filter
+            </button>
+        </div>
+    </div>
+
+    <!-- Navigation Tabs -->
+    <div class="due-tabs">
+        <button class="tab-btn @(activeTab == "collect" ? "active" : "")" @onclick='() => SetActiveTab("collect")'>
+            <i class="bi bi-cash-coin"></i> Collect Dues
+        </button>
+        <button class="tab-btn @(activeTab == "history" ? "active" : "")" @onclick='() => SetActiveTab("history")'>
+            <i class="bi bi-clock-history"></i> Collection History
+        </button>
+    </div>
+
+    <!-- TAB 1: COLLECT DUES -->
+    @if (activeTab == "collect")
+    {
+        <div class="collect-tab-layout">
+            <!-- Advanced Filter Card -->
+            @if (showCollectFilter)
+            {
+                <div class="advanced-filter-card">
+                    <div class="filter-boxes-grid">
+                        <!-- First Row: PATIENT SEARCH, PATIENT ID, MOBILE NO, BRANCH, COUNTER -->
+                        <div style="display: flex; gap: 1rem; align-items: flex-end; flex-wrap: wrap; width: 100%;">
+                            <!-- Patient Autocomplete Search -->
+                            <div class="form-group-filter" style="flex: 2; min-width: 260px; position: relative;">
+                                <label>PATIENT SEARCH</label>
+                                <div class="autocomplete-search-wrapper">
+                                    <div style="position: relative; display: flex; align-items: center;">
+                                        <input type="text" class="filter-input" placeholder="Type Patient Name, Mobile, or ID..."
+                                               value="@patientSearchQuery" @oninput="OnPatientSearchInput" @onkeydown="OnPatientSearchKeyDown" style="width: 100%; padding-right: 28px;" />
+                                        @if (isSearchingPatients)
+                                        {
+                                            <span class="spinner-border spinner-border-sm" style="position: absolute; right: 8px; width: 14px; height: 14px; color: #4f46e5;" role="status"></span>
+                                        }
+                                        else if (!string.IsNullOrWhiteSpace(patientSearchQuery))
+                                        {
+                                            <button type="button" @onclick="ClearPatientSearch" style="position: absolute; right: 8px; background: none; border: none; color: #94a3b8; cursor: pointer; padding: 0; line-height: 1;" title="Clear search">
+                                                <i class="bi bi-x-circle-fill"></i>
+                                            </button>
+                                        }
+                                    </div>
+                                    @if (showPatientDropdown)
+                                    {
+                                        <div class="autocomplete-dropdown">
+                                            <div class="autocomplete-header">
+                                                <span>MATCHING PATIENTS (@searchedPatients.Count)</span>
+                                                <button type="button" class="btn-close-dropdown" @onclick="() => showPatientDropdown = false">&times;</button>
+                                            </div>
+                                            @if (searchedPatients.Count == 0)
+                                            {
+                                                <div style="padding: 0.85rem 1rem; color: #64748b; font-size: 0.82rem; text-align: center;">
+                                                    No patients found matching "<strong>@patientSearchQuery</strong>"
+                                                </div>
+                                            }
+                                            else
+                                            {
+                                                @for (int i = 0; i < searchedPatients.Count; i++)
+                                                {
+                                                    var patIdx = i;
+                                                    var pat = searchedPatients[i];
+                                                    var displayName = !string.IsNullOrWhiteSpace(pat.namewithinitials)
+                                                        ? pat.namewithinitials
+                                                        : (!string.IsNullOrWhiteSpace(pat.name) ? pat.name : $"Patient {pat.custid}");
+
+                                                    <div class="autocomplete-item @(patIdx == activePatientIndex ? "active-focused" : "")"
+                                                         @onclick="() => SelectCustomerPatient(pat)"
+                                                         @onmouseover="() => activePatientIndex = patIdx">
+                                                        <div style="flex: 1; min-width: 0;">
+                                                            <div style="display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap;">
+                                                                <span style="font-weight: 700; color: #0f172a; font-size: 0.88rem;">@displayName</span>
+                                                                <span class="autocomplete-code">CUST-@pat.custid</span>
+                                                                @if (!string.IsNullOrWhiteSpace(pat.op_no))
+                                                                {
+                                                                    <span class="autocomplete-op-code">OP: @pat.op_no</span>
+                                                                }
+                                                            </div>
+                                                            <div style="font-size: 0.78rem; color: #64748b; margin-top: 2px; display: flex; gap: 0.6rem; flex-wrap: wrap;">
+                                                                <span>📞 @(string.IsNullOrWhiteSpace(pat.mobile) ? (string.IsNullOrWhiteSpace(pat.phone) ? "No Mobile" : pat.phone) : pat.mobile)</span>
+                                                                @if (pat.ageyears > 0 || !string.IsNullOrWhiteSpace(pat.gender))
+                                                                {
+                                                                    <span>| 👤 @pat.gender @(pat.ageyears > 0 ? $"({pat.ageyears} Yrs)" : "")</span>
+                                                                }
+                                                                @if (!string.IsNullOrWhiteSpace(pat.area) || !string.IsNullOrWhiteSpace(pat.city))
+                                                                {
+                                                                    <span>| 📍 @pat.area@(string.IsNullOrWhiteSpace(pat.city) ? "" : $", {pat.city}")</span>
+                                                                }
+                                                            </div>
+                                                        </div>
+                                                        <div style="font-size: 0.75rem; color: #4f46e5; font-weight: 700; display: flex; align-items: center; gap: 4px; padding-left: 8px;">
+                                                            <span>Select</span> <i class="bi bi-chevron-right"></i>
+                                                        </div>
+                                                    </div>
+                                                }
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </div>
+
+                            <!-- Direct Patient ID -->
+                            <div class="form-group-filter" style="flex: 1; min-width: 120px;">
+                                <label>PATIENT ID</label>
+                                <input type="text" class="filter-input" placeholder="e.g. P1001" @bind="patientIdFilter" style="width: 100%;" />
+                            </div>
+
+                            <!-- Direct Mobile No -->
+                            <div class="form-group-filter" style="flex: 1; min-width: 130px;">
+                                <label>MOBILE NO</label>
+                                <input type="text" class="filter-input" placeholder="e.g. 9876543210" @bind="mobileNoFilter" style="width: 100%;" />
+                            </div>
+
+                            <!-- Branch -->
+                            <div class="form-group-filter" style="flex: 1; min-width: 150px;">
+                                <label>BRANCH</label>
+                                <select class="filter-select" @bind="selectedBranch" @bind:after="OnBranchChanged" style="width: 100%;">
+                                    <option value="">Select Branch</option>
+                                    @if (branchesList != null && branchesList.Count > 0)
+                                    {
+                                        @foreach (var b in branchesList)
+                                        {
+                                            <option value="@b.bh_code.ToString()">@b.name</option>
+                                        }
+                                    }
+                                </select>
+                            </div>
+
+                            <!-- Counter -->
+                            <div class="form-group-filter" style="flex: 1; min-width: 150px;">
+                                <label>COUNTER</label>
+                                <select class="filter-select" @bind="selectedCounter" style="width: 100%;">
+                                    <option value="">Select Counter</option>
+                                    @if (filteredCountersList != null && filteredCountersList.Count > 0)
+                                    {
+                                        @foreach (var c in filteredCountersList)
+                                        {
+                                            <option value="@c.cntcode.ToString()">@c.name</option>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        @foreach (var c in allCounters)
+                                        {
+                                            <option value="@c.cntcode.ToString()">@c.name</option>
+                                        }
+                                    }
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Second Row: DATE, PAYMODE, CHEQUE / REF, AMOUNT + AUTO SELECT, SEARCH / RESET -->
+                        <div style="display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 1rem; width: 100%; margin-top: 0.25rem;">
+                            <div style="display: flex; gap: 0.85rem; align-items: flex-end; flex-wrap: wrap;">
+                                <!-- Collection Date -->
+                                <div class="form-group-filter" style="width: 140px;">
+                                    <label>COLLECTION DATE</label>
+                                    <input type="date" class="filter-input" @bind="requestDate" style="width: 100%;" />
+                                </div>
+
+                                <!-- Pay Mode -->
+                                <div class="form-group-filter" style="width: 130px;">
+                                    <label>PAY MODE</label>
+                                    <select class="filter-select" @bind="payMode" style="width: 100%;">
+                                        <option value="CASH">CASH</option>
+                                        <option value="UPI">UPI</option>
+                                        <option value="CARD">CARD</option>
+                                        <option value="GPAY">GPAY</option>
+                                        <option value="CHEQUE">CHEQUE</option>
+                                        @if (paymodesList != null && paymodesList.Count > 0)
+                                        {
+                                            @foreach (var pm in paymodesList.Where(p => !new[] { "CASH", "CARD", "UPI", "GPAY", "CHEQUE" }.Contains(p.shortname?.ToUpperInvariant() ?? "")))
+                                            {
+                                                <option value="@(pm.shortname?.ToUpperInvariant() ?? pm.name)">@(pm.name ?? pm.shortname)</option>
+                                            }
+                                        }
+                                    </select>
+                                </div>
+
+                                <!-- Cheque fields -->
+                                @if (payMode == "CHEQUE")
+                                {
+                                    <div class="form-group-filter" style="width: 130px;">
+                                        <label>CHEQUE NO</label>
+                                        <input type="text" class="filter-input" placeholder="e.g. 004512" @bind="chequeNo" style="width: 100%;" />
+                                    </div>
+                                    <div class="form-group-filter" style="width: 160px;">
+                                        <label>ACCOUNT NO / BANK</label>
+                                        <input type="text" class="filter-input" placeholder="e.g. 50100123456789" @bind="accountNo" style="width: 100%;" />
+                                    </div>
+                                }
+                                else if (payMode != "CASH")
+                                {
+                                    <div class="form-group-filter" style="width: 180px;">
+                                        <label>TXN / REF NO</label>
+                                        <input type="text" class="filter-input" placeholder="e.g. UPI4829301847" @bind="referenceNo" style="width: 100%;" />
+                                    </div>
+                                }
+
+                                <!-- Amount + Auto Select button -->
+                                <div class="form-group-filter" style="width: 220px;">
+                                    <label>AMOUNT</label>
+                                    <div style="display: flex; align-items: center; gap: 0.4rem;">
+                                        <input type="number" step="any" min="0" class="filter-input" placeholder="0.00"
+                                               @bind="totalAmountToAllocate" @bind:event="oninput" style="flex: 1;" />
+                                        <button type="button" class="btn-link" @onclick="AutoAllocateAmount"
+                                                disabled="@(totalAmountToAllocate == null || totalAmountToAllocate <= 0 || pendingBills.Count == 0)"
+                                                title="Auto distribute amount greedily across pending bills">
+                                            Auto select
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Filter Actions -->
+                            <div style="display: flex; gap: 0.75rem; align-items: flex-end;">
+                                <button class="btn-reset-filters" @onclick="ResetFilters">
+                                    <i class="bi bi-arrow-counterclockwise"></i> Reset
+                                </button>
+                                <button class="btn-search-blue" @onclick="SearchPendingDues" disabled="@loadingBills">
+                                    @if (loadingBills)
+                                    {
+                                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                                    }
+                                    else
+                                    {
+                                        <i class="bi bi-search"></i>
+                                    }
+                                    Search Dues
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            }
+
+            <!-- Selected Patient Information Card -->
+            @if (selectedPatient != null || pendingBills.Any())
+            {
+                var displayName = selectedPatient != null
+                    ? (!string.IsNullOrWhiteSpace(selectedPatient.namewithinitials) ? selectedPatient.namewithinitials : (!string.IsNullOrWhiteSpace(selectedPatient.name) ? selectedPatient.name : "Patient"))
+                    : (pendingBills.FirstOrDefault()?.patientname ?? "Patient");
+                var dispId = selectedPatient != null
+                    ? (selectedPatient.custid > 0 ? selectedPatient.custid.ToString() : (selectedPatient.custcode ?? patientIdFilter))
+                    : (pendingBills.FirstOrDefault()?.patientid ?? patientIdFilter);
+                var dispMobile = selectedPatient != null
+                    ? (!string.IsNullOrWhiteSpace(selectedPatient.mobile) ? selectedPatient.mobile : (selectedPatient.phone ?? mobileNoFilter))
+                    : (pendingBills.FirstOrDefault()?.mobileno ?? mobileNoFilter);
+                var dispOp = selectedPatient?.op_no;
+                var dispArea = selectedPatient?.area;
+                var dispGender = selectedPatient?.gender;
+                var dispAge = selectedPatient != null && selectedPatient.ageyears > 0 ? $"{selectedPatient.ageyears} Yrs" : null;
+
+                <div class="selected-patient-card">
+                    <div class="patient-card-left">
+                        <div class="patient-avatar">
+                            <i class="bi bi-person-fill"></i>
+                        </div>
+                        <div class="patient-info">
+                            <div class="patient-name-row">
+                                <span class="patient-name">@displayName</span>
+                                @if (!string.IsNullOrWhiteSpace(dispId))
+                                {
+                                    <span class="patient-id-badge">ID: @dispId</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(dispOp))
+                                {
+                                    <span class="patient-op-badge">OP: @dispOp</span>
+                                }
+                            </div>
+                            <div class="patient-meta-row">
+                                @if (!string.IsNullOrWhiteSpace(dispMobile))
+                                {
+                                    <span><i class="bi bi-telephone"></i> @dispMobile</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(dispGender) || !string.IsNullOrWhiteSpace(dispAge))
+                                {
+                                    <span><i class="bi bi-person"></i> @dispGender @(dispAge != null ? $", {dispAge}" : "")</span>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(dispArea))
+                                {
+                                    <span><i class="bi bi-geo-alt"></i> @dispArea</span>
+                                }
+                                <span class="bills-found-tag"><i class="bi bi-receipt"></i> @pendingBills.Count Pending Bill(s)</span>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="patient-card-right">
+                        <button type="button" class="btn-clear-patient" @onclick="ClearSelectedPatient" title="Clear Patient Selection">
+                            <i class="bi bi-x-circle"></i> Clear Selection
+                        </button>
+                    </div>
+                </div>
+            }
+
+            <!-- Controls Card -->
+            <div class="controls-card">
+                <div class="controls-left">
+                    <span style="font-size: 0.85rem; font-weight: 700; color: #475569;">
+                        Selected: <strong style="color: #4f46e5;">@selectedBills.Count</strong> of <strong>@pendingBills.Count</strong> bills
+                        | Total Collection: <strong style="color: #4f46e5;">₹ @TotalCollectedEntered.ToString("N2")</strong>
+                    </span>
+                </div>
+
+                <div class="controls-right">
+                    <div class="search-input-wrapper">
+                        <i class="bi bi-search"></i>
+                        <input type="text" class="control-input" placeholder="Filter bills or patient..." @bind="tableSearchQuery" @bind:event="oninput" />
+                        @if (!string.IsNullOrEmpty(tableSearchQuery))
+                        {
+                            <button class="clear-search-btn" @onclick="() => tableSearchQuery = string.Empty">×</button>
+                        }
+                    </div>
+
+                    <button class="btn-save" @onclick="SaveDueCollection" disabled="@(selectedBills.Count == 0 || TotalCollectedEntered <= 0 || saving)">
+                        @if (saving)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            <span>Saving...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-check2-circle"></i>
+                            <span>Save Collection</span>
+                        }
+                    </button>
+                </div>
+            </div>
+
+            <!-- Bills Table -->
+            <div class="table-container shadow-sm mt-2">
+                <table class="due-table">
+                    <thead>
+                        <tr>
+                            <th class="col-check">
+                                <input type="checkbox" checked="@IsAllSelected()" @onchange="ToggleSelectAll" disabled="@(FilteredPendingBills.Count == 0)" title="Select all bills" />
+                            </th>
+                            <th>BILL NO</th>
+                            <th>DATE / TIME</th>
+                            <th>PATIENT ID</th>
+                            <th>CUSTOMER NAME</th>
+                            <th>MOBILE</th>
+                            <th class="text-end">BILL AMOUNT</th>
+                            <th class="text-end">PAID AMOUNT</th>
+                            <th class="text-end">REMAINING DUE</th>
+                            <th class="text-center" style="width: 140px;">COLLECTED (₹)</th>
+                            <th style="min-width: 140px;">REMARKS</th>
+                            <th class="text-center">STATUS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (loadingBills)
+                        {
+                            <tr>
+                                <td colspan="12" class="text-center py-5">
+                                    <div class="spinner-border text-primary" role="status"></div>
+                                    <div class="mt-2 text-muted font-bold">Loading pending pharmacy dues...</div>
+                                </td>
+                            </tr>
+                        }
+                        else if (pendingBills.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="12" class="text-center py-5 text-muted">
+                                    <i class="bi bi-receipt font-xxl" style="font-size: 2.2rem; color: #cbd5e1; display: block; margin-bottom: 0.5rem;"></i>
+                                    <div style="font-weight: 700; color: #475569;">No pending dues loaded.</div>
+                                    <div style="font-size: 0.8rem; color: #94a3b8; margin-top: 0.25rem;">
+                                        Enter a Patient ID (e.g. P1001) or Mobile Number, or use the Patient Search autocomplete above.
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                        else if (FilteredPendingBills.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="12" class="text-center py-4 text-muted">
+                                    No pending bills match your filter query "<strong>@tableSearchQuery</strong>".
+                                </td>
+                            </tr>
+                        }
+                        else
+                        {
+                            @foreach (var bill in FilteredPendingBills)
+                            {
+                                var isSelected = selectedBills.ContainsKey(bill.salescode);
+                                var enteredAmt = collectedAmounts.GetValueOrDefault(bill.salescode, 0);
+
+                                <tr class="@(isSelected ? "row-selected" : "")">
+                                    <td class="col-check">
+                                        <input type="checkbox" checked="@isSelected" @onchange="() => ToggleSelectBill(bill)" />
+                                    </td>
+                                    <td>
+                                        <span style="font-weight: 800; color: #4f46e5; font-family: monospace;">@bill.billno</span>
+                                    </td>
+                                    <td class="text-muted" style="font-size: 0.8rem;">
+                                        @(bill.billdate?.ToString("dd-MMM-yyyy HH:mm") ?? "-")
+                                    </td>
+                                    <td style="font-weight: 700; font-family: monospace;">
+                                        @bill.patientid
+                                    </td>
+                                    <td style="font-weight: 700; color: #0f172a;">
+                                        @bill.patientname
+                                    </td>
+                                    <td class="text-muted">
+                                        @bill.mobileno
+                                    </td>
+                                    <td class="text-end" style="font-weight: 700;">
+                                        ₹ @bill.billamount.ToString("N2")
+                                    </td>
+                                    <td class="text-end text-muted">
+                                        ₹ @bill.paidamount.ToString("N2")
+                                    </td>
+                                    <td class="text-end" style="font-weight: 800; color: #dc2626;">
+                                        ₹ @bill.remainingamount.ToString("N2")
+                                    </td>
+                                    <td class="text-center">
+                                        <input id="@($"collected_{bill.salescode}")"
+                                               type="number" step="any" min="0" max="@bill.remainingamount"
+                                               class="row-input text-end"
+                                               value="@GetCollectedAmountString(bill.salescode)"
+                                               @oninput="(e) => OnCollectedAmountInput(bill, e)"
+                                               @onclick="() => EnsureBillSelected(bill)"
+                                               placeholder="0.00" />
+                                    </td>
+                                    <td>
+                                        <input type="text" class="filter-input" style="height: 32px; font-size: 0.8rem; width: 100%;"
+                                               placeholder="Remarks..."
+                                               value="@GetBillRemarks(bill.salescode)"
+                                               @oninput="(e) => SetBillRemarks(bill, e.Value?.ToString())"
+                                               @onclick="() => EnsureBillSelected(bill)" />
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="badge-status @(bill.paymentstatus?.ToLowerInvariant() == "paid" ? "paid" : (bill.paymentstatus?.ToLowerInvariant() == "partial" ? "partial" : "due"))">
+                                            @bill.paymentstatus
+                                        </span>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+
+    <!-- TAB 2: COLLECTION HISTORY -->
+    @if (activeTab == "history")
+    {
+        <div class="history-tab-layout">
+            <!-- History Filter Card -->
+            <div class="hist-filter-card">
+                <div class="hist-filter-row">
+                    <div class="form-group-filter" style="width: 140px;">
+                        <label>FROM DATE</label>
+                        <input type="date" class="filter-input" @bind="historyFromDate" />
+                    </div>
+                    <div class="form-group-filter" style="width: 140px;">
+                        <label>TO DATE</label>
+                        <input type="date" class="filter-input" @bind="historyToDate" />
+                    </div>
+                    <div class="form-group-filter" style="width: 130px;">
+                        <label>PRESET</label>
+                        <select class="filter-select" value="@historyPreset" @onchange="OnHistoryPresetChanged">
+                            <option value="All">All Time</option>
+                            <option value="Today">Today</option>
+                            <option value="Yesterday">Yesterday</option>
+                            <option value="This Week">This Week</option>
+                            <option value="This Month">This Month</option>
+                        </select>
+                    </div>
+                    <div class="form-group-filter" style="width: 130px;">
+                        <label>PAY MODE</label>
+                        <select class="filter-select" @bind="historyPayMode">
+                            <option value="">All Modes</option>
+                            <option value="CASH">CASH</option>
+                            <option value="UPI">UPI</option>
+                            <option value="CARD">CARD</option>
+                            <option value="CHEQUE">CHEQUE</option>
+                        </select>
+                    </div>
+                    <div class="form-group-filter" style="flex: 1; min-width: 200px;">
+                        <label>SEARCH HISTORY</label>
+                        <input type="text" class="filter-input" placeholder="Search Request No, Patient, Mobile, Bill No..." @bind="historySearchQuery" @bind:event="oninput" />
+                    </div>
+                    <div style="display: flex; gap: 0.5rem; align-items: flex-end;">
+                        <button class="btn-hist-action search" @onclick="LoadDueCollectionHistory" disabled="@loadingHistory">
+                            @if (loadingHistory)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                            }
+                            else
+                            {
+                                <i class="bi bi-search"></i>
+                            }
+                            Search
+                        </button>
+                        <button class="btn-hist-action reset" @onclick="ResetHistoryFilters">
+                            <i class="bi bi-arrow-counterclockwise"></i> Reset
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- History Summary Stats -->
+            <div style="display: flex; gap: 1rem; margin-bottom: 0.75rem; flex-wrap: wrap;">
+                <div class="header-summary-card count" style="flex: 1; background: #ffffff; padding: 0.75rem 1rem;">
+                    <span class="header-summary-label">COLLECTIONS COUNT</span>
+                    <span class="header-summary-value text-count" style="font-size: 1.25rem;">@FilteredHistoryList.Count</span>
+                </div>
+                <div class="header-summary-card collected" style="flex: 1; background: #ffffff; padding: 0.75rem 1rem;">
+                    <span class="header-summary-label">TOTAL AMOUNT COLLECTED</span>
+                    <span class="header-summary-value text-collected" style="font-size: 1.25rem;">₹ @FilteredHistoryList.Sum(h => h.master?.totalcollectedamount ?? 0).ToString("N2")</span>
+                </div>
+                <div class="header-summary-card remaining" style="flex: 1; background: #ffffff; padding: 0.75rem 1rem;">
+                    <span class="header-summary-label">TOTAL REMAINING</span>
+                    <span class="header-summary-value text-remaining" style="font-size: 1.25rem;">₹ @FilteredHistoryList.Sum(h => h.master?.totalremainingamount ?? 0).ToString("N2")</span>
+                </div>
+            </div>
+
+            <!-- History Table -->
+            <div class="table-container shadow-sm">
+                <table class="due-table">
+                    <thead>
+                        <tr>
+                            <th>REQUEST NO</th>
+                            <th>DATE / TIME</th>
+                            <th>PATIENT ID</th>
+                            <th>PATIENT NAME</th>
+                            <th>MOBILE</th>
+                            <th class="text-center">BILLS</th>
+                            <th class="text-end">TOTAL DUE</th>
+                            <th class="text-end">COLLECTED</th>
+                            <th class="text-end">REMAINING</th>
+                            <th class="text-center">PAY MODE</th>
+                            <th class="text-center">STATUS</th>
+                            <th class="text-center" style="width: 140px;">ACTIONS</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @if (loadingHistory)
+                        {
+                            <tr>
+                                <td colspan="12" class="text-center py-5">
+                                    <div class="spinner-border text-primary" role="status"></div>
+                                    <div class="mt-2 text-muted font-bold">Loading past pharmacy due collections...</div>
+                                </td>
+                            </tr>
+                        }
+                        else if (FilteredHistoryList.Count == 0)
+                        {
+                            <tr>
+                                <td colspan="12" class="text-center py-5 text-muted">
+                                    <i class="bi bi-clock-history font-xxl" style="font-size: 2.2rem; color: #cbd5e1; display: block; margin-bottom: 0.5rem;"></i>
+                                    <div style="font-weight: 700; color: #475569;">No collection history found.</div>
+                                </td>
+                            </tr>
+                        }
+                        else
+                        {
+                            @foreach (var rec in FilteredHistoryList)
+                            {
+                                var m = rec.master;
+                                if (m == null) continue;
+
+                                <tr>
+                                    <td>
+                                        <strong style="color: #4f46e5; font-family: monospace;">@m.requestno</strong>
+                                    </td>
+                                    <td class="text-muted" style="font-size: 0.8rem;">
+                                        @(m.requestdate?.ToString("dd-MMM-yyyy HH:mm") ?? "-")
+                                    </td>
+                                    <td style="font-weight: 700; font-family: monospace;">
+                                        @m.patientid
+                                    </td>
+                                    <td style="font-weight: 700; color: #0f172a;">
+                                        @m.patientname
+                                    </td>
+                                    <td class="text-muted">
+                                        @m.mobileno
+                                    </td>
+                                    <td class="text-center font-bold">
+                                        @(m.totalbills > 0 ? m.totalbills : (rec.details?.Count ?? 0))
+                                    </td>
+                                    <td class="text-end" style="font-weight: 700;">
+                                        ₹ @m.totaldueamount.ToString("N2")
+                                    </td>
+                                    <td class="text-end" style="font-weight: 800; color: #10b981;">
+                                        ₹ @m.totalcollectedamount.ToString("N2")
+                                    </td>
+                                    <td class="text-end" style="font-weight: 700; color: #dc2626;">
+                                        ₹ @m.totalremainingamount.ToString("N2")
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="badge bg-light text-dark border">
+                                            @m.paymentmode
+                                            @if (!string.IsNullOrEmpty(m.referenceno))
+                                            {
+                                                <small style="display: block; font-size: 0.68rem; color: #64748b;">@m.referenceno</small>
+                                            }
+                                            @if (!string.IsNullOrEmpty(m.chequeno))
+                                            {
+                                                <small style="display: block; font-size: 0.68rem; color: #64748b;">Chq: @m.chequeno</small>
+                                            }
+                                        </span>
+                                    </td>
+                                    <td class="text-center">
+                                        <span class="badge-status completed">
+                                            @(string.IsNullOrWhiteSpace(m.status) ? "COMPLETED" : m.status)
+                                        </span>
+                                    </td>
+                                    <td class="text-center">
+                                        <div style="display: inline-flex; gap: 0.35rem;">
+                                            <button class="btn btn-sm btn-outline-primary" style="padding: 2px 7px; font-size: 0.75rem;"
+                                                    @onclick="() => OpenDetailsModal(rec)" title="View Details">
+                                                <i class="bi bi-eye"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-primary" style="padding: 2px 7px; font-size: 0.75rem;"
+                                                    @onclick="() => PrintHistoryReceipt(rec)" title="Print Receipt">
+                                                <i class="bi bi-printer"></i>
+                                            </button>
+                                            <button class="btn btn-sm btn-outline-danger" style="padding: 2px 7px; font-size: 0.75rem;"
+                                                    @onclick="() => PromptDeleteCollection(rec)" title="Delete Collection (Restores Balance)">
+                                                <i class="bi bi-trash"></i>
+                                            </button>
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    }
+</div>
+
+<!-- SUCCESS / RECEIPT MODAL -->
+@if (showSuccessModal && lastCreatedReceipt != null)
+{
+    <div class="modal-backdrop-custom">
+        <div class="modal-card-custom shadow">
+            <div class="modal-header-custom success">
+                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                    <div style="width: 36px; height: 36px; border-radius: 50%; background: #10b981; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 1.2rem;">
+                        <i class="bi bi-check-lg"></i>
+                    </div>
+                    <div>
+                        <h3>Due Collection Saved Successfully</h3>
+                        <p style="margin: 0; font-size: 0.8rem; color: #047857; font-weight: 700;">
+                            Request No: <span style="font-family: monospace;">@lastCreatedReceipt.RequestNo</span>
+                        </p>
+                    </div>
+                </div>
+                <button class="close-btn" @onclick="() => showSuccessModal = false">×</button>
+            </div>
+
+            <div class="modal-body-custom">
+                <div id="printable-receipt" style="background: #ffffff; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 1.25rem; font-family: monospace, sans-serif;">
+                    <div style="text-align: center; border-bottom: 1.5px solid #0f172a; padding-bottom: 0.5rem; margin-bottom: 0.75rem;">
+                        <h4 style="margin: 0; font-weight: 800; font-size: 1.1rem; color: #0f172a;">MEDICO PHARMACY</h4>
+                        <div style="font-size: 0.75rem; color: #475569;">DUE COLLECTION RECEIPT</div>
+                        <div style="font-size: 0.75rem; color: #64748b;">Receipt #: <strong>@lastCreatedReceipt.RequestNo</strong> | Date: @lastCreatedReceipt.RequestDate.ToString("dd-MMM-yyyy HH:mm")</div>
+                    </div>
+
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.5rem; font-size: 0.8rem; margin-bottom: 0.75rem;">
+                        <div>Patient ID: <strong>@lastCreatedReceipt.PatientId</strong></div>
+                        <div>Name: <strong>@lastCreatedReceipt.PatientName</strong></div>
+                        <div>Mobile: <strong>@lastCreatedReceipt.MobileNo</strong></div>
+                        <div>Pay Mode: <strong>@lastCreatedReceipt.PaymentMode</strong></div>
+                        @if (!string.IsNullOrEmpty(lastCreatedReceipt.ReferenceNo))
+                        {
+                            <div style="grid-column: span 2;">Ref / Txn No: <strong>@lastCreatedReceipt.ReferenceNo</strong></div>
+                        }
+                    </div>
+
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.78rem; margin-bottom: 0.75rem;">
+                        <thead>
+                            <tr style="border-top: 1px solid #cbd5e1; border-bottom: 1px solid #cbd5e1;">
+                                <th style="text-align: left; padding: 4px 2px;">BILL NO</th>
+                                <th style="text-align: right; padding: 4px 2px;">DUE AMT</th>
+                                <th style="text-align: right; padding: 4px 2px;">PAID</th>
+                                <th style="text-align: right; padding: 4px 2px;">BALANCE</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var itm in lastCreatedReceipt.SettledBills)
+                            {
+                                <tr>
+                                    <td style="padding: 3px 2px;">@itm.BillNo</td>
+                                    <td style="text-align: right; padding: 3px 2px;">₹ @itm.DueAmount.ToString("N2")</td>
+                                    <td style="text-align: right; padding: 3px 2px; font-weight: 700; color: #10b981;">₹ @itm.CollectedAmount.ToString("N2")</td>
+                                    <td style="text-align: right; padding: 3px 2px;">₹ @itm.RemainingAmount.ToString("N2")</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+
+                    <div style="border-top: 1.5px solid #0f172a; padding-top: 0.5rem; font-size: 0.82rem;">
+                        <div style="display: flex; justify-content: space-between; font-weight: 800;">
+                            <span>TOTAL AMOUNT COLLECTED:</span>
+                            <span style="color: #10b981;">₹ @lastCreatedReceipt.TotalCollectedAmount.ToString("N2")</span>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: #64748b; margin-top: 2px;">
+                            <span>TOTAL REMAINING BALANCE:</span>
+                            <span>₹ @lastCreatedReceipt.TotalRemainingAmount.ToString("N2")</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer-custom">
+                <button class="btn btn-outline-secondary" @onclick="() => showSuccessModal = false">
+                    Close
+                </button>
+                <button class="btn btn-primary" style="background: #2563eb; border-color: #2563eb;" @onclick="PrintReceiptWindow">
+                    <i class="bi bi-printer me-1"></i> Print Receipt
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- DETAILS MODAL -->
+@if (showDetailsModal && selectedRecordForDetails != null)
+{
+    var m = selectedRecordForDetails.master;
+    var dList = selectedRecordForDetails.details ?? new List<PharmacyDueCollectionDetailData>();
+
+    <div class="modal-backdrop-custom">
+        <div class="modal-card-custom shadow" style="max-width: 750px;">
+            <div class="modal-header-custom">
+                <div>
+                    <h3>Due Collection Details</h3>
+                    <p style="margin: 0; font-size: 0.8rem; color: #64748b;">
+                        Request No: <strong style="color: #4f46e5; font-family: monospace;">@m?.requestno</strong>
+                    </p>
+                </div>
+                <button class="close-btn" @onclick="() => showDetailsModal = false">×</button>
+            </div>
+
+            <div class="modal-body-custom">
+                @if (m != null)
+                {
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0.75rem; background: #f8fafc; padding: 1rem; border-radius: 8px; border: 1px solid #e2e8f0; margin-bottom: 1rem; font-size: 0.82rem;">
+                        <div>Patient ID: <strong>@m.patientid</strong></div>
+                        <div>Patient Name: <strong>@m.patientname</strong></div>
+                        <div>Mobile: <strong>@m.mobileno</strong></div>
+                        <div>Address: <strong>@(string.IsNullOrWhiteSpace(m.address) ? "-" : m.address)</strong></div>
+                        <div>Collection Date: <strong>@(m.requestdate?.ToString("dd-MMM-yyyy HH:mm") ?? "-")</strong></div>
+                        <div>Pay Mode: <strong>@m.paymentmode</strong></div>
+                        @if (!string.IsNullOrEmpty(m.referenceno))
+                        {
+                            <div>Ref / Txn No: <strong>@m.referenceno</strong></div>
+                        }
+                        @if (!string.IsNullOrEmpty(m.chequeno))
+                        {
+                            <div>Cheque No: <strong>@m.chequeno</strong></div>
+                        }
+                        @if (!string.IsNullOrEmpty(m.remarks))
+                        {
+                            <div>Remarks: <strong>@m.remarks</strong></div>
+                        }
+                    </div>
+                }
+
+                <h5 style="font-size: 0.9rem; font-weight: 800; color: #0f172a; margin-bottom: 0.5rem;">Associated Bills</h5>
+                <div class="table-container">
+                    <table class="due-table">
+                        <thead>
+                            <tr>
+                                <th>BILL NO</th>
+                                <th>BILL DATE</th>
+                                <th class="text-end">BILL AMOUNT</th>
+                                <th class="text-end">DUE AMOUNT</th>
+                                <th class="text-end">COLLECTED</th>
+                                <th class="text-end">REMAINING</th>
+                                <th class="text-center">STATUS</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (dList.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="7" class="text-center py-3 text-muted">No bill items recorded.</td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @foreach (var d in dList)
+                                {
+                                    <tr>
+                                        <td style="font-weight: 800; font-family: monospace; color: #4f46e5;">@d.billno</td>
+                                        <td class="text-muted" style="font-size: 0.8rem;">@(d.billdate?.ToString("dd-MMM-yyyy HH:mm") ?? "-")</td>
+                                        <td class="text-end">₹ @d.billamount.ToString("N2")</td>
+                                        <td class="text-end">₹ @d.dueamount.ToString("N2")</td>
+                                        <td class="text-end font-bold text-success">₹ @d.collectedamount.ToString("N2")</td>
+                                        <td class="text-end font-bold text-danger">₹ @d.remainingamount.ToString("N2")</td>
+                                        <td class="text-center">
+                                            <span class="badge-status @(d.paymentstatus?.ToLowerInvariant() == "paid" ? "paid" : "partial")">
+                                                @d.paymentstatus
+                                            </span>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="modal-footer-custom">
+                <button class="btn btn-secondary" @onclick="() => showDetailsModal = false">Close</button>
+                <button class="btn btn-success" @onclick="() => PrintHistoryReceipt(selectedRecordForDetails)">
+                    <i class="bi bi-printer me-1"></i> Print Receipt
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+<!-- DELETE CONFIRMATION MODAL -->
+@if (showDeleteModal && recordToDelete != null)
+{
+    var m = recordToDelete.master;
+    <div class="modal-backdrop-custom">
+        <div class="modal-card-custom shadow" style="max-width: 480px;">
+            <div class="modal-header-custom" style="background: #fff5f5; border-bottom-color: #fed7d7;">
+                <div style="display: flex; align-items: center; gap: 0.5rem; color: #dc2626;">
+                    <i class="bi bi-exclamation-triangle-fill fs-4"></i>
+                    <h3 style="color: #dc2626; margin: 0;">Confirm Delete</h3>
+                </div>
+                <button class="close-btn" @onclick="() => showDeleteModal = false">×</button>
+            </div>
+            <div class="modal-body-custom">
+                <p>Are you sure you want to delete due collection <strong style="font-family: monospace; color: #059669;">@m?.requestno</strong>?</p>
+                <div class="alert alert-warning p-2 mb-0" style="font-size: 0.82rem;">
+                    <i class="bi bi-info-circle me-1"></i>
+                    Deleting this collection will restore the outstanding due balance for all associated sales bills.
+                </div>
+            </div>
+            <div class="modal-footer-custom">
+                <button class="btn btn-outline-secondary" @onclick="() => showDeleteModal = false" disabled="@deleting">Cancel</button>
+                <button class="btn btn-danger" @onclick="ExecuteDeleteCollection" disabled="@deleting">
+                    @if (deleting)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        <span>Deleting...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-trash me-1"></i>
+                        <span>Yes, Delete &amp; Restore</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    // Active Tab: "collect" or "history"
+    private string activeTab = "collect";
+
+    // Header Summary Calculations
+    private decimal TotalBalanceLoaded => pendingBills.Sum(b => b.remainingamount);
+    private decimal TotalCollectedEntered => selectedBills.Keys.Sum(salesCode => collectedAmounts.GetValueOrDefault(salesCode, 0));
+    private decimal TotalRemainingAfterCollection => Math.Max(0, TotalBalanceLoaded - TotalCollectedEntered);
+
+    private decimal HeaderTotalBalance => activeTab == "history"
+        ? FilteredHistoryList.Sum(h => (h.master?.totaldueamount > 0 ? h.master.totaldueamount : (h.master?.totalcollectedamount ?? 0) + (h.master?.totalremainingamount ?? 0)))
+        : TotalBalanceLoaded;
+
+    private int HeaderBillCount => activeTab == "history"
+        ? FilteredHistoryList.Count
+        : pendingBills.Count;
+
+    private decimal HeaderCollectedAmount => activeTab == "history"
+        ? FilteredHistoryList.Sum(h => h.master?.totalcollectedamount ?? 0)
+        : (TotalCollectedEntered > 0 ? TotalCollectedEntered : (allHistoryList.Count > 0 && pendingBills.Count == 0 ? allHistoryList.Sum(h => h.master?.totalcollectedamount ?? 0) : TotalCollectedEntered));
+
+    private decimal HeaderRemainingBalance => activeTab == "history"
+        ? FilteredHistoryList.Sum(h => h.master?.totalremainingamount ?? 0)
+        : TotalRemainingAfterCollection;
+
+    // Filter controls for Tab 1
+    private bool showCollectFilter = true;
+    private string patientSearchQuery = string.Empty;
+    private string patientIdFilter = string.Empty;
+    private string mobileNoFilter = string.Empty;
+    private string selectedBranch = "";
+    private string selectedCounter = "";
+    private DateTime requestDate = DateTime.Today;
+    private string payMode = "CASH";
+    private string? chequeNo;
+    private string? accountNo;
+    private string? referenceNo;
+    private decimal? totalAmountToAllocate;
+    private string tableSearchQuery = string.Empty;
+
+    // Selected patient & Autocomplete search states
+    private Booking.Models.CustomerWithOpModel? selectedPatient;
+    private List<Booking.Models.CustomerWithOpModel> searchedPatients = new();
+    private bool showPatientDropdown = false;
+    private int activePatientIndex = -1;
+    private bool isSearchingPatients = false;
+    private System.Threading.CancellationTokenSource? _patientSearchCts;
+
+    // Master lists
+    private List<Booking.Models.BranchModel> branchesList = new();
+    private List<Medico_Backend.Model.CounterMasterModel> allCounters = new();
+    private List<Medico_Backend.Model.CounterMasterModel> filteredCountersList = new();
+    private List<Booking.Models.PaymodeMasterModel> paymodesList = new();
+
+    // Data lists
+    private List<PharmacyPendingDueBill> pendingBills = new();
+    private Dictionary<long, PharmacyPendingDueBill> selectedBills = new();
+    private Dictionary<long, decimal> collectedAmounts = new();
+    private Dictionary<long, string> billRemarks = new();
+
+    // Loading & saving flags
+    private bool loadingBills = false;
+    private bool saving = false;
+
+    // Success receipt tracking
+    private bool showSuccessModal = false;
+    private CreatedReceiptReceiptViewModel? lastCreatedReceipt;
+
+    // History Tab State
+    private List<PharmacyDueCollectionRecord> allHistoryList = new();
+    private bool loadingHistory = false;
+    private DateTime? historyFromDate;
+    private DateTime? historyToDate;
+    private string historyPreset = "All";
+    private string historyPayMode = "";
+    private string historySearchQuery = string.Empty;
+
+    // Details & Delete Modal State
+    private bool showDetailsModal = false;
+    private PharmacyDueCollectionRecord? selectedRecordForDetails;
+    private bool showDeleteModal = false;
+    private PharmacyDueCollectionRecord? recordToDelete;
+    private bool deleting = false;
+
+    // Filtered lists
+    private List<PharmacyPendingDueBill> FilteredPendingBills
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(tableSearchQuery)) return pendingBills;
+            var q = tableSearchQuery.Trim().ToLowerInvariant();
+            return pendingBills.Where(b =>
+                (b.billno != null && b.billno.ToLowerInvariant().Contains(q)) ||
+                (b.patientid != null && b.patientid.ToLowerInvariant().Contains(q)) ||
+                (b.patientname != null && b.patientname.ToLowerInvariant().Contains(q)) ||
+                (b.mobileno != null && b.mobileno.Contains(q)) ||
+                (b.paymentstatus != null && b.paymentstatus.ToLowerInvariant().Contains(q))
+            ).ToList();
+        }
+    }
+
+    private List<PharmacyDueCollectionRecord> FilteredHistoryList
+    {
+        get
+        {
+            var list = allHistoryList.AsEnumerable();
+
+            if (historyFromDate.HasValue)
+            {
+                list = list.Where(r => r.master?.requestdate?.Date >= historyFromDate.Value.Date);
+            }
+            if (historyToDate.HasValue)
+            {
+                list = list.Where(r => r.master?.requestdate?.Date <= historyToDate.Value.Date);
+            }
+            if (!string.IsNullOrWhiteSpace(historyPayMode))
+            {
+                list = list.Where(r => string.Equals(r.master?.paymentmode, historyPayMode, StringComparison.OrdinalIgnoreCase));
+            }
+            if (!string.IsNullOrWhiteSpace(historySearchQuery))
+            {
+                var q = historySearchQuery.Trim().ToLowerInvariant();
+                list = list.Where(r =>
+                    (r.master?.requestno != null && r.master.requestno.ToLowerInvariant().Contains(q)) ||
+                    (r.master?.patientid != null && r.master.patientid.ToLowerInvariant().Contains(q)) ||
+                    (r.master?.patientname != null && r.master.patientname.ToLowerInvariant().Contains(q)) ||
+                    (r.master?.mobileno != null && r.master.mobileno.Contains(q)) ||
+                    (r.details != null && r.details.Any(d => d.billno != null && d.billno.ToLowerInvariant().Contains(q)))
+                );
+            }
+
+            return list.OrderByDescending(r => r.master?.requestdate ?? r.master?.createddate ?? DateTime.MinValue).ToList();
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Set default date range for history (defaults to past 30 days)
+        historyFromDate = DateTime.Today.AddDays(-30);
+        historyToDate = DateTime.Today;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var bhCodeResult = await _sessionStorage.GetAsync<string>("bhcode");
+                if (bhCodeResult.Success && !string.IsNullOrEmpty(bhCodeResult.Value))
+                {
+                    selectedBranch = bhCodeResult.Value;
+                }
+
+                var cntCodeResult = await _sessionStorage.GetAsync<string>("cntcode");
+                if (cntCodeResult.Success && !string.IsNullOrEmpty(cntCodeResult.Value))
+                {
+                    selectedCounter = cntCodeResult.Value;
+                }
+            }
+            catch { }
+
+            await LoadCountersAsync();
+            await LoadBranchesAsync();
+            await LoadPaymodesAsync();
+            await LoadDueCollectionHistory();
+
+            StateHasChanged();
+        }
+    }
+
+    private void ToggleCollectFilter()
+    {
+        showCollectFilter = !showCollectFilter;
+    }
+
+    private async Task SetActiveTab(string tab)
+    {
+        activeTab = tab;
+        if (tab == "history" && allHistoryList.Count == 0)
+        {
+            await LoadDueCollectionHistory();
+        }
+        StateHasChanged();
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            // 1. Session storage cache from MainLayout / UserLogin ("UserBranches")
+            try
+            {
+                var ubRes = await _sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.BranchModel>>("UserBranches");
+                if (ubRes.Success && ubRes.Value != null && ubRes.Value.Any())
+                {
+                    branchesList = ubRes.Value
+                        .Where(b => b.bh_code > 0)
+                        .Select(b => new Booking.Models.BranchModel
+                        {
+                            bh_code = b.bh_code,
+                            name = !string.IsNullOrWhiteSpace(b.name) ? b.name.Trim() : $"Branch #{b.bh_code}",
+                            is_main_branch = b.is_main_branch,
+                            deleted = b.deleted
+                        })
+                        .Where(b => !b.deleted)
+                        .GroupBy(b => b.bh_code)
+                        .Select(g => g.First())
+                        .ToList();
+                }
+            }
+            catch { }
+
+            // 2. Check UserDetails in session storage
+            if (branchesList == null || !branchesList.Any())
+            {
+                try
+                {
+                    var udRes = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (udRes.Success && udRes.Value?.Branches != null && udRes.Value.Branches.Any())
+                    {
+                        branchesList = udRes.Value.Branches
+                            .Where(b => (b.bh_code > 0 || (b.bhcode.HasValue && b.bhcode.Value > 0)))
+                            .Select(b => new Booking.Models.BranchModel
+                            {
+                                bh_code = b.bh_code > 0 ? b.bh_code : b.bhcode!.Value,
+                                name = !string.IsNullOrWhiteSpace(b.name) ? b.name.Trim() : $"Branch #{b.bh_code}"
+                            })
+                            .GroupBy(b => b.bh_code)
+                            .Select(g => g.First())
+                            .ToList();
+                    }
+                }
+                catch { }
+            }
+
+            // 3. If still empty, fetch from API with Authorization & tenantcode
+            if (branchesList == null || !branchesList.Any())
+            {
+                string effectiveTenant = TenantState?.TenantCode ?? "";
+                string effectiveToken = TenantState?.AuthToken ?? "";
+
+                if (string.IsNullOrEmpty(effectiveTenant))
+                {
+                    try
+                    {
+                        var tRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                        if (tRes.Success && !string.IsNullOrEmpty(tRes.Value)) effectiveTenant = tRes.Value;
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrEmpty(effectiveToken))
+                {
+                    try
+                    {
+                        var tokRes = await _sessionStorage.GetAsync<string>("authToken");
+                        if (tokRes.Success && !string.IsNullOrEmpty(tokRes.Value)) effectiveToken = tokRes.Value;
+                    }
+                    catch { }
+                }
+
+                if (string.IsNullOrEmpty(effectiveTenant) || string.IsNullOrEmpty(effectiveToken))
+                {
+                    try
+                    {
+                        var localSessionJson = await JS.InvokeAsync<string>("medicoSessionHelper.getSession");
+                        if (!string.IsNullOrWhiteSpace(localSessionJson))
+                        {
+                            var jObj = Newtonsoft.Json.Linq.JObject.Parse(localSessionJson);
+                            if (string.IsNullOrEmpty(effectiveTenant)) effectiveTenant = jObj["tenant_code"]?.ToString() ?? "";
+                            if (string.IsNullOrEmpty(effectiveToken)) effectiveToken = jObj["authToken"]?.ToString() ?? "";
+                        }
+                    }
+                    catch { }
+                }
+
+                string[] clientNames = new[] { "LabCareUrl", "DoctorApi" };
+                foreach (var cName in clientNames)
+                {
+                    try
+                    {
+                        var client = ClientFactory.CreateClient(cName);
+                        if (!string.IsNullOrEmpty(effectiveTenant))
+                        {
+                            client.DefaultRequestHeaders.Remove("tenant_code");
+                            client.DefaultRequestHeaders.Remove("tenantcode");
+                            client.DefaultRequestHeaders.Remove("tenant-code");
+                            client.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                            client.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                            client.DefaultRequestHeaders.Add("tenant-code", effectiveTenant);
+                        }
+                        if (!string.IsNullOrEmpty(effectiveToken))
+                        {
+                            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+                        }
+
+                        var response = await client.GetAsync("api/Branch/get");
+                        if (response.IsSuccessStatusCode)
+                        {
+                            var json = await response.Content.ReadAsStringAsync();
+                            var list = JsonConvert.DeserializeObject<List<Booking.Models.BranchModel>>(json) ?? new();
+                            list = list.Where(b => !b.deleted).ToList();
+                            if (list.Any())
+                            {
+                                branchesList = list;
+                                break;
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[PharmacyDueCollection] Error loading branches from {cName}: {ex.Message}");
+                    }
+                }
+            }
+
+            // 4. Fallback from allCounters if branches list is still empty
+            if ((branchesList == null || !branchesList.Any()) && allCounters != null && allCounters.Any())
+            {
+                branchesList = allCounters
+                    .Where(c => c.bhcode.HasValue && c.bhcode.Value > 0)
+                    .Select(c => (int)c.bhcode!.Value)
+                    .Distinct()
+                    .Select(bh => new Booking.Models.BranchModel
+                    {
+                        bh_code = bh,
+                        name = bh == 1 ? "Main Branch" : $"Branch {bh}"
+                    })
+                    .ToList();
+            }
+
+            // 5. Filter by user access rights for non-admins
+            await FilterBranchesByUserAccessAsync();
+
+            // 6. Auto-select branch if not already set or invalid
+            if (string.IsNullOrEmpty(selectedBranch) || !branchesList.Any(b => b.bh_code.ToString() == selectedBranch))
+            {
+                if (TenantState?.BranchCode.HasValue == true && branchesList.Any(b => b.bh_code == TenantState.BranchCode.Value))
+                {
+                    selectedBranch = TenantState.BranchCode.Value.ToString();
+                }
+                else if (branchesList.Any(b => b.name != null && b.name.Contains("main", StringComparison.OrdinalIgnoreCase)))
+                {
+                    selectedBranch = branchesList.First(b => b.name != null && b.name.Contains("main", StringComparison.OrdinalIgnoreCase)).bh_code.ToString();
+                }
+                else if (branchesList.Any())
+                {
+                    selectedBranch = branchesList.First().bh_code.ToString();
+                }
+            }
+
+            ApplyCounterFilter();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PharmacyDueCollection] Error loading branches: {ex.Message}");
+        }
+    }
+
+    private async Task FilterBranchesByUserAccessAsync()
+    {
+        try
+        {
+            var isTenantAdminResult = await _sessionStorage.GetAsync<bool>("IsTenantAdmin");
+            if (isTenantAdminResult.Success && isTenantAdminResult.Value == true)
+            {
+                return;
+            }
+
+            var userDetailsResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userDetailsResult.Success && userDetailsResult.Value != null)
+            {
+                var ud = userDetailsResult.Value;
+                if (ud.UserCode == 0 || ud.UserCode == 1 ||
+                    string.Equals(ud.Role, "Administrator", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ud.Role, "Admin", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(ud.Role, "Owner", StringComparison.OrdinalIgnoreCase))
+                {
+                    return; // Admins/Owners see all branches
+                }
+
+                if (ud.Branches != null && ud.Branches.Any())
+                {
+                    var allowedCodes = ud.Branches
+                        .Select(b => b.bh_code != 0 ? b.bh_code : (b.bhcode ?? 0))
+                        .Where(code => code > 0)
+                        .ToHashSet();
+
+                    if (allowedCodes.Any())
+                    {
+                        var filtered = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                        if (filtered.Any())
+                        {
+                            branchesList = filtered;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            var branchCodesResult = await _sessionStorage.GetAsync<List<int>>("UserBranchCodes");
+            if (branchCodesResult.Success && branchCodesResult.Value != null && branchCodesResult.Value.Any())
+            {
+                var allowedCodes = branchCodesResult.Value.ToHashSet();
+                var filtered = branchesList.Where(b => allowedCodes.Contains(b.bh_code)).ToList();
+                if (filtered.Any())
+                {
+                    branchesList = filtered;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PharmacyDueCollection] Error filtering branches: {ex.Message}");
+        }
+    }
+
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            var res = await CounterService.GetCountersAsync();
+            if (res != null)
+            {
+                allCounters = res.OrderBy(c => c.orderno).ToList();
+                ApplyCounterFilter();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PharmacyDueCollection] Error loading counters: {ex.Message}");
+        }
+    }
+
+    private void ApplyCounterFilter()
+    {
+        if (int.TryParse(selectedBranch, out var bCode))
+        {
+            filteredCountersList = allCounters.Where(c => c.bhcode == bCode && !c.deleted).ToList();
+        }
+        else
+        {
+            filteredCountersList = allCounters.Where(c => !c.deleted).ToList();
+        }
+
+        if (string.IsNullOrEmpty(selectedCounter) || !filteredCountersList.Any(c => c.cntcode.ToString() == selectedCounter))
+        {
+            if (filteredCountersList.Any())
+            {
+                selectedCounter = filteredCountersList.First().cntcode.ToString();
+            }
+            else
+            {
+                selectedCounter = "";
+            }
+        }
+    }
+
+    private void OnBranchChanged()
+    {
+        ApplyCounterFilter();
+        if (!string.IsNullOrEmpty(selectedCounter) && !filteredCountersList.Any(c => c.cntcode.ToString() == selectedCounter))
+        {
+            selectedCounter = filteredCountersList.FirstOrDefault()?.cntcode.ToString() ?? "";
+        }
+        StateHasChanged();
+    }
+
+    private async Task LoadPaymodesAsync()
+    {
+        try
+        {
+            paymodesList = await PaymodeService.GetPaymodeMastersAsync();
+            paymodesList = paymodesList.Where(p => !p.deleted).OrderBy(p => p.orderno).ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PharmacyDueCollection] Error loading paymodes: {ex.Message}");
+        }
+    }
+
+    // --- SAFE DICTIONARY ACCESSORS (Prevents KeyNotFoundException) ---
+    private string GetBillRemarks(long salescode)
+    {
+        return billRemarks.TryGetValue(salescode, out var rem) ? rem : "";
+    }
+
+    private void SetBillRemarks(PharmacyPendingDueBill bill, string? remarks)
+    {
+        EnsureBillSelected(bill);
+        billRemarks[bill.salescode] = remarks ?? "";
+    }
+
+    private string GetCollectedAmountString(long salescode)
+    {
+        if (collectedAmounts.TryGetValue(salescode, out var amt) && amt > 0)
+        {
+            return amt.ToString();
+        }
+        return "";
+    }
+
+    private void ClearPatientSearch()
+    {
+        patientSearchQuery = "";
+        searchedPatients.Clear();
+        showPatientDropdown = false;
+        activePatientIndex = -1;
+        StateHasChanged();
+    }
+
+    private void ClearSelectedPatient()
+    {
+        selectedPatient = null;
+        patientSearchQuery = "";
+        patientIdFilter = "";
+        mobileNoFilter = "";
+        totalAmountToAllocate = null;
+        pendingBills.Clear();
+        selectedBills.Clear();
+        collectedAmounts.Clear();
+        billRemarks.Clear();
+        showPatientDropdown = false;
+        searchedPatients.Clear();
+        StateHasChanged();
+    }
+
+    // --- PATIENT AUTOCOMPLETE SEARCH ---
+    private async Task OnPatientSearchInput(ChangeEventArgs e)
+    {
+        patientSearchQuery = e.Value?.ToString() ?? "";
+        activePatientIndex = -1;
+
+        _patientSearchCts?.Cancel();
+        _patientSearchCts = new System.Threading.CancellationTokenSource();
+        var token = _patientSearchCts.Token;
+
+        if (string.IsNullOrWhiteSpace(patientSearchQuery))
+        {
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+            return;
+        }
+
+        try
+        {
+            await Task.Delay(250, token);
+            isSearchingPatients = true;
+            await InvokeAsync(StateHasChanged);
+
+            string effectiveTenant = TenantState?.TenantCode ?? "";
+            string effectiveToken = TenantState?.AuthToken ?? "";
+
+            if (string.IsNullOrEmpty(effectiveTenant))
+            {
+                try
+                {
+                    var tRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                    if (tRes.Success && !string.IsNullOrEmpty(tRes.Value)) effectiveTenant = tRes.Value;
+                }
+                catch { }
+            }
+
+            if (string.IsNullOrEmpty(effectiveToken))
+            {
+                try
+                {
+                    var tokRes = await _sessionStorage.GetAsync<string>("authToken");
+                    if (tokRes.Success && !string.IsNullOrEmpty(tokRes.Value)) effectiveToken = tokRes.Value;
+                }
+                catch { }
+            }
+
+            var resultsList = new List<Booking.Models.CustomerWithOpModel>();
+            var settings = new Newtonsoft.Json.JsonSerializerSettings { NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore };
+
+            // 1. Query LabCareUrl: api/Customer/search?key={query}
+            try
+            {
+                var labClient = ClientFactory.CreateClient("LabCareUrl");
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                {
+                    labClient.DefaultRequestHeaders.Remove("tenant_code");
+                    labClient.DefaultRequestHeaders.Remove("tenantcode");
+                    labClient.DefaultRequestHeaders.Remove("tenant-code");
+                    labClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                    labClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                    labClient.DefaultRequestHeaders.Add("tenant-code", effectiveTenant);
+                }
+                if (!string.IsNullOrEmpty(effectiveToken))
+                {
+                    labClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+                }
+
+                var response = await labClient.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(patientSearchQuery)}", token);
+                if (response.IsSuccessStatusCode)
+                {
+                    var rawJson = await response.Content.ReadAsStringAsync(token);
+                    var jToken = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
+                    List<Booking.Models.CustomerWithOpModel>? list = null;
+                    if (jToken is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
+                    {
+                        list = obj["value"].ToObject<List<Booking.Models.CustomerWithOpModel>>(Newtonsoft.Json.JsonSerializer.Create(settings));
+                    }
+                    else
+                    {
+                        list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings);
+                    }
+                    if (list != null && list.Count > 0)
+                    {
+                        resultsList.AddRange(list);
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PharmacyDueCollection] LabCare customer search error: {ex.Message}");
+            }
+
+            // 2. Query DoctorApi: api/OpRegistration/customers-with-op?key={query}
+            try
+            {
+                var docClient = ClientFactory.CreateClient("DoctorApi");
+                if (!string.IsNullOrEmpty(effectiveTenant))
+                {
+                    docClient.DefaultRequestHeaders.Remove("tenant_code");
+                    docClient.DefaultRequestHeaders.Remove("tenantcode");
+                    docClient.DefaultRequestHeaders.Remove("tenant-code");
+                    docClient.DefaultRequestHeaders.Add("tenant_code", effectiveTenant);
+                    docClient.DefaultRequestHeaders.Add("tenantcode", effectiveTenant);
+                    docClient.DefaultRequestHeaders.Add("tenant-code", effectiveTenant);
+                }
+                if (!string.IsNullOrEmpty(effectiveToken))
+                {
+                    docClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+                }
+
+                var docResp = await docClient.GetAsync($"api/OpRegistration/customers-with-op?key={Uri.EscapeDataString(patientSearchQuery)}", token);
+                if (docResp.IsSuccessStatusCode)
+                {
+                    var rawJson = await docResp.Content.ReadAsStringAsync(token);
+                    var jToken = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
+                    List<Booking.Models.CustomerWithOpModel>? list = null;
+                    if (jToken is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
+                    {
+                        list = obj["value"].ToObject<List<Booking.Models.CustomerWithOpModel>>(Newtonsoft.Json.JsonSerializer.Create(settings));
+                    }
+                    else
+                    {
+                        list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings);
+                    }
+                    if (list != null && list.Count > 0)
+                    {
+                        foreach (var item in list)
+                        {
+                            if (!resultsList.Any(r => r.custid == item.custid))
+                            {
+                                resultsList.Add(item);
+                            }
+                        }
+                    }
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[PharmacyDueCollection] DoctorApi customers-with-op error: {ex.Message}");
+            }
+
+            if (token.IsCancellationRequested) return;
+
+            // Client-side filtering & matching to ensure all typed fields match
+            var lowerQuery = patientSearchQuery.Trim().ToLowerInvariant();
+            var filtered = resultsList.Where(p =>
+                (!string.IsNullOrEmpty(p.name) && p.name.ToLowerInvariant().Contains(lowerQuery)) ||
+                (!string.IsNullOrEmpty(p.namewithinitials) && p.namewithinitials.ToLowerInvariant().Contains(lowerQuery)) ||
+                (!string.IsNullOrEmpty(p.mobile) && p.mobile.Contains(lowerQuery)) ||
+                (!string.IsNullOrEmpty(p.phone) && p.phone.Contains(lowerQuery)) ||
+                (!string.IsNullOrEmpty(p.op_no) && p.op_no.ToLowerInvariant().Contains(lowerQuery)) ||
+                p.custid.ToString().Contains(lowerQuery) ||
+                (!string.IsNullOrEmpty(p.custcode) && p.custcode.ToLowerInvariant().Contains(lowerQuery))
+            ).ToList();
+
+            var finalMatches = filtered.Any() ? filtered : resultsList;
+
+            // Deduplicate by custid/custcode and display up to 100 matching patients
+            searchedPatients = finalMatches
+                .GroupBy(p => p.custid > 0 ? p.custid.ToString() : (p.custcode ?? Guid.NewGuid().ToString()))
+                .Select(g => g.First())
+                .Take(100)
+                .ToList();
+
+            showPatientDropdown = true;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[PharmacyDueCollection] Patient search error: {ex.Message}");
+            searchedPatients.Clear();
+            showPatientDropdown = false;
+        }
+        finally
+        {
+            isSearchingPatients = false;
+            if (!token.IsCancellationRequested)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private void OnPatientSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (!showPatientDropdown || searchedPatients.Count == 0) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            activePatientIndex = (activePatientIndex < searchedPatients.Count - 1) ? activePatientIndex + 1 : 0;
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activePatientIndex = (activePatientIndex > 0) ? activePatientIndex - 1 : searchedPatients.Count - 1;
+        }
+        else if (e.Key == "Enter" || e.Key == "NumpadEnter")
+        {
+            if (activePatientIndex >= 0 && activePatientIndex < searchedPatients.Count)
+            {
+                _ = SelectCustomerPatient(searchedPatients[activePatientIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showPatientDropdown = false;
+        }
+    }
+
+    private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
+    {
+        selectedPatient = pat;
+        showPatientDropdown = false;
+        activePatientIndex = -1;
+
+        // Use exact custid or custcode so ItemMaster/getpendingdues matches DB
+        patientIdFilter = pat.custid > 0 ? pat.custid.ToString() : (pat.custcode ?? "");
+        mobileNoFilter = !string.IsNullOrWhiteSpace(pat.mobile) ? pat.mobile : (pat.phone ?? "");
+
+        var displayName = !string.IsNullOrWhiteSpace(pat.namewithinitials)
+            ? pat.namewithinitials
+            : (!string.IsNullOrWhiteSpace(pat.name) ? pat.name : $"Patient {pat.custid}");
+
+        patientSearchQuery = $"{displayName} (CUST-{pat.custid})";
+
+        await SearchPendingDues();
+    }
+
+    // --- SEARCH PENDING DUES (Endpoint 1) ---
+    private async Task SearchPendingDues()
+    {
+        if (string.IsNullOrWhiteSpace(patientIdFilter) && string.IsNullOrWhiteSpace(mobileNoFilter))
+        {
+            ToastService.ShowError("Please enter a Patient ID or Mobile Number to search dues.");
+            return;
+        }
+
+        loadingBills = true;
+        selectedBills.Clear();
+        collectedAmounts.Clear();
+        billRemarks.Clear();
+        totalAmountToAllocate = null;
+        StateHasChanged();
+
+        try
+        {
+            var (success, message, bills) = await DueService.GetPendingDuesAsync(patientIdFilter, mobileNoFilter);
+            if (success)
+            {
+                pendingBills = bills ?? new();
+
+                // Pre-populate remarks dictionary safely for all pending bills to prevent KeyNotFoundException
+                foreach (var b in pendingBills)
+                {
+                    billRemarks[b.salescode] = "Part payment";
+                }
+
+                // If selectedPatient is not set yet, construct it from returned bill details so patient is always viewed
+                if (selectedPatient == null && pendingBills.Any())
+                {
+                    var firstBill = pendingBills.First();
+                    selectedPatient = new Booking.Models.CustomerWithOpModel
+                    {
+                        name = firstBill.patientname,
+                        namewithinitials = firstBill.patientname,
+                        custid = long.TryParse(firstBill.patientid, out var cid) ? cid : 0,
+                        custcode = firstBill.patientid,
+                        mobile = firstBill.mobileno
+                    };
+                    if (string.IsNullOrWhiteSpace(patientSearchQuery))
+                    {
+                        patientSearchQuery = $"{firstBill.patientname} ({firstBill.patientid})";
+                    }
+                }
+
+                if (pendingBills.Count == 0)
+                {
+                    ToastService.ShowInfo("No pending due bills found for this patient.");
+                }
+                else
+                {
+                    ToastService.ShowSuccess($"Found {pendingBills.Count} pending due bill(s).");
+                }
+            }
+            else
+            {
+                pendingBills.Clear();
+                ToastService.ShowError(message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error retrieving pending dues: {ex.Message}");
+        }
+        finally
+        {
+            loadingBills = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ResetFilters()
+    {
+        selectedPatient = null;
+        patientSearchQuery = "";
+        patientIdFilter = "";
+        mobileNoFilter = "";
+        selectedBranch = "";
+        selectedCounter = "";
+        payMode = "CASH";
+        chequeNo = null;
+        accountNo = null;
+        referenceNo = null;
+        totalAmountToAllocate = null;
+        tableSearchQuery = "";
+        pendingBills.Clear();
+        selectedBills.Clear();
+        collectedAmounts.Clear();
+        billRemarks.Clear();
+        showPatientDropdown = false;
+        searchedPatients.Clear();
+        ApplyCounterFilter();
+    }
+
+    // --- SELECTION & AUTO ALLOCATE ---
+    private bool IsAllSelected()
+    {
+        return FilteredPendingBills.Count > 0 && FilteredPendingBills.All(b => selectedBills.ContainsKey(b.salescode));
+    }
+
+    private void ToggleSelectAll(ChangeEventArgs e)
+    {
+        bool isChecked = (bool)(e.Value ?? false);
+        if (isChecked)
+        {
+            foreach (var b in FilteredPendingBills)
+            {
+                selectedBills[b.salescode] = b;
+                if (!collectedAmounts.ContainsKey(b.salescode) || collectedAmounts[b.salescode] <= 0)
+                {
+                    collectedAmounts[b.salescode] = b.remainingamount;
+                }
+                if (!billRemarks.ContainsKey(b.salescode))
+                {
+                    billRemarks[b.salescode] = "Part payment";
+                }
+            }
+        }
+        else
+        {
+            selectedBills.Clear();
+            collectedAmounts.Clear();
+            billRemarks.Clear();
+        }
+        StateHasChanged();
+    }
+
+    private void ToggleSelectBill(PharmacyPendingDueBill bill)
+    {
+        if (selectedBills.ContainsKey(bill.salescode))
+        {
+            selectedBills.Remove(bill.salescode);
+            collectedAmounts.Remove(bill.salescode);
+            billRemarks.Remove(bill.salescode);
+        }
+        else
+        {
+            selectedBills[bill.salescode] = bill;
+            collectedAmounts[bill.salescode] = bill.remainingamount;
+            if (!billRemarks.ContainsKey(bill.salescode))
+            {
+                billRemarks[bill.salescode] = "Part payment";
+            }
+        }
+        StateHasChanged();
+    }
+
+    private void EnsureBillSelected(PharmacyPendingDueBill bill)
+    {
+        if (!selectedBills.ContainsKey(bill.salescode))
+        {
+            selectedBills[bill.salescode] = bill;
+            if (!collectedAmounts.ContainsKey(bill.salescode))
+            {
+                collectedAmounts[bill.salescode] = bill.remainingamount;
+            }
+            if (!billRemarks.ContainsKey(bill.salescode))
+            {
+                billRemarks[bill.salescode] = "Part payment";
+            }
+            StateHasChanged();
+        }
+    }
+
+    private void OnCollectedAmountInput(PharmacyPendingDueBill bill, ChangeEventArgs e)
+    {
+        EnsureBillSelected(bill);
+        var str = e.Value?.ToString() ?? "0";
+        if (decimal.TryParse(str, out var val))
+        {
+            if (val > bill.remainingamount)
+            {
+                val = bill.remainingamount;
+                ToastService.ShowWarning($"Collected amount cannot exceed balance of ₹ {bill.remainingamount:N2}");
+            }
+            else if (val < 0)
+            {
+                val = 0;
+            }
+            collectedAmounts[bill.salescode] = val;
+        }
+        else
+        {
+            collectedAmounts[bill.salescode] = 0;
+        }
+        StateHasChanged();
+    }
+
+    /// <summary>
+    /// Greedily distributes the entered amount across all visible pending bills.
+    /// Exactly mirrors the Auto select behavior of Due Collection in Billing Portal!
+    /// </summary>
+    private void AutoAllocateAmount()
+    {
+        if (totalAmountToAllocate == null || totalAmountToAllocate <= 0)
+        {
+            ToastService.ShowError("Please enter an amount greater than zero before using Auto Select.");
+            return;
+        }
+
+        if (pendingBills.Count == 0)
+        {
+            ToastService.ShowError("No pending bills loaded.");
+            return;
+        }
+
+        selectedBills.Clear();
+        collectedAmounts.Clear();
+        billRemarks.Clear();
+
+        decimal remainingCash = totalAmountToAllocate.Value;
+
+        foreach (var bill in pendingBills)
+        {
+            if (remainingCash <= 0) break;
+
+            decimal due = bill.remainingamount;
+            if (due <= 0) continue;
+
+            decimal allocate = Math.Min(remainingCash, due);
+            remainingCash -= allocate;
+
+            selectedBills[bill.salescode] = bill;
+            collectedAmounts[bill.salescode] = allocate;
+            billRemarks[bill.salescode] = allocate == due ? "Full payment" : "Part payment";
+        }
+
+        ToastService.ShowSuccess($"Allocated ₹ {totalAmountToAllocate:N2} across {selectedBills.Count} bill(s).");
+        StateHasChanged();
+    }
+
+    // --- SAVE DUE COLLECTION (Endpoint 2) ---
+    private async Task SaveDueCollection()
+    {
+        if (selectedBills.Count == 0)
+        {
+            ToastService.ShowError("Please select at least one bill to collect due.");
+            return;
+        }
+
+        var billsToSave = selectedBills.Values.Where(b => collectedAmounts.GetValueOrDefault(b.salescode, 0) > 0).ToList();
+        if (billsToSave.Count == 0)
+        {
+            ToastService.ShowError("Collected amount must be greater than zero for selected bills.");
+            return;
+        }
+
+        // Validate collected amounts do not exceed balances
+        foreach (var bill in billsToSave)
+        {
+            var amt = collectedAmounts.GetValueOrDefault(bill.salescode, 0);
+            if (amt > bill.remainingamount)
+            {
+                ToastService.ShowError($"Collected amount ({amt:N2}) is more than the balance ({bill.remainingamount:N2}) for bill {bill.billno}.");
+                return;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(payMode))
+        {
+            ToastService.ShowError("Please select a payment mode.");
+            return;
+        }
+
+        saving = true;
+        StateHasChanged();
+
+        try
+        {
+            var firstBill = billsToSave.First();
+            int? parsedUserCode = TenantState.UserCode > 0 ? TenantState.UserCode : 5;
+            int? parsedBranchCode = int.TryParse(selectedBranch, out var bh) ? bh : 1;
+            int? parsedCounterCode = int.TryParse(selectedCounter, out var cnt) ? cnt : (TenantState.CounterCode.HasValue ? TenantState.CounterCode.Value : 2);
+
+            var req = new PharmacyDueCollectionInsertRequest
+            {
+                master = new PharmacyDueCollectionMasterRequest
+                {
+                    requestdate = requestDate.Date.Add(DateTime.Now.TimeOfDay),
+                    patientid = !string.IsNullOrWhiteSpace(firstBill.patientid) ? firstBill.patientid : patientIdFilter,
+                    patientname = firstBill.patientname,
+                    mobileno = !string.IsNullOrWhiteSpace(firstBill.mobileno) ? firstBill.mobileno : mobileNoFilter,
+                    address = null,
+                    custid = null,
+                    paymentmode = payMode,
+                    chequeno = payMode == "CHEQUE" ? chequeNo : null,
+                    accountno = payMode == "CHEQUE" ? accountNo : null,
+                    referenceno = (payMode != "CASH" && payMode != "CHEQUE") ? referenceNo : null,
+                    remarks = "Part payment",
+                    usercode = parsedUserCode,
+                    branchcode = parsedBranchCode?.ToString() ?? "1",
+                    companycode = "1",
+                    bh_code = parsedBranchCode,
+                    cntcode = parsedCounterCode,
+                    cnttid = Guid.NewGuid().ToString()
+                },
+                details = billsToSave.Select(b => new PharmacyDueCollectionDetailRequest
+                {
+                    salescode = b.salescode,
+                    collectedamount = collectedAmounts.GetValueOrDefault(b.salescode, 0),
+                    remarks = billRemarks.GetValueOrDefault(b.salescode, "Part payment")
+                }).ToList()
+            };
+
+            var res = await DueService.InsertDueCollectionAsync(req);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess(res.Message ?? "Due collection saved successfully");
+
+                // Generate View Model for receipt
+                lastCreatedReceipt = new CreatedReceiptReceiptViewModel
+                {
+                    DueCollectionCode = res.DueCollectionCode ?? 0,
+                    RequestNo = $"DUE{DateTime.Now.Year}{(res.DueCollectionCode.HasValue ? res.DueCollectionCode.Value.ToString("D4") : "0001")}",
+                    RequestDate = req.master.requestdate,
+                    PatientId = req.master.patientid ?? "",
+                    PatientName = req.master.patientname ?? "",
+                    MobileNo = req.master.mobileno ?? "",
+                    PaymentMode = req.master.paymentmode ?? "CASH",
+                    ReferenceNo = req.master.referenceno ?? req.master.chequeno,
+                    TotalCollectedAmount = billsToSave.Sum(b => collectedAmounts.GetValueOrDefault(b.salescode, 0)),
+                    TotalRemainingAmount = Math.Max(0, billsToSave.Sum(b => b.remainingamount - collectedAmounts.GetValueOrDefault(b.salescode, 0))),
+                    SettledBills = billsToSave.Select(b => new SettledBillItemViewModel
+                    {
+                        BillNo = b.billno ?? "",
+                        DueAmount = b.remainingamount,
+                        CollectedAmount = collectedAmounts.GetValueOrDefault(b.salescode, 0),
+                        RemainingAmount = Math.Max(0, b.remainingamount - collectedAmounts.GetValueOrDefault(b.salescode, 0))
+                    }).ToList()
+                };
+
+                showSuccessModal = true;
+
+                // Reload pending dues to show updated balances
+                await SearchPendingDues();
+            }
+            else
+            {
+                ToastService.ShowError(res.Message ?? "Failed to save due collection.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error saving due collection: {ex.Message}");
+        }
+        finally
+        {
+            saving = false;
+            StateHasChanged();
+        }
+    }
+
+    // --- HISTORY TAB (Endpoint 5, 6, 4) ---
+    private async Task LoadDueCollectionHistory()
+    {
+        loadingHistory = true;
+        StateHasChanged();
+
+        try
+        {
+            var (success, message, data) = await DueService.GetAllDueCollectionsAsync();
+            if (success)
+            {
+                allHistoryList = data ?? new();
+            }
+            else
+            {
+                ToastService.ShowError(message);
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error loading history: {ex.Message}");
+        }
+        finally
+        {
+            loadingHistory = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnHistoryPresetChanged(ChangeEventArgs e)
+    {
+        historyPreset = e.Value?.ToString() ?? "All";
+        var today = DateTime.Today;
+
+        switch (historyPreset)
+        {
+            case "Today":
+                historyFromDate = today;
+                historyToDate = today;
+                break;
+            case "Yesterday":
+                historyFromDate = today.AddDays(-1);
+                historyToDate = today.AddDays(-1);
+                break;
+            case "This Week":
+                var diff = (7 + (today.DayOfWeek - DayOfWeek.Monday)) % 7;
+                historyFromDate = today.AddDays(-1 * diff);
+                historyToDate = today;
+                break;
+            case "This Month":
+                historyFromDate = new DateTime(today.Year, today.Month, 1);
+                historyToDate = today;
+                break;
+            case "All":
+            default:
+                historyFromDate = null;
+                historyToDate = null;
+                break;
+        }
+    }
+
+    private void ResetHistoryFilters()
+    {
+        historyPreset = "All";
+        historyFromDate = null;
+        historyToDate = null;
+        historyPayMode = "";
+        historySearchQuery = "";
+    }
+
+    private async Task OpenDetailsModal(PharmacyDueCollectionRecord rec)
+    {
+        if (rec.master != null && (rec.details == null || rec.details.Count == 0))
+        {
+            // Call getduecollectionbycode to get full bill details
+            var full = await DueService.GetDueCollectionByCodeAsync(rec.master.duecollectioncode);
+            selectedRecordForDetails = full ?? rec;
+        }
+        else
+        {
+            selectedRecordForDetails = rec;
+        }
+        showDetailsModal = true;
+    }
+
+    private void PromptDeleteCollection(PharmacyDueCollectionRecord rec)
+    {
+        recordToDelete = rec;
+        showDeleteModal = true;
+    }
+
+    private async Task ExecuteDeleteCollection()
+    {
+        if (recordToDelete?.master == null) return;
+
+        deleting = true;
+        StateHasChanged();
+
+        try
+        {
+            var code = recordToDelete.master.duecollectioncode;
+            var res = await DueService.DeleteDueCollectionAsync(code);
+            if (res.IsSuccess)
+            {
+                ToastService.ShowSuccess(res.Message ?? "Due collection deleted successfully (bill balance restored).");
+                showDeleteModal = false;
+                recordToDelete = null;
+
+                // Reload history and pending dues
+                await LoadDueCollectionHistory();
+                if (pendingBills.Count > 0)
+                {
+                    await SearchPendingDues();
+                }
+            }
+            else
+            {
+                ToastService.ShowError(res.Message ?? "Failed to delete due collection.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Error deleting collection: {ex.Message}");
+        }
+        finally
+        {
+            deleting = false;
+            StateHasChanged();
+        }
+    }
+
+    private void PrintHistoryReceipt(PharmacyDueCollectionRecord rec)
+    {
+        if (rec.master == null) return;
+        var m = rec.master;
+
+        lastCreatedReceipt = new CreatedReceiptReceiptViewModel
+        {
+            DueCollectionCode = m.duecollectioncode,
+            RequestNo = m.requestno ?? $"DUE{m.duecollectioncode}",
+            RequestDate = m.requestdate ?? DateTime.Now,
+            PatientId = m.patientid ?? "",
+            PatientName = m.patientname ?? "",
+            MobileNo = m.mobileno ?? "",
+            PaymentMode = m.paymentmode ?? "CASH",
+            ReferenceNo = m.referenceno ?? m.chequeno,
+            TotalCollectedAmount = m.totalcollectedamount,
+            TotalRemainingAmount = m.totalremainingamount,
+            SettledBills = (rec.details ?? new List<PharmacyDueCollectionDetailData>()).Select(d => new SettledBillItemViewModel
+            {
+                BillNo = d.billno ?? "",
+                DueAmount = d.dueamount,
+                CollectedAmount = d.collectedamount,
+                RemainingAmount = d.remainingamount
+            }).ToList()
+        };
+
+        showSuccessModal = true;
+    }
+
+    private async Task PrintReceiptWindow()
+    {
+        await JS.InvokeVoidAsync("window.print");
+    }
+
+    public void Dispose()
+    {
+        _patientSearchCts?.Cancel();
+        _patientSearchCts?.Dispose();
+    }
+
+    // View Models for receipts
+    private class CreatedReceiptReceiptViewModel
+    {
+        public long DueCollectionCode { get; set; }
+        public string RequestNo { get; set; } = "";
+        public DateTime RequestDate { get; set; }
+        public string PatientId { get; set; } = "";
+        public string PatientName { get; set; } = "";
+        public string MobileNo { get; set; } = "";
+        public string PaymentMode { get; set; } = "CASH";
+        public string? ReferenceNo { get; set; }
+        public decimal TotalCollectedAmount { get; set; }
+        public decimal TotalRemainingAmount { get; set; }
+        public List<SettledBillItemViewModel> SettledBills { get; set; } = new();
+    }
+
+    private class SettledBillItemViewModel
+    {
+        public string BillNo { get; set; } = "";
+        public decimal DueAmount { get; set; }
+        public decimal CollectedAmount { get; set; }
+        public decimal RemainingAmount { get; set; }
+    }
+}

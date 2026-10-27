@@ -174,6 +174,7 @@ namespace medico_backend.Model
 
 
         public string? notes { get; set; }
+        public string? instructions { get => notes; set => notes = value; }
         public string? tenant_code { get; set; }
         public bool isdeleted { get; set; } = false;
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
@@ -328,6 +329,7 @@ namespace medico_backend.Model
 
     public class CaseSheetPrescriptionRequest
     {
+        public string? pr_id { get; set; }
         /// <summary>null = new. Provide pr_code to update existing.</summary>
         public string? pr_code { get; set; }
         public string? topremarks { get; set; }
@@ -362,6 +364,7 @@ namespace medico_backend.Model
         public decimal? rate { get; set; }
         public decimal? mrp { get; set; }
         public string? notes { get; set; }
+        public string? instructions { get => notes; set => notes = value; }
     }
 
 
@@ -471,6 +474,21 @@ namespace medico_backend.Model
         public bool is_dispensed { get; set; }
         public List<OpPrescriptionDetailModel> items { get; set; } = new();
     }
+
+
+    public class LastVisitPrescriptionViewModel
+    {
+        public decimal custid { get; set; }
+        public string? op_id { get; set; }
+        public string? ip_id { get; set; }
+        public DateTime? visit_date { get; set; }
+        public int dcode { get; set; }
+        public string? doctor_name { get; set; }
+
+        // all prescriptions of that visit, newest first
+        public List<CaseSheetPrescriptionViewModel> prescription_list { get; set; } = new();
+    }
+
 
 
     public class CaseSheetInvestigationViewModel
