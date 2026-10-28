@@ -30,7 +30,7 @@
             <div class="flex-shrink-0">
                 @if (hasEditRight)
                 {
-                    <button type="button" class="ls-btn-save-hero" @onclick="SaveSettings" disabled="@isSaving">
+                    <button type="button" class="ls-btn-save-hero" @onclick="SaveSettings" disabled="@(!settingsLoadedSuccessfully || isSaving)">
                         @if (isSaving)
                         {
                             <span class="spinner-border spinner-border-sm me-2" role="status"></span>
@@ -2326,6 +2326,7 @@
     private LabSettingModel setting = new();
     private bool isLoading = true;
     private bool isSaving = false;
+    private bool settingsLoadedSuccessfully;
     private string activeTab = "general";
 
     // Main Logo and Tenant Report Method State
@@ -2434,6 +2435,7 @@
     private async Task LoadSettings()
     {
         isLoading = true;
+        settingsLoadedSuccessfully = false;
         try
         {
             try
@@ -2454,8 +2456,9 @@
                 return;
             }
 
-            setting = await LabSettingService.GetLabSettingAsync(forceRefresh: true) ?? new LabSettingModel();
+            setting = await LabSettingService.GetLabSettingAsync(forceRefresh: true, throwOnError: true) ?? new LabSettingModel();
             await LoadTenantLogo();
+            settingsLoadedSuccessfully = true;
         }
         catch (Exception ex)
         {
@@ -2549,9 +2552,19 @@
         isSaving = true;
         try
         {
-            bool isUpdate = setting.lsid != Guid.Empty;
+            if (!settingsLoadedSuccessfully)
+            {
+                ToastService.ShowError("Settings could not be loaded. Reload the page before saving.");
+                return;
+            }
 
-            var form = new MultipartFormDataContent();
+            bool isUpdate = setting.lsid != Guid.Empty;
+            if (!isUpdate)
+            {
+                setting.lsid = Guid.NewGuid();
+            }
+
+            using var form = new MultipartFormDataContent();
             form.Add(new StringContent(setting.lsid.ToString()), "lsid");
             if (setting.bh_code.HasValue)
             {
@@ -2643,15 +2656,17 @@
             form.Add(new StringContent((setting.use_labsetting_signatures ?? true).ToString().ToLowerInvariant()), "use_labsetting_signatures");
             form.Add(new StringContent((setting.use_labsetting_culture_signatures ?? true).ToString().ToLowerInvariant()), "use_labsetting_culture_signatures");
 
-            form.Add(new StringContent((setting.iscan_margin_top ?? 0).ToString()), "iscan_margin_top");
-            form.Add(new StringContent((setting.iscan_margin_bottom ?? 0).ToString()), "iscan_margin_bottom");
-            form.Add(new StringContent((setting.iscan_margin_left ?? 0).ToString()), "iscan_margin_left");
-            form.Add(new StringContent((setting.iscan_margin_right ?? 0).ToString()), "iscan_margin_right");
+            form.Add(new StringContent((setting.iscan_margin_top ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "iscan_margin_top");
+            form.Add(new StringContent((setting.iscan_margin_bottom ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "iscan_margin_bottom");
+            form.Add(new StringContent((setting.iscan_margin_left ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "iscan_margin_left");
+            form.Add(new StringContent((setting.iscan_margin_right ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "iscan_margin_right");
 
-            form.Add(new StringContent((setting.culture_margin_top ?? 0).ToString()), "culture_margin_top");
-            form.Add(new StringContent((setting.culture_margin_bottom ?? 0).ToString()), "culture_margin_bottom");
-            form.Add(new StringContent((setting.culture_margin_left ?? 0).ToString()), "culture_margin_left");
-            form.Add(new StringContent((setting.culture_margin_right ?? 0).ToString()), "culture_margin_right");
+            form.Add(new StringContent((setting.culture_margin_top ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "culture_margin_top");
+            form.Add(new StringContent((setting.culture_margin_bottom ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "culture_margin_bottom");
+            form.Add(new StringContent((setting.culture_margin_left ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "culture_margin_left");
+            form.Add(new StringContent((setting.culture_margin_right ?? 0).ToString(System.Globalization.CultureInfo.InvariantCulture)), "culture_margin_right");
+
+            AddRemainingSettingFieldsToForm(form);
 
             // Attach Image Files matching backend parameter names
             await AddFileToForm(form, headerFile, "headerFile");
@@ -2666,59 +2681,57 @@
             // Primary: Send Multipart Form Data matching backend [FromForm] binder
             bool success = await LabSettingService.SaveLabSettingAsync(form, isUpdate: isUpdate);
 
-            if (!success)
-            {
-                // Fallback: Send JSON payload
-                if (isUpdate)
-                {
-                    success = await LabSettingService.UpdateLabSettingAsync(setting);
-                }
-                else
-                {
-                    success = await LabSettingService.InsertLabSettingAsync(setting);
-                }
-            }
-
             // Save Main Logo using existing TenantReportMethod endpoint
-            try
+            bool logoSuccess = true;
+            if (success)
             {
-                tenantReportModel.tenant_code = tenantCode;
-                tenantReportModel.updated_at = DateTime.UtcNow;
+                try
+                {
+                    tenantReportModel.tenant_code = tenantCode;
+                    tenantReportModel.updated_at = DateTime.UtcNow;
 
-                var files = new Dictionary<string, (byte[] Bytes, string FileName, string ContentType)>();
-                if (pendingLogoFile != null)
-                {
-                    files["logo"] = pendingLogoFile.Value;
-                }
+                    var files = new Dictionary<string, (byte[] Bytes, string FileName, string ContentType)>();
+                    if (pendingLogoFile != null)
+                    {
+                        files["logo"] = pendingLogoFile.Value;
+                    }
 
-                bool logoSuccess;
-                if (isTenantReportEditMode)
-                {
-                    logoSuccess = await MasterTenantService.UpdateTenantReportMethodAsync(tenantReportModel, tenantCode, files);
-                }
-                else
-                {
-                    tenantReportModel.created_at = DateTime.UtcNow;
-                    logoSuccess = await MasterTenantService.InsertTenantReportMethodAsync(tenantReportModel, tenantCode, files);
-                }
+                    if (isTenantReportEditMode)
+                    {
+                        logoSuccess = await MasterTenantService.UpdateTenantReportMethodAsync(tenantReportModel, tenantCode, files);
+                    }
+                    else
+                    {
+                        tenantReportModel.created_at = DateTime.UtcNow;
+                        logoSuccess = await MasterTenantService.InsertTenantReportMethodAsync(tenantReportModel, tenantCode, files);
+                    }
 
-                if (logoSuccess)
-                {
-                    pendingLogoFile = null;
-                    await LoadTenantLogo();
+                    if (logoSuccess)
+                    {
+                        pendingLogoFile = null;
+                        await LoadTenantLogo();
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error saving tenant main logo: {ex.Message}");
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"Error saving tenant main logo: {ex.Message}");
+                    logoSuccess = false;
+                }
             }
 
             if (success)
             {
                 LabSettingService.ClearCache();
-                ToastService.ShowSuccess("Lab settings updated successfully!");
                 headerFile = footerFile = auth1SigFile = auth2SigFile = auth3SigFile = cultureAuth1SigFile = cultureAuth2SigFile = cultureAuth3SigFile = null;
                 await LoadSettings();
+                if (!logoSuccess)
+                {
+                    ToastService.ShowError("Lab settings were saved, but the tenant logo could not be saved.");
+                }
+                else
+                {
+                    ToastService.ShowSuccess("Lab settings updated successfully!");
+                }
             }
             else
             {
@@ -2736,21 +2749,45 @@
         }
     }
 
+    private void AddRemainingSettingFieldsToForm(MultipartFormDataContent form)
+    {
+        var existingFields = form
+            .Select(content => content.Headers.ContentDisposition?.Name?.Trim('"'))
+            .Where(name => !string.IsNullOrEmpty(name))
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var property in typeof(LabSettingModel).GetProperties())
+        {
+            if (!property.CanRead || property.GetIndexParameters().Length != 0 || existingFields.Contains(property.Name))
+            {
+                continue;
+            }
+
+            var value = property.GetValue(setting);
+            var text = value switch
+            {
+                bool boolean => boolean.ToString().ToLowerInvariant(),
+                IFormattable formattable => formattable.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+                _ => value?.ToString() ?? string.Empty
+            };
+
+            form.Add(new StringContent(text), property.Name);
+        }
+    }
+
     private async Task AddFileToForm(MultipartFormDataContent form, IBrowserFile? file, string paramName)
     {
         if (file == null) return;
-        try
-        {
-            var maxFileSize = 10 * 1024 * 1024; // 10MB
-            var stream = file.OpenReadStream(maxAllowedSize: maxFileSize);
-            var content = new StreamContent(stream);
-            content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType);
-            form.Add(content, paramName, file.Name);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error attaching file {paramName}: {ex.Message}");
-        }
+
+        const long maxFileSize = 10 * 1024 * 1024;
+        await using var stream = file.OpenReadStream(maxAllowedSize: maxFileSize);
+        using var memoryStream = new MemoryStream();
+        await stream.CopyToAsync(memoryStream);
+
+        var content = new ByteArrayContent(memoryStream.ToArray());
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(
+            string.IsNullOrWhiteSpace(file.ContentType) ? "application/octet-stream" : file.ContentType);
+        form.Add(content, paramName, file.Name);
     }
 
     private class FileDownloadResponse
