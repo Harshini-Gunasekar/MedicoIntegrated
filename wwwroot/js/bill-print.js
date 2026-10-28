@@ -604,21 +604,42 @@
         })();
     };
 
-    window.openPdfPreviewModal = function (base64String, title, dotNetHelper) {
+    window.openPdfPreviewModal = function (contentString, title, dotNetHelper) {
         try {
-            if (!base64String) return false;
-            if (base64String.startsWith('data:application/pdf;base64,')) {
-                base64String = base64String.substring('data:application/pdf;base64,'.length);
+            if (!contentString) return false;
+            let blobUrl = '';
+            let isHtml = false;
+            let cleanBase64 = '';
+
+            const trimmed = typeof contentString === 'string' ? contentString.trim() : '';
+
+            // Check if content is HTML string
+            if (trimmed.startsWith('<') || 
+                trimmed.toLowerCase().startsWith('<!doctype') || 
+                trimmed.toLowerCase().startsWith('<html') || 
+                trimmed.includes('<!DOCTYPE') ||
+                trimmed.includes('<html') ||
+                trimmed.includes('<table') ||
+                trimmed.includes('<div') ||
+                trimmed.includes('class="report-page"')) {
+                isHtml = true;
+                const blob = new Blob([trimmed], { type: 'text/html;charset=utf-8' });
+                blobUrl = URL.createObjectURL(blob);
+            } else {
+                let base64 = trimmed;
+                if (base64.startsWith('data:application/pdf;base64,')) {
+                    base64 = base64.substring('data:application/pdf;base64,'.length);
+                }
+                cleanBase64 = base64.replace(/\s/g, '');
+                const byteCharacters = atob(cleanBase64);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray], { type: 'application/pdf' });
+                blobUrl = URL.createObjectURL(blob);
             }
-            const cleanBase64 = base64String.trim().replace(/\s/g, '');
-            const byteCharacters = atob(cleanBase64);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: 'application/pdf' });
-            const blobUrl = URL.createObjectURL(blob);
 
             // Remove existing modal if present
             let existingModal = document.getElementById('pdfPreviewInPageModal');
@@ -629,7 +650,7 @@
             modal.style.cssText = 'position:fixed;inset:0;z-index:99999;display:flex;align-items:center;justify-content:center;background:rgba(15,23,42,0.75);backdrop-filter:blur(6px);animation:fadeIn 0.2s ease-in-out;';
 
             const modalContent = document.createElement('div');
-            modalContent.style.cssText = 'background:#ffffff;border-radius:16px;width:92vw;max-width:1100px;height:90vh;display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4);overflow:hidden;border:1px solid #cbd5e1;';
+            modalContent.style.cssText = 'background:#ffffff;border-radius:16px;width:94vw;max-width:1250px;height:92vh;display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,0.4);overflow:hidden;border:1px solid #cbd5e1;';
 
             const header = document.createElement('div');
             header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:14px 24px;background:#f8fafc;border-bottom:1px solid #e2e8f0;';
@@ -637,7 +658,7 @@
                 <div style="display:flex;align-items:center;gap:12px;">
                     <span style="font-size:22px;color:#4f46e5;">📄</span>
                     <div>
-                        <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">${title || 'Lab Report Preview'}</h3>
+                        <h3 style="margin:0;font-size:16px;font-weight:700;color:#0f172a;">${title || 'Report Preview'}</h3>
                         <p style="margin:0;font-size:12px;color:#64748b;">Medical Laboratory & Billing Reports</p>
                     </div>
                 </div>
@@ -657,7 +678,7 @@
             const iframe = document.createElement('iframe');
             iframe.id = 'pdfPreviewFrame';
             iframe.src = blobUrl;
-            iframe.style.cssText = 'flex:1;border:none;width:100%;height:100%;background:#525659;';
+            iframe.style.cssText = `flex:1;border:none;width:100%;height:100%;background:${isHtml ? '#ffffff' : '#525659'};`;
             modalContent.appendChild(iframe);
 
             modal.appendChild(modalContent);
@@ -667,10 +688,35 @@
                 modal.remove();
                 URL.revokeObjectURL(blobUrl);
             };
-            document.getElementById('pdfModalDownloadBtn').onclick = () => {
-                const fileName = (title ? title.replace(/[^a-zA-Z0-9_-]/g, '_') : 'Lab_Report') + '.pdf';
-                window.downloadPdfFile(cleanBase64, fileName);
+
+            document.getElementById('pdfModalDownloadBtn').onclick = async () => {
+                const fileName = (title ? title.replace(/[^a-zA-Z0-9_-]/g, '_') : 'Report') + '.pdf';
+                if (!isHtml && cleanBase64) {
+                    window.downloadPdfFile(cleanBase64, fileName);
+                } else if (isHtml) {
+                    try {
+                        const iframeDoc = iframe.contentDocument || (iframe.contentWindow ? iframe.contentWindow.document : null);
+                        if (window.html2pdf && iframeDoc && iframeDoc.body) {
+                            const opt = {
+                                margin: [6, 6, 6, 6],
+                                filename: fileName,
+                                image: { type: 'jpeg', quality: 0.98 },
+                                html2canvas: { scale: 2, useCORS: true, letterRendering: true, scrollX: 0, scrollY: 0 },
+                                jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' }
+                            };
+                            await window.html2pdf().set(opt).from(iframeDoc.body).save();
+                        } else {
+                            iframe.contentWindow.focus();
+                            iframe.contentWindow.print();
+                        }
+                    } catch (e) {
+                        console.error('Download PDF error, triggering print dialog instead:', e);
+                        iframe.contentWindow.focus();
+                        iframe.contentWindow.print();
+                    }
+                }
             };
+
             const printBtn = document.getElementById('pdfModalPrintBtn');
             if (printBtn) {
                 printBtn.onclick = async () => {
@@ -684,11 +730,15 @@
                     try {
                         window.dispatchEvent(new CustomEvent('pdfPreviewModalPrintClicked', { detail: { title: title } }));
                     } catch (e) { }
-                    try {
-                        await window.triggerIscanPrint(cleanBase64);
-                    } catch (e) {
-                        console.error('Trigger iScan print error:', e);
+
+                    if (!isHtml && cleanBase64) {
+                        try {
+                            await window.triggerIscanPrint(cleanBase64);
+                        } catch (e) {
+                            console.error('Trigger iScan print error:', e);
+                        }
                     }
+
                     try {
                         const iframeWin = iframe.contentWindow || iframe.contentDocument.defaultView;
                         if (iframeWin) {
@@ -723,6 +773,10 @@
 
     window.openPdfPreview = function (base64String, title, dotNetHelper) {
         return window.openPdfPreviewModal(base64String, title, dotNetHelper);
+    };
+
+    window.openReportModal = function (contentString, title, dotNetHelper) {
+        return window.openPdfPreviewModal(contentString, title, dotNetHelper);
     };
 
     window.downloadPdfFile = function (base64String, fileName) {
@@ -1660,7 +1714,7 @@ window.setIframeHtml = function (iframeId, htmlContent) {
     }
 };
 
-window.convertHtmlToPdfBase64 = async function (htmlContent, title) {
+window.convertHtmlToPdfBase64 = async function (htmlContent, title, orientation) {
     try {
         // Ensure html2pdf is loaded
         if (!window.html2pdf) {
@@ -1673,11 +1727,14 @@ window.convertHtmlToPdfBase64 = async function (htmlContent, title) {
             });
         }
 
+        const isLandscape = orientation === 'landscape';
         const container = document.createElement('div');
-        container.style.position = 'fixed';
-        container.style.left = '-9999px';
+        container.style.position = 'absolute';
+        container.style.left = '0';
         container.style.top = '0';
-        container.style.width = '210mm';
+        container.style.zIndex = '-99999';
+        container.style.opacity = '1';
+        container.style.width = isLandscape ? '297mm' : '210mm';
         container.style.background = '#ffffff';
         container.innerHTML = htmlContent;
         document.body.appendChild(container);
@@ -1687,8 +1744,8 @@ window.convertHtmlToPdfBase64 = async function (htmlContent, title) {
             margin: [8, 8, 8, 8],
             filename: `${cleanTitle}.pdf`,
             image: { type: 'jpeg', quality: 0.98 },
-            html2canvas: { scale: 2, useCORS: true, letterRendering: true },
-            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+            html2canvas: { scale: 2, useCORS: true, letterRendering: true, scrollX: 0, scrollY: 0, x: 0, y: 0 },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: orientation || 'portrait' }
         };
 
         const pdfBlob = await window.html2pdf().set(opt).from(container).outputPdf('blob');
@@ -1713,4 +1770,64 @@ window.convertHtmlToPdfBase64 = async function (htmlContent, title) {
         return null;
     }
 };
+
+window.printHtmlDirect = function (htmlContent, title) {
+    try {
+        const iframe = document.createElement('iframe');
+        iframe.style.position = 'fixed';
+        iframe.style.right = '0';
+        iframe.style.bottom = '0';
+        iframe.style.width = '0';
+        iframe.style.height = '0';
+        iframe.style.border = '0';
+        document.body.appendChild(iframe);
+
+        const doc = iframe.contentWindow.document;
+        doc.open();
+        doc.write(`
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="utf-8" />
+                <title>${title || 'Print Report'}</title>
+                <style>
+                    @page { size: auto; margin: 8mm; }
+                    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; }
+                </style>
+            </head>
+            <body>${htmlContent}</body>
+            </html>
+        `);
+        doc.close();
+
+        setTimeout(() => {
+            iframe.contentWindow.focus();
+            iframe.contentWindow.print();
+            setTimeout(() => {
+                if (document.body.contains(iframe)) {
+                    document.body.removeChild(iframe);
+                }
+            }, 1000);
+        }, 400);
+    } catch (err) {
+        console.error('printHtmlDirect failed:', err);
+    }
+};
+
+window.downloadCsvFile = function (csvString, fileName) {
+    try {
+        var blob = new Blob(["\uFEFF" + csvString], { type: 'text/csv;charset=utf-8;' });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.setAttribute("href", url);
+        link.setAttribute("download", fileName || "Report.csv");
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    } catch (e) {
+        console.error("downloadCsvFile failed:", e);
+    }
+};
+
 

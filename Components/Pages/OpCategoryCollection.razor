@@ -243,12 +243,46 @@
                 </div>
             </div>
 
-            <!-- Table Actions: Refresh button and record count badge only (Export CSV & Print removed) -->
+            <!-- Table Actions: Refresh, CSV Export, Print / Report Generation, and Record count badge -->
             <div class="table-actions">
                 <button class="table-btn-action" @onclick="RefreshReportAsync" disabled="@isLoading" title="Refresh all data">
                     <i class="bi bi-arrow-clockwise @(isLoading ? "spin-icon" : "")"></i>
                     <span>Refresh</span>
                 </button>
+
+                <button class="table-btn-action btn-export-csv" @onclick="ExportCsvAsync" disabled="@(isLoading || isGeneratingReport || reportData == null)" title="Export data to CSV spreadsheet">
+                    <i class="bi bi-file-earmark-excel"></i>
+                    <span>Export CSV</span>
+                </button>
+
+                <div class="report-btn-group">
+                    <button class="table-btn-action btn-print-report" @onclick='() => GenerateReportAsync("summary")' disabled="@(isLoading || isGeneratingReport || reportData == null)" title="Generate & preview summary PDF report">
+                        @if (isGeneratingReport && reportGeneratingMode == "summary")
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Generating...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-printer-fill"></i>
+                            <span>Print Report</span>
+                        }
+                    </button>
+
+                    <button class="table-btn-action btn-full-report" @onclick='() => GenerateReportAsync("full")' disabled="@(isLoading || isGeneratingReport || reportData == null)" title="Generate complete comprehensive PDF ledger report">
+                        @if (isGeneratingReport && reportGeneratingMode == "full")
+                        {
+                            <span class="spinner-border spinner-border-sm me-1" role="status"></span>
+                            <span>Full...</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-file-earmark-pdf-fill"></i>
+                            <span>Full Ledger</span>
+                        }
+                    </button>
+                </div>
+
                 <span class="record-count">Total: @CurrentActiveCount records</span>
             </div>
         </div>
@@ -970,4 +1004,621 @@
         if (c.Contains("PHARM")) return "cat-pharmacy";
         return "cat-default";
     }
+
+    // =========================================================
+    // FRONTEND REPORT GENERATION & EXPORT METHODS
+    // =========================================================
+    private bool isGeneratingReport = false;
+    private string reportGeneratingMode = "";
+
+    private async Task GenerateReportAsync(string mode = "summary")
+    {
+        if (isGeneratingReport) return;
+
+        if (reportData == null || (reportData.categories.Count == 0 && reportData.services.Count == 0 && reportData.visits.Count == 0))
+        {
+            ToastService.ShowWarning("No report data available to generate report. Please fetch data first.");
+            return;
+        }
+
+        isGeneratingReport = true;
+        reportGeneratingMode = mode;
+        StateHasChanged();
+
+        try
+        {
+            string htmlContent = BuildCategorizationReportHtml(mode);
+            string modalTitle = mode == "full"
+                ? "Outpatient Categorization Comprehensive Financial Ledger"
+                : "Outpatient Billing Categorization Summary Report";
+
+            // Open report preview instantly in modal (with full CSS styling, instant rendering, Print and Download)
+            await JS.InvokeVoidAsync("openPdfPreviewModal", htmlContent, modalTitle);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OpCategoryCollection] Error generating report: {ex.Message}");
+            ToastService.ShowError($"Failed to generate report: {ex.Message}");
+        }
+        finally
+        {
+            isGeneratingReport = false;
+            reportGeneratingMode = "";
+            StateHasChanged();
+        }
+    }
+
+    private async Task ExportCsvAsync()
+    {
+        try
+        {
+            if (reportData == null)
+            {
+                ToastService.ShowWarning("No records to export.");
+                return;
+            }
+
+            var sb = new System.Text.StringBuilder();
+
+            if (activeTab == "categories")
+            {
+                sb.AppendLine("Departmental Category,OP Visits,Bills Count,Items Count,Gross Amount (INR),Discount Amount (INR),Net Amount (INR),Collected Amount (INR),Due Amount (INR),Recovery Rate %");
+                var list = FilteredCategories;
+                foreach (var c in list)
+                {
+                    double recovery = c.net_amount > 0 ? Math.Round((c.collected_amount / c.net_amount) * 100, 1) : 0;
+                    sb.AppendLine($"{EscapeCsv(c.category)},{c.visit_count},{c.bill_count},{c.item_count},{c.gross_amount:F2},{c.discount_amount:F2},{c.net_amount:F2},{c.collected_amount:F2},{c.due_amount:F2},{recovery:F1}%");
+                }
+                double totalNet = list.Sum(c => c.net_amount);
+                double totalCol = list.Sum(c => c.collected_amount);
+                double totRecovery = totalNet > 0 ? Math.Round((totalCol / totalNet) * 100, 1) : 0;
+                sb.AppendLine($"TOTAL,{list.Sum(c => c.visit_count)},{list.Sum(c => c.bill_count)},{list.Sum(c => c.item_count)},{list.Sum(c => c.gross_amount):F2},{list.Sum(c => c.discount_amount):F2},{totalNet:F2},{totalCol:F2},{list.Sum(c => c.due_amount):F2},{totRecovery:F1}%");
+            }
+            else if (activeTab == "services")
+            {
+                sb.AppendLine("Service ID,Service Name,OP Visits,Items Count,Token References,Net Amount (INR),Collected Amount (INR),Due Amount (INR)");
+                var list = FilteredServices;
+                foreach (var s in list)
+                {
+                    sb.AppendLine($"\"{s.service_id}\",{EscapeCsv(s.service_name)},{s.visit_count},{s.item_count},{EscapeCsv(s.tokens)},{s.net_amount:F2},{s.collected_amount:F2},{s.due_amount:F2}");
+                }
+                sb.AppendLine($"TOTAL,,{list.Sum(s => s.visit_count)},{list.Sum(s => s.item_count)},,{list.Sum(s => s.net_amount):F2},{list.Sum(s => s.collected_amount):F2},{list.Sum(s => s.due_amount):F2}");
+            }
+            else
+            {
+                sb.AppendLine("Visit Date,OP No,Token No,Patient Name,Cust ID,Bill Nos,Net Amount (INR),Collected Amount (INR),Due Amount (INR),Status");
+                var list = FilteredVisits;
+                foreach (var v in list)
+                {
+                    string status = v.due_amount <= 0 && v.net_amount > 0 ? "Settled" : (v.collected_amount > 0 && v.due_amount > 0 ? "Partial" : (v.due_amount > 0 ? "Pending" : "Zero Net"));
+                    sb.AppendLine($"{v.visit_date:yyyy-MM-dd HH:mm},{EscapeCsv(v.op_no)},{EscapeCsv(v.token_no)},{EscapeCsv(v.patient_name)},{v.custid},{EscapeCsv(v.bill_nos)},{v.net_amount:F2},{v.collected_amount:F2},{v.due_amount:F2},{status}");
+                }
+                sb.AppendLine($"TOTAL ({list.Count} Visits),,,,,,{list.Sum(v => v.net_amount):F2},{list.Sum(v => v.collected_amount):F2},{list.Sum(v => v.due_amount):F2},");
+            }
+
+            string filename = $"Billing_Categorization_{activeTab}_{DateTime.Now:yyyyMMdd_HHmm}.csv";
+            await JS.InvokeVoidAsync("downloadCsvFile", sb.ToString(), filename);
+            ToastService.ShowSuccess($"Exported {CurrentActiveCount} records to CSV successfully.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[OpCategoryCollection] Export CSV error: {ex.Message}");
+            ToastService.ShowError($"Failed to export CSV: {ex.Message}");
+        }
+    }
+
+    private static string EscapeCsv(string? val)
+    {
+        if (string.IsNullOrEmpty(val)) return "\"\"";
+        if (val.Contains(",") || val.Contains("\"") || val.Contains("\n") || val.Contains("\r"))
+        {
+            return $"\"{val.Replace("\"", "\"\"")}\"";
+        }
+        return val;
+    }
+
+    private string BuildCategorizationReportHtml(string mode)
+    {
+        string hospitalName = !string.IsNullOrWhiteSpace(TenantState?.TenantName) ? TenantState.TenantName : "MEDICO HEALTHCARE HOSPITAL";
+
+        string branchName = "All Branches";
+        if (selectedBhCode > 0)
+        {
+            var b = branches.FirstOrDefault(x => x.bh_code == selectedBhCode);
+            if (b != null && !string.IsNullOrWhiteSpace(b.name)) branchName = b.name;
+            else branchName = $"Branch #{selectedBhCode}";
+        }
+
+        string counterName = "All Counters";
+        if (selectedCntCode > 0)
+        {
+            var c = counters.FirstOrDefault(x => (int)x.cntcode == selectedCntCode);
+            if (c != null && !string.IsNullOrWhiteSpace(c.name)) counterName = c.name;
+            else counterName = $"Counter #{selectedCntCode}";
+        }
+
+        string doctorName = "All Doctors";
+        if (selectedDCode > 0)
+        {
+            var d = doctors.FirstOrDefault(x => x.dcode == selectedDCode);
+            if (d != null && !string.IsNullOrWhiteSpace(d.name)) doctorName = d.name;
+            else doctorName = $"Doctor #{selectedDCode}";
+        }
+
+        string periodStr = $"{fromDate:dd-MMM-yyyy} to {toDate:dd-MMM-yyyy}";
+        string printTime = DateTime.Now.ToString("dd-MMM-yyyy hh:mm tt");
+        string printedBy = !string.IsNullOrWhiteSpace(TenantState?.UserData?.UserName) ? TenantState.UserData.UserName : "Administrator";
+
+        int totalVisits = reportData?.total_visits ?? 0;
+        double totalNet = reportData?.total_net ?? 0;
+        double totalCol = reportData?.total_collected ?? 0;
+        double totalDue = reportData?.total_due ?? 0;
+        double recoveryPct = totalNet > 0 ? Math.Round((totalCol / totalNet) * 100, 1) : 0;
+
+        // Categories Table Rows
+        var catRows = new System.Text.StringBuilder();
+        var catList = FilteredCategories;
+        if (catList.Any())
+        {
+            int idx = 1;
+            foreach (var c in catList)
+            {
+                double rowRecovery = c.net_amount > 0 ? Math.Round((c.collected_amount / c.net_amount) * 100, 1) : 0;
+                catRows.Append($@"
+                    <tr>
+                        <td style=""text-align: center; font-weight: 600;"">{idx++}</td>
+                        <td style=""font-weight: 700; color: #1e293b;"">{System.Net.WebUtility.HtmlEncode(c.category)}</td>
+                        <td style=""text-align: right;"">{c.visit_count}</td>
+                        <td style=""text-align: right;"">{c.bill_count}</td>
+                        <td style=""text-align: right;"">{c.item_count}</td>
+                        <td style=""text-align: right;"">&#8377;{c.gross_amount:N2}</td>
+                        <td style=""text-align: right; color: #dc2626;"">&#8377;{c.discount_amount:N2}</td>
+                        <td style=""text-align: right; font-weight: 700; color: #2563eb;"">&#8377;{c.net_amount:N2}</td>
+                        <td style=""text-align: right; font-weight: 700; color: #16a34a;"">&#8377;{c.collected_amount:N2}</td>
+                        <td style=""text-align: right; font-weight: 700; color: {(c.due_amount > 0 ? "#dc2626" : "#64748b")};"">&#8377;{c.due_amount:N2}</td>
+                        <td style=""text-align: right; font-weight: 700;"">{rowRecovery:F1}%</td>
+                    </tr>");
+            }
+        }
+        else
+        {
+            catRows.Append(@"<tr><td colspan=""11"" style=""text-align: center; color: #64748b; padding: 18px;"">No departmental category data available.</td></tr>");
+        }
+
+        // Secondary Services Table Rows (if mode == "full" or activeTab == "services")
+        string servicesSectionHtml = "";
+        if (mode == "full" || activeTab == "services")
+        {
+            var sRows = new System.Text.StringBuilder();
+            var sList = FilteredServices;
+            if (sList.Any())
+            {
+                int sIdx = 1;
+                foreach (var s in sList)
+                {
+                    sRows.Append($@"
+                        <tr>
+                            <td style=""text-align: center; font-weight: 600;"">{sIdx++}</td>
+                            <td style=""font-weight: 700; color: #1e293b;"">{System.Net.WebUtility.HtmlEncode(s.service_name)}</td>
+                            <td style=""text-align: right;"">{s.visit_count}</td>
+                            <td style=""text-align: right;"">{s.item_count}</td>
+                            <td style=""font-size: 10px; color: #64748b;"">{System.Net.WebUtility.HtmlEncode(s.tokens ?? "-")}</td>
+                            <td style=""text-align: right; font-weight: 700; color: #2563eb;"">&#8377;{s.net_amount:N2}</td>
+                            <td style=""text-align: right; font-weight: 700; color: #16a34a;"">&#8377;{s.collected_amount:N2}</td>
+                            <td style=""text-align: right; font-weight: 700; color: {(s.due_amount > 0 ? "#dc2626" : "#64748b")};"">&#8377;{s.due_amount:N2}</td>
+                        </tr>");
+                }
+            }
+            else
+            {
+                sRows.Append(@"<tr><td colspan=""8"" style=""text-align: center; color: #64748b; padding: 18px;"">No service items data available.</td></tr>");
+            }
+
+            servicesSectionHtml = $@"
+                <div class=""section-title"" style=""page-break-before: {(mode == "full" ? "always" : "auto")};"">
+                    <span>2. SERVICE ITEMS FINANCIAL BREAKDOWN ({sList.Count} Services)</span>
+                </div>
+                <table class=""data-table"">
+                    <thead>
+                        <tr>
+                            <th style=""width: 35px; text-align: center;"">#</th>
+                            <th>Service Name</th>
+                            <th style=""width: 70px; text-align: right;"">Visits</th>
+                            <th style=""width: 70px; text-align: right;"">Items</th>
+                            <th style=""width: 140px;"">Token References</th>
+                            <th style=""width: 95px; text-align: right;"">Net Amount</th>
+                            <th style=""width: 95px; text-align: right;"">Collected</th>
+                            <th style=""width: 95px; text-align: right;"">Due Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {sRows}
+                    </tbody>
+                    <tfoot>
+                        <tr class=""total-row"">
+                            <td colspan=""2"" style=""font-weight: 800;"">SERVICES TOTAL</td>
+                            <td style=""text-align: right; font-weight: 800;"">{sList.Sum(s => s.visit_count)}</td>
+                            <td style=""text-align: right; font-weight: 800;"">{sList.Sum(s => s.item_count)}</td>
+                            <td></td>
+                            <td style=""text-align: right; font-weight: 800; color: #2563eb;"">&#8377;{sList.Sum(s => s.net_amount):N2}</td>
+                            <td style=""text-align: right; font-weight: 800; color: #16a34a;"">&#8377;{sList.Sum(s => s.collected_amount):N2}</td>
+                            <td style=""text-align: right; font-weight: 800; color: #dc2626;"">&#8377;{sList.Sum(s => s.due_amount):N2}</td>
+                        </tr>
+                    </tfoot>
+                </table>";
+        }
+
+        // Tertiary Visits Ledger Rows (if mode == "full" or activeTab == "visits")
+        string visitsSectionHtml = "";
+        if (mode == "full" || activeTab == "visits")
+        {
+            var vRows = new System.Text.StringBuilder();
+            var vList = FilteredVisits;
+            if (vList.Any())
+            {
+                int vIdx = 1;
+                foreach (var v in vList)
+                {
+                    string statusBadge = v.due_amount <= 0 && v.net_amount > 0 ? "background:#dcfce7;color:#15803d;padding:2px 6px;border-radius:4px;font-weight:700;font-size:10px;"
+                        : (v.collected_amount > 0 && v.due_amount > 0 ? "background:#fef3c7;color:#b45309;padding:2px 6px;border-radius:4px;font-weight:700;font-size:10px;"
+                        : (v.due_amount > 0 ? "background:#fee2e2;color:#b91c1c;padding:2px 6px;border-radius:4px;font-weight:700;font-size:10px;"
+                        : "background:#f1f5f9;color:#64748b;padding:2px 6px;border-radius:4px;font-weight:700;font-size:10px;"));
+
+                    string statusText = v.due_amount <= 0 && v.net_amount > 0 ? "Settled"
+                        : (v.collected_amount > 0 && v.due_amount > 0 ? "Partial"
+                        : (v.due_amount > 0 ? "Pending" : "Zero"));
+
+                    vRows.Append($@"
+                        <tr>
+                            <td style=""text-align: center; font-weight: 600;"">{vIdx++}</td>
+                            <td>{v.visit_date:dd-MMM-yyyy HH:mm}</td>
+                            <td style=""font-weight: 700;"">{System.Net.WebUtility.HtmlEncode(v.op_no ?? "-")}</td>
+                            <td>{System.Net.WebUtility.HtmlEncode(v.token_no ?? "-")}</td>
+                            <td style=""font-weight: 700; color: #1e293b;"">{System.Net.WebUtility.HtmlEncode(v.patient_name ?? "-")}</td>
+                            <td>{v.custid?.ToString() ?? "-"}</td>
+                            <td style=""font-size: 10px; color: #64748b;"">{System.Net.WebUtility.HtmlEncode(v.bill_nos ?? "-")}</td>
+                            <td style=""text-align: right; font-weight: 700; color: #2563eb;"">&#8377;{v.net_amount:N2}</td>
+                            <td style=""text-align: right; font-weight: 700; color: #16a34a;"">&#8377;{v.collected_amount:N2}</td>
+                            <td style=""text-align: right; font-weight: 700; color: {(v.due_amount > 0 ? "#dc2626" : "#64748b")};"">&#8377;{v.due_amount:N2}</td>
+                            <td style=""text-align: center;""><span style=""{statusBadge}"">{statusText}</span></td>
+                        </tr>");
+                }
+            }
+            else
+            {
+                vRows.Append(@"<tr><td colspan=""11"" style=""text-align: center; color: #64748b; padding: 18px;"">No patient visits recorded for this criteria.</td></tr>");
+            }
+
+            visitsSectionHtml = $@"
+                <div class=""section-title"" style=""page-break-before: always;"">
+                    <span>3. OP PATIENT VISITS &amp; BILLING TRANSACTION LEDGER ({vList.Count} Patient Visits)</span>
+                </div>
+                <table class=""data-table"">
+                    <thead>
+                        <tr>
+                            <th style=""width: 35px; text-align: center;"">#</th>
+                            <th style=""width: 105px;"">Date &amp; Time</th>
+                            <th style=""width: 80px;"">OP No</th>
+                            <th style=""width: 65px;"">Token</th>
+                            <th>Patient Name</th>
+                            <th style=""width: 70px;"">Cust ID</th>
+                            <th style=""width: 110px;"">Bill Nos</th>
+                            <th style=""width: 85px; text-align: right;"">Net Amount</th>
+                            <th style=""width: 85px; text-align: right;"">Collected</th>
+                            <th style=""width: 85px; text-align: right;"">Due Amount</th>
+                            <th style=""width: 70px; text-align: center;"">Status</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {vRows}
+                    </tbody>
+                    <tfoot>
+                        <tr class=""total-row"">
+                            <td colspan=""7"" style=""font-weight: 800;"">PATIENT VISITS TOTAL ({vList.Count} Visits)</td>
+                            <td style=""text-align: right; font-weight: 800; color: #2563eb;"">&#8377;{vList.Sum(v => v.net_amount):N2}</td>
+                            <td style=""text-align: right; font-weight: 800; color: #16a34a;"">&#8377;{vList.Sum(v => v.collected_amount):N2}</td>
+                            <td style=""text-align: right; font-weight: 800; color: #dc2626;"">&#8377;{vList.Sum(v => v.due_amount):N2}</td>
+                            <td></td>
+                        </tr>
+                    </tfoot>
+                </table>";
+        }
+
+        return $@"<!DOCTYPE html>
+<html lang=""en"">
+<head>
+    <meta charset=""utf-8"" />
+    <title>Billing Categorization Report</title>
+    <style>
+        * {{ box-sizing: border-box; }}
+        @page {{
+            size: A4 landscape;
+            margin: 8mm;
+        }}
+        body {{
+            margin: 0;
+            padding: 12px;
+            background: #ffffff;
+            font-family: -apple-system, BlinkMacSystemFont, ""Segoe UI"", Roboto, Helvetica, Arial, sans-serif;
+            color: #0f172a;
+            font-size: 11px;
+            line-height: 1.4;
+        }}
+        .report-page {{
+            width: 100%;
+            max-width: 1100px;
+            margin: 0 auto;
+            background: #ffffff;
+        }}
+        .report-header {{
+            border-bottom: 2.5px solid #2563eb;
+            padding-bottom: 10px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+        }}
+        .hospital-brand {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        .hospital-icon {{
+            width: 38px;
+            height: 38px;
+            border-radius: 8px;
+            background: #eff6ff;
+            color: #2563eb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 20px;
+            font-weight: 800;
+            border: 1.5px solid #bfdbfe;
+        }}
+        .hospital-title {{
+            font-size: 17px;
+            font-weight: 800;
+            color: #0f172a;
+            margin: 0;
+            text-transform: uppercase;
+            letter-spacing: -0.01em;
+        }}
+        .report-subtitle {{
+            font-size: 12px;
+            font-weight: 700;
+            color: #475569;
+            margin-top: 2px;
+        }}
+        .meta-box {{
+            text-align: right;
+            font-size: 10.5px;
+            color: #475569;
+        }}
+        .meta-box strong {{
+            color: #0f172a;
+        }}
+        .filters-strip {{
+            background: #f8fafc;
+            border: 1px solid #e2e8f0;
+            border-radius: 6px;
+            padding: 6px 12px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            font-size: 11px;
+            color: #334155;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        .filter-item strong {{
+            color: #0f172a;
+        }}
+        .kpi-grid {{
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 8px;
+            margin-bottom: 14px;
+        }}
+        .kpi-card {{
+            border-radius: 6px;
+            padding: 8px 10px;
+            border: 1px solid #e2e8f0;
+            background: #ffffff;
+        }}
+        .kpi-card.blue {{ background: #eff6ff; border-color: #bfdbfe; }}
+        .kpi-card.indigo {{ background: #eef2ff; border-color: #c7d2fe; }}
+        .kpi-card.green {{ background: #f0fdf4; border-color: #bbf7d0; }}
+        .kpi-card.red {{ background: #fef2f2; border-color: #fecaca; }}
+        .kpi-card.amber {{ background: #fffbeb; border-color: #fde68a; }}
+        .kpi-label {{
+            font-size: 9.5px;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            margin-bottom: 3px;
+        }}
+        .kpi-card.blue .kpi-label {{ color: #1d4ed8; }}
+        .kpi-card.indigo .kpi-label {{ color: #4338ca; }}
+        .kpi-card.green .kpi-label {{ color: #15803d; }}
+        .kpi-card.red .kpi-label {{ color: #b91c1c; }}
+        .kpi-card.amber .kpi-label {{ color: #b45309; }}
+        .kpi-value {{
+            font-size: 14px;
+            font-weight: 800;
+            color: #0f172a;
+            letter-spacing: -0.2px;
+        }}
+        .section-title {{
+            font-size: 12px;
+            font-weight: 800;
+            color: #1e293b;
+            margin: 12px 0 6px 0;
+            padding-bottom: 3px;
+            border-bottom: 1.5px solid #cbd5e1;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .data-table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 14px;
+            font-size: 10.5px;
+        }}
+        .data-table th {{
+            background: #f1f5f9;
+            color: #1e293b;
+            font-weight: 800;
+            text-align: left;
+            padding: 5px 7px;
+            border: 1px solid #cbd5e1;
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.2px;
+        }}
+        .data-table td {{
+            padding: 4px 7px;
+            border: 1px solid #e2e8f0;
+            color: #334155;
+        }}
+        .data-table tbody tr:nth-child(even) {{
+            background: #fafbfc;
+        }}
+        .total-row td {{
+            background: #f8fafc;
+            border-top: 2px solid #0f172a;
+            border-bottom: 2px solid #0f172a;
+            padding: 6px 7px;
+        }}
+        .signatures-area {{
+            margin-top: 24px;
+            padding-top: 18px;
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            text-align: center;
+            page-break-inside: avoid;
+        }}
+        .sig-box {{
+            border-top: 1.5px dashed #94a3b8;
+            padding-top: 6px;
+            font-size: 10.5px;
+            font-weight: 700;
+            color: #475569;
+        }}
+        .footer-note {{
+            margin-top: 16px;
+            font-size: 9.5px;
+            color: #94a3b8;
+            text-align: center;
+            border-top: 1px solid #f1f5f9;
+            padding-top: 6px;
+        }}
+    </style>
+</head>
+<body>
+    <div class=""report-page"">
+        <div class=""report-header"">
+            <div class=""hospital-brand"">
+                <div class=""hospital-icon"">&#9877;</div>
+                <div>
+                    <h1 class=""hospital-title"">{System.Net.WebUtility.HtmlEncode(hospitalName)}</h1>
+                    <div class=""report-subtitle"">OUTPATIENT BILLING CATEGORIZATION &amp; FINANCIAL REPORT</div>
+                </div>
+            </div>
+            <div class=""meta-box"">
+                <div><strong>Generated:</strong> {printTime}</div>
+                <div><strong>User:</strong> {System.Net.WebUtility.HtmlEncode(printedBy)}</div>
+                <div><strong>Report Scope:</strong> {(mode == "full" ? "Full Financial Ledger" : "Executive Summary")}</div>
+            </div>
+        </div>
+
+        <div class=""filters-strip"">
+            <div class=""filter-item""><strong>Period:</strong> {periodStr}</div>
+            <div class=""filter-item""><strong>Branch:</strong> {System.Net.WebUtility.HtmlEncode(branchName)}</div>
+            <div class=""filter-item""><strong>Counter:</strong> {System.Net.WebUtility.HtmlEncode(counterName)}</div>
+            <div class=""filter-item""><strong>Doctor:</strong> {System.Net.WebUtility.HtmlEncode(doctorName)}</div>
+        </div>
+
+        <div class=""kpi-grid"">
+            <div class=""kpi-card blue"">
+                <div class=""kpi-label"">Total OP Visits</div>
+                <div class=""kpi-value"">{totalVisits}</div>
+            </div>
+            <div class=""kpi-card indigo"">
+                <div class=""kpi-label"">Total Net Billed</div>
+                <div class=""kpi-value"">&#8377;{totalNet:N2}</div>
+            </div>
+            <div class=""kpi-card green"">
+                <div class=""kpi-label"">Total Collected</div>
+                <div class=""kpi-value"">&#8377;{totalCol:N2}</div>
+            </div>
+            <div class=""kpi-card red"">
+                <div class=""kpi-label"">Outstanding Due</div>
+                <div class=""kpi-value"">&#8377;{totalDue:N2}</div>
+            </div>
+            <div class=""kpi-card amber"">
+                <div class=""kpi-label"">Collection Recovery</div>
+                <div class=""kpi-value"">{recoveryPct:F1}%</div>
+            </div>
+        </div>
+
+        <div class=""section-title"">
+            <span>1. DEPARTMENTAL CATEGORY BREAKDOWN ({catList.Count} Categories)</span>
+        </div>
+        <table class=""data-table"">
+            <thead>
+                <tr>
+                    <th style=""width: 35px; text-align: center;"">#</th>
+                    <th>Departmental Category</th>
+                    <th style=""width: 60px; text-align: right;"">Visits</th>
+                    <th style=""width: 60px; text-align: right;"">Bills</th>
+                    <th style=""width: 60px; text-align: right;"">Items</th>
+                    <th style=""width: 85px; text-align: right;"">Gross Billed</th>
+                    <th style=""width: 80px; text-align: right;"">Discount</th>
+                    <th style=""width: 85px; text-align: right;"">Net Amount</th>
+                    <th style=""width: 85px; text-align: right;"">Collected</th>
+                    <th style=""width: 85px; text-align: right;"">Due Amount</th>
+                    <th style=""width: 70px; text-align: right;"">Recovery</th>
+                </tr>
+            </thead>
+            <tbody>
+                {catRows}
+            </tbody>
+            <tfoot>
+                <tr class=""total-row"">
+                    <td colspan=""2"" style=""font-weight: 800;"">CATEGORIES TOTAL</td>
+                    <td style=""text-align: right; font-weight: 800;"">{catList.Sum(c => c.visit_count)}</td>
+                    <td style=""text-align: right; font-weight: 800;"">{catList.Sum(c => c.bill_count)}</td>
+                    <td style=""text-align: right; font-weight: 800;"">{catList.Sum(c => c.item_count)}</td>
+                    <td style=""text-align: right; font-weight: 800;"">&#8377;{catList.Sum(c => c.gross_amount):N2}</td>
+                    <td style=""text-align: right; font-weight: 800; color: #dc2626;"">&#8377;{catList.Sum(c => c.discount_amount):N2}</td>
+                    <td style=""text-align: right; font-weight: 800; color: #2563eb;"">&#8377;{catList.Sum(c => c.net_amount):N2}</td>
+                    <td style=""text-align: right; font-weight: 800; color: #16a34a;"">&#8377;{catList.Sum(c => c.collected_amount):N2}</td>
+                    <td style=""text-align: right; font-weight: 800; color: #dc2626;"">&#8377;{catList.Sum(c => c.due_amount):N2}</td>
+                    <td style=""text-align: right; font-weight: 800;"">{recoveryPct:F1}%</td>
+                </tr>
+            </tfoot>
+        </table>
+
+        {servicesSectionHtml}
+
+        {visitsSectionHtml}
+
+        <div class=""signatures-area"">
+            <div class=""sig-box"">Prepared By</div>
+            <div class=""sig-box"">Cashier / Billing Incharge</div>
+            <div class=""sig-box"">Accounts Officer</div>
+            <div class=""sig-box"">Authorized Signatory</div>
+        </div>
+
+        <div class=""footer-note"">
+            This is a system generated financial document from Medico Integrated Healthcare System. Confidential.
+        </div>
+    </div>
+</body>
+</html>";
+    }
 }
+
