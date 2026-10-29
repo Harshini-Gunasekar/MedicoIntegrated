@@ -491,7 +491,7 @@
                                                 <i class="bi bi-bandaid-fill"></i> Dressing
                                             </span>
                                         }
-                                        else if (b.paid_status == true && b.unbilled_status == true)
+                                        else if (IsBookingPaid(b))
                                         {
                                             <span class="btn-bill-status paid">
                                                 <i class="bi bi-check-circle-fill"></i> Paid
@@ -954,7 +954,7 @@
                 <div class="form-group" style="position: relative; display: flex; flex-direction: column; gap: 0.35rem;">
                     <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Select Patient *</label>
                     <div style="position: relative;">
-                        <input type="text" class="filter-control" placeholder="-- Choose Patient --" 
+                        <input @key="@("doc_patient_search_input")" type="text" class="filter-control" placeholder="-- Choose Patient --" 
                                value="@selectedPatientSearchName" 
                                @oninput="OnPatientSearchInput" 
                                @focus="ShowPatientDropdown" 
@@ -971,7 +971,7 @@
                                     {
                                         var pIndex = idx;
                                         var p = filteredPatientsForDropdown[idx];
-                                        <div @onmousedown="() => SelectPatientFromDropdown(p)" 
+                                        <div @key="p.custid > 0 ? p.custid : (long)pIndex" @onmousedown="() => SelectPatientFromDropdown(p)" 
                                              style="padding: 8px 12px; cursor: pointer; font-size: 0.8rem; color: #1e293b; background-color: @(idx == activeDropdownIndex ? "#f1f5f9" : "transparent");">
                                             @p.custcode @(string.IsNullOrEmpty(p.namewithinitials) ? p.name : p.namewithinitials)
                                         </div>
@@ -1005,7 +1005,7 @@
                 </div>
                 <div class="form-group" style="display: flex; flex-direction: column; gap: 0.35rem;">
                     <label style="font-size: 0.72rem; font-weight: 700; color: #475569; text-transform: uppercase;">Admission Reason</label>
-                    <input type="text" class="filter-control" @bind="admitRequest.admission_reason" @bind:event="oninput" @bind:after="PrintPayload" placeholder="e.g. Appendectomy" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
+                    <input @key="@("doc_admit_reason_input")" type="text" class="filter-control" @bind="admitRequest.admission_reason" @bind:after="PrintPayload" placeholder="e.g. Appendectomy" style="width: 100%; padding: 0.55rem 0.75rem; border: 1px solid #cbd5e1; border-radius: 9px; font-size: 0.8rem; box-sizing: border-box;" />
                 </div>
             </div>
 
@@ -1709,6 +1709,9 @@
     private Dictionary<Guid, HmsBillSummary> ipBillsMap = new();
     private Dictionary<string, HmsBillSummary> ipBillsByOpVisitId = new(StringComparer.OrdinalIgnoreCase);
     private Dictionary<decimal, HmsBillSummary> ipBillsByCustId = new();
+    private Dictionary<Guid, List<HmsBillSummary>> ipBillsMultiMap = new();
+    private Dictionary<string, List<HmsBillSummary>> ipBillsByOpVisitIdMultiMap = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<decimal, List<HmsBillSummary>> ipBillsByCustIdMultiMap = new();
 
     // Dropdowns data lists
     private List<FloorMasterModel> floorsList = new();
@@ -1888,15 +1891,24 @@
         StateHasChanged();
     }
 
+    private bool IsBookingPaid(DoctorBookingListModel b)
+    {
+        if (b == null) return false;
+        if (b.is_dressing) return true;
+        if (b.paid_status == true) return true;
+        if (b.unbilled_status == true && b.paid_status != false) return true;
+        return false;
+    }
+
     private int GetBillingStatusCount(string status)
     {
         if (activeTab == "OP")
         {
             var baseList = GetBaseFilteredBookings();
             if (status == "PAID")
-                return baseList.Count(b => (b.paid_status == true && b.unbilled_status == true) || b.is_dressing);
+                return baseList.Count(b => IsBookingPaid(b));
             if (status == "UNPAID")
-                return baseList.Count(b => (b.paid_status != true || b.unbilled_status != true) && !b.is_dressing);
+                return baseList.Count(b => !IsBookingPaid(b));
             return baseList.Count;
         }
         else if (activeTab == "IP")
@@ -2618,11 +2630,11 @@
         // Apply Billing / Payment Status Filter (PAID, UNPAID, ALL)
         if (billingStatusFilter == "PAID")
         {
-            result = result.Where(b => (b.paid_status == true && b.unbilled_status == true) || b.is_dressing).ToList();
+            result = result.Where(b => IsBookingPaid(b)).ToList();
         }
         else if (billingStatusFilter == "UNPAID")
         {
-            result = result.Where(b => (b.paid_status != true || b.unbilled_status != true) && !b.is_dressing).ToList();
+            result = result.Where(b => !IsBookingPaid(b)).ToList();
         }
 
         return result;
@@ -3011,19 +3023,32 @@
             ipBillsMap.Clear();
             ipBillsByOpVisitId.Clear();
             ipBillsByCustId.Clear();
+            ipBillsMultiMap.Clear();
+            ipBillsByOpVisitIdMultiMap.Clear();
+            ipBillsByCustIdMultiMap.Clear();
             foreach (var b in bills)
             {
                 if (b.ip_id.HasValue && b.ip_id.Value != Guid.Empty)
                 {
                     ipBillsMap[b.ip_id.Value] = b;
+                    if (!ipBillsMultiMap.ContainsKey(b.ip_id.Value))
+                        ipBillsMultiMap[b.ip_id.Value] = new();
+                    ipBillsMultiMap[b.ip_id.Value].Add(b);
                 }
                 if (!string.IsNullOrWhiteSpace(b.opvisitid))
                 {
-                    ipBillsByOpVisitId[b.opvisitid.Trim()] = b;
+                    var k = b.opvisitid.Trim();
+                    ipBillsByOpVisitId[k] = b;
+                    if (!ipBillsByOpVisitIdMultiMap.ContainsKey(k))
+                        ipBillsByOpVisitIdMultiMap[k] = new();
+                    ipBillsByOpVisitIdMultiMap[k].Add(b);
                 }
                 if (b.custid.HasValue && b.custid.Value > 0)
                 {
                     ipBillsByCustId[b.custid.Value] = b;
+                    if (!ipBillsByCustIdMultiMap.ContainsKey(b.custid.Value))
+                        ipBillsByCustIdMultiMap[b.custid.Value] = new();
+                    ipBillsByCustIdMultiMap[b.custid.Value].Add(b);
                 }
             }
 
@@ -3039,24 +3064,71 @@
         }
     }
 
+    private List<HmsBillSummary> GetBillsForIp(IPRegistrationModel.IpRegistrationModel ip)
+    {
+        if (ip == null) return new();
+        var list = new List<HmsBillSummary>();
+        if (ipBillsMultiMap.TryGetValue(ip.ip_id, out var b1List))
+        {
+            list.AddRange(b1List);
+        }
+        if (!string.IsNullOrWhiteSpace(ip.ip_no) && ipBillsByOpVisitIdMultiMap.TryGetValue(ip.ip_no.Trim(), out var b2List))
+        {
+            foreach (var b in b2List) if (!list.Contains(b)) list.Add(b);
+        }
+        var ipIdStr = ip.ip_id.ToString();
+        if (ipBillsByOpVisitIdMultiMap.TryGetValue(ipIdStr, out var b3List))
+        {
+            foreach (var b in b3List) if (!list.Contains(b)) list.Add(b);
+        }
+        if (ip.custid > 0 && ipBillsByCustIdMultiMap.TryGetValue(ip.custid, out var b4List))
+        {
+            foreach (var b in b4List.Where(x => x.ip_id == ip.ip_id)) if (!list.Contains(b)) list.Add(b);
+        }
+        return list;
+    }
+
     private HmsBillSummary? GetBillForIp(IPRegistrationModel.IpRegistrationModel ip)
     {
-        if (ip == null) return null;
-        if (ipBillsMap.TryGetValue(ip.ip_id, out var b1)) return b1;
-        if (!string.IsNullOrWhiteSpace(ip.ip_no) && ipBillsByOpVisitId.TryGetValue(ip.ip_no.Trim(), out var b2)) return b2;
-        var ipIdStr = ip.ip_id.ToString();
-        if (ipBillsByOpVisitId.TryGetValue(ipIdStr, out var b3)) return b3;
-        if (ip.custid > 0 && ipBillsByCustId.TryGetValue(ip.custid, out var b4) && b4.ip_id == ip.ip_id) return b4;
-        return null;
+        var all = GetBillsForIp(ip);
+        return all.FirstOrDefault(b => (b.balance_amount ?? 0) > 0 && !b.is_settled) ?? all.LastOrDefault();
     }
 
     private bool IsIpPaid(IPRegistrationModel.IpRegistrationModel ip)
     {
-        var bill = GetBillForIp(ip);
-        if (bill != null)
+        if (ip == null) return false;
+
+        // 1. Discharged patients are discharged & settled/completed — must never show in unpaid!
+        if (string.Equals(ip.ip_status, "DISCHARGED", StringComparison.OrdinalIgnoreCase) || ip.dischargedate.HasValue)
         {
-            return (bill.balance_amount ?? 0) <= 0;
+            return true;
         }
+
+        // 2. Check matching HMS bills
+        var bills = GetBillsForIp(ip);
+        if (bills.Count > 0)
+        {
+            // If any bill has an outstanding balance and is not settled, it's unpaid
+            if (bills.Any(b => (b.balance_amount ?? 0) > 0 && !b.is_settled))
+            {
+                return false;
+            }
+            return true;
+        }
+
+        // 3. For admitted patient without an HMS bill: check if there are pending unbilled charges
+        var unbilled = GetObservationChargesForIp(ip);
+        if (unbilled != null && unbilled.Any(c => c.billedstatus != true && (c.amount ?? 0) > 0))
+        {
+            return false;
+        }
+
+        // 4. Insurance patients
+        if (ip.isinsurancepatient)
+        {
+            return true;
+        }
+
         return false;
     }
 
@@ -3066,7 +3138,7 @@
 
         if (filterStatus != "ALL")
         {
-            result = result.Where(a => a.ip_status == filterStatus).ToList();
+            result = result.Where(a => string.Equals(a.ip_status, filterStatus, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
         if (filterDoctor > 0)

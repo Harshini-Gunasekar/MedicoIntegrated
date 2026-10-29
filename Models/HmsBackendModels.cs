@@ -50,6 +50,11 @@ namespace Booking.Models
         public string? username { get; set; }
         public string? user_name { get; set; }
         public string? created_by { get; set; }
+        public string? op_no { get; set; }
+        public string? opno { get; set; }
+        public string? ip_no { get; set; }
+        public string? ipno { get; set; }
+        public string? ipid { get; set; }
     }
 
     public class HmsBillResponse

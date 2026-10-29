@@ -73,7 +73,7 @@
                         <span class="filter-label">
                             <i class="bi bi-calendar3"></i> Date:
                         </span>
-                        <input type="date" class="filter-input-date" @bind="selectedReportDate" />
+                        <input type="date" class="filter-input-date" @bind="selectedReportDate" @bind:after="OnFilterChanged" />
                     </div>
                 </div>
 
@@ -88,7 +88,7 @@
 
                     @if (hasPreviewRight)
                     {
-                        <button class="btn-report-preview" @onclick="() => PreviewStockReport(selectedReportWarehouseCode)" disabled="@isPrinting" title="Preview Stock Report">
+                        <button class="btn-report-preview" @onclick="() => PreviewStockReport(selectedReportWarehouseCode)" disabled="@isPrinting" title="Preview Report">
                             @if (isPrinting)
                             {
                                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
@@ -96,14 +96,14 @@
                             }
                             else
                             {
-                                <i class="bi bi-printer me-1"></i> <span>Stock Report</span>
+                                <i class="bi bi-printer me-1"></i> <span>Preview Report</span>
                             }
                         </button>
                     }
 
                     @if (hasPrintRight)
                     {
-                        <button class="btn-report-download" @onclick="() => PrintStockReportDirect(selectedReportWarehouseCode)" disabled="@isPrintingPdf" title="Print Stock Report">
+                        <button class="btn-report-download" @onclick="() => PrintStockReportDirect(selectedReportWarehouseCode)" disabled="@isPrintingPdf" title="Print Report">
                             @if (isPrintingPdf)
                             {
                                 <span class="spinner-border spinner-border-sm me-1" role="status" aria-hidden="true"></span>
@@ -425,6 +425,83 @@
     </div>
 }
 
+@if (showReportPreviewModal)
+{
+    <div class="report-preview-modal-backdrop" @onclick="CloseReportPreviewModal">
+        <div class="report-preview-modal-dialog" @onclick:stopPropagation="true">
+            <!-- Modal Header -->
+            <div class="report-preview-modal-header">
+                <div class="report-preview-header-brand">
+                    <span class="report-preview-header-icon">📄</span>
+                    <div>
+                        <h3 class="report-preview-title">Stock Inventory Report</h3>
+                        <p class="report-preview-subtitle">Pharmacy &amp; Inventory Reports</p>
+                    </div>
+                </div>
+
+                <div class="report-preview-header-right">
+                    <!-- Filter Bar inside Modal Header -->
+                    <div class="report-preview-filters">
+                        <div class="filter-group">
+                            <span class="filter-label">
+                                <i class="bi bi-building"></i> Store:
+                            </span>
+                            <select class="filter-select" @bind="selectedReportWarehouseCode" @bind:after="ReloadPreviewReport">
+                                <option value="0">-- Select the Store --</option>
+                                @foreach (var wh in WarehouseList)
+                                {
+                                    <option value="@wh.warehousecode">@wh.warehousename</option>
+                                }
+                            </select>
+                        </div>
+
+                        <div class="filter-group">
+                            <span class="filter-label">
+                                <i class="bi bi-calendar3"></i> Date:
+                            </span>
+                            <input type="date" class="filter-input-date" @bind="selectedReportDate" @bind:after="ReloadPreviewReport" />
+                        </div>
+                    </div>
+
+                    <!-- Actions: Print, Close -->
+                    <div class="report-preview-header-actions">
+                        <button type="button" class="btn-modal-print" @onclick="PrintCurrentPreviewReport" disabled="@isPreviewReportLoading">
+                            <i class="bi bi-printer"></i>
+                            <span>Print</span>
+                        </button>
+                        <button type="button" class="btn-modal-close" @onclick="CloseReportPreviewModal" title="Close Preview">
+                            ✕
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Modal Body -->
+            <div class="report-preview-modal-body">
+                @if (isPreviewReportLoading)
+                {
+                    <div class="report-preview-loading-overlay">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <span class="loading-text">Loading Report Preview...</span>
+                    </div>
+                }
+                @if (!string.IsNullOrEmpty(previewReportError))
+                {
+                    <div class="report-preview-error-overlay">
+                        <i class="bi bi-exclamation-triangle text-danger fs-1 mb-2"></i>
+                        <h6 class="text-danger fw-bold">Unable to Load Preview</h6>
+                        <p class="text-muted small">@previewReportError</p>
+                        <button class="btn btn-sm btn-outline-primary" @onclick="ReloadPreviewReport">
+                            <i class="bi bi-arrow-clockwise me-1"></i> Retry
+                        </button>
+                    </div>
+                }
+                <iframe id="stockReportPreviewFrame" class="report-preview-iframe"></iframe>
+            </div>
+        </div>
+    </div>
+}
+
 @code {
     private List<stock_master> StockList = new();
     private List<inventory_item_master> ItemList = new();
@@ -480,6 +557,11 @@
             if (selectedReportWarehouseCode > 0)
             {
                 query = query.Where(s => s.warehousecode == selectedReportWarehouseCode);
+            }
+
+            if (selectedReportDate != default)
+            {
+                query = query.Where(s => s.createddate == default || s.createddate.Date <= selectedReportDate.Date);
             }
 
             if (!string.IsNullOrWhiteSpace(SearchQuery))
@@ -1083,7 +1165,9 @@
     private long selectedReportWarehouseCode = 0;
     private DateTime selectedReportDate = DateTime.Now;
 
-    private async Task<string> FetchStockReportBase64(long? warehouseCode = null)
+    private CancellationTokenSource? _stockPreviewCts;
+
+    private async Task<string> FetchStockReportBase64(long? warehouseCode = null, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(DefaultTenant))
         {
@@ -1121,18 +1205,26 @@
         req.Headers.Add("tenant_code", DefaultTenant);
         req.Headers.Add("tenant-code", DefaultTenant);
 
-        var response = await client.SendAsync(req);
+        var response = await client.SendAsync(req, cancellationToken);
 
-        if (!response.IsSuccessStatusCode)
+        if (!response.IsSuccessStatusCode && !cancellationToken.IsCancellationRequested)
         {
-            // Fallback case-sensitive variant
+            // Fallback case-sensitive variant with full headers
             string relativeUrl = $"api/Report/StockReport?warehousecode={code}&date={dateStr}&tenantcode={DefaultTenant}&tenant_code={DefaultTenant}";
-            response = await client.GetAsync(relativeUrl);
+            var req2 = new HttpRequestMessage(HttpMethod.Get, relativeUrl);
+            if (!string.IsNullOrEmpty(effectiveToken))
+            {
+                req2.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", effectiveToken);
+            }
+            req2.Headers.Add("tenantcode", DefaultTenant);
+            req2.Headers.Add("tenant_code", DefaultTenant);
+            req2.Headers.Add("tenant-code", DefaultTenant);
+            response = await client.SendAsync(req2, cancellationToken);
         }
 
         if (response.IsSuccessStatusCode)
         {
-            var contentStr = await response.Content.ReadAsStringAsync();
+            var contentStr = await response.Content.ReadAsStringAsync(cancellationToken);
             contentStr = contentStr.Trim('"').Trim();
 
             string base64Data = contentStr;
@@ -1157,7 +1249,7 @@
         }
         else
         {
-            var errContent = await response.Content.ReadAsStringAsync();
+            var errContent = await response.Content.ReadAsStringAsync(cancellationToken);
             throw new Exception($"HTTP {(int)response.StatusCode} ({response.ReasonPhrase}): {errContent}");
         }
     }
@@ -1172,6 +1264,12 @@
         await PreviewStockReport(warehouseCode);
     }
 
+    private bool showReportPreviewModal = false;
+    private bool isPreviewReportLoading = false;
+    private string? currentPreviewBase64 = null;
+    private string? previewReportError = null;
+    private int _stockPreviewRequestSeq = 0;
+
     private async Task PreviewStockReport(long? warehouseCode)
     {
         if (!hasPreviewRight)
@@ -1180,31 +1278,96 @@
             return;
         }
 
+        if (warehouseCode.HasValue && warehouseCode.Value > 0)
+        {
+            selectedReportWarehouseCode = warehouseCode.Value;
+        }
+
+        showReportPreviewModal = true;
+        isPreviewReportLoading = true;
+        currentPreviewBase64 = null;
+        previewReportError = null;
+        StateHasChanged();
+        await ReloadPreviewReport();
+    }
+
+    private async Task ReloadPreviewReport()
+    {
+        _stockPreviewCts?.Cancel();
+        _stockPreviewCts?.Dispose();
+        _stockPreviewCts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var token = _stockPreviewCts.Token;
+
+        var seq = ++_stockPreviewRequestSeq;
         try
         {
-            isPrinting = true;
+            isPreviewReportLoading = true;
+            previewReportError = null;
             StateHasChanged();
 
-            string base64Data = await FetchStockReportBase64(warehouseCode);
+            await Task.Delay(150, token);
+            if (seq != _stockPreviewRequestSeq || token.IsCancellationRequested) return;
 
-            if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
+            var base64 = await FetchStockReportBase64(selectedReportWarehouseCode, token);
+            if (seq != _stockPreviewRequestSeq || token.IsCancellationRequested) return;
+
+            currentPreviewBase64 = base64;
+
+            if (!string.IsNullOrWhiteSpace(currentPreviewBase64))
             {
-                await JS.InvokeVoidAsync("openPdfPreviewModal", base64Data, "Stock Inventory Report");
+                await JS.InvokeVoidAsync("setIframePdfBase64", "stockReportPreviewFrame", currentPreviewBase64);
             }
             else
             {
-                ToastService.ShowError("Unable to load PDF preview: Invalid report data returned.");
+                previewReportError = "Empty report data returned from server.";
             }
+        }
+        catch (OperationCanceledException)
+        {
+            return;
         }
         catch (Exception ex)
         {
+            if (seq != _stockPreviewRequestSeq || token.IsCancellationRequested) return;
+            previewReportError = ex.Message;
             ToastService.ShowError($"Error loading stock report: {ex.Message}");
         }
         finally
         {
-            isPrinting = false;
-            StateHasChanged();
+            if (seq == _stockPreviewRequestSeq && !token.IsCancellationRequested)
+            {
+                isPreviewReportLoading = false;
+                StateHasChanged();
+            }
         }
+    }
+
+    private async Task PrintCurrentPreviewReport()
+    {
+        if (!string.IsNullOrWhiteSpace(currentPreviewBase64))
+        {
+            await JS.InvokeVoidAsync("printIframePdf", "stockReportPreviewFrame", currentPreviewBase64);
+        }
+    }
+
+    private async Task DownloadCurrentPreviewReport()
+    {
+        if (!string.IsNullOrWhiteSpace(currentPreviewBase64))
+        {
+            string fileName = $"Stock_Report_{selectedReportDate:yyyyMMdd}.pdf";
+            await JS.InvokeVoidAsync("downloadPdfFile", currentPreviewBase64, fileName);
+        }
+    }
+
+    private void CloseReportPreviewModal()
+    {
+        _stockPreviewCts?.Cancel();
+        showReportPreviewModal = false;
+        currentPreviewBase64 = null;
+        previewReportError = null;
+        isPreviewReportLoading = false;
+        CurrentPage = 1;
+        StateHasChanged();
     }
 
     private async Task PrintStockReportDirect(long? warehouseCode)

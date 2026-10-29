@@ -363,6 +363,8 @@ namespace medico_backend.Model
         public string? route { get; set; }
         public decimal? rate { get; set; }
         public decimal? mrp { get; set; }
+        public string? batchno { get; set; }
+        public string? batch_no { get => batchno; set => batchno = value; }
         public string? notes { get; set; }
         public string? instructions { get => notes; set => notes = value; }
     }

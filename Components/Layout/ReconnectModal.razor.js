@@ -1,4 +1,4 @@
-// ReconnectModal.razor.js - Resilient Blazor Server Reconnection Handler
+// ReconnectModal.razor.js - Resilient Blazor Server Reconnection & Wake-from-Sleep Handler
 const reconnectModal = document.getElementById("components-reconnect-modal");
 if (reconnectModal) {
     reconnectModal.addEventListener("components-reconnect-state-changed", handleReconnectStateChanged);
@@ -25,11 +25,15 @@ let reconnectShowTimeout = null;
 let reconnectRetryTimeout = null;
 let retryAttempt = 0;
 let isReconnecting = false;
+let isCheckingHealth = false;
+let lastHeartbeatTime = Date.now();
+let tabHiddenTimestamp = 0;
+
 const MAX_ATTEMPTS_BEFORE_RELOAD = 3;
-const MAX_BACKOFF_MS = 6000;
+const MAX_BACKOFF_MS = 5000;
 
 function getBackoffDelay() {
-    // 1s, 2s, 4s, up to 6s
+    // 1s, 2s, 4s, up to 5s
     return Math.min(1000 * Math.pow(2, retryAttempt), MAX_BACKOFF_MS);
 }
 
@@ -60,9 +64,9 @@ async function checkServerAndReload() {
         // Network or server still restarting
     }
 
-    // Ping again in 3 seconds until online
+    // Ping again in 2 seconds until online
     clearTimeout(reconnectRetryTimeout);
-    reconnectRetryTimeout = setTimeout(checkServerAndReload, 3000);
+    reconnectRetryTimeout = setTimeout(checkServerAndReload, 2000);
 }
 
 async function silentReconnect() {
@@ -84,6 +88,7 @@ async function silentReconnect() {
             } else {
                 // Server explicitly refused/rejected this circuit (it is no longer retained in server memory)
                 // Reconnecting to this circuit will NEVER succeed. We must reload the page.
+                console.warn("[Medico Reconnect] Circuit rejected by server. Reloading page...");
                 window.location.reload();
                 return;
             }
@@ -116,18 +121,24 @@ function handleReconnectStateChanged(event) {
 
     if (state === "show") {
         clearTimeout(reconnectShowTimeout);
-        // Delay showing reconnect modal by 2 seconds so momentary network blips or tab switches don't flash UI
+        // Delay showing reconnect modal by 1.5 seconds so momentary blips don't flicker UI
         reconnectShowTimeout = setTimeout(() => {
             if (reconnectModal && !reconnectModal.open) {
                 try { reconnectModal.showModal(); } catch { }
             }
-        }, 2000);
+        }, 1500);
 
+        scheduleSilentRetry();
+    } else if (state === "retrying") {
+        if (reconnectModal && !reconnectModal.open) {
+            try { reconnectModal.showModal(); } catch { }
+        }
         scheduleSilentRetry();
     } else if (state === "hide") {
         clearTimeout(reconnectShowTimeout);
         clearTimeout(reconnectRetryTimeout);
         retryAttempt = 0;
+        isReconnecting = false;
         if (reconnectModal && reconnectModal.open) {
             try { reconnectModal.close(); } catch { }
         }
@@ -136,9 +147,6 @@ function handleReconnectStateChanged(event) {
         if (reconnectModal && !reconnectModal.open) {
             try { reconnectModal.showModal(); } catch { }
         }
-        document.addEventListener("visibilitychange", retryWhenDocumentBecomesVisible);
-        window.addEventListener("online", handleOnline);
-
         scheduleSilentRetry();
     } else if (state === "rejected") {
         // Circuit was permanently rejected/evicted by server.
@@ -150,8 +158,6 @@ function handleReconnectStateChanged(event) {
 }
 
 async function retry() {
-    document.removeEventListener("visibilitychange", retryWhenDocumentBecomesVisible);
-    
     if (retryButton) {
         retryButton.disabled = true;
         retryButton.innerText = "Reconnecting...";
@@ -194,30 +200,130 @@ async function resume() {
     await retry();
 }
 
-async function retryWhenDocumentBecomesVisible() {
-    if (document.visibilityState === "visible") {
-        retryAttempt = 0;
-        await silentReconnect();
+// Handler for when user switches back to tab or device wakes from sleep
+async function handleTabOrWakeResume(elapsedMs) {
+    if (isCheckingHealth) return;
+
+    const isModalOpen = reconnectModal && reconnectModal.open;
+    const isModalShownClass = reconnectModal && (
+        reconnectModal.classList.contains("components-reconnect-show") ||
+        reconnectModal.classList.contains("components-reconnect-retrying") ||
+        reconnectModal.classList.contains("components-reconnect-failed") ||
+        reconnectModal.classList.contains("components-reconnect-rejected")
+    );
+
+    // If away for less than 3s and modal is not active, connection is likely unaffected
+    if (!isModalOpen && !isModalShownClass && elapsedMs < 3000) {
+        return;
+    }
+
+    isCheckingHealth = true;
+
+    try {
+        // Step 1: Probe server availability with a fast HEAD request
+        try {
+            const probe = await fetch("/favicon.ico?probe=" + Date.now(), {
+                method: "HEAD",
+                cache: "no-store"
+            });
+            if (!probe.ok && probe.status >= 500) {
+                scheduleSilentRetry();
+                return;
+            }
+        } catch (probeErr) {
+            // Network is still offline (e.g. WiFi reconnecting right after wake)
+            window.addEventListener("online", () => handleTabOrWakeResume(elapsedMs), { once: true });
+            return;
+        }
+
+        // Step 2: Server is alive. Verify and restore the Blazor circuit.
+        if (window.Blazor && typeof window.Blazor.reconnect === "function") {
+            const reconnected = await window.Blazor.reconnect();
+            if (reconnected) {
+                // Reconnected successfully to the existing circuit!
+                retryAttempt = 0;
+                clearTimeout(reconnectShowTimeout);
+                clearTimeout(reconnectRetryTimeout);
+                if (reconnectModal && reconnectModal.open) {
+                    try { reconnectModal.close(); } catch { }
+                }
+                return;
+            } else {
+                // Circuit was evicted on the server (session expired during sleep).
+                // Auto-reload to immediately give the user a fresh, responsive page!
+                console.warn("[Medico Reconnect] Circuit evicted on server. Auto-reloading page...");
+                window.location.reload();
+                return;
+            }
+        }
+
+        if (window.Blazor && typeof window.Blazor.resumeCircuit === "function") {
+            const resumed = await window.Blazor.resumeCircuit();
+            if (resumed) {
+                retryAttempt = 0;
+                clearTimeout(reconnectShowTimeout);
+                clearTimeout(reconnectRetryTimeout);
+                if (reconnectModal && reconnectModal.open) {
+                    try { reconnectModal.close(); } catch { }
+                }
+                return;
+            }
+        }
+    } catch (e) {
+        console.warn("[Medico Reconnect] Error during resume check:", e);
+        if (elapsedMs > 5000 || isModalOpen || isModalShownClass) {
+            window.location.reload();
+        }
+    } finally {
+        isCheckingHealth = false;
     }
 }
 
-function handleOnline() {
-    retryAttempt = 0;
-    silentReconnect();
-}
-
-// When user returns to tab after a long time, check if modal is open or connection is dead
-document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
-        if (reconnectModal && reconnectModal.open) {
-            retry();
-        }
+// Listen for tab visibility changes
+document.addEventListener("visibilitychange", async () => {
+    if (document.visibilityState === "hidden") {
+        tabHiddenTimestamp = Date.now();
+    } else if (document.visibilityState === "visible") {
+        const awayTime = tabHiddenTimestamp > 0 ? (Date.now() - tabHiddenTimestamp) : 0;
+        tabHiddenTimestamp = 0;
+        await handleTabOrWakeResume(awayTime);
     }
 });
 
-// Periodic lightweight keep-alive ping every 45s while active to prevent idle connection termination
+// Listen for window focus & pageshow
+window.addEventListener("focus", async () => {
+    if (document.visibilityState === "visible") {
+        await handleTabOrWakeResume(0);
+    }
+});
+
+window.addEventListener("pageshow", async () => {
+    if (document.visibilityState === "visible") {
+        await handleTabOrWakeResume(0);
+    }
+});
+
+window.addEventListener("online", async () => {
+    retryAttempt = 0;
+    await silentReconnect();
+});
+
+// Heartbeat timer running every 2.5s.
+// If the interval between ticks is > 6s, the PC woke up from sleep or tab was frozen!
+setInterval(async () => {
+    const now = Date.now();
+    const gap = now - lastHeartbeatTime;
+    lastHeartbeatTime = now;
+
+    if (gap > 6000) {
+        console.log(`[Medico Reconnect] Wake-from-sleep detected (gap: ${Math.round(gap / 1000)}s).`);
+        await handleTabOrWakeResume(gap);
+    }
+}, 2500);
+
+// Periodic lightweight keep-alive ping every 25s while active to prevent idle connection drop
 setInterval(() => {
     if (document.visibilityState === "visible" && (!reconnectModal || !reconnectModal.open)) {
         fetch("/favicon.ico", { method: "HEAD", cache: "no-store" }).catch(() => {});
     }
-}, 45000);
+}, 25000);

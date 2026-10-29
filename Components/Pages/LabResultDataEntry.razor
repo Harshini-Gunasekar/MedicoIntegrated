@@ -294,7 +294,7 @@
                 </div>
             </div>
             <div style="display: flex; align-items: center; gap: 8px;">
-                <button type="button" class="re-stb-btn" style="background: #2563eb; color: #ffffff; border: 1px solid #1d4ed8;" @onclick="() => PrintReportExternal(FilterTCode)" title="Preview this test report only">
+                <button type="button" class="re-stb-btn" style="background: #2563eb; color: #ffffff; border: 1px solid #1d4ed8;" @onclick="() => PrintReportExternal()" title="Preview this test report only">
                     <i class="fas fa-print"></i>
                     <span>Preview Test Report</span>
                 </button>
@@ -333,7 +333,7 @@
                             {
                                 var rowIndex = i;
                                 var it = lre[i];
-                                long groupTCode = it.fromtcode > 0 ? (long)it.fromtcode : (long)it.tcode;
+                                long groupTCode = GetParentTCode(it);
                                 bool isParentHeader = (it.resultvaluetype == "Title" || it.resultvaluetype == "SubTitle")
                                                    || (it.col2?.Trim().Equals("NLR", StringComparison.OrdinalIgnoreCase) == true);
                                 var isHeaderRow = isParentHeader;
@@ -2619,6 +2619,138 @@ else if (!string.IsNullOrEmpty(saveMessage))
         ApplyUnifiedFilter();
     }
 
+    private string GetStandardLabUnit(string paramName)
+    {
+        if (string.IsNullOrWhiteSpace(paramName)) return "";
+        var p = paramName.Trim().ToLowerInvariant();
+
+        // 1. Packed Cell Volume / Hematocrit
+        if (p == "pcv" || p.Contains("packed cell") || p.Contains("hematocrit") || p.Contains("haematocrit") || p.StartsWith("pcv ") || p.EndsWith(" pcv"))
+            return "%";
+
+        // 2. Mean Corpuscular Volume
+        if (p == "mcv" || p.Contains("mean corpuscular volume") || p.StartsWith("mcv ") || p.EndsWith(" mcv"))
+            return "fl";
+
+        // 3. Mean Corpuscular Hemoglobin (not MCHC)
+        if ((p == "mch" || p.Contains("mean corpuscular hemoglobin") || p.Contains("mean corpuscular haemoglobin") || p.StartsWith("mch ") || p.EndsWith(" mch")) && !p.Contains("mchc") && !p.Contains("concentration"))
+            return "pg";
+
+        // 4. Mean Corpuscular Hemoglobin Concentration
+        if (p == "mchc" || p.Contains("mchc") || p.Contains("concentration"))
+            return "g/dl";
+
+        // 5. ESR (Erythrocyte Sedimentation Rate)
+        if (p.StartsWith("esr") || p.Contains("erythrocyte sedimentation") || p.Contains("westergren"))
+            return "mm/hr";
+
+        // 6. Differential counts
+        if (p.Contains("neutrophil") || p.Contains("lymphocyte") || p.Contains("monocyte") || p.Contains("eosinophil") || p.Contains("basophil"))
+            return "%";
+
+        // 7. Platelet Count
+        if (p.Contains("platelet"))
+            return "lakhs/cumm";
+
+        // 8. Total RBC Count
+        if (p.Contains("rbc") || p.Contains("red blood cell"))
+            return "millions/cumm";
+
+        // 9. Total WBC Count
+        if (p.Contains("wbc") || p.Contains("white blood cell") || p.Contains("leucocyte") || p.Contains("leukocyte"))
+            return "cells/cumm";
+
+        // 10. Haemoglobin
+        if (p.Contains("haemoglobin") || p.Contains("hemoglobin") || p == "hb")
+            return "g/dl";
+
+        return "";
+    }
+
+    private long GetParentTCode(LabResultEntry? r)
+    {
+        if (r == null) return 0;
+        if (billedTestSelections != null && billedTestSelections.Any())
+        {
+            if (billedTestSelections.Any(b => b.tcode == r.tcode))
+                return r.tcode;
+            if (r.fromtcode > 0 && billedTestSelections.Any(b => b.tcode == r.fromtcode))
+                return r.fromtcode;
+        }
+        return r.tcode > 0 ? (long)r.tcode : (long)r.fromtcode;
+    }
+
+    private bool IsTextParameterRow(LabResultEntry? r)
+    {
+        if (r == null) return false;
+        if (string.Equals(r.resulttype, "Text", StringComparison.OrdinalIgnoreCase) || 
+            string.Equals(r.resulttype, "T", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(r.resulttype, "D", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        if (r.testname?.Contains("XRAY", StringComparison.OrdinalIgnoreCase) == true ||
+            r.testname?.Contains("X-RAY", StringComparison.OrdinalIgnoreCase) == true ||
+            r.col2?.Contains("XRAY", StringComparison.OrdinalIgnoreCase) == true ||
+            r.col2?.Contains("X-RAY", StringComparison.OrdinalIgnoreCase) == true)
+            return true;
+
+        if (r.groupname?.Contains("RADIOLOGY", StringComparison.OrdinalIgnoreCase) == true ||
+            r.groupname?.Contains("X-RAY", StringComparison.OrdinalIgnoreCase) == true ||
+            r.groupname?.Contains("IMAGING", StringComparison.OrdinalIgnoreCase) == true)
+            return true;
+
+        return false;
+    }
+
+    private int GetTestBilledOrder(long parentTCode)
+    {
+        if (!string.IsNullOrEmpty(FilterTCode))
+        {
+            var codes = FilterTCode.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(s => long.TryParse(s, out var v) ? v : 0L)
+                .Where(v => v > 0)
+                .ToList();
+            int idx = codes.IndexOf(parentTCode);
+            if (idx >= 0) return idx;
+        }
+
+        if (billedTestSelections != null && billedTestSelections.Any())
+        {
+            int idx = billedTestSelections.FindIndex(b => b.tcode == parentTCode);
+            if (idx >= 0) return idx;
+        }
+
+        if (lre1 != null)
+        {
+            var distinct = lre1.Select(x => GetParentTCode(x)).Where(tc => tc > 0).Distinct().ToList();
+            int idx = distinct.IndexOf(parentTCode);
+            if (idx >= 0) return idx;
+        }
+
+        return 9999;
+    }
+
+    private List<LabResultEntry> SortLabResultEntries(IEnumerable<LabResultEntry>? list)
+    {
+        if (list == null) return new List<LabResultEntry>();
+        var l = list.ToList();
+        return l
+            .OrderBy(x => x.grouporder > 0 ? x.grouporder : 9999)
+            .ThenBy(x => GetTestBilledOrder(GetParentTCode(x)))
+            .ThenBy(x => GetParentTCode(x))
+            .ThenBy(x => {
+                // Headline/Title row ALWAYS prompt (first): Priority 0
+                if (x.resultvaluetype == "Title") return 0;
+                // SubTitle (e.g. NLR) Priority 1
+                if (x.resultvaluetype == "SubTitle" || string.Equals(x.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase)) return 1;
+                // Child parameter rows: Priority 2 (appear directly under the headline)
+                return 2;
+            })
+            .ThenBy(x => x.orderno > 0 ? x.orderno : 9999)
+            .ThenBy(x => x.slno > 0 ? x.slno : 9999)
+            .ToList();
+    }
+
     private void ApplyUnifiedFilter()
     {
         // Start with the full list
@@ -2642,14 +2774,37 @@ else if (!string.IsNullOrEmpty(saveMessage))
         // 3. Filter by Billed Test Selections
         if (billedTestSelections != null && billedTestSelections.Any())
         {
-            var selectedCodes = billedTestSelections
-                .Where(b => b.IsSelected)
-                .Select(b => b.tcode)
-                .ToHashSet();
+            var selectedItems = billedTestSelections.Where(b => b.IsSelected).ToList();
+            var selectedCodes = selectedItems.Select(b => b.tcode).ToHashSet();
 
-            if (selectedCodes.Any() && (isFilteredByIncomingTest || selectedCodes.Count < billedTestSelections.Count))
+            if (selectedCodes.Any() && selectedCodes.Count < billedTestSelections.Count)
             {
-                scope = scope.Where(x => selectedCodes.Contains(x.tcode) || (x.fromtcode > 0 && selectedCodes.Contains(x.fromtcode)));
+                scope = scope.Where(x => selectedCodes.Contains(GetParentTCode(x)));
+                isFilteredByIncomingTest = true;
+                activeFilteredTestDisplay = string.Join(", ", selectedItems.Select(s => s.testname));
+                FilterTCode = string.Join(",", selectedCodes);
+            }
+            else if (selectedCodes.Count == billedTestSelections.Count)
+            {
+                // All tests are selected
+                if (isFilteredByIncomingTest && !string.IsNullOrWhiteSpace(FilterTCode))
+                {
+                    var targetCodes = FilterTCode.Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Select(s => long.TryParse(s, out var v) ? v : 0L)
+                        .Where(v => v > 0)
+                        .ToHashSet();
+                    if (targetCodes.Count < billedTestSelections.Count)
+                    {
+                        isFilteredByIncomingTest = false;
+                        activeFilteredTestDisplay = "";
+                        FilterTCode = null;
+                    }
+                }
+            }
+            else if (!selectedCodes.Any())
+            {
+                scope = Enumerable.Empty<LabResultEntry>();
+                activeFilteredTestDisplay = "None";
             }
         }
         else if (isFilteredByIncomingTest && !string.IsNullOrEmpty(FilterTCode))
@@ -2660,11 +2815,11 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 .ToHashSet();
             if (targetCodes.Any())
             {
-                scope = scope.Where(x => targetCodes.Contains(x.tcode) || (x.fromtcode > 0 && targetCodes.Contains(x.fromtcode)));
+                scope = scope.Where(x => targetCodes.Contains(GetParentTCode(x)));
             }
         }
 
-        lre = scope.ToList();
+        lre = SortLabResultEntries(scope);
         StateHasChanged();
     }
 
@@ -2691,15 +2846,20 @@ else if (!string.IsNullOrEmpty(saveMessage))
             : lre1.Where(x => x.gcode == groupCode).ToList();
 
         return source
-            .Where(x => x.tcode > 0 && !string.IsNullOrWhiteSpace(x.testname))
-            .GroupBy(x => x.tcode)                          // deduplicate by tcode
-            .Select(g => new BilledTestItem
-            {
-                tcode    = g.Key,
-                testname = g.First().testname!,
-                IsSelected = true
+            .Where(x => GetParentTCode(x) > 0)
+            .GroupBy(x => GetParentTCode(x))                          // deduplicate by parent tcode
+            .Select(g => {
+                string name = g.FirstOrDefault(x => x.resultvaluetype == "Title" && !IsTextParameterRow(x))?.testname
+                           ?? g.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.testname))?.testname
+                           ?? g.First().col2 ?? $"Test {g.Key}";
+                return new BilledTestItem
+                {
+                    tcode = g.Key,
+                    testname = name,
+                    IsSelected = true
+                };
             })
-            .OrderBy(b => b.testname)
+            .OrderBy(b => GetTestBilledOrder(b.tcode))
             .ToList();
     }
 
@@ -4899,10 +5059,10 @@ else if (!string.IsNullOrEmpty(saveMessage))
         }
         else if (billedTestSelections != null && billedTestSelections.Any())
         {
-            var selCodes = billedTestSelections.Where(b => b.IsSelected).Select(b => b.tcode.ToString()).ToList();
-            if (selCodes.Any() && (isFilteredByIncomingTest || selCodes.Count < billedTestSelections.Count))
+            var selItems = billedTestSelections.Where(b => b.IsSelected).ToList();
+            if (selItems.Any() && (isFilteredByIncomingTest || selItems.Count < billedTestSelections.Count))
             {
-                selectedTcodes = string.Join(",", selCodes);
+                selectedTcodes = string.Join(",", selItems.Select(b => b.tcode));
             }
             else if (!string.IsNullOrEmpty(FilterTCode))
             {
@@ -4912,6 +5072,17 @@ else if (!string.IsNullOrEmpty(saveMessage))
         else if (!string.IsNullOrEmpty(FilterTCode))
         {
             selectedTcodes = FilterTCode.Trim();
+        }
+
+        // Also check if lre is filtered to a subset of tests (e.g. through search or group)
+        if (string.IsNullOrWhiteSpace(selectedTcodes) && lre != null && lre.Any() && lre1 != null && lre1.Any())
+        {
+            var visibleTCodes = lre.Where(x => x.tcode > 0).Select(x => x.tcode).Distinct().ToList();
+            var allTCodes = lre1.Where(x => x.tcode > 0).Select(x => x.tcode).Distinct().ToList();
+            if (visibleTCodes.Count > 0 && visibleTCodes.Count < allTCodes.Count)
+            {
+                selectedTcodes = string.Join(",", visibleTCodes);
+            }
         }
 
         // Determine effective Guid strictly as valid requestguid
@@ -4969,7 +5140,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
         string tzParam = !string.IsNullOrEmpty(tz) ? $"&timezone={Uri.EscapeDataString(tz)}" : "";
         string letterheadParam = $"isletterhead={(isLetterHead ? "true" : "false")}";
 
-        // Candidate URLs strictly querying [HttpGet("labreport")] with requestguid, isletterhead, tcode, tcodes, timezone
+        // Candidate URLs strictly querying [HttpGet("labreport")] with requestguid, isletterhead, tcode, timezone
         var candidateUrls = new List<string>();
 
         // If we found valid Guids, build queries for each Guid
@@ -4982,46 +5153,61 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 if (parsedCodes.Any())
                 {
                     string singleTcodeStr = string.Join(",", parsedCodes);
-                    string listTcodesStr = string.Join("&", parsedCodes.Select(c => $"tcodes={c}"));
 
-                    // 1. Both tcode & tcodes without timezone
-                    candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&tcode={singleTcodeStr}&{listTcodesStr}");
-                    // 2. tcode parameter only
+                    // 1. Primary endpoint with tcode parameter (exact match to LabResultSearch pattern)
                     candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&tcode={singleTcodeStr}");
-                    // 3. tcodes list parameter only
-                    candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&{listTcodesStr}");
+                    candidateUrls.Add($"api/Report/LabReport?requestguid={guidStr}&{letterheadParam}&tcode={singleTcodeStr}");
 
-                    // 4. With timezone
+                    // 2. With timezone
                     if (!string.IsNullOrEmpty(tzParam))
                     {
-                        candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&tcode={singleTcodeStr}&{listTcodesStr}{tzParam}");
                         candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&tcode={singleTcodeStr}{tzParam}");
-                        candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&{listTcodesStr}{tzParam}");
+                        candidateUrls.Add($"api/Report/LabReport?requestguid={guidStr}&{letterheadParam}&tcode={singleTcodeStr}{tzParam}");
+                    }
+
+                    if (parsedCodes.Count > 1)
+                    {
+                        string listTcodesStr = string.Join("&", parsedCodes.Select(c => $"tcodes={c}"));
+                        candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&{listTcodesStr}");
                     }
                 }
                 else if (!string.IsNullOrWhiteSpace(selectedTcodes))
                 {
                     candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&tcode={Uri.EscapeDataString(selectedTcodes)}");
+                    candidateUrls.Add($"api/Report/LabReport?requestguid={guidStr}&{letterheadParam}&tcode={Uri.EscapeDataString(selectedTcodes)}");
                     if (!string.IsNullOrEmpty(tzParam))
+                    {
                         candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}&tcode={Uri.EscapeDataString(selectedTcodes)}{tzParam}");
+                        candidateUrls.Add($"api/Report/LabReport?requestguid={guidStr}&{letterheadParam}&tcode={Uri.EscapeDataString(selectedTcodes)}{tzParam}");
+                    }
                 }
-
-                // Fallback: full lab report for this requestguid (no tcode filter)
-                candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}");
-                if (!string.IsNullOrEmpty(tzParam))
-                    candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}{tzParam}");
+                else
+                {
+                    // Full lab report (no tcode filter) ONLY when no test filter was selected
+                    candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}");
+                    candidateUrls.Add($"api/Report/LabReport?requestguid={guidStr}&{letterheadParam}");
+                    if (!string.IsNullOrEmpty(tzParam))
+                    {
+                        candidateUrls.Add($"api/report/labreport?requestguid={guidStr}&{letterheadParam}{tzParam}");
+                        candidateUrls.Add($"api/Report/LabReport?requestguid={guidStr}&{letterheadParam}{tzParam}");
+                    }
+                }
             }
         }
         else if (!string.IsNullOrWhiteSpace(RequestGuid))
         {
-            // Fallback if raw string could not parse into Guid struct
             string raw = RequestGuid.Trim();
             if (parsedCodes.Any())
             {
                 string singleTcodeStr = string.Join(",", parsedCodes);
                 candidateUrls.Add($"api/report/labreport?requestguid={raw}&{letterheadParam}&tcode={singleTcodeStr}");
+                candidateUrls.Add($"api/Report/LabReport?requestguid={raw}&{letterheadParam}&tcode={singleTcodeStr}");
             }
-            candidateUrls.Add($"api/report/labreport?requestguid={raw}&{letterheadParam}");
+            else
+            {
+                candidateUrls.Add($"api/report/labreport?requestguid={raw}&{letterheadParam}");
+                candidateUrls.Add($"api/Report/LabReport?requestguid={raw}&{letterheadParam}");
+            }
         }
 
         // Helper to extract PDF Base64 from binary stream/file or json/base64 response
@@ -5256,13 +5442,20 @@ else if (!string.IsNullOrEmpty(saveMessage))
             if (!string.IsNullOrEmpty(base64) && base64.Length >= 50)
             {
                 string previewTitle = "Lab Report Preview";
-                string effectiveCode = !string.IsNullOrEmpty(specificTcode) ? specificTcode : (!string.IsNullOrEmpty(FilterTCode) ? FilterTCode : "");
-                if (!string.IsNullOrEmpty(effectiveCode))
+                if (!string.IsNullOrEmpty(activeFilteredTestDisplay))
                 {
-                    var matched = lre1?.FirstOrDefault(x => x.tcode.ToString() == effectiveCode || x.fromtcode.ToString() == effectiveCode);
-                    if (matched != null && !string.IsNullOrWhiteSpace(matched.testname))
+                    previewTitle = $"Lab Report - {activeFilteredTestDisplay}";
+                }
+                else
+                {
+                    string effectiveCode = !string.IsNullOrEmpty(specificTcode) ? specificTcode : (!string.IsNullOrEmpty(FilterTCode) ? FilterTCode : "");
+                    if (!string.IsNullOrEmpty(effectiveCode))
                     {
-                        previewTitle = $"Lab Report - {matched.testname}";
+                        var matched = lre1?.FirstOrDefault(x => x.tcode.ToString() == effectiveCode || x.fromtcode.ToString() == effectiveCode);
+                        if (matched != null && !string.IsNullOrWhiteSpace(matched.testname))
+                        {
+                            previewTitle = $"Lab Report - {matched.testname}";
+                        }
                     }
                 }
                 await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64, previewTitle);
@@ -5836,12 +6029,12 @@ else if (!string.IsNullOrEmpty(saveMessage))
     {
         // Restore all selections within current group scope
         billedTestSelections = BuildBilledTestSelections(SelectedGroupCode);
+        FilterTCode = null;
+        FilterTestName = null;
+        isFilteredByIncomingTest = false;
+        activeFilteredTestDisplay = "";
 
-        // Restore lre to current group scope
-        lre = SelectedGroupCode == 0
-            ? lre1
-            : lre1.Where(x => x.gcode == SelectedGroupCode).ToList();
-
+        ApplyUnifiedFilter();
         showBilledTestsDropdown = false;
     }
     private static List<User_Master>? _cachedUserMaster;
@@ -6224,14 +6417,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
             }
 
             lre1 = rawResults.GroupBy(x => x.testresultid!.Value).Select(g => g.First()).ToList();
-            lre1 = lre1
-                .OrderBy(x => x.grouporder > 0 ? x.grouporder : 9999)
-                .ThenBy(x => x.testname ?? "")
-                .ThenBy(x => x.orderno > 0 ? x.orderno : 9999)
-                .ThenBy(x => x.slno > 0 ? x.slno : x.tcode)
-                .ThenBy(x => x.fromtcode > 0 ? (long)x.fromtcode : (long)x.tcode)
-                .ThenBy(x => x.fromtcode > 0 ? 1 : 0)
-                .ToList();
+            lre1 = SortLabResultEntries(lre1);
 
             if (lre1 == null || !lre1.Any())
             {
@@ -6445,7 +6631,28 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 ).ToList();
             }
 
-            // 1. Mark known inner sub-headlines (e.g. NLR) as SubTitle
+            // 1. Text parameter & prompt heading handling:
+            // "XRAY(CHEST) this is the seperate test which has no parameters so keep it as a prompt heading"
+            var rowsByTest = lre1.GroupBy(x => GetParentTCode(x)).ToList();
+            foreach (var testGrp in rowsByTest)
+            {
+                var paramRows = testGrp.Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" && !string.Equals(r.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase)).ToList();
+
+                if (!paramRows.Any() || testGrp.Count() == 1)
+                {
+                    // Standalone test with no parameters (e.g. XRAY(CHEST)): keep as a prompt heading
+                    var singleRow = testGrp.First();
+                    singleRow.resultvaluetype = "Title";
+                    singleRow.printresultonly = true;
+                    singleRow.enteredresult = "";
+                    singleRow.unitname = "";
+                    singleRow.normalvalue = "";
+                    singleRow.orderno = 0;
+                    singleRow.slno = 0;
+                }
+            }
+
+            // 2. Mark known inner sub-headlines (e.g. NLR) as SubTitle
             foreach (var row in lre1)
             {
                 if (row.col2?.Trim().Equals("NLR", StringComparison.OrdinalIgnoreCase) == true)
@@ -6454,48 +6661,66 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
             }
 
-            // 2. Ensure each multi-parameter test group has its top Headline row (matching reference image e.g. "Lipid Profile", "COMPLETE BLOOD COUNT (CBC)")
-            var distinctParentTCodes = lre1.Where(x => x.tcode > 0).GroupBy(x => x.tcode).ToList();
-            foreach (var testGrp in distinctParentTCodes)
+            // 3. Ensure each multi-parameter test group has EXACTLY ONE top Headline row
+            rowsByTest = lre1.GroupBy(x => GetParentTCode(x)).ToList();
+            foreach (var testGrp in rowsByTest)
             {
-                // Multi-parameter test with multiple rows
-                if (testGrp.Count() > 1)
+                var paramRows = testGrp.Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" && !string.Equals(r.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase)).ToList();
+
+                if (paramRows.Count > 1)
                 {
-                    var existingHeader = testGrp.FirstOrDefault(r => r.resultvaluetype == "Title" || (r.fromtcode <= 0 && lre1.Any(x => x.tcode == r.tcode && x.fromtcode > 0 && x != r && !string.Equals(x.col2, "NLR", StringComparison.OrdinalIgnoreCase))));
-                    if (existingHeader != null && existingHeader.col2?.Trim().Equals("NLR", StringComparison.OrdinalIgnoreCase) != true)
+                    string headlineName = "";
+                    if (_testConfigs.TryGetValue(testGrp.Key, out var tmCfg) && !string.IsNullOrWhiteSpace(tmCfg.TestMaster?.name))
                     {
-                        existingHeader.resultvaluetype = "Title";
-                        existingHeader.printresultonly = true;
-                        existingHeader.enteredresult = "";
-                        existingHeader.unitname = "";
-                        existingHeader.normalvalue = "";
+                        headlineName = tmCfg.TestMaster.name.Trim();
+                    }
+                    if (string.IsNullOrWhiteSpace(headlineName) && billedTestSelections != null)
+                    {
+                        headlineName = billedTestSelections.FirstOrDefault(b => b.tcode == testGrp.Key)?.testname ?? "";
+                    }
+                    if (string.IsNullOrWhiteSpace(headlineName))
+                    {
+                        headlineName = testGrp.First().testname ?? "Test Group";
+                    }
+
+                    var titleRows = testGrp.Where(r => r.resultvaluetype == "Title").ToList();
+                    LabResultEntry titleRow;
+
+                    if (titleRows.Any())
+                    {
+                        titleRow = titleRows.First();
+                        titleRow.resultvaluetype = "Title";
+                        titleRow.printresultonly = true;
+                        titleRow.enteredresult = "";
+                        titleRow.unitname = "";
+                        titleRow.normalvalue = "";
+                        titleRow.testname = headlineName;
+                        titleRow.col2 = headlineName;
+                        titleRow.grouporder = testGrp.First().grouporder;
+                        titleRow.groupname = testGrp.First().groupname;
+                        titleRow.gcode = testGrp.First().gcode;
+                        titleRow.orderno = 0;
+                        titleRow.slno = 0;
+
+                        // Deduplicate: Remove any extra duplicate Title rows
+                        for (int i = 1; i < titleRows.Count; i++)
+                        {
+                            lre1.Remove(titleRows[i]);
+                        }
                     }
                     else
                     {
-                        string headlineName = "";
-                        if (_testConfigs.TryGetValue((long)testGrp.Key, out var tmCfg) && !string.IsNullOrWhiteSpace(tmCfg.TestMaster?.name))
-                        {
-                            headlineName = tmCfg.TestMaster.name.Trim();
-                        }
-                        if (string.IsNullOrWhiteSpace(headlineName) && billedTestSelections != null)
-                        {
-                            headlineName = billedTestSelections.FirstOrDefault(b => b.tcode == testGrp.Key)?.testname ?? "";
-                        }
-                        if (string.IsNullOrWhiteSpace(headlineName))
-                        {
-                            headlineName = testGrp.First().testname ?? "Test Group";
-                        }
-
-                        var titleRow = new LabResultEntry
+                        titleRow = new LabResultEntry
                         {
                             testresultid = Guid.NewGuid(),
                             requestguid = RequestGuid,
-                            tcode = testGrp.Key,
+                            tcode = (int)testGrp.Key,
                             fromtcode = 0,
                             testname = headlineName,
                             col2 = headlineName,
                             resultvaluetype = "Title",
                             printresultonly = true,
+                            grouporder = testGrp.First().grouporder, // MUST match parameters!
                             groupname = testGrp.First().groupname,
                             gcode = testGrp.First().gcode,
                             slno = 0,
@@ -6507,7 +6732,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
             }
 
-            // 3. Clear result/unit/normalvalue for all Title and SubTitle headline rows
+            // 4. Clear result/unit/normalvalue for all Title and SubTitle headline rows
             foreach (var row in lre1)
             {
                 if (row.resultvaluetype == "Title" || row.resultvaluetype == "SubTitle" || row.col2?.Trim().Equals("NLR", StringComparison.OrdinalIgnoreCase) == true)
@@ -6530,29 +6755,62 @@ else if (!string.IsNullOrEmpty(saveMessage))
 
                 long targetTCode = row.fromtcode > 0 ? (long)row.fromtcode : row.tcode;
                 long parentTCode = (long)row.tcode;
+                long pBilledTCode = GetParentTCode(row);
 
                 LabCare.Models.TestResultRowDto? mConfig = null;
                 var cleanCol2 = (row.col2 ?? row.testname ?? "").Trim().ToLower();
 
-                // Search across both subtest config and parent test config
+                // Search across subtest config, parent test config, and all available test configs
                 var configsToSearch = new List<LabCare.Models.TestInsertDto>();
                 if (_testConfigs.TryGetValue(targetTCode, out var cfg1) && cfg1?.ResultRows?.Any() == true) configsToSearch.Add(cfg1);
                 if (parentTCode != targetTCode && _testConfigs.TryGetValue(parentTCode, out var cfg2) && cfg2?.ResultRows?.Any() == true) configsToSearch.Add(cfg2);
+                if (pBilledTCode > 0 && !configsToSearch.Any(c => c.TestMaster?.tcode == pBilledTCode) && _testConfigs.TryGetValue(pBilledTCode, out var cfgP) && cfgP?.ResultRows?.Any() == true) configsToSearch.Add(cfgP);
+                foreach (var cfgExtra in _testConfigs.Values)
+                {
+                    if (cfgExtra?.ResultRows?.Any() == true && !configsToSearch.Contains(cfgExtra))
+                        configsToSearch.Add(cfgExtra);
+                }
 
                 foreach (var cfg in configsToSearch)
                 {
+                    // 1. Precise match by ID
                     mConfig = cfg.ResultRows.FirstOrDefault(r => row.fromtestresultid.HasValue && row.fromtestresultid.Value != Guid.Empty && r.ResultMaster?.testresultid == row.fromtestresultid)
-                           ?? cfg.ResultRows.FirstOrDefault(r => row.testresultid.HasValue && row.testresultid.Value != Guid.Empty && r.ResultMaster?.testresultid == row.testresultid)
-                           ?? cfg.ResultRows.FirstOrDefault(r => row.fromtcode > 0 && r.ResultMaster?.fromtcode == row.fromtcode)
-                           ?? cfg.ResultRows.FirstOrDefault(r => row.fromtcode > 0 && r.ResultMaster?.tcode == row.fromtcode)
-                           ?? cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.cellcontent) && r.ResultMaster.cellcontent.Trim().ToLower() == cleanCol2)
-                           ?? cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.col2) && r.ResultMaster.col2.Trim().ToLower() == cleanCol2);
+                           ?? cfg.ResultRows.FirstOrDefault(r => row.testresultid.HasValue && row.testresultid.Value != Guid.Empty && r.ResultMaster?.testresultid == row.testresultid);
+
+                    // 2. Exact match by name
+                    if (mConfig == null)
+                    {
+                        mConfig = cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.cellcontent) && r.ResultMaster.cellcontent.Trim().Equals(cleanCol2, StringComparison.OrdinalIgnoreCase))
+                               ?? cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.col2) && r.ResultMaster.col2.Trim().Equals(cleanCol2, StringComparison.OrdinalIgnoreCase));
+                    }
+
+                    // 3. Normalized / Substring name match
+                    if (mConfig == null)
+                    {
+                        mConfig = cfg.ResultRows.FirstOrDefault(r => {
+                            var rName = (r.ResultMaster?.cellcontent ?? r.ResultMaster?.col2 ?? "").Trim().ToLower();
+                            if (string.IsNullOrEmpty(rName)) return false;
+                            return rName == cleanCol2
+                                || (cleanCol2.Length >= 3 && rName.Contains(cleanCol2))
+                                || (rName.Length >= 3 && cleanCol2.Contains(rName));
+                        });
+                    }
+
                     if (mConfig != null) break;
                 }
 
                 if (row.rtmcode == 0 && mConfig != null && mConfig.ResultProperties != null && mConfig.ResultProperties.rtmcode > 0)
                 {
                     row.rtmcode = mConfig.ResultProperties.rtmcode ?? 0;
+                }
+
+                // Clean up wrongly assigned U/L on WBC count
+                if (cleanCol2.Contains("wbc") || cleanCol2.Contains("leucocyte") || cleanCol2.Contains("white blood"))
+                {
+                    if (string.Equals(row.unitname?.Trim(), "u/l", StringComparison.OrdinalIgnoreCase))
+                    {
+                        row.unitname = null;
+                    }
                 }
 
                 // 1. Normalize existing unitname with uom list
@@ -6570,9 +6828,21 @@ else if (!string.IsNullOrEmpty(saveMessage))
                     }
                 }
 
-                // 2. Resolve missing unitname from defaultunitscode, mConfig, or TestMaster
+                // 2. Resolve missing unitname from mConfig, TestMaster, or clinical standards
                 if (string.IsNullOrWhiteSpace(row.unitname) && row.resultvaluetype != "Title" && row.resultvaluetype != "SubTitle")
                 {
+                    // Check candidate unit string on mConfig.ResultMaster.col3
+                    if (!string.IsNullOrWhiteSpace(mConfig?.ResultMaster?.col3) && uom != null)
+                    {
+                        var cand = mConfig.ResultMaster.col3.Trim();
+                        var matchedCand = uom.FirstOrDefault(u => string.Equals(u.name?.Trim(), cand, StringComparison.OrdinalIgnoreCase));
+                        if (matchedCand != null)
+                        {
+                            row.unitname = matchedCand.name;
+                            row.defaultunitscode = (int)matchedCand.ucode;
+                        }
+                    }
+
                     int resolvedUcode = row.defaultunitscode;
                     if (resolvedUcode <= 0 && mConfig?.ResultProperties?.defaultunitscode > 0)
                     {
@@ -6614,17 +6884,9 @@ else if (!string.IsNullOrEmpty(saveMessage))
                     {
                         resolvedUcode = (int)pcfg.TestMaster.ucode;
                     }
-                    if (resolvedUcode <= 0 && row.labproperties?.FirstOrDefault()?.defaultunitscode > 0)
-                    {
-                        resolvedUcode = row.labproperties.First().defaultunitscode ?? 0;
-                    }
-                    if (resolvedUcode <= 0 && row.testproperties?.FirstOrDefault()?.defaultunitscode > 0)
-                    {
-                        resolvedUcode = row.testproperties.First().defaultunitscode ?? 0;
-                    }
 
-                    // 1. Direct match by ucode
-                    if (resolvedUcode > 0 && uom != null)
+                    // Direct match by ucode in uom
+                    if (string.IsNullOrWhiteSpace(row.unitname) && resolvedUcode > 0 && uom != null)
                     {
                         var matched = uom.FirstOrDefault(u => u.ucode == resolvedUcode);
                         if (matched != null && !string.IsNullOrWhiteSpace(matched.name))
@@ -6634,94 +6896,73 @@ else if (!string.IsNullOrEmpty(saveMessage))
                         }
                     }
 
-                    // 2. Legacy master ucodes mapping across tenants (e.g. tenant 0033 vs tenant 0012)
-                    // 105 or 1 -> mg/dl; 106, 17, 53 -> U/L; 99 or 7 -> g/dl; 14 -> mmol/L; 28 -> %
-                    if (string.IsNullOrWhiteSpace(row.unitname) && resolvedUcode > 0 && uom != null)
-                    {
-                        if (resolvedUcode == 105 || resolvedUcode == 1)
-                        {
-                            var mgdl = uom.FirstOrDefault(u => (u.name ?? "").Replace(" ", "").Equals("mg/dl", StringComparison.OrdinalIgnoreCase));
-                            if (mgdl != null)
-                            {
-                                row.defaultunitscode = (int)mgdl.ucode;
-                                row.unitname = mgdl.name;
-                            }
-                        }
-                        else if (resolvedUcode == 106 || resolvedUcode == 17 || resolvedUcode == 53)
-                        {
-                            var ul = uom.FirstOrDefault(u => string.Equals((u.name ?? "").Trim(), "U/L", StringComparison.OrdinalIgnoreCase));
-                            if (ul != null)
-                            {
-                                row.defaultunitscode = (int)ul.ucode;
-                                row.unitname = ul.name;
-                            }
-                        }
-                        else if (resolvedUcode == 99 || resolvedUcode == 7)
-                        {
-                            var gdl = uom.FirstOrDefault(u => (u.name ?? "").Replace(" ", "").Equals("g/dl", StringComparison.OrdinalIgnoreCase));
-                            if (gdl != null)
-                            {
-                                row.defaultunitscode = (int)gdl.ucode;
-                                row.unitname = gdl.name;
-                            }
-                        }
-                        else if (resolvedUcode == 14)
-                        {
-                            var mmol = uom.FirstOrDefault(u => string.Equals((u.name ?? "").Trim(), "mmol/L", StringComparison.OrdinalIgnoreCase));
-                            if (mmol != null)
-                            {
-                                row.defaultunitscode = (int)mmol.ucode;
-                                row.unitname = mmol.name;
-                            }
-                        }
-                    }
-
-                    // 3. Clinical standard laboratory unit heuristics
+                    // Clinical standard laboratory unit heuristics (including full CBC / ESR parameters)
                     if (string.IsNullOrWhiteSpace(row.unitname) && uom != null)
                     {
-                        var normName = cleanCol2;
-                        if (normName.Contains("billirubin") || normName.Contains("bilirubin") || normName.Contains("urea") || 
-                            normName.Contains("creatinine") || normName.Contains("uric") || normName.Contains("sugar") || 
-                            normName.Contains("glucose") || normName.Contains("cholesterol") || normName.Contains("triglyceride") || 
-                            normName.Contains("calcium") || normName.Contains("rbs") || normName.Contains("fbs") || normName.Contains("ppbs") ||
-                            normName.Contains("bun"))
+                        var stdUnit = GetStandardLabUnit(row.col2 ?? row.testname ?? "");
+                        if (!string.IsNullOrEmpty(stdUnit))
                         {
-                            var mgdl = uom.FirstOrDefault(u => (u.name ?? "").Replace(" ", "").Equals("mg/dl", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 1);
-                            if (mgdl != null)
+                            var matchedUom = uom.FirstOrDefault(u => string.Equals(u.name?.Trim(), stdUnit, StringComparison.OrdinalIgnoreCase))
+                                          ?? uom.FirstOrDefault(u => string.Equals((u.name ?? "").Replace(" ", ""), stdUnit.Replace(" ", ""), StringComparison.OrdinalIgnoreCase));
+                            if (matchedUom != null)
                             {
-                                row.defaultunitscode = (int)mgdl.ucode;
-                                row.unitname = mgdl.name;
+                                row.unitname = matchedUom.name;
+                                row.defaultunitscode = (int)matchedUom.ucode;
+                            }
+                            else
+                            {
+                                row.unitname = stdUnit;
+                                int newUcode = uom.Any() ? (int)uom.Max(x => x.ucode) + 1 : 1000;
+                                uom.Add(new Booking.Models.UomMasterModel { ucode = newUcode, name = stdUnit });
+                                row.defaultunitscode = newUcode;
                             }
                         }
-                        else if (normName.Contains("sgot") || normName.Contains("sgpt") || normName.Contains("ast") || 
-                                 normName.Contains("alt") || normName.Contains("alp") || normName.Contains("phosphata") ||
-                                 normName.Contains("ggt") || normName.Contains("amylase") || normName.Contains("lipase") ||
-                                 normName.Contains("cpk") || normName.Contains("ldh"))
+                        else
                         {
-                            var ul = uom.FirstOrDefault(u => string.Equals((u.name ?? "").Trim(), "U/L", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 17);
-                            if (ul != null)
+                            var normName = cleanCol2;
+                            if (normName.Contains("billirubin") || normName.Contains("bilirubin") || normName.Contains("urea") || 
+                                normName.Contains("creatinine") || normName.Contains("uric") || normName.Contains("sugar") || 
+                                normName.Contains("glucose") || normName.Contains("cholesterol") || normName.Contains("triglyceride") || 
+                                normName.Contains("calcium") || normName.Contains("rbs") || normName.Contains("fbs") || normName.Contains("ppbs") ||
+                                normName.Contains("bun"))
                             {
-                                row.defaultunitscode = (int)ul.ucode;
-                                row.unitname = ul.name;
+                                var mgdl = uom.FirstOrDefault(u => (u.name ?? "").Replace(" ", "").Equals("mg/dl", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 1);
+                                if (mgdl != null)
+                                {
+                                    row.defaultunitscode = (int)mgdl.ucode;
+                                    row.unitname = mgdl.name;
+                                }
                             }
-                        }
-                        else if (normName.Contains("albumin") || normName.Contains("globulin") || normName.Contains("protein") || 
-                                 normName.Contains("haemoglobin") || normName.Contains("hemoglobin") || normName.Equals("hb"))
-                        {
-                            var gdl = uom.FirstOrDefault(u => (u.name ?? "").Replace(" ", "").Equals("g/dl", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 7);
-                            if (gdl != null)
+                            else if (normName.Contains("sgot") || normName.Contains("sgpt") || normName.Contains("ast") || 
+                                     normName.Contains("alt") || normName.Contains("alp") || normName.Contains("phosphata") ||
+                                     normName.Contains("ggt") || normName.Contains("amylase") || normName.Contains("lipase") ||
+                                     normName.Contains("cpk") || normName.Contains("ldh"))
                             {
-                                row.defaultunitscode = (int)gdl.ucode;
-                                row.unitname = gdl.name;
+                                var ul = uom.FirstOrDefault(u => string.Equals((u.name ?? "").Trim(), "U/L", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 17);
+                                if (ul != null)
+                                {
+                                    row.defaultunitscode = (int)ul.ucode;
+                                    row.unitname = ul.name;
+                                }
                             }
-                        }
-                        else if (normName.Contains("sodium") || normName.Contains("potassium") || normName.Contains("chloride") || normName.Contains("bicarbonate"))
-                        {
-                            var mmol = uom.FirstOrDefault(u => string.Equals((u.name ?? "").Trim(), "mmol/L", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 14);
-                            if (mmol != null)
+                            else if (normName.Contains("albumin") || normName.Contains("globulin") || normName.Contains("protein") || 
+                                     normName.Contains("haemoglobin") || normName.Contains("hemoglobin") || normName.Equals("hb"))
                             {
-                                row.defaultunitscode = (int)mmol.ucode;
-                                row.unitname = mmol.name;
+                                var gdl = uom.FirstOrDefault(u => (u.name ?? "").Replace(" ", "").Equals("g/dl", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 7);
+                                if (gdl != null)
+                                {
+                                    row.defaultunitscode = (int)gdl.ucode;
+                                    row.unitname = gdl.name;
+                                }
+                            }
+                            else if (normName.Contains("sodium") || normName.Contains("potassium") || normName.Contains("chloride") || normName.Contains("bicarbonate"))
+                            {
+                                var mmol = uom.FirstOrDefault(u => string.Equals((u.name ?? "").Trim(), "mmol/L", StringComparison.OrdinalIgnoreCase)) ?? uom.FirstOrDefault(u => u.ucode == 14);
+                                if (mmol != null)
+                                {
+                                    row.defaultunitscode = (int)mmol.ucode;
+                                    row.unitname = mmol.name;
+                                }
                             }
                         }
                     }
@@ -6734,10 +6975,12 @@ else if (!string.IsNullOrEmpty(saveMessage))
                     if (existingUom != null)
                     {
                         row.unitname = existingUom.name ?? row.unitname;
+                        if (row.defaultunitscode <= 0) row.defaultunitscode = (int)existingUom.ucode;
                     }
                     else
                     {
-                        uom.Add(new Booking.Models.UomMasterModel { ucode = row.defaultunitscode, name = row.unitname.Trim() });
+                        int newUcode = row.defaultunitscode > 0 ? row.defaultunitscode : (uom.Any() ? (int)uom.Max(x => x.ucode) + 1 : 1000);
+                        uom.Add(new Booking.Models.UomMasterModel { ucode = newUcode, name = row.unitname.Trim() });
                     }
                 }
 
@@ -7071,16 +7314,9 @@ else if (!string.IsNullOrEmpty(saveMessage))
             // â”€â”€ Test group conclusion & footer propagation: ONLY on the LAST row of each billed test group â”€â”€
             if (lre1 != null && lre1.Any())
             {
-                lre1 = lre1
-                    .OrderBy(x => x.grouporder > 0 ? x.grouporder : 9999)
-                    .ThenBy(x => x.testname ?? "")
-                    .ThenBy(x => x.orderno > 0 ? x.orderno : 9999)
-                    .ThenBy(x => x.slno > 0 ? x.slno : x.tcode)
-                    .ThenBy(x => x.fromtcode > 0 ? (long)x.fromtcode : (long)x.tcode)
-                    .ThenBy(x => x.fromtcode > 0 ? 1 : 0)
-                    .ToList();
+                lre1 = SortLabResultEntries(lre1);
 
-                var testGroupsLoad = lre1.GroupBy(r => !string.IsNullOrEmpty(r.testname) ? r.testname : (r.fromtcode > 0 ? r.fromtcode.ToString() : r.tcode.ToString()));
+                var testGroupsLoad = lre1.GroupBy(r => GetParentTCode(r));
                 foreach (var group in testGroupsLoad)
                 {
                     var groupList = group.ToList();
@@ -7906,16 +8142,9 @@ else if (!string.IsNullOrEmpty(saveMessage))
             }
 
             // Propagate group-level conclusions for RDLC report rendering (ONLY onto the last row of each billed test group)
-            lre1 = lre1
-                .OrderBy(x => x.grouporder > 0 ? x.grouporder : 9999)
-                .ThenBy(x => x.testname ?? "")
-                .ThenBy(x => x.orderno > 0 ? x.orderno : 9999)
-                .ThenBy(x => x.slno > 0 ? x.slno : x.tcode)
-                .ThenBy(x => x.fromtcode > 0 ? (long)x.fromtcode : (long)x.tcode)
-                .ThenBy(x => x.fromtcode > 0 ? 1 : 0)
-                .ToList();
+            lre1 = SortLabResultEntries(lre1);
 
-            var tcodeGroups = lre1.GroupBy(r => !string.IsNullOrEmpty(r.testname) ? r.testname : (r.fromtcode > 0 ? r.fromtcode.ToString() : r.tcode.ToString()));
+            var tcodeGroups = lre1.GroupBy(r => GetParentTCode(r));
             foreach (var group in tcodeGroups)
             {
                 var groupList = group.ToList();

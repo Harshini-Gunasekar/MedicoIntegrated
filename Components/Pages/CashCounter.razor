@@ -10,6 +10,7 @@
 @inject Booking.Services.HmsDueCollectionService DueCollectionService
 @inject Booking.Services.AppointmentBookingService AppointmentBookingService
 @inject Booking.Services.DoctorService DoctorService
+@inject Booking.Services.IpRegistrationService IpService
 @inject IHttpClientFactory ClientFactory
 @inject Booking.Services.RoleMasterService RoleService
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
@@ -49,7 +50,7 @@
     else
     {
     <!-- Header (Matching Patient Advance Reference) -->
-    <div class="page-header">
+    <div class="page-header @(isPayModeSelected ? "header-scrollable" : "")">
         <div class="header-left-group">
             <div class="header-title-container">
                 <h1 class="header-title">Cash Counter Portal</h1>
@@ -245,6 +246,10 @@
                         <th>BILL NO</th>
                         <th>DATE</th>
                         <th>PATIENT NAME</th>
+                        @if (billingSource != "PHARMACY")
+                        {
+                            <th>Reference No.</th>
+                        }
                         <th>@(billingSource == "PHARMACY" ? "LOCATION" : "MOBILE")</th>
                         <th>REF. DOCTOR</th>
                         <th class="text-end">GROSS</th>
@@ -260,7 +265,7 @@
                     @if (isLoading)
                     {
                         <tr>
-                            <td colspan="13" class="text-center py-5">
+                            <td colspan="@(billingSource == "PHARMACY" ? 13 : 14)" class="text-center py-5">
                                 <div class="spinner-container">
                                     <div class="spinner-border text-primary" role="status"></div>
                                     <p class="mt-2">Loading bills list...</p>
@@ -347,7 +352,7 @@
                         @if (billsList == null || !billsList.data.Any())
                         {
                             <tr>
-                                <td colspan="13" class="text-center py-5 text-muted">
+                                <td colspan="14" class="text-center py-5 text-muted">
                                     <i class="bi bi-receipt-cutoff" style="font-size: 2.5rem; color: #94a3b8; display: block; margin-bottom: 0.5rem;"></i>
                                     No bills found matching the selected criteria.
                                 </td>
@@ -365,6 +370,7 @@
                                     <td class="bill-no">@bill.bill_no</td>
                                     <td>@(DateTimeHelper.ConvertUtcToIst(bill.bill_date)?.ToString("dd-MMM-yyyy hh:mm tt") ?? "-")</td>
                                     <td class="patient-name">@bill.patient_name</td>
+                                    <td class="patient-id-no">@GetPatientIdentifyingNumber(bill)</td>
                                     <td class="patient-phone">@bill.mobileno</td>
                                     <td>@GetDoctorName(bill.dcode, bill.doctor_name, bill.opvisitid, bill.custid, bill.bill_date)</td>
                                     <td class="text-end font-numeric">@(bill.gross_amount?.ToString("0.00") ?? "0.00")</td>
@@ -752,6 +758,14 @@
     private Dictionary<string, OPRegistrationModel.OpRegistrationModel> opByCustDateMap = new();
     private Dictionary<decimal, OPRegistrationModel.OpRegistrationModel> opByCustIdMap = new();
 
+    private List<IPRegistrationModel.IpRegistrationModel> cachedIpRegistrations = new();
+    private Dictionary<Guid, IPRegistrationModel.IpRegistrationModel> ipByGuidMap = new();
+    private Dictionary<string, IPRegistrationModel.IpRegistrationModel> ipByGuidStringMap = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, IPRegistrationModel.IpRegistrationModel> ipByNoMap = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<decimal, IPRegistrationModel.IpRegistrationModel> ipByCustIdMap = new();
+    private Dictionary<string, IPRegistrationModel.IpRegistrationModel> ipByNameMap = new(StringComparer.OrdinalIgnoreCase);
+    private Dictionary<string, IPRegistrationModel.IpRegistrationModel> ipByMobileMap = new(StringComparer.OrdinalIgnoreCase);
+
     // Text state for amount input boxes (prevents wheel scroll increment/decrement)
     private string pmc1InputText = "";
     private string pmc2InputText = "";
@@ -960,6 +974,7 @@
                 LoadPharmacySalesAsync(),
                 LoadDoctorsAsync(),
                 LoadOpRegistrationsLookupAsync(),
+                LoadIpRegistrationsLookupAsync(),
                 LoadDueTotalsAsync()
             );
 
@@ -1014,6 +1029,7 @@
                     LoadPharmacySalesAsync(),
                     LoadDoctorsAsync(),
                     LoadOpRegistrationsLookupAsync(),
+                    LoadIpRegistrationsLookupAsync(),
                     LoadDueTotalsAsync()
                 );
                 await SetDefaultCounterAsync();
@@ -1185,6 +1201,10 @@
         if (!cachedOpRegistrations.Any())
         {
             await LoadOpRegistrationsLookupAsync();
+        }
+        if (!cachedIpRegistrations.Any())
+        {
+            await LoadIpRegistrationsLookupAsync();
         }
         if (!doctorsList.Any())
         {
@@ -1376,6 +1396,78 @@
         }
     }
 
+    private async Task LoadIpRegistrationsLookupAsync()
+    {
+        try
+        {
+            var admittedTask = IpService.GetIpRegistrationsAsync("ADMITTED");
+            var dischargedTask = IpService.GetIpRegistrationsAsync("DISCHARGED");
+            var activeAdmissionsTask = IpService.GetActiveAdmissionsAsync();
+
+            await Task.WhenAll(admittedTask, dischargedTask, activeAdmissionsTask);
+
+            var admitted = (await admittedTask) ?? new();
+            var discharged = (await dischargedTask) ?? new();
+            var active = (await activeAdmissionsTask) ?? new();
+
+            cachedIpRegistrations = admitted
+                .Concat(discharged)
+                .Concat(active)
+                .GroupBy(x => x.ip_id)
+                .Select(g => g.First())
+                .ToList();
+
+            ipByGuidMap.Clear();
+            ipByGuidStringMap.Clear();
+            ipByNoMap.Clear();
+            ipByCustIdMap.Clear();
+            ipByNameMap.Clear();
+            ipByMobileMap.Clear();
+
+            foreach (var r in cachedIpRegistrations.Where(x => !x.isdeleted && !string.IsNullOrWhiteSpace(x.ip_no)))
+            {
+                var cleanIpNo = r.ip_no.Trim();
+
+                if (r.ip_id != Guid.Empty)
+                {
+                    ipByGuidMap[r.ip_id] = r;
+                    ipByGuidStringMap[r.ip_id.ToString()] = r;
+                }
+
+                ipByNoMap[cleanIpNo] = r;
+
+                if (r.custid > 0 && !ipByCustIdMap.ContainsKey(r.custid))
+                {
+                    ipByCustIdMap[r.custid] = r;
+                }
+
+                var pName = r.GetPatientName();
+                if (!string.IsNullOrWhiteSpace(pName))
+                {
+                    var nameKey = pName.Trim().ToLowerInvariant();
+                    if (!ipByNameMap.ContainsKey(nameKey))
+                    {
+                        ipByNameMap[nameKey] = r;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(r.mobile))
+                {
+                    var mobKey = r.mobile.Trim();
+                    if (!ipByMobileMap.ContainsKey(mobKey))
+                    {
+                        ipByMobileMap[mobKey] = r;
+                    }
+                }
+            }
+            Console.WriteLine($"[CashCounter] Successfully loaded {cachedIpRegistrations.Count} IP registrations for lookup");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading IP registrations in CashCounter: {ex.Message}");
+        }
+    }
+
     private OPRegistrationModel.OpRegistrationModel? FindMatchedOpRegistration(string? opvisitid, decimal? custid, DateTime? billDate)
     {
         if (!string.IsNullOrWhiteSpace(opvisitid))
@@ -1409,6 +1501,157 @@
         }
 
         return null;
+    }
+
+    private string GetPatientIdentifyingNumber(HmsBillSummary bill)
+    {
+        // 1. If explicit ip_no / ipno from backend bill model
+        if (!string.IsNullOrWhiteSpace(bill.ip_no))
+        {
+            return bill.ip_no.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(bill.ipno))
+        {
+            return bill.ipno.Trim();
+        }
+
+        // 2. If explicit op_no / opno from backend bill model
+        if (!string.IsNullOrWhiteSpace(bill.op_no))
+        {
+            return bill.op_no.Trim();
+        }
+        if (!string.IsNullOrWhiteSpace(bill.opno))
+        {
+            return bill.opno.Trim();
+        }
+
+        // 3. If bill is linked to an IP admission via ip_id or ipid
+        if (bill.ip_id.HasValue && bill.ip_id.Value != Guid.Empty)
+        {
+            if (ipByGuidMap.TryGetValue(bill.ip_id.Value, out var ipReg) && !string.IsNullOrWhiteSpace(ipReg.ip_no))
+            {
+                return ipReg.ip_no.Trim();
+            }
+        }
+        if (!string.IsNullOrWhiteSpace(bill.ipid))
+        {
+            var cleanIpId = bill.ipid.Trim();
+            if (Guid.TryParse(cleanIpId, out var parsedIpGuid) && ipByGuidMap.TryGetValue(parsedIpGuid, out var ipRegG))
+            {
+                return ipRegG.ip_no.Trim();
+            }
+            if (ipByGuidStringMap.TryGetValue(cleanIpId, out var ipRegS))
+            {
+                return ipRegS.ip_no.Trim();
+            }
+            if (ipByNoMap.TryGetValue(cleanIpId, out var ipRegN))
+            {
+                return ipRegN.ip_no.Trim();
+            }
+            if (cleanIpId.StartsWith("IP", StringComparison.OrdinalIgnoreCase))
+            {
+                return cleanIpId;
+            }
+        }
+
+        // 4. Try matching OP registration via opvisitid or custid + bill_date or custid
+        var matchedOp = FindMatchedOpRegistration(bill.opvisitid, bill.custid, bill.bill_date);
+        if (matchedOp != null && !string.IsNullOrWhiteSpace(matchedOp.op_no))
+        {
+            return matchedOp.op_no.Trim();
+        }
+
+        // 5. If opvisitid itself looks like an IP or OP number
+        if (!string.IsNullOrWhiteSpace(bill.opvisitid))
+        {
+            var cleanOpId = bill.opvisitid.Trim();
+            if (cleanOpId.StartsWith("IP", StringComparison.OrdinalIgnoreCase))
+            {
+                return cleanOpId;
+            }
+            if (cleanOpId.Contains('/') || cleanOpId.StartsWith("OP", StringComparison.OrdinalIgnoreCase))
+            {
+                return cleanOpId;
+            }
+            if (Guid.TryParse(cleanOpId, out var opAsIpGuid) && ipByGuidMap.TryGetValue(opAsIpGuid, out var ipRegOp))
+            {
+                return ipRegOp.ip_no.Trim();
+            }
+        }
+
+        // 6. Try matching IP registration via custid
+        if (bill.custid.HasValue && bill.custid.Value > 0)
+        {
+            if (ipByCustIdMap.TryGetValue(bill.custid.Value, out var ipRegByCust) && !string.IsNullOrWhiteSpace(ipRegByCust.ip_no))
+            {
+                return ipRegByCust.ip_no.Trim();
+            }
+        }
+
+        // 7. Try matching IP registration via mobileno
+        if (!string.IsNullOrWhiteSpace(bill.mobileno))
+        {
+            var cleanMob = bill.mobileno.Trim();
+            if (cleanMob.StartsWith("+91")) cleanMob = cleanMob.Substring(3).Trim();
+            if (cleanMob.StartsWith("0") && cleanMob.Length > 10) cleanMob = cleanMob.Substring(1).Trim();
+            if (ipByMobileMap.TryGetValue(cleanMob, out var ipRegByMob) && !string.IsNullOrWhiteSpace(ipRegByMob.ip_no))
+            {
+                return ipRegByMob.ip_no.Trim();
+            }
+            if (ipByMobileMap.TryGetValue(bill.mobileno.Trim(), out var ipRegByOrigMob) && !string.IsNullOrWhiteSpace(ipRegByOrigMob.ip_no))
+            {
+                return ipRegByOrigMob.ip_no.Trim();
+            }
+        }
+
+        // 8. Try matching IP registration via patient_name
+        if (!string.IsNullOrWhiteSpace(bill.patient_name))
+        {
+            var cleanName = bill.patient_name.Trim().ToLowerInvariant();
+            if (ipByNameMap.TryGetValue(cleanName, out var ipRegByName) && !string.IsNullOrWhiteSpace(ipRegByName.ip_no))
+            {
+                return ipRegByName.ip_no.Trim();
+            }
+        }
+
+        // 9. Fallback to custcode or custid
+        if (!string.IsNullOrWhiteSpace(bill.custcode))
+        {
+            return bill.custcode.Trim();
+        }
+
+        if (bill.custid.HasValue && bill.custid.Value > 0)
+        {
+            return bill.custid.Value.ToString();
+        }
+
+        return "-";
+    }
+
+    private string GetPharmacyPatientIdentifyingNumber(sales_master s)
+    {
+        // 1. If patientid is provided and non-empty
+        if (!string.IsNullOrWhiteSpace(s.patientid))
+        {
+            return s.patientid.Trim();
+        }
+
+        // 2. If customercode is available, try matching OP/IP registration
+        if (s.customercode.HasValue && s.customercode.Value > 0)
+        {
+            decimal custid = (decimal)s.customercode.Value;
+            if (opByCustIdMap.TryGetValue(custid, out var opReg) && !string.IsNullOrWhiteSpace(opReg.op_no))
+            {
+                return opReg.op_no.Trim();
+            }
+            if (ipByCustIdMap.TryGetValue(custid, out var ipReg) && !string.IsNullOrWhiteSpace(ipReg.ip_no))
+            {
+                return ipReg.ip_no.Trim();
+            }
+            return custid.ToString();
+        }
+
+        return "-";
     }
 
     private string GetDoctorName(int? dcode, string? fallbackName, string? opvisitid = null, decimal? custid = null, DateTime? billDate = null)

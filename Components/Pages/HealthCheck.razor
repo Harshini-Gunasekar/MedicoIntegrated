@@ -1,0 +1,360 @@
+@page "/health"
+@page "/system-health"
+@attribute [Microsoft.AspNetCore.Authorization.AllowAnonymous]
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using System.Text.Json
+@using Booking.Models
+@using Booking.Services
+@inject HealthService HealthCheckService
+@inject IJSRuntime JSRuntime
+
+<PageTitle>System Health Dashboard - Medico</PageTitle>
+
+<div class="health-dashboard-wrapper">
+    <!-- Ambient Backdrop Glows -->
+    <div class="health-glow-orb glow-1"></div>
+    <div class="health-glow-orb glow-2"></div>
+
+    <div class="health-container">
+        <!-- Top Navigation / Brand Header -->
+        <header class="health-header">
+            <div class="health-brand-block">
+                <div class="brand-icon-shield @(IsOverallHealthy ? "healthy" : "unhealthy")">
+                    <i class="bi @(IsOverallHealthy ? "bi-shield-check" : "bi-shield-exclamation")"></i>
+                </div>
+                <div>
+                    <div class="health-title-row">
+                        <h1 class="health-title">System Health & API Diagnostics</h1>
+                        <span class="status-pill-badge @(IsOverallHealthy ? "status-healthy" : "status-unhealthy")">
+                            <span class="pulse-dot"></span>
+                            @(IsOverallHealthy ? "All Systems Operational" : "Service Disruption Detected")
+                        </span>
+                    </div>
+                    <p class="health-subtitle">Real-time status, latency metrics, and connectivity health across dependent services</p>
+                </div>
+            </div>
+
+            <div class="health-header-actions">
+                <div class="auto-refresh-toggle">
+                    <label class="toggle-switch" title="Toggle 15s auto-refresh">
+                        <input type="checkbox" checked="@isAutoRefreshEnabled" @onchange="ToggleAutoRefresh" />
+                        <span class="slider round"></span>
+                    </label>
+                    <span class="toggle-label">Auto-refresh (15s)</span>
+                </div>
+
+                <button class="btn-health-refresh @(isRefreshing ? "refreshing" : "")" 
+                        @onclick="RefreshHealthCheckAsync" 
+                        disabled="@isRefreshing" 
+                        id="btn-health-refresh">
+                    <i class="bi bi-arrow-clockwise refresh-icon"></i>
+                    <span>@(isRefreshing ? "Pinging APIs..." : "Run Health Check")</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Metric Stat Cards -->
+        <div class="health-stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon-wrapper bg-indigo">
+                    <i class="bi bi-hdd-network"></i>
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">Total Endpoints</span>
+                    <span class="stat-value">@(healthData?.Apis?.Count ?? 0)</span>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-icon-wrapper bg-emerald">
+                    <i class="bi bi-check2-circle"></i>
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">Healthy Services</span>
+                    <span class="stat-value text-emerald">@(healthData?.Apis?.Count(a => string.Equals(a.Status, "healthy", StringComparison.OrdinalIgnoreCase)) ?? 0)</span>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-icon-wrapper bg-rose">
+                    <i class="bi bi-exclamation-triangle"></i>
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">Unhealthy / Degraded</span>
+                    <span class="stat-value @(UnhealthyCount > 0 ? "text-rose" : "")">@UnhealthyCount</span>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <div class="stat-icon-wrapper bg-cyan">
+                    <i class="bi bi-speedometer2"></i>
+                </div>
+                <div class="stat-content">
+                    <span class="stat-label">Avg Response Time</span>
+                    <span class="stat-value">@(AverageResponseTimeMs) ms</span>
+                </div>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(healthData?.Message))
+        {
+            <div class="health-alert-banner">
+                <div class="alert-icon">
+                    <i class="bi bi-exclamation-octagon-fill"></i>
+                </div>
+                <div class="alert-text">
+                    <strong>Service Notice:</strong> @healthData.Message
+                </div>
+            </div>
+        }
+
+        <!-- API Health Cards Grid -->
+        <section class="api-cards-section">
+            <div class="section-top-bar">
+                <h2 class="section-title">
+                    <i class="bi bi-activity me-2"></i>Monitored Dependent APIs
+                </h2>
+                <div class="last-checked-tag">
+                    <i class="bi bi-clock-history me-1"></i>
+                    Last verified: <strong>@LastCheckedDisplay</strong>
+                </div>
+            </div>
+
+            @if (isRefreshing && healthData == null)
+            {
+                <div class="health-loading-state">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p class="mt-3 text-muted">Running network diagnostics on configured endpoints...</p>
+                </div>
+            }
+            else if (healthData?.Apis == null || healthData.Apis.Count == 0)
+            {
+                <div class="health-empty-state">
+                    <i class="bi bi-cloud-slash empty-icon"></i>
+                    <p class="empty-title">No APIs configured for health monitoring</p>
+                    <p class="empty-sub">Verify that ApiBaseUrl, LabCareUrl, RidoUrl, or UserRightUrl are configured in appsettings.json</p>
+                </div>
+            }
+            else
+            {
+                <div class="api-cards-grid">
+                    @foreach (var api in healthData.Apis)
+                    {
+                        var isHealthy = string.Equals(api.Status, "healthy", StringComparison.OrdinalIgnoreCase);
+                        <div class="api-card @(isHealthy ? "card-healthy" : "card-unhealthy")">
+                            <div class="api-card-header">
+                                <div class="api-name-block">
+                                    <div class="api-indicator-dot @(isHealthy ? "dot-healthy" : "dot-unhealthy")"></div>
+                                    <h3 class="api-name">@api.Name</h3>
+                                </div>
+                                <span class="badge-status @(isHealthy ? "badge-healthy" : "badge-unhealthy")">
+                                    <i class="bi @(isHealthy ? "bi-check-circle-fill" : "bi-x-circle-fill") me-1"></i>
+                                    @(isHealthy ? "HEALTHY" : "UNHEALTHY")
+                                </span>
+                            </div>
+
+                            <div class="api-url-row">
+                                <span class="url-code" title="@api.Url">@api.Url</span>
+                                <button class="btn-copy-url" @onclick="() => CopyToClipboard(api.Url)" title="Copy URL">
+                                    <i class="bi bi-copy"></i>
+                                </button>
+                            </div>
+
+                            <div class="api-card-footer">
+                                <div class="latency-pill @GetLatencyClass(api.ResponseTimeMs, isHealthy)">
+                                    <i class="bi bi-lightning-charge-fill me-1"></i>
+                                    <span>@api.ResponseTimeMs ms</span>
+                                </div>
+
+                                @if (!string.IsNullOrWhiteSpace(api.Message))
+                                {
+                                    <div class="error-reason-box" title="@api.Message">
+                                        <i class="bi bi-info-circle-fill me-1"></i>
+                                        <span>@api.Message</span>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="success-note">
+                                        <i class="bi bi-check-lg me-1"></i> Responding normally
+                                    </div>
+                                }
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </section>
+
+        <!-- Raw JSON Diagnostics Accordion -->
+        <section class="json-diagnostics-section">
+            <div class="json-header" @onclick="ToggleJsonViewer">
+                <div class="json-header-title">
+                    <i class="bi bi-code-slash me-2"></i>
+                    <span>Raw Diagnostic Response Payload</span>
+                    <span class="json-status-tag @(IsOverallHealthy ? "healthy" : "unhealthy")">
+                        HTTP 200 OK — JSON
+                    </span>
+                </div>
+                <div class="json-header-controls">
+                    <button class="btn-copy-json" @onclick="CopyJsonPayload" @onclick:stopPropagation="true">
+                        <i class="bi bi-clipboard me-1"></i> @copyButtonText
+                    </button>
+                    <i class="bi bi-chevron-down chevron-icon @(isJsonExpanded ? "expanded" : "")"></i>
+                </div>
+            </div>
+
+            @if (isJsonExpanded)
+            {
+                <div class="json-body">
+                    <pre class="json-pre"><code>@FormattedJson</code></pre>
+                </div>
+            }
+        </section>
+    </div>
+</div>
+
+@code {
+    private HealthCheckResponse? healthData;
+    private bool isRefreshing = false;
+    private bool isAutoRefreshEnabled = false;
+    private bool isJsonExpanded = false;
+    private string copyButtonText = "Copy JSON";
+    private System.Threading.Timer? autoRefreshTimer;
+
+    private bool IsOverallHealthy => string.Equals(healthData?.Status, "healthy", StringComparison.OrdinalIgnoreCase);
+    private int UnhealthyCount => healthData?.Apis?.Count(a => !string.Equals(a.Status, "healthy", StringComparison.OrdinalIgnoreCase)) ?? 0;
+    private long AverageResponseTimeMs => healthData?.Apis?.Count > 0 
+        ? (long)healthData.Apis.Average(a => a.ResponseTimeMs) 
+        : 0;
+
+    private string LastCheckedDisplay
+    {
+        get
+        {
+            if (healthData == null || string.IsNullOrWhiteSpace(healthData.CheckedAtUtc))
+                return "Not yet checked";
+
+            if (DateTime.TryParse(healthData.CheckedAtUtc, out var dt))
+                return dt.ToLocalTime().ToString("hh:mm:ss tt (MMM dd, yyyy)");
+
+            return healthData.CheckedAtUtc;
+        }
+    }
+
+    private string FormattedJson
+    {
+        get
+        {
+            if (healthData == null) return "{}";
+            try
+            {
+                return JsonSerializer.Serialize(healthData, new JsonSerializerOptions { WriteIndented = true });
+            }
+            catch
+            {
+                return "{}";
+            }
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshHealthCheckAsync();
+    }
+
+    private async Task RefreshHealthCheckAsync()
+    {
+        if (isRefreshing) return;
+        isRefreshing = true;
+        StateHasChanged();
+
+        try
+        {
+            healthData = await HealthCheckService.CheckHealthAsync();
+        }
+        catch (Exception ex)
+        {
+            healthData = new HealthCheckResponse
+            {
+                App = "Medico Web",
+                Status = "unhealthy",
+                Message = $"Diagnostic check failed: {ex.Message}",
+                CheckedAtUtc = DateTime.UtcNow.ToString("o")
+            };
+        }
+        finally
+        {
+            isRefreshing = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void ToggleAutoRefresh(ChangeEventArgs e)
+    {
+        isAutoRefreshEnabled = e.Value is bool b && b;
+
+        if (isAutoRefreshEnabled)
+        {
+            autoRefreshTimer?.Dispose();
+            autoRefreshTimer = new System.Threading.Timer(async _ =>
+            {
+                await InvokeAsync(async () =>
+                {
+                    await RefreshHealthCheckAsync();
+                });
+            }, null, TimeSpan.FromSeconds(15), TimeSpan.FromSeconds(15));
+        }
+        else
+        {
+            autoRefreshTimer?.Dispose();
+            autoRefreshTimer = null;
+        }
+    }
+
+    private void ToggleJsonViewer()
+    {
+        isJsonExpanded = !isJsonExpanded;
+    }
+
+    private string GetLatencyClass(long ms, bool isHealthy)
+    {
+        if (!isHealthy) return "latency-critical";
+        if (ms < 100) return "latency-fast";
+        if (ms < 300) return "latency-medium";
+        return "latency-slow";
+    }
+
+    private async Task CopyToClipboard(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", text);
+        }
+        catch { }
+    }
+
+    private async Task CopyJsonPayload()
+    {
+        try
+        {
+            await JSRuntime.InvokeVoidAsync("navigator.clipboard.writeText", FormattedJson);
+            copyButtonText = "Copied!";
+            StateHasChanged();
+            _ = Task.Delay(2000).ContinueWith(_ =>
+            {
+                copyButtonText = "Copy JSON";
+                InvokeAsync(StateHasChanged);
+            });
+        }
+        catch { }
+    }
+
+    public void Dispose()
+    {
+        autoRefreshTimer?.Dispose();
+        autoRefreshTimer = null;
+    }
+}

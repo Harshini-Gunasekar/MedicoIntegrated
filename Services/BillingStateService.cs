@@ -43,7 +43,7 @@ namespace Booking.Services
             {
                 return BillModel.patient_name.Trim();
             }
-            if (!string.IsNullOrWhiteSpace(PatientSearchQuery))
+            if (SelectedPatientBadgeVisible && !string.IsNullOrWhiteSpace(PatientSearchQuery))
             {
                 var query = PatientSearchQuery.Trim();
                 int idx = query.IndexOf('(');

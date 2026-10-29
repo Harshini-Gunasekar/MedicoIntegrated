@@ -2,6 +2,7 @@ using Booking.Components;
 using Microsoft.AspNetCore.Components.Authorization;
 using Booking.Services;
 using Booking.Handlers;
+using Booking.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -221,6 +222,33 @@ builder.Services.AddScoped<LabCare.Services.UserService>(sp =>
     return new LabCare.Services.UserService(client, session);
 });
 
+// Register Health Check and Multi-API dependencies
+builder.Services.AddControllers();
+builder.Services.AddSingleton(sp =>
+{
+    var config = sp.GetRequiredService<IConfiguration>();
+    var baseUrl = config["ApiBaseUrl"] ?? config["BaseUrl"] ?? "";
+    var uniIdentityUrl = config["RidoUrl"] ?? config["UniIdentityBaseUrl"] ?? "";
+    var ridoUrl = config["UserRightUrl"] ?? config["RidoBaseUrl"] ?? uniIdentityUrl;
+    var labCareUrl = config["LabCareUrl"] ?? "";
+    var barcodeUrl = config["BarcodeApiUrl"] ?? "";
+    var medicoUrl = config["MedicoApiUrl"] ?? baseUrl;
+
+    return new HealthAppSettings
+    {
+        BaseUrl = baseUrl,
+        ApiBaseUrl = baseUrl,
+        UniIdentityBaseUrl = uniIdentityUrl,
+        RidoBaseUrl = ridoUrl,
+        UserRightUrl = config["UserRightUrl"] ?? ridoUrl,
+        LabCareUrl = labCareUrl,
+        BarcodeApiUrl = barcodeUrl,
+        MedicoApiUrl = medicoUrl,
+        App = "Medico Web"
+    };
+});
+builder.Services.AddScoped<HealthService>();
+
 
 var app = builder.Build();
 
@@ -237,6 +265,7 @@ app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages:
 app.UseAntiforgery();
 
 app.MapStaticAssets();
+app.MapControllers();
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 
