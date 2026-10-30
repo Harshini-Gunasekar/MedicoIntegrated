@@ -1,4 +1,4 @@
-@page "/ot-console"
+﻿@page "/ot-console"
 @page "/ot-console/{RequestId:guid}"
 @page "/ot-dashboard"
 @page "/ot-surgery"
@@ -14,6 +14,7 @@
 @using Newtonsoft.Json
 @inject Booking.Services.RoleMasterService RoleService
 @inject OtService OtService
+@inject Booking.Services.HmsBillingService HmsBillingService
 @inject DoctorService DoctorService
 @inject NurseMasterService NurseService
 @inject LabSettingService LabSettingService
@@ -4365,6 +4366,7 @@
                     priority = formPriority,
                     expected_duration_minutes = formDuration,
                     anesthesia_type = formAnesthesia,
+                    procedure_fee = formProcedureFee,
                     notes = string.IsNullOrWhiteSpace(formNotes) ? null : formNotes.Trim()
                 });
             }
@@ -4383,7 +4385,7 @@
                     priority = formPriority,
                     expected_duration_minutes = formDuration,
                     anesthesia_type = formAnesthesia,
-                    procedure_fee = formProcedureFee.HasValue && formProcedureFee.Value > 0 ? formProcedureFee.Value : null,
+                    procedure_fee = formProcedureFee,
                     notes = string.IsNullOrWhiteSpace(formNotes) ? null : formNotes.Trim()
                 });
             }
@@ -4396,6 +4398,46 @@
                     if (!string.IsNullOrWhiteSpace(res.GeneratedId) && Guid.TryParse(res.GeneratedId, out var parsedId))
                     {
                         targetRequestId = parsedId;
+                    }
+                }
+
+                if (isEditingRequest)
+                {
+                    if (selectedRequest != null && selectedRequest.request_id == targetRequestId)
+                    {
+                        selectedRequest.procedure_fee = formProcedureFee;
+                        selectedRequest.procedure_name = formProcedureName.Trim();
+                        selectedRequest.procedure_code = string.IsNullOrWhiteSpace(formProcedureCode) ? null : formProcedureCode.Trim();
+                        selectedRequest.diagnosis = string.IsNullOrWhiteSpace(formDiagnosis) ? null : formDiagnosis.Trim();
+                        selectedRequest.surgery_type = formSurgeryType;
+                        selectedRequest.priority = formPriority;
+                        selectedRequest.expected_duration_minutes = formDuration;
+                        selectedRequest.anesthesia_type = formAnesthesia;
+                        selectedRequest.notes = string.IsNullOrWhiteSpace(formNotes) ? null : formNotes.Trim();
+                    }
+
+                    try
+                    {
+                        var unbilledList = await HmsBillingService.GetUnbilledChargesByVisitAsync(formOpId, formIpId);
+                        var otCharge = unbilledList?.FirstOrDefault(u =>
+                            (u.entrytype == "OT_PROCEDURE" && u.entryid == targetRequestId.ToString()) ||
+                            (u.entrytype == "OT_PROCEDURE" && !string.IsNullOrWhiteSpace(u.particulars) && u.particulars.Equals(formProcedureName, StringComparison.OrdinalIgnoreCase)));
+
+                        if (otCharge != null && !string.IsNullOrWhiteSpace(otCharge.unbilledid))
+                        {
+                            double newAmt = (double)(formProcedureFee ?? 0);
+                            await HmsBillingService.UpdateUnbilledChargeAsync(new UpdateUnbilledChargeRequest
+                            {
+                                unbilledid = otCharge.unbilledid,
+                                rate = newAmt,
+                                quantity = 1,
+                                amount = newAmt
+                            });
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[SaveSurgeryRequestAsync] Error updating unbilled charge: {ex.Message}");
                     }
                 }
 
@@ -4555,6 +4597,10 @@
         var match = allRequests.FirstOrDefault(r => r.request_id == targetId);
         if (match != null)
         {
+            if (formProcedureFee.HasValue)
+            {
+                match.procedure_fee = formProcedureFee;
+            }
             await SelectSurgeryCaseAsync(match);
         }
         else if (allRequests.Any())

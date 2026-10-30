@@ -1,4 +1,4 @@
-using Dapper.Contrib.Extensions;
+﻿using Dapper.Contrib.Extensions;
 
 namespace medico_backend.Model
 {
@@ -101,16 +101,14 @@ namespace medico_backend.Model
     {
         public Guid request_id { get; set; }
         public string? diagnosis { get; set; }
-        public string? surgery_type { get; set; }  // e.g. MAJOR / MINOR / DAYCARE / LOCAL
+        public string? surgery_type { get; set; }
         public string procedure_name { get; set; } = string.Empty;
         public string? procedure_code { get; set; }
         public string priority { get; set; } = "ELECTIVE";
         public int? expected_duration_minutes { get; set; }
         public string? anesthesia_type { get; set; }
+        public decimal? procedure_fee { get; set; }      // NEW: null = leave fee unchanged
         public string? notes { get; set; }
-        // procedure_fee is intentionally NOT editable here — once charged,
-        // correct it via the common billing screen's unbilled-charge editor
-        // (UnbilledChargesClass.UpdateUnbilledCharge), same as investigations.
     }
 
     public class UpdateSurgeryStatusRequest

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -184,6 +184,107 @@ namespace Booking.Services
         // ══════════════════════════════════════════════════════════════════════
         // 3. SERVICE
         // ══════════════════════════════════════════════════════════════════════
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        // DIABETIC CHART
+        // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+        public async Task<(bool Success, string Message)> AddDiabeticAsync(AddDiabeticRequest request, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/diabetic/add");
+                req.Content = JsonContent.Create(request);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
+
+                var response = await _http.SendAsync(req);
+                var raw = await response.Content.ReadAsStringAsync();
+                return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Diabetic record added successfully."));
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error adding diabetic record: {ex.Message}");
+            }
+        }
+
+        public async Task<(bool Success, string Message)> UpdateDiabeticAsync(UpdateDiabeticRequest request, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/diabetic/update");
+                req.Content = JsonContent.Create(request);
+                AddTenantHeaders(req, tenantCode, userCode);
+
+                var response = await _http.SendAsync(req);
+                var raw = await response.Content.ReadAsStringAsync();
+                return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Diabetic record updated successfully."));
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error updating diabetic record: {ex.Message}");
+            }
+        }
+
+        public async Task<List<NurseDiabeticModel>> GetDiabeticsAsync(Guid ipId, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/diabetic/{ipId}");
+                AddTenantHeaders(req, tenantCode, userCode);
+
+                var response = await _http.SendAsync(req);
+                if (!response.IsSuccessStatusCode) return new();
+
+                var raw = await response.Content.ReadAsStringAsync();
+                return DeserializeList<NurseDiabeticModel>(raw);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NurseNotesService] GetDiabeticsAsync error: {ex.Message}");
+                return new();
+            }
+        }
+
+        public async Task<NurseDiabeticModel?> GetDiabeticDetailAsync(Guid ipId, Guid diabeticId, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/diabetic/{ipId}/detail?diabetic_id={diabeticId}");
+                AddTenantHeaders(req, tenantCode, userCode);
+
+                var response = await _http.SendAsync(req);
+                if (!response.IsSuccessStatusCode) return null;
+
+                var raw = await response.Content.ReadAsStringAsync();
+                return JsonSerializer.Deserialize<NurseDiabeticModel>(raw, _jsonOptions);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[NurseNotesService] GetDiabeticDetailAsync error: {ex.Message}");
+                return null;
+            }
+        }
+
+        public async Task<(bool Success, string Message)> DeleteDiabeticAsync(Guid diabeticId, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                using var req = new HttpRequestMessage(HttpMethod.Get, $"api/IpBedsideChart/diabetic/delete?diabetic_id={diabeticId}");
+                AddTenantHeaders(req, tenantCode, userCode);
+
+                var response = await _http.SendAsync(req);
+                var raw = await response.Content.ReadAsStringAsync();
+                return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Diabetic record deleted."));
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error deleting diabetic record: {ex.Message}");
+            }
+        }
+
         public async Task<(bool Success, string Message)> AddServiceAsync(AddServiceRequest request, string? tenantCode = null, int? userCode = null)
         {
             try

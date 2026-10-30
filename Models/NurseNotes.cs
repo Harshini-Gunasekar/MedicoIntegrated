@@ -1,4 +1,4 @@
-
+﻿
 using Dapper.Contrib.Extensions;
 using System.Text.Json.Serialization;
 
@@ -31,6 +31,7 @@ namespace medico_backend.Model
         public class AddTemperatureRequest
         {
             public Guid ip_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public decimal custid { get; set; }
             public int usercode { get; set; }                       // CHANGED — now read from body
             public string shift { get; set; } = "MORNING";
@@ -42,6 +43,7 @@ namespace medico_backend.Model
         public class UpdateTemperatureRequest
         {
             public Guid temp_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public string shift { get; set; } = "MORNING";
             public decimal temperature { get; set; }
             public string unit { get; set; } = "F";
@@ -81,6 +83,7 @@ namespace medico_backend.Model
         public class AddInputOutputRequest
         {
             public Guid ip_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public decimal custid { get; set; }
             public int usercode { get; set; }                       // CHANGED — now read from body
             public string shift { get; set; } = "MORNING";
@@ -94,6 +97,7 @@ namespace medico_backend.Model
         public class UpdateInputOutputRequest
         {
             public Guid io_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public string shift { get; set; } = "MORNING";
             public string io_type { get; set; } = "INPUT";
             public string particulars { get; set; } = string.Empty;
@@ -105,6 +109,62 @@ namespace medico_backend.Model
         // ─────────────────────────────────────────
         // 4. SERVICE
         // ─────────────────────────────────────────
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        // DIABETIC CHART
+        // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        [Table("ip_nurse_note_diabetic")]
+        public class NurseDiabeticModel
+        {
+            [ExplicitKey] public Guid diabetic_id { get; set; } = Guid.NewGuid();
+            public Guid ip_id { get; set; }
+            public decimal custid { get; set; }
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public string shift { get; set; } = "MORNING";
+            public string reading_type { get; set; } = "RANDOM";
+            public decimal blood_sugar { get; set; }
+            public string? insulin_type { get; set; }
+            public decimal? insulin_dose { get; set; }
+            public string? insulin_unit { get; set; } = "units";
+            public string? site { get; set; }
+            public string? remarks { get; set; }
+            public int? usercode { get; set; }
+            public string? tenant_code { get; set; }
+            public bool isdeleted { get; set; } = false;
+            public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+            public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
+        }
+
+        public class AddDiabeticRequest
+        {
+            public Guid ip_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
+            public decimal custid { get; set; }
+            public int usercode { get; set; }
+            public string shift { get; set; } = "MORNING";
+            public string reading_type { get; set; } = "RANDOM";
+            public decimal blood_sugar { get; set; }
+            public string? insulin_type { get; set; }
+            public decimal? insulin_dose { get; set; }
+            public string? insulin_unit { get; set; } = "units";
+            public string? site { get; set; }
+            public string? remarks { get; set; }
+        }
+
+        public class UpdateDiabeticRequest
+        {
+            public Guid diabetic_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
+            public string shift { get; set; } = "MORNING";
+            public string reading_type { get; set; } = "RANDOM";
+            public decimal blood_sugar { get; set; }
+            public string? insulin_type { get; set; }
+            public decimal? insulin_dose { get; set; }
+            public string? insulin_unit { get; set; } = "units";
+            public string? site { get; set; }
+            public string? remarks { get; set; }
+        }
+
         [Table("ip_nurse_note_service")]
         public class NurseServiceModel
         {
@@ -127,6 +187,7 @@ namespace medico_backend.Model
         public class AddServiceRequest
         {
             public Guid ip_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public decimal custid { get; set; }
             public int usercode { get; set; }                       // CHANGED — now read from body
             public string shift { get; set; } = "MORNING";
@@ -139,6 +200,7 @@ namespace medico_backend.Model
         public class UpdateServiceRequest
         {
             public Guid service_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public string shift { get; set; } = "MORNING";
             public string service_name { get; set; } = string.Empty;
             public string? action { get; set; }
@@ -174,6 +236,7 @@ namespace medico_backend.Model
         public class AddMedicineRequest
         {
             public Guid ip_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public decimal custid { get; set; }
             public int usercode { get; set; }                       // CHANGED — now read from body
             public string shift { get; set; } = "MORNING";
@@ -189,6 +252,7 @@ namespace medico_backend.Model
         public class UpdateMedicineRequest
         {
             public Guid med_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public string shift { get; set; } = "MORNING";
             public string medicine_name { get; set; } = string.Empty;
             public decimal? dose { get; set; }
@@ -222,6 +286,7 @@ namespace medico_backend.Model
         public class AddOtherRequest
         {
             public Guid ip_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public decimal custid { get; set; }
             public int usercode { get; set; }                       // CHANGED — now read from body
             public string shift { get; set; } = "MORNING";
@@ -231,6 +296,7 @@ namespace medico_backend.Model
         public class UpdateOtherRequest
         {
             public Guid other_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public string shift { get; set; } = "MORNING";
             public string note { get; set; } = string.Empty;
         }
@@ -257,6 +323,7 @@ namespace medico_backend.Model
             public List<NurseOtherModel> other { get; set; } = new();
             public List<NurseVisitingDoctorModel> visiting_doctor { get; set; } = new();
             public List<NurseScheduleModel> schedule { get; set; } = new();
+            public List<NurseDiabeticModel> diabetic { get; set; } = new();
         }
 
         // ─────────────────────────────────────────
@@ -287,6 +354,7 @@ namespace medico_backend.Model
         public class AddVisitingDoctorRequest
         {
             public Guid ip_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public decimal custid { get; set; }
             public int usercode { get; set; }                       // CHANGED — now read from body
             public string shift { get; set; } = "MORNING";
@@ -301,6 +369,7 @@ namespace medico_backend.Model
         public class UpdateVisitingDoctorRequest
         {
             public Guid visit_id { get; set; }
+            public TimeOnly? entry_time { get; set; }
             public string shift { get; set; } = "MORNING";
             public string doctor_name { get; set; } = string.Empty;
             public string? specialization { get; set; }
