@@ -143,6 +143,25 @@ namespace Booking.Models
         public string? header_path { get; set; }
         public string? footer_path { get; set; }
 
+        // ✅ Segment-Wise Header & Footer Image file paths
+        // 1. Hospital (IP/OP bills, casesheets, discharge summaries)
+        public string? hospital_header_path { get; set; }
+        public string? hospital_header_image_path { get => hospital_header_path ?? header_path; set => hospital_header_path = value; }
+        public string? hospital_footer_path { get; set; }
+        public string? hospital_footer_image_path { get => hospital_footer_path ?? footer_path; set => hospital_footer_path = value; }
+
+        // 2. Lab (Routine reports, culture reports, lab bills)
+        public string? lab_header_path { get; set; }
+        public string? lab_header_image_path { get => lab_header_path ?? header_path; set => lab_header_path = value; }
+        public string? lab_footer_path { get; set; }
+        public string? lab_footer_image_path { get => lab_footer_path ?? footer_path; set => lab_footer_path = value; }
+
+        // 3. Pharmacy (Pharmacy bills, sales invoices, dispensing receipts)
+        public string? pharmacy_header_path { get; set; }
+        public string? pharmacy_header_image_path { get => pharmacy_header_path ?? header_path; set => pharmacy_header_path = value; }
+        public string? pharmacy_footer_path { get; set; }
+        public string? pharmacy_footer_image_path { get => pharmacy_footer_path ?? footer_path; set => pharmacy_footer_path = value; }
+
         public string? tenant_code { get; set; }
         public bool deleted { get; set; } = false;
         public int? bh_code { get; set; }

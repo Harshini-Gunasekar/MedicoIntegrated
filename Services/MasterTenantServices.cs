@@ -31,6 +31,8 @@ namespace Booking.Services
             content.Add(new StringContent(model.tenant_code ?? string.Empty), "tenant_code");
             if (model.logo_url != null)
                 content.Add(new StringContent(model.logo_url), "logo_url");
+            else
+                content.Add(new StringContent("__REMOVE__"), "logo_url");
 
             content.Add(new StringContent(model.isletterhead.ToString().ToLower()), "isletterhead");
             if (model.letterhead_url != null)
