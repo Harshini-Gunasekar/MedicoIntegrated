@@ -1,4 +1,4 @@
-@page "/result-entry"
+﻿@page "/result-entry"
 @page "/result-entry/{RequestGuid}"
 @page "/lab-result-entry"
 @page "/lab-result-entry/{RequestGuid}"
@@ -272,7 +272,7 @@
                 <span>@(isDeltaLoading ? "Loading..." : "Delta Check")</span>
             </button>
 
-            <button type="button" class="re-pill-btn-outline" @onclick="@LoadResults" title="Reload default normal values">
+            <button type="button" class="re-pill-btn-outline" @onclick="ReloadNewNormalValuesAsync" title="Reload default normal values">
                 <i class="fas fa-sync-alt"></i>
                 <span>New Normal Values</span>
             </button>
@@ -2624,6 +2624,10 @@ else if (!string.IsNullOrEmpty(saveMessage))
         if (string.IsNullOrWhiteSpace(paramName)) return "";
         var p = paramName.Trim().ToLowerInvariant();
 
+        // 0. CRP / C-Reactive Protein / Hs-CRP
+        if (p == "crp" || p.Contains("c-reactive") || p.Contains("c reactive") || p.StartsWith("crp ") || p.EndsWith(" crp") || p.Contains("hscrp") || p.Contains("hs-crp"))
+            return "MG/L";
+
         // 1. Packed Cell Volume / Hematocrit
         if (p == "pcv" || p.Contains("packed cell") || p.Contains("hematocrit") || p.Contains("haematocrit") || p.StartsWith("pcv ") || p.EndsWith(" pcv"))
             return "%";
@@ -3138,6 +3142,16 @@ else if (!string.IsNullOrEmpty(saveMessage))
         if (row == null) return;
         SelectedRowEntry = row;
 
+        bool isRowUnentered = (string.IsNullOrWhiteSpace(row.enteredresult) || row.enteredresult.Trim() == "-") && !row.status && !row.isauthorized1 && !row.isauthorized2 && (row.resultenteredby == 0 || row.resultenteredby == null);
+        if (isRowUnentered)
+        {
+            var mCfg = FindMatchingTestResultRow(row);
+            if (mCfg != null)
+            {
+                ApplyMasterConfigToRow(row, mCfg, forceOverwrite: true);
+            }
+        }
+
         if (row.testresultid.HasValue && rowImageMap.TryGetValue(row.testresultid.Value, out var imgTuple))
         {
             reportImageFileName = imgTuple.fileName;
@@ -3256,13 +3270,48 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 {
                     // Update our row reference with fetched details
                     row.resultvaluetype = detailedRow.resultvaluetype ?? row.resultvaluetype;
-                    row.normalvalue = detailedRow.normalvalue ?? row.normalvalue;
+                    string rNameSel = (row.col2 ?? row.testname ?? "").ToLower();
+                    long pCode = GetParentTCode(row);
+                    bool isMulti = _testConfigs.TryGetValue(pCode, out var pCfg) && pCfg.ResultRows != null && pCfg.ResultRows.Count > 1;
+                    if (!isMulti && string.Equals(row.resultvaluetype, "Title", StringComparison.OrdinalIgnoreCase) &&
+                        (rNameSel.Contains("crp") || rNameSel.Contains("widal") || rNameSel.Contains("hiv") || rNameSel.Contains("hcv") || rNameSel.Contains("hbsag")))
+                    {
+                        if (_testConfigs.TryGetValue(pCode, out var tCfgCheck))
+                        {
+                            string tType = tCfgCheck.ResultRows?.FirstOrDefault()?.ResultProperties?.resultvaluetype ?? "";
+                            if (!string.Equals(tType, "Title", StringComparison.OrdinalIgnoreCase))
+                            {
+                                row.resultvaluetype = "Numeric";
+                                row.printresultonly = false;
+                            }
+                        }
+                    }
+                    if (!string.IsNullOrWhiteSpace(detailedRow.normalvalue) && detailedRow.normalvalue.Trim() != "-" && detailedRow.normalvalue.Trim() != "Normal 0" && detailedRow.normalvalue.Trim() != "0-0" && detailedRow.normalvalue.Trim() != "0 - 0" && detailedRow.normalvalue.Trim() != "0")
+                    {
+                        if (isRowUnentered)
+                        {
+                            if (string.IsNullOrWhiteSpace(row.normalvalue)) row.normalvalue = detailedRow.normalvalue;
+                        }
+                        else
+                        {
+                            row.normalvalue = detailedRow.normalvalue;
+                        }
+                    }
                     row.simplenv = detailedRow.simplenv;
                     row.printresultonly = detailedRow.printresultonly;
                     row.detailednv = detailedRow.detailednv;
                     row.calculatedformula = detailedRow.calculatedformula ?? row.calculatedformula;
                     row.fixedvalues = detailedRow.fixedvalues ?? row.fixedvalues;
+
                     row.unitname = detailedRow.unitname ?? row.unitname;
+                    if (!string.IsNullOrWhiteSpace(row.unitname) && QualitativeValues.Contains(row.unitname.Trim()))
+                    {
+                        if (string.IsNullOrWhiteSpace(row.normalvalue) || row.normalvalue == "-" || row.normalvalue == "0-0" || row.normalvalue == "0 - 0" || row.normalvalue == "0" || row.normalvalue == "Normal 0")
+                        {
+                            row.normalvalue = "Negative";
+                        }
+                    }
+
                     row.machinename = detailedRow.machinename ?? row.machinename;
                     row.samplename = detailedRow.samplename ?? row.samplename;
                     
@@ -3272,7 +3321,6 @@ else if (!string.IsNullOrEmpty(saveMessage))
                     // Sync advanced parameters with HTML stripped from conclusion and footer
                     row.decimalvalue = detailedRow.decimalvalue;
                     row.showalertonhigherlower = detailedRow.showalertonhigherlower;
-                    row.normalvalue = detailedRow.normalvalue ?? row.normalvalue;
                     
                     string masterFooter = (row.tcode > 0 && _testConfigs.TryGetValue(row.tcode, out var cfgFooterMaster) && !string.IsNullOrWhiteSpace(cfgFooterMaster.TestMaster?.footer)) ? cfgFooterMaster.TestMaster.footer : "";
                     string finalFooter = !string.IsNullOrWhiteSpace(detailedRow.footermessage) ? detailedRow.footermessage : masterFooter;
@@ -3932,6 +3980,12 @@ else if (!string.IsNullOrEmpty(saveMessage))
             .Where(x => string.IsNullOrEmpty(x.rangetype) || 
                         x.rangetype.Equals("Normal", StringComparison.OrdinalIgnoreCase) || 
                         x.rangetype.Equals("Between", StringComparison.OrdinalIgnoreCase) || 
+                        x.rangetype.Equals("Range", StringComparison.OrdinalIgnoreCase) || 
+                        x.rangetype.Equals("Upto", StringComparison.OrdinalIgnoreCase) || 
+                        x.rangetype.Equals("Less than", StringComparison.OrdinalIgnoreCase) || 
+                        x.rangetype == "<" || x.rangetype == "<=" ||
+                        x.rangetype.Equals("More than", StringComparison.OrdinalIgnoreCase) || 
+                        x.rangetype == ">" || x.rangetype == ">=" ||
                         x.rangetype.Equals("-", StringComparison.OrdinalIgnoreCase))
             .ToList();
 
@@ -3960,11 +4014,38 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
 
                 var prefix = string.IsNullOrEmpty(label) ? "" : $"{label}: ";
-                var rangeStr = d.rangefrom == d.rangeto
-                    ? $"{d.rangefrom}"
-                    : $"{d.rangefrom} - {d.rangeto}";
+                string op = (d.rangetype ?? "").Trim();
+                string rangeStr = "";
+
+                if (op.Equals("Upto", StringComparison.OrdinalIgnoreCase) || op.Equals("Less than", StringComparison.OrdinalIgnoreCase) || op == "<" || op == "<=")
+                {
+                    rangeStr = $"< {(d.rangeto > 0 ? d.rangeto : d.rangefrom)}";
+                }
+                else if (op.Equals("More than", StringComparison.OrdinalIgnoreCase) || op == ">" || op == ">=")
+                {
+                    rangeStr = $"> {d.rangefrom}";
+                }
+                else if (d.rangefrom > 0 && d.rangeto > 0)
+                {
+                    rangeStr = d.rangefrom == d.rangeto ? $"{d.rangefrom}" : $"{d.rangefrom} - {d.rangeto}";
+                }
+                else if (d.rangefrom == 0 && d.rangeto > 0)
+                {
+                    rangeStr = $"< {d.rangeto}";
+                }
+                else if (d.rangefrom > 0 && d.rangeto == 0)
+                {
+                    rangeStr = $"{d.rangefrom}";
+                }
+                else
+                {
+                    rangeStr = "";
+                }
+
+                if (string.IsNullOrWhiteSpace(rangeStr)) return "";
                 return $"{prefix}{rangeStr}";
             })
+            .Where(s => !string.IsNullOrWhiteSpace(s))
             .Distinct()
             .ToList();
 
@@ -5965,6 +6046,42 @@ else if (!string.IsNullOrEmpty(saveMessage))
         IList<Booking.Models.UomMasterModel>? resultUnits)
     {
         var merged = new List<Booking.Models.UomMasterModel>(resultUnits ?? new List<Booking.Models.UomMasterModel>());
+        var effectiveTenantCode = !string.IsNullOrEmpty(tenantCode) ? tenantCode : (!string.IsNullOrEmpty(TenantState?.TenantCode) ? TenantState.TenantCode : "0010");
+
+        try
+        {
+            var client = ClientFactory.CreateClient("InventoryApi");
+            if (!string.IsNullOrEmpty(effectiveTenantCode))
+            {
+                client.DefaultRequestHeaders.Remove("tenantcode");
+                client.DefaultRequestHeaders.Add("tenantcode", effectiveTenantCode);
+                client.DefaultRequestHeaders.Remove("tenant_code");
+                client.DefaultRequestHeaders.Add("tenant_code", effectiveTenantCode);
+            }
+            if (!string.IsNullOrEmpty(token))
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+            }
+
+            var response = await client.GetStringAsync("ItemMaster/getalluom");
+            var opts = new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+            var direct = System.Text.Json.JsonSerializer.Deserialize<List<Booking.Models.UomMasterModel>>(response, opts);
+            if (direct != null && direct.Any())
+            {
+                foreach (var mu in direct.Where(x => !x.deleted))
+                {
+                    if (string.IsNullOrWhiteSpace(mu.name) && !string.IsNullOrWhiteSpace(mu.shortname)) mu.name = mu.shortname;
+                    if (string.IsNullOrWhiteSpace(mu.shortname) && !string.IsNullOrWhiteSpace(mu.name)) mu.shortname = mu.name;
+
+                    if (!merged.Any(m => m.ucode == mu.ucode || string.Equals(m.name?.Trim(), mu.name?.Trim(), StringComparison.OrdinalIgnoreCase)))
+                    {
+                        merged.Add(mu);
+                    }
+                }
+            }
+        }
+        catch { }
+
         try
         {
             if (_cachedMasterUnits == null || !_cachedMasterUnits.Any())
@@ -5974,8 +6091,11 @@ else if (!string.IsNullOrEmpty(saveMessage))
             var masterUnits = _cachedMasterUnits;
             if (masterUnits != null)
             {
-                foreach (var mu in masterUnits)
+                foreach (var mu in masterUnits.Where(x => !x.deleted))
                 {
+                    if (string.IsNullOrWhiteSpace(mu.name) && !string.IsNullOrWhiteSpace(mu.shortname)) mu.name = mu.shortname;
+                    if (string.IsNullOrWhiteSpace(mu.shortname) && !string.IsNullOrWhiteSpace(mu.name)) mu.shortname = mu.name;
+
                     bool alreadyExists = merged.Any(m =>
                         m.ucode == mu.ucode ||
                         (m.name != null && mu.name != null &&
@@ -5989,9 +6109,39 @@ else if (!string.IsNullOrEmpty(saveMessage))
         {
             Console.WriteLine($"[UOM] Failed to load UOM master list: {ex.Message}");
         }
-        // Sort by orderno then name for consistent dropdown ordering
+
+        // Standard clinical laboratory units seed
+        var standardLabUnits = new[]
+        {
+            "MG/L", "mg/dl", "g/dl", "mmol/L", "µmol/L", "U/L", "IU/L", "IU/ml",
+            "cells/cumm", "millions/cumm", "lakhs/cumm", "mm/hr", "%", "fl", "pg",
+            "mEq/L", "ng/ml", "µg/dl", "pg/ml", "copies/ml", "index", "ratio", "mg/24hr", "g/24hr"
+        };
+
+        int maxUcode = merged.Any() ? (int)merged.Max(x => x.ucode) : 1000;
+        foreach (var std in standardLabUnits)
+        {
+            if (!merged.Any(m => string.Equals(m.name?.Trim(), std, StringComparison.OrdinalIgnoreCase) || string.Equals(m.shortname?.Trim(), std, StringComparison.OrdinalIgnoreCase)))
+            {
+                maxUcode++;
+                merged.Add(new Booking.Models.UomMasterModel
+                {
+                    ucode = maxUcode,
+                    name = std,
+                    shortname = std,
+                    orderno = maxUcode
+                });
+            }
+        }
+
+        // Normalize
         return merged
-            .Where(u => !string.IsNullOrWhiteSpace(u.name))
+            .Where(u => (!string.IsNullOrWhiteSpace(u.name) || !string.IsNullOrWhiteSpace(u.shortname)))
+            .Select(u => {
+                if (string.IsNullOrWhiteSpace(u.name)) u.name = u.shortname;
+                if (string.IsNullOrWhiteSpace(u.shortname)) u.shortname = u.name;
+                return u;
+            })
             .OrderBy(u => u.orderno > 0 ? u.orderno : int.MaxValue)
             .ThenBy(u => u.name)
             .ToList();
@@ -6273,7 +6423,7 @@ else if (!string.IsNullOrEmpty(saveMessage))
         return isPending ? "Loading..." : $"User ({code})";
     }
 
-    private async Task LoadResults()
+    private async Task LoadResults(bool forceRefreshMaster = false)
     {
         try
         {
@@ -6535,16 +6685,34 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
             }
 
-            // Pre-load test configurations (including sub-parameter fromtcodes) in parallel with static caching
+// Pre-load test configurations (including sub-parameter fromtcodes) in parallel with static caching
             if (lre1 != null && lre1.Any())
             {
                 var distinctTCodes = lre1.Select(x => (long)x.tcode)
                     .Concat(lre1.Where(x => x.fromtcode > 0).Select(x => (long)x.fromtcode))
+                    .Concat(lre1.Select(x => GetParentTCode(x)))
+                    .Concat((billedTestSelections ?? new()).Select(b => (long)b.tcode))
                     .Where(tc => tc > 0)
                     .Distinct()
                     .ToList();
 
-                var missingTCodes = distinctTCodes.Where(tc => !_staticTestConfigs.ContainsKey($"{effectiveTenantCode}_{tc}")).ToList();
+                bool hasUnenteredRows = lre1.Any(r => 
+                    r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" &&
+                    (string.IsNullOrWhiteSpace(r.enteredresult) || r.enteredresult.Trim() == "-") && 
+                    !r.status && !r.isauthorized1 && !r.isauthorized2 && (r.resultenteredby == 0 || r.resultenteredby == null));
+
+                if (forceRefreshMaster || hasUnenteredRows)
+                {
+                    foreach (var tc in distinctTCodes)
+                    {
+                        _staticTestConfigs.TryRemove($"{effectiveTenantCode}_{tc}", out _);
+                    }
+                }
+
+                var missingTCodes = distinctTCodes.Where(tc => {
+                    if (!_staticTestConfigs.TryGetValue($"{effectiveTenantCode}_{tc}", out var cached)) return true;
+                    return (DateTime.UtcNow - cached.CachedAt).TotalSeconds > 20;
+                }).ToList();
 
                 if (missingTCodes.Any())
                 {
@@ -6563,19 +6731,20 @@ else if (!string.IsNullOrEmpty(saveMessage))
                     {
                         if (tuple.Item2 != null)
                         {
-                            _staticTestConfigs[$"{effectiveTenantCode}_{tuple.Item1}"] = tuple.Item2;
+                            _staticTestConfigs[$"{effectiveTenantCode}_{tuple.Item1}"] = (tuple.Item2, DateTime.UtcNow);
                         }
                     }
                 }
 
                 foreach (var tc in distinctTCodes)
                 {
-                    if (_staticTestConfigs.TryGetValue($"{effectiveTenantCode}_{tc}", out var cfg))
+                    if (_staticTestConfigs.TryGetValue($"{effectiveTenantCode}_{tc}", out var cfgTuple))
                     {
-                        _testConfigs[tc] = cfg;
+                        _testConfigs[tc] = cfgTuple.Dto;
                     }
                 }
             }
+
 
             // Exclude locked tests (lockresult == true) from LabResultDataEntry
             var lockedTCodes = new HashSet<long>();
@@ -6631,16 +6800,37 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 ).ToList();
             }
 
-            // 1. Text parameter & prompt heading handling:
-            // "XRAY(CHEST) this is the seperate test which has no parameters so keep it as a prompt heading"
+            // 0. Respect Test Master configuration: if Test Master defines a test as Title (e.g. MALARIA CARD), keep as Title
+            foreach (var testGrp in lre1.GroupBy(x => GetParentTCode(x)).ToList())
+            {
+                long tcode = testGrp.Key;
+                if (_testConfigs.TryGetValue(tcode, out var cfg) && cfg.ResultRows?.Any() == true)
+                {
+                    var mFirst = cfg.ResultRows.First();
+                    string mType = mFirst.ResultProperties?.resultvaluetype ?? "";
+                    if (string.Equals(mType, "Title", StringComparison.OrdinalIgnoreCase) && (cfg.ResultRows.Count <= 1 || cfg.TestMaster?.lockresult != true))
+                    {
+                        foreach (var row in testGrp)
+                        {
+                            row.resultvaluetype = "Title";
+                            row.printresultonly = true;
+                            row.enteredresult = "";
+                            row.unitname = "";
+                            row.normalvalue = "";
+                        }
+                    }
+                }
+            }
+
+            // 1. Standalone test with no parameters / prompt heading handling:
+            // Tests like XRAY(CHEST) or MALARIA CARD whose resultvaluetype is Title should display as a prompt heading Title row
             var rowsByTest = lre1.GroupBy(x => GetParentTCode(x)).ToList();
             foreach (var testGrp in rowsByTest)
             {
                 var paramRows = testGrp.Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" && !string.Equals(r.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase)).ToList();
 
-                if (!paramRows.Any() || testGrp.Count() == 1)
+                if (!paramRows.Any())
                 {
-                    // Standalone test with no parameters (e.g. XRAY(CHEST)): keep as a prompt heading
                     var singleRow = testGrp.First();
                     singleRow.resultvaluetype = "Title";
                     singleRow.printresultonly = true;
@@ -6661,13 +6851,29 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 }
             }
 
-            // 3. Ensure each multi-parameter test group has EXACTLY ONE top Headline row
+            // 3. Ensure each multi-parameter test group has EXACTLY ONE top Headline row, and single tests have NO separate Title row
             rowsByTest = lre1.GroupBy(x => GetParentTCode(x)).ToList();
             foreach (var testGrp in rowsByTest)
             {
+                long tcode = testGrp.Key;
+                bool isMultiParam = false;
+                if (_testConfigs.TryGetValue(tcode, out var cfg) && cfg.ResultRows != null && cfg.ResultRows.Count > 1)
+                {
+                    isMultiParam = true;
+                }
+                else
+                {
+                    var distinctParams = testGrp
+                        .Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" && !string.Equals(r.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase))
+                        .Select(r => (r.col2 ?? r.testname ?? "").Trim().ToLowerInvariant())
+                        .Distinct()
+                        .ToList();
+                    if (distinctParams.Count > 1) isMultiParam = true;
+                }
+
                 var paramRows = testGrp.Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" && !string.Equals(r.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase)).ToList();
 
-                if (paramRows.Count > 1)
+                if (isMultiParam && paramRows.Count > 1)
                 {
                     string headlineName = "";
                     if (_testConfigs.TryGetValue(testGrp.Key, out var tmCfg) && !string.IsNullOrWhiteSpace(tmCfg.TestMaster?.name))
@@ -6730,6 +6936,112 @@ else if (!string.IsNullOrEmpty(saveMessage))
                         lre1.Insert(lre1.IndexOf(testGrp.First()), titleRow);
                     }
                 }
+                else if (!isMultiParam)
+                {
+                    // Single parameter test (e.g. CRP, MALARIA CARD):
+                    var strayTitles = testGrp.Where(r => r.resultvaluetype == "Title").ToList();
+                    if (paramRows.Any())
+                    {
+                        // Test has an editable parameter row (like CRP), so remove extra Title row
+                        foreach (var st in strayTitles)
+                        {
+                            lre1.Remove(st);
+                        }
+                    }
+                    else if (strayTitles.Any())
+                    {
+                        // Test Master configured this test as Title (like MALARIA CARD):
+                        // Keep exactly ONE Title row, remove any duplicates!
+                        var firstTitle = strayTitles.First();
+                        firstTitle.resultvaluetype = "Title";
+                        firstTitle.printresultonly = true;
+                        firstTitle.enteredresult = "";
+                        firstTitle.unitname = "";
+                        firstTitle.normalvalue = "";
+                        for (int i = 1; i < strayTitles.Count; i++)
+                        {
+                            lre1.Remove(strayTitles[i]);
+                        }
+                    }
+                }
+            }
+
+            // 3b. Deduplicate single-parameter test rows and duplicate sub-parameters
+            foreach (var testGrp in lre1.GroupBy(x => GetParentTCode(x)).ToList())
+            {
+                long tcode = testGrp.Key;
+                bool isMultiParam = false;
+                if (_testConfigs.TryGetValue(tcode, out var cfg) && cfg.ResultRows != null && cfg.ResultRows.Count > 1)
+                {
+                    isMultiParam = true;
+                }
+                else
+                {
+                    var distinctParams = testGrp
+                        .Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" && !string.Equals(r.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase))
+                        .Select(r => (r.col2 ?? r.testname ?? "").Trim().ToLowerInvariant())
+                        .Distinct()
+                        .ToList();
+                    if (distinctParams.Count > 1) isMultiParam = true;
+                }
+
+                if (!isMultiParam && testGrp.Count() > 1)
+                {
+                    bool isMasterTitle = false;
+                    if (_testConfigs.TryGetValue(tcode, out var cfgM) && cfgM.ResultRows?.Any() == true)
+                    {
+                        var mFirst = cfgM.ResultRows.First();
+                        string mType = mFirst.ResultProperties?.resultvaluetype ?? "";
+                        isMasterTitle = string.Equals(mType, "Title", StringComparison.OrdinalIgnoreCase);
+                    }
+
+                    var bestRow = isMasterTitle
+                                ? (testGrp.FirstOrDefault(r => r.resultvaluetype == "Title") ?? testGrp.First())
+                                : (testGrp.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.enteredresult) && r.enteredresult != "-")
+                                ?? testGrp.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.normalvalue) && r.resultvaluetype != "Title")
+                                ?? testGrp.FirstOrDefault(r => r.resultvaluetype != "Title")
+                                ?? testGrp.First());
+
+                    if (isMasterTitle)
+                    {
+                        bestRow.resultvaluetype = "Title";
+                        bestRow.printresultonly = true;
+                        bestRow.enteredresult = "";
+                        bestRow.unitname = "";
+                        bestRow.normalvalue = "";
+                    }
+                    else
+                    {
+                        bestRow.resultvaluetype = "Numeric";
+                        bestRow.printresultonly = false;
+                    }
+
+                    var toRemove = testGrp.Where(r => r != bestRow).ToList();
+                    foreach (var dup in toRemove)
+                    {
+                        lre1.Remove(dup);
+                    }
+                }
+                else if (isMultiParam)
+                {
+                    var dupGroups = testGrp
+                        .Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle")
+                        .GroupBy(r => (r.col2 ?? r.testname ?? "").Trim().ToLowerInvariant())
+                        .Where(g => g.Count() > 1)
+                        .ToList();
+
+                    foreach (var dGrp in dupGroups)
+                    {
+                        var bestP = dGrp.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.enteredresult) && r.enteredresult != "-")
+                                 ?? dGrp.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.normalvalue))
+                                 ?? dGrp.First();
+                        var toRemove = dGrp.Where(r => r != bestP).ToList();
+                        foreach (var dup in toRemove)
+                        {
+                            lre1.Remove(dup);
+                        }
+                    }
+                }
             }
 
             // 4. Clear result/unit/normalvalue for all Title and SubTitle headline rows
@@ -6757,51 +7069,26 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 long parentTCode = (long)row.tcode;
                 long pBilledTCode = GetParentTCode(row);
 
-                LabCare.Models.TestResultRowDto? mConfig = null;
                 var cleanCol2 = (row.col2 ?? row.testname ?? "").Trim().ToLower();
+                var mConfig = FindMatchingTestResultRow(row);
 
-                // Search across subtest config, parent test config, and all available test configs
-                var configsToSearch = new List<LabCare.Models.TestInsertDto>();
-                if (_testConfigs.TryGetValue(targetTCode, out var cfg1) && cfg1?.ResultRows?.Any() == true) configsToSearch.Add(cfg1);
-                if (parentTCode != targetTCode && _testConfigs.TryGetValue(parentTCode, out var cfg2) && cfg2?.ResultRows?.Any() == true) configsToSearch.Add(cfg2);
-                if (pBilledTCode > 0 && !configsToSearch.Any(c => c.TestMaster?.tcode == pBilledTCode) && _testConfigs.TryGetValue(pBilledTCode, out var cfgP) && cfgP?.ResultRows?.Any() == true) configsToSearch.Add(cfgP);
-                foreach (var cfgExtra in _testConfigs.Values)
-                {
-                    if (cfgExtra?.ResultRows?.Any() == true && !configsToSearch.Contains(cfgExtra))
-                        configsToSearch.Add(cfgExtra);
-                }
+                bool isRowUnentered = (string.IsNullOrWhiteSpace(row.enteredresult) || row.enteredresult.Trim() == "-") && !row.status && !row.isauthorized1 && !row.isauthorized2 && (row.resultenteredby == 0 || row.resultenteredby == null);
 
-                foreach (var cfg in configsToSearch)
-                {
-                    // 1. Precise match by ID
-                    mConfig = cfg.ResultRows.FirstOrDefault(r => row.fromtestresultid.HasValue && row.fromtestresultid.Value != Guid.Empty && r.ResultMaster?.testresultid == row.fromtestresultid)
-                           ?? cfg.ResultRows.FirstOrDefault(r => row.testresultid.HasValue && row.testresultid.Value != Guid.Empty && r.ResultMaster?.testresultid == row.testresultid);
-
-                    // 2. Exact match by name
-                    if (mConfig == null)
-                    {
-                        mConfig = cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.cellcontent) && r.ResultMaster.cellcontent.Trim().Equals(cleanCol2, StringComparison.OrdinalIgnoreCase))
-                               ?? cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.col2) && r.ResultMaster.col2.Trim().Equals(cleanCol2, StringComparison.OrdinalIgnoreCase));
-                    }
-
-                    // 3. Normalized / Substring name match
-                    if (mConfig == null)
-                    {
-                        mConfig = cfg.ResultRows.FirstOrDefault(r => {
-                            var rName = (r.ResultMaster?.cellcontent ?? r.ResultMaster?.col2 ?? "").Trim().ToLower();
-                            if (string.IsNullOrEmpty(rName)) return false;
-                            return rName == cleanCol2
-                                || (cleanCol2.Length >= 3 && rName.Contains(cleanCol2))
-                                || (rName.Length >= 3 && cleanCol2.Contains(rName));
-                        });
-                    }
-
-                    if (mConfig != null) break;
-                }
+                // Apply master config (units, normal values, properties)
+                ApplyMasterConfigToRow(row, mConfig, forceOverwrite: (forceRefreshMaster || isRowUnentered));
 
                 if (row.rtmcode == 0 && mConfig != null && mConfig.ResultProperties != null && mConfig.ResultProperties.rtmcode > 0)
                 {
                     row.rtmcode = mConfig.ResultProperties.rtmcode ?? 0;
+                }
+
+                // If unitname is a qualitative value ("NEGATIVE", "POSITIVE", etc.), ensure normalvalue is set
+                if (!string.IsNullOrWhiteSpace(row.unitname) && QualitativeValues.Contains(row.unitname.Trim()))
+                {
+                    if (string.IsNullOrWhiteSpace(row.normalvalue) || row.normalvalue == "-" || row.normalvalue == "0-0" || row.normalvalue == "0 - 0" || row.normalvalue == "0" || row.normalvalue == "Normal 0")
+                    {
+                        row.normalvalue = "Negative";
+                    }
                 }
 
                 // Clean up wrongly assigned U/L on WBC count
@@ -6988,69 +7275,54 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 if (row.normalvalue != null)
                 {
                     var trimmed = row.normalvalue.Trim();
-                    if (trimmed == "-" || trimmed == "Normal 0" || trimmed == "0-0" || trimmed == "0 - 0" || trimmed == "()" || trimmed == "(-)")
+                    if (trimmed == "-" || trimmed == "Normal 0" || trimmed == "0-0" || trimmed == "0 - 0" || trimmed == "()" || trimmed == "(-)" || trimmed == "0")
                     {
                         row.normalvalue = "";
                     }
                 }
 
                 // 3. Resolve normalvalue if empty
-                if (string.IsNullOrWhiteSpace(row.normalvalue))
+                if (string.IsNullOrWhiteSpace(row.normalvalue) && row.resultvaluetype != "Title" && row.resultvaluetype != "SubTitle")
                 {
-                    if (!string.IsNullOrWhiteSpace(mConfig?.ResultProperties?.normalvalue))
+                    var masterNv = GetMasterNormalValueFromConfig(mConfig);
+                    if (!string.IsNullOrWhiteSpace(masterNv))
                     {
-                        row.normalvalue = mConfig.ResultProperties.normalvalue.Trim();
+                        row.normalvalue = masterNv;
                     }
-                    else if (mConfig?.ResultProperties != null && (mConfig.ResultProperties.fromnormalvalue.HasValue || mConfig.ResultProperties.tonormalvalue.HasValue))
+                    else if (!string.IsNullOrWhiteSpace(row.defaultunitvalue) && row.defaultunitvalue != "-")
                     {
-                        double fVal = mConfig.ResultProperties.fromnormalvalue ?? 0;
-                        double tVal = mConfig.ResultProperties.tonormalvalue ?? 0;
-                        string op = (mConfig.ResultProperties.rangetype ?? "").Trim();
-                        if (fVal > 0 || tVal > 0)
+                        row.normalvalue = row.defaultunitvalue.Trim();
+                    }
+                    else if (!string.IsNullOrWhiteSpace(row.unitname) && QualitativeValues.Contains(row.unitname.Trim()))
+                    {
+                        row.normalvalue = "Negative";
+                    }
+                    else
+                    {
+                        string pName = (row.col2 ?? row.testname ?? "").ToLower();
+                        if (pName.Contains("salmonella") || pName.Contains("dengue") || pName.Contains("malaria") || 
+                            pName.Contains("ns-1") || pName.Contains("ns1") || pName.Contains("antigen") || 
+                            pName.Contains("card") || pName.Contains("widal") || pName.Contains("hbsag") || 
+                            pName.Contains("hcv") || pName.Contains("hiv") || pName.Contains("urobilinogen") || 
+                            pName.Contains("bilirubin") || pName.Contains("bile"))
                         {
-                            if (op.Equals("Upto", StringComparison.OrdinalIgnoreCase) || op.Equals("Less than", StringComparison.OrdinalIgnoreCase) || op == "<")
-                                row.normalvalue = $"< {(tVal > 0 ? tVal : fVal)}";
-                            else if (op.Equals("More than", StringComparison.OrdinalIgnoreCase) || op == ">")
-                                row.normalvalue = $"> {fVal}";
-                            else
-                                row.normalvalue = (fVal == 0) ? $"0 - {tVal}" : $"{fVal} - {tVal}";
+                            row.normalvalue = "Negative";
                         }
                     }
-                    else if (mConfig?.TextNormalValues?.Any(x => !string.IsNullOrWhiteSpace(x.normalvalue)) == true)
+                }
+
+                // If qualitative / card test and unitname is empty, default unitname to NEGATIVE
+                if (string.IsNullOrWhiteSpace(row.unitname) && row.resultvaluetype != "Title" && row.resultvaluetype != "SubTitle")
+                {
+                    string pName = (row.col2 ?? row.testname ?? "").ToLower();
+                    if (pName.Contains("salmonella") || pName.Contains("dengue") || pName.Contains("malaria") || 
+                        pName.Contains("urobilinogen") || pName.Contains("bilirubin") || pName.Contains("bile"))
                     {
-                        var nvParts = mConfig.TextNormalValues
-                            .Where(x => !string.IsNullOrWhiteSpace(x.normalvalue))
-                            .Select(x => !string.IsNullOrWhiteSpace(x.sex) && x.sex != "Both" && x.sex != "-" ? $"{x.sex}: {x.normalvalue}" : x.normalvalue!);
-                        row.normalvalue = string.Join(" | ", nvParts);
-                    }
-                    else if (mConfig?.DetailedNormalValues?.Any() == true)
-                    {
-                        var dParts = mConfig.DetailedNormalValues.Select(d =>
+                        var neg = uom?.FirstOrDefault(u => string.Equals(u.name?.Trim(), "NEGATIVE", StringComparison.OrdinalIgnoreCase));
+                        if (neg != null)
                         {
-                            string r = d.rangetype == "Range" || string.IsNullOrEmpty(d.rangetype) || d.rangetype == "-"
-                                ? $"{d.rangefrom} - {d.rangeto}"
-                                : d.rangetype == "Upto" || d.rangetype == "Less than"
-                                ? $"< {d.rangeto}"
-                                : $"{d.rangetype} {d.rangefrom}";
-                            string sexLbl = (d.sex == "Both" || d.sex == "-" || string.IsNullOrEmpty(d.sex)) ? "" : $"{d.sex}: ";
-                            return $"{sexLbl}{r}".Trim();
-                        }).Distinct();
-                        row.normalvalue = string.Join(" | ", dParts);
-                    }
-                    else if (_testConfigs.TryGetValue(targetTCode, out var tcfg2) && tcfg2.ResultRows?.Any() == true)
-                    {
-                        var matchedR = tcfg2.ResultRows.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.ResultProperties?.normalvalue));
-                        if (matchedR != null)
-                        {
-                            row.normalvalue = matchedR.ResultProperties!.normalvalue!.Trim();
-                        }
-                    }
-                    else if (parentTCode != targetTCode && _testConfigs.TryGetValue(parentTCode, out var pcfg2) && pcfg2.ResultRows?.Any() == true)
-                    {
-                        var matchedR = pcfg2.ResultRows.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.ResultProperties?.normalvalue));
-                        if (matchedR != null)
-                        {
-                            row.normalvalue = matchedR.ResultProperties!.normalvalue!.Trim();
+                            row.unitname = neg.name;
+                            row.defaultunitscode = (int)neg.ucode;
                         }
                     }
                 }
@@ -7309,6 +7581,75 @@ else if (!string.IsNullOrEmpty(saveMessage))
                 
                 // Final cleanup: remove any leftover method parentheses or trailing slashes
                 if (row.normalvalue != null) row.normalvalue = row.normalvalue.Trim(' ', '/');
+            }
+
+            // Final Title headline and single-parameter deduplication pass:
+            foreach (var testGrp in lre1.GroupBy(x => GetParentTCode(x)).ToList())
+            {
+                long tcode = testGrp.Key;
+                bool isMultiParam = false;
+                if (_testConfigs.TryGetValue(tcode, out var cfg) && cfg.ResultRows != null && cfg.ResultRows.Count > 1)
+                {
+                    isMultiParam = true;
+                }
+                else
+                {
+                    var distinctParams = testGrp
+                        .Where(r => r.resultvaluetype != "Title" && r.resultvaluetype != "SubTitle" && !string.Equals(r.col2?.Trim(), "NLR", StringComparison.OrdinalIgnoreCase))
+                        .Select(r => (r.col2 ?? r.testname ?? "").Trim().ToLowerInvariant())
+                        .Distinct()
+                        .ToList();
+                    if (distinctParams.Count > 1) isMultiParam = true;
+                }
+
+                if (!isMultiParam && testGrp.Count() > 1)
+                {
+                    bool isMasterTitle = false;
+                    if (_testConfigs.TryGetValue(tcode, out var cfgM) && cfgM.ResultRows?.Any() == true)
+                    {
+                        var mFirst = cfgM.ResultRows.First();
+                        string mType = mFirst.ResultProperties?.resultvaluetype ?? "";
+                        isMasterTitle = string.Equals(mType, "Title", StringComparison.OrdinalIgnoreCase);
+                    }
+
+                    var bestRow = isMasterTitle
+                                ? (testGrp.FirstOrDefault(r => r.resultvaluetype == "Title") ?? testGrp.First())
+                                : (testGrp.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.enteredresult) && r.enteredresult != "-")
+                                ?? testGrp.FirstOrDefault(r => !string.IsNullOrWhiteSpace(r.normalvalue) && r.resultvaluetype != "Title")
+                                ?? testGrp.FirstOrDefault(r => r.resultvaluetype != "Title")
+                                ?? testGrp.First());
+
+                    if (isMasterTitle)
+                    {
+                        bestRow.resultvaluetype = "Title";
+                        bestRow.printresultonly = true;
+                        bestRow.enteredresult = "";
+                        bestRow.unitname = "";
+                        bestRow.normalvalue = "";
+                    }
+                    else
+                    {
+                        bestRow.resultvaluetype = "Numeric";
+                        bestRow.printresultonly = false;
+                    }
+
+                    var toRemove = testGrp.Where(r => r != bestRow).ToList();
+                    foreach (var dup in toRemove)
+                    {
+                        lre1.Remove(dup);
+                    }
+                }
+                else
+                {
+                    var titles = testGrp.Where(r => r.resultvaluetype == "Title").ToList();
+                    if (titles.Count > 1)
+                    {
+                        for (int i = 1; i < titles.Count; i++)
+                        {
+                            lre1.Remove(titles[i]);
+                        }
+                    }
+                }
             }
 
             // â”€â”€ Test group conclusion & footer propagation: ONLY on the LAST row of each billed test group â”€â”€
@@ -7714,13 +8055,554 @@ else if (!string.IsNullOrEmpty(saveMessage))
     }
 
 
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, LabCare.Models.TestInsertDto> _staticTestConfigs = new();
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (LabCare.Models.TestInsertDto Dto, DateTime CachedAt)> _staticTestConfigs = new();
     private static string? _cachedTenantCodeForTestMasters;
     private static HashSet<long>? _cachedLockedTcodes;
     private static HashSet<string>? _cachedLockedTestNames;
     private static Dictionary<long, Booking.Models.TestMasterModel>? _cachedTestMastersByTCode;
     private static Dictionary<string, Booking.Models.TestMasterModel>? _cachedTestMastersByName;
     private Dictionary<long, LabCare.Models.TestInsertDto> _testConfigs = new();
+
+    private static readonly HashSet<string> QualitativeValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "NEGATIVE", "POSITIVE", "REACTIVE", "NON-REACTIVE", "NON REACTIVE",
+        "CLEAR", "CLOUDY", "TURBID", "SLIGHTLY CLOUDY", "SLIGHT TURBID",
+        "NIL", "ABSENT", "PRESENT", "NORMAL", "NOT DETECTED", "DETECTED",
+        "YELLOW", "PALE YELLOW", "STRAW", "AMBER", "TRACE", "MODERATE"
+    };
+
+    private static string NormalizeParamName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "";
+        return System.Text.RegularExpressions.Regex.Replace(name, @"[^a-zA-Z0-9]", "").ToLowerInvariant();
+    }
+
+    public static void InvalidateAllTestConfigs()
+    {
+        _staticTestConfigs.Clear();
+        _cachedTenantCodeForTestMasters = null;
+        _cachedLockedTcodes = null;
+        _cachedLockedTestNames = null;
+        _cachedTestMastersByTCode = null;
+        _cachedTestMastersByName = null;
+    }
+
+    public static void InvalidateTestConfig(long tcode)
+    {
+        foreach (var key in _staticTestConfigs.Keys.Where(k => k.EndsWith($"_{tcode}")).ToList())
+        {
+            _staticTestConfigs.TryRemove(key, out _);
+        }
+        if (_cachedTestMastersByTCode != null)
+        {
+            _cachedTestMastersByTCode.Remove(tcode);
+        }
+    }
+
+    private LabCare.Models.TestResultRowDto? FindMatchingTestResultRow(LabResultEntry? row)
+    {
+        if (row == null) return null;
+        long targetTCode = row.fromtcode > 0 ? (long)row.fromtcode : row.tcode;
+        long parentTCode = (long)row.tcode;
+        long pBilledTCode = GetParentTCode(row);
+
+        var cleanCol2 = (row.col2 ?? row.testname ?? "").Trim().ToLower();
+        var normRowName = NormalizeParamName(row.col2 ?? row.testname);
+
+        var configsToSearch = new List<LabCare.Models.TestInsertDto>();
+        if (_testConfigs.TryGetValue(targetTCode, out var cfg1) && cfg1?.ResultRows?.Any() == true) configsToSearch.Add(cfg1);
+        if (parentTCode != targetTCode && _testConfigs.TryGetValue(parentTCode, out var cfg2) && cfg2?.ResultRows?.Any() == true) configsToSearch.Add(cfg2);
+        if (pBilledTCode > 0 && !configsToSearch.Any(c => c.TestMaster?.tcode == pBilledTCode) && _testConfigs.TryGetValue(pBilledTCode, out var cfgP) && cfgP?.ResultRows?.Any() == true) configsToSearch.Add(cfgP);
+        foreach (var cfgExtra in _testConfigs.Values)
+        {
+            if (cfgExtra?.ResultRows?.Any() == true && !configsToSearch.Contains(cfgExtra))
+                configsToSearch.Add(cfgExtra);
+        }
+
+        foreach (var cfg in configsToSearch)
+        {
+            // 1. Guid matches
+            var mConfig = cfg.ResultRows.FirstOrDefault(r => row.fromtestresultid.HasValue && row.fromtestresultid.Value != Guid.Empty && r.ResultMaster?.testresultid == row.fromtestresultid)
+                       ?? cfg.ResultRows.FirstOrDefault(r => row.testresultid.HasValue && row.testresultid.Value != Guid.Empty && r.ResultMaster?.testresultid == row.testresultid);
+
+            // 2. Exact match on cellcontent or col2
+            if (mConfig == null)
+            {
+                mConfig = cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.cellcontent) && r.ResultMaster.cellcontent.Trim().Equals(cleanCol2, StringComparison.OrdinalIgnoreCase))
+                       ?? cfg.ResultRows.FirstOrDefault(r => !string.IsNullOrEmpty(r.ResultMaster?.col2) && r.ResultMaster.col2.Trim().Equals(cleanCol2, StringComparison.OrdinalIgnoreCase));
+            }
+
+            // 3. Normalized alphanumeric match (ignores spaces, hyphens, slashes, brackets)
+            if (mConfig == null && !string.IsNullOrEmpty(normRowName))
+            {
+                mConfig = cfg.ResultRows.FirstOrDefault(r => {
+                    var rNorm = NormalizeParamName(r.ResultMaster?.cellcontent ?? r.ResultMaster?.col2);
+                    if (string.IsNullOrEmpty(rNorm)) return false;
+                    return rNorm == normRowName || rNorm.Contains(normRowName) || normRowName.Contains(rNorm);
+                });
+            }
+
+            // 4. Token / word substring match
+            if (mConfig == null)
+            {
+                mConfig = cfg.ResultRows.FirstOrDefault(r => {
+                    var rName = (r.ResultMaster?.cellcontent ?? r.ResultMaster?.col2 ?? "").Trim().ToLower();
+                    if (string.IsNullOrEmpty(rName)) return false;
+                    return rName == cleanCol2
+                        || (cleanCol2.Length >= 3 && rName.Contains(cleanCol2))
+                        || (rName.Length >= 3 && cleanCol2.Contains(rName));
+                });
+            }
+
+            if (mConfig != null) return mConfig;
+        }
+
+        return null;
+    }
+
+    private string GetMasterNormalValueFromConfig(LabCare.Models.TestResultRowDto? mConfig)
+    {
+        if (mConfig == null) return "";
+
+        // 1. Detailed Normal Values (if detailednormalvalues enabled or ranges present)
+        if (mConfig.ResultProperties?.detailednormalvalues == true && mConfig.DetailedNormalValues?.Any() == true)
+        {
+            var mappedDnv = mConfig.DetailedNormalValues.Select(x => new Lab_Result_DetailedNormalValues
+            {
+                dnvid = x.trdnid,
+                trdnid = x.trdnid,
+                sno = x.sno ?? 0,
+                agefrom = x.agefrom ?? 0,
+                agefromtype = !string.IsNullOrEmpty(x.agefromtype) ? (x.agefromtype == "Yrs" ? "Years" : x.agefromtype) : "Years",
+                ageto = x.ageto ?? 0,
+                agetotype = !string.IsNullOrEmpty(x.agetotype) ? (x.agetotype == "Yrs" ? "Years" : x.agetotype) : "Years",
+                agerangetype = !string.IsNullOrEmpty(x.agerangetype) ? x.agerangetype : "Normal",
+                sex = !string.IsNullOrEmpty(x.sex) ? x.sex : "Both",
+                rangetype = !string.IsNullOrEmpty(x.rangetype) ? x.rangetype : "Normal",
+                rangefrom = x.rangefrom ?? 0,
+                rangeto = x.rangeto ?? 0,
+                specialconditioncode = x.specialconditioncode
+            }).ToList();
+            var dnvStr = FormatNormalValueFromDetailed(mappedDnv);
+            if (!string.IsNullOrWhiteSpace(dnvStr)) return dnvStr;
+        }
+
+        // 2. Text Normal Values
+        if (mConfig.TextNormalValues?.Any(x => !string.IsNullOrWhiteSpace(x.normalvalue)) == true)
+        {
+            var nvParts = mConfig.TextNormalValues
+                .Where(x => !string.IsNullOrWhiteSpace(x.normalvalue))
+                .Select(x =>
+                {
+                    if (string.IsNullOrWhiteSpace(x.sex) || x.sex == "Both" || x.sex == "-") return x.normalvalue!.Trim();
+                    var sex = x.sex.Trim();
+                    var label = (sex.Equals("M", StringComparison.OrdinalIgnoreCase) || sex.Equals("Male", StringComparison.OrdinalIgnoreCase)) ? "Males" :
+                                (sex.Equals("F", StringComparison.OrdinalIgnoreCase) || sex.Equals("Female", StringComparison.OrdinalIgnoreCase)) ? "Females" : sex;
+                    return $"{label} : {x.normalvalue.Trim()}";
+                });
+            var tnvStr = string.Join(" | ", nvParts);
+            if (!string.IsNullOrWhiteSpace(tnvStr)) return tnvStr;
+        }
+
+        // 3. Simple Normal Value text from ResultProperties
+        if (!string.IsNullOrWhiteSpace(mConfig.ResultProperties?.normalvalue) && !mConfig.ResultProperties.normalvalue.StartsWith("("))
+        {
+            var nv = mConfig.ResultProperties.normalvalue.Trim();
+            if (nv != "-" && nv != "Normal 0" && nv != "0-0" && nv != "0 - 0" && nv != "()" && nv != "(-)" && nv != "0")
+            {
+                return nv;
+            }
+        }
+
+        // 4. Check col3 if it holds qualitative value (e.g. "NEGATIVE", "CLEAR", "NON-REACTIVE")
+        if (!string.IsNullOrWhiteSpace(mConfig.ResultMaster?.col3))
+        {
+            var c3 = mConfig.ResultMaster.col3.Trim();
+            if (QualitativeValues.Contains(c3))
+            {
+                return c3;
+            }
+        }
+
+        // 5. Check col4 from test_result_master (often reference range text in LIMS)
+        if (!string.IsNullOrWhiteSpace(mConfig.ResultMaster?.col4))
+        {
+            var c4 = mConfig.ResultMaster.col4.Trim();
+            if (c4 != "-" && c4 != "Normal 0" && c4 != "0-0" && c4 != "0 - 0" && c4 != "()" && c4 != "(-)" && c4 != "0")
+            {
+                return c4;
+            }
+        }
+
+        // 6. Check defaultvalue if qualitative (e.g. "Negative", "Clear", "Nil")
+        if (!string.IsNullOrWhiteSpace(mConfig.ResultProperties?.defaultvalue))
+        {
+            var dv = mConfig.ResultProperties.defaultvalue.Trim();
+            if (QualitativeValues.Contains(dv))
+            {
+                return dv;
+            }
+        }
+
+        // 7. Check normalfemale if female patient
+        if (PatientGender?.StartsWith("F", StringComparison.OrdinalIgnoreCase) == true && !string.IsNullOrWhiteSpace(mConfig.ResultMaster?.normalfemale))
+        {
+            var nf = mConfig.ResultMaster.normalfemale.Trim();
+            if (nf != "-" && nf != "Normal 0" && nf != "0-0" && nf != "0 - 0" && nf != "0")
+            {
+                return nf;
+            }
+        }
+
+        // 8. Numeric Range (fromnormalvalue - tonormalvalue)
+        if (mConfig.ResultProperties != null && (mConfig.ResultProperties.fromnormalvalue.HasValue || mConfig.ResultProperties.tonormalvalue.HasValue))
+        {
+            double fVal = mConfig.ResultProperties.fromnormalvalue ?? 0;
+            double tVal = mConfig.ResultProperties.tonormalvalue ?? 0;
+            string op = (mConfig.ResultProperties.rangetype ?? "").Trim();
+            if (fVal > 0 || tVal > 0)
+            {
+                if (op.Equals("Upto", StringComparison.OrdinalIgnoreCase) || op.Equals("Less than", StringComparison.OrdinalIgnoreCase) || op == "<" || op == "<=")
+                    return $"< {(tVal > 0 ? tVal : fVal)}";
+                if (op.Equals("More than", StringComparison.OrdinalIgnoreCase) || op == ">" || op == ">=")
+                    return $"> {fVal}";
+                if (fVal > 0 && tVal > 0)
+                    return $"{fVal} - {tVal}";
+                if (fVal == 0 && tVal > 0)
+                    return $"0 - {tVal}";
+                if (fVal > 0 && tVal == 0)
+                    return $"{fVal}";
+            }
+        }
+
+        // 9. Detailed Normal Values fallback even if flag wasn't explicitly set
+        if (mConfig.DetailedNormalValues?.Any() == true)
+        {
+            var mappedDnv = mConfig.DetailedNormalValues.Select(x => new Lab_Result_DetailedNormalValues
+            {
+                dnvid = x.trdnid,
+                trdnid = x.trdnid,
+                sno = x.sno ?? 0,
+                agefrom = x.agefrom ?? 0,
+                agefromtype = !string.IsNullOrEmpty(x.agefromtype) ? (x.agefromtype == "Yrs" ? "Years" : x.agefromtype) : "Years",
+                ageto = x.ageto ?? 0,
+                agetotype = !string.IsNullOrEmpty(x.agetotype) ? (x.agetotype == "Yrs" ? "Years" : x.agetotype) : "Years",
+                agerangetype = !string.IsNullOrEmpty(x.agerangetype) ? x.agerangetype : "Normal",
+                sex = !string.IsNullOrEmpty(x.sex) ? x.sex : "Both",
+                rangetype = !string.IsNullOrEmpty(x.rangetype) ? x.rangetype : "Normal",
+                rangefrom = x.rangefrom ?? 0,
+                rangeto = x.rangeto ?? 0,
+                specialconditioncode = x.specialconditioncode
+            }).ToList();
+            var dnvStr = FormatNormalValueFromDetailed(mappedDnv);
+            if (!string.IsNullOrWhiteSpace(dnvStr)) return dnvStr;
+        }
+
+        // 10. Check if defaultunitscode resolves to a qualitative unit (e.g. "NEGATIVE")
+        if (mConfig.ResultProperties?.defaultunitscode > 0 && uom != null)
+        {
+            var matchedUom = uom.FirstOrDefault(u => u.ucode == mConfig.ResultProperties.defaultunitscode);
+            if (matchedUom != null && QualitativeValues.Contains(matchedUom.name?.Trim() ?? ""))
+            {
+                return "Negative";
+            }
+        }
+
+        return "";
+    }
+
+    private void ApplyMasterConfigToRow(LabResultEntry? row, LabCare.Models.TestResultRowDto? mConfig, bool forceOverwrite = false)
+    {
+        if (row == null || mConfig == null) return;
+
+        string masterType = mConfig.ResultProperties?.resultvaluetype ?? "";
+        if (string.Equals(masterType, "Title", StringComparison.OrdinalIgnoreCase))
+        {
+            row.resultvaluetype = "Title";
+            row.printresultonly = true;
+            row.enteredresult = "";
+            row.unitname = "";
+            row.normalvalue = "";
+            return;
+        }
+
+        bool isTitleOrSub = row.resultvaluetype == "Title" || row.resultvaluetype == "SubTitle";
+        if (isTitleOrSub) return;
+
+        bool isRowEntered = !string.IsNullOrWhiteSpace(row.enteredresult) && row.enteredresult.Trim() != "-";
+        bool isRowSavedOrAuth = row.status || row.isauthorized1 || row.isauthorized2 || (row.resultenteredby > 0 && isRowEntered);
+        bool shouldUpdate = forceOverwrite || (!isRowEntered && !isRowSavedOrAuth);
+
+        // Clean stale placeholder normal values first
+        if (row.normalvalue != null)
+        {
+            var trimmed = row.normalvalue.Trim();
+            if (trimmed == "-" || trimmed == "Normal 0" || trimmed == "0-0" || trimmed == "0 - 0" || trimmed == "()" || trimmed == "(-)" || trimmed == "0")
+            {
+                row.normalvalue = "";
+            }
+        }
+
+        var masterNv = GetMasterNormalValueFromConfig(mConfig);
+
+        // 1. Normal Value
+        if (shouldUpdate)
+        {
+            if (!string.IsNullOrWhiteSpace(masterNv))
+            {
+                row.normalvalue = masterNv;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(row.normalvalue) && !string.IsNullOrWhiteSpace(masterNv))
+        {
+            row.normalvalue = masterNv;
+        }
+
+        // 2. Detailed Normal Values
+        if (mConfig.DetailedNormalValues?.Any() == true)
+        {
+            if (shouldUpdate || row.detailednormalvalues == null || !row.detailednormalvalues.Any())
+            {
+                row.detailednormalvalues = mConfig.DetailedNormalValues.Select(x => new Lab_Result_DetailedNormalValues
+                {
+                    dnvid = x.trdnid,
+                    trdnid = x.trdnid,
+                    testresultid = row.testresultid,
+                    sno = x.sno ?? 0,
+                    agefrom = x.agefrom ?? 0,
+                    agefromtype = !string.IsNullOrEmpty(x.agefromtype) ? (x.agefromtype == "Yrs" ? "Years" : x.agefromtype) : "Years",
+                    ageto = x.ageto ?? 0,
+                    agetotype = !string.IsNullOrEmpty(x.agetotype) ? (x.agetotype == "Yrs" ? "Years" : x.agetotype) : "Years",
+                    agerangetype = !string.IsNullOrEmpty(x.agerangetype) ? x.agerangetype : "Normal",
+                    sex = !string.IsNullOrEmpty(x.sex) ? x.sex : "Both",
+                    rangetype = !string.IsNullOrEmpty(x.rangetype) ? x.rangetype : "Normal",
+                    rangefrom = x.rangefrom ?? 0,
+                    rangeto = x.rangeto ?? 0,
+                    specialconditioncode = x.specialconditioncode
+                }).ToList();
+            }
+        }
+
+        // 3. Text Normal Values
+        if (mConfig.TextNormalValues?.Any() == true)
+        {
+            if (shouldUpdate || row.textnormalvalues == null || !row.textnormalvalues.Any())
+            {
+                row.textnormalvalues = mConfig.TextNormalValues.Select(x => new Lab_Result_TextNormalValues
+                {
+                    trtid = x.trtid,
+                    testresultid = row.testresultid,
+                    sex = x.sex,
+                    normalvalue = x.normalvalue
+                }).ToList();
+            }
+        }
+
+        // 4. Calculated Formulas
+        if (mConfig.CalculatedFormulas?.Any() == true)
+        {
+            if (shouldUpdate || row.calculatedformulas == null || !row.calculatedformulas.Any())
+            {
+                row.calculatedformulas = mConfig.CalculatedFormulas.Select(x => new Lab_Result_CalculatedFormula
+                {
+                    trcfid = x.trcfid,
+                    testresultid = row.testresultid,
+                    sex = x.sex,
+                    calculatedformula = x.calculatedformula
+                }).ToList();
+            }
+        }
+
+        // 5. Unit vs Qualitative Normal Value
+        int resolvedUcode = mConfig.ResultProperties?.defaultunitscode ?? 0;
+        string? resolvedUnitName = null;
+
+        if (resolvedUcode > 0 && uom != null)
+        {
+            var matched = uom.FirstOrDefault(u => u.ucode == resolvedUcode);
+            if (matched != null)
+            {
+                resolvedUnitName = !string.IsNullOrWhiteSpace(matched.name) ? matched.name : matched.shortname;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(resolvedUnitName) && !string.IsNullOrWhiteSpace(mConfig.ResultMaster?.col3))
+        {
+            var cand3 = mConfig.ResultMaster.col3.Trim();
+            resolvedUnitName = cand3;
+            var matchedUom = uom?.FirstOrDefault(u => string.Equals(u.name?.Trim(), cand3, StringComparison.OrdinalIgnoreCase) || string.Equals(u.shortname?.Trim(), cand3, StringComparison.OrdinalIgnoreCase));
+            if (matchedUom != null)
+            {
+                resolvedUcode = (int)matchedUom.ucode;
+                resolvedUnitName = matchedUom.name ?? cand3;
+            }
+            else if (uom != null)
+            {
+                int newUc = uom.Any() ? (int)uom.Max(x => x.ucode) + 1 : 1000;
+                resolvedUcode = newUc;
+                uom.Add(new Booking.Models.UomMasterModel { ucode = newUc, name = cand3, shortname = cand3 });
+            }
+
+            if (QualitativeValues.Contains(cand3) && (shouldUpdate || string.IsNullOrWhiteSpace(row.normalvalue)))
+            {
+                row.normalvalue = "Negative";
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(resolvedUnitName))
+        {
+            var std = GetStandardLabUnit(row.col2 ?? row.testname ?? "");
+            if (!string.IsNullOrWhiteSpace(std))
+            {
+                resolvedUnitName = std;
+                var matchedUom = uom?.FirstOrDefault(u => string.Equals(u.name?.Trim(), std, StringComparison.OrdinalIgnoreCase) || string.Equals(u.shortname?.Trim(), std, StringComparison.OrdinalIgnoreCase));
+                if (matchedUom != null)
+                {
+                    resolvedUcode = (int)matchedUom.ucode;
+                    resolvedUnitName = matchedUom.name ?? std;
+                }
+                else if (uom != null)
+                {
+                    int newUc = uom.Any() ? (int)uom.Max(x => x.ucode) + 1 : 1000;
+                    resolvedUcode = newUc;
+                    uom.Add(new Booking.Models.UomMasterModel { ucode = newUc, name = std, shortname = std });
+                }
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(resolvedUnitName))
+        {
+            if (shouldUpdate || string.IsNullOrWhiteSpace(row.unitname))
+            {
+                row.defaultunitscode = resolvedUcode;
+                row.unitname = resolvedUnitName;
+            }
+        }
+
+        // If normalvalue is still blank, and unitname or test is qualitative, default normalvalue to "Negative"
+        if (string.IsNullOrWhiteSpace(row.normalvalue))
+        {
+            if (!string.IsNullOrWhiteSpace(row.unitname) && QualitativeValues.Contains(row.unitname.Trim()))
+            {
+                row.normalvalue = "Negative";
+            }
+            else
+            {
+                string pName = (row.col2 ?? row.testname ?? "").ToLower();
+                if (pName.Contains("salmonella") || pName.Contains("dengue") || pName.Contains("malaria") || 
+                    pName.Contains("ns-1") || pName.Contains("ns1") || pName.Contains("antigen") || 
+                    pName.Contains("card") || pName.Contains("widal") || pName.Contains("hbsag") || 
+                    pName.Contains("hcv") || pName.Contains("hiv") || pName.Contains("urobilinogen") || 
+                    pName.Contains("bilirubin") || pName.Contains("bile"))
+                {
+                    row.normalvalue = "Negative";
+                }
+            }
+        }
+
+        // 6. Properties
+        if (mConfig.ResultProperties != null)
+        {
+            var mp = mConfig.ResultProperties;
+            if (shouldUpdate)
+            {
+                row.simplenv = mp.simplenormalvalues ?? false;
+                row.detailednv = mp.detailednormalvalues ?? false;
+                row.showagedbased = mp.showagedbased ?? false;
+                row.showalertonhigherlower = mp.showalertonhigherlower ?? false;
+                row.printresultonly = mp.printresultonly ?? false;
+                row.printnormalvaluesatbottom = mp.printnormalvaluesatbottom ?? false;
+                row.printunitsinnormalvalues = mp.printunitsinnormalvalues ?? false;
+                row.decimalvalue = mp.decimalvalue ?? 0;
+                if (!string.IsNullOrWhiteSpace(mp.resultvaluetype))
+                {
+                    string rName = (row.col2 ?? row.testname ?? "").ToLower();
+                    row.resultvaluetype = mp.resultvaluetype;
+                    if (string.Equals(row.resultvaluetype, "Title", StringComparison.OrdinalIgnoreCase))
+                    {
+                        row.printresultonly = true;
+                        row.enteredresult = "";
+                        row.unitname = "";
+                        row.normalvalue = "";
+                    }
+                }
+                if (!string.IsNullOrWhiteSpace(mp.defaultvalue)) row.defaultunitvalue = mp.defaultvalue;
+                if (mp.rtmcode.HasValue && mp.rtmcode.Value > 0) row.rtmcode = mp.rtmcode.Value;
+                if (!string.IsNullOrWhiteSpace(mp.footermessage)) row.footermessage = mp.footermessage;
+                if (!string.IsNullOrWhiteSpace(mp.conclusionforfixedtext) && !Guid.TryParse(mp.conclusionforfixedtext, out _)) row.conclusionforfixedtext = mp.conclusionforfixedtext;
+                if (!string.IsNullOrWhiteSpace(mp.conclusionforhigher)) row.conclusionforhigher = mp.conclusionforhigher;
+                if (!string.IsNullOrWhiteSpace(mp.conclusionforlower)) row.conclusionforlower = mp.conclusionforlower;
+
+                // Sync Specimen from Master
+                if (mConfig.ResultProperties?.scode > 0 && (row.scode <= 0 || string.IsNullOrWhiteSpace(row.samplename)))
+                {
+                    row.scode = mConfig.ResultProperties.scode.Value;
+                    var matchedSample = sample?.FirstOrDefault(s => s.scode == row.scode);
+                    if (matchedSample != null) row.samplename = matchedSample.name ?? matchedSample.shortname;
+                }
+                else if (row.tcode > 0 && _testConfigs.TryGetValue(row.tcode, out var tcfgSample) && tcfgSample.TestMaster?.scode > 0 && (row.scode <= 0 || string.IsNullOrWhiteSpace(row.samplename)))
+                {
+                    row.scode = (int)tcfgSample.TestMaster.scode;
+                    var matchedSample = sample?.FirstOrDefault(s => s.scode == row.scode);
+                    if (matchedSample != null) row.samplename = matchedSample.name ?? matchedSample.shortname;
+                }
+            }
+            else
+            {
+                if (string.IsNullOrWhiteSpace(row.resultvaluetype) && !string.IsNullOrWhiteSpace(mp.resultvaluetype))
+                {
+                    string rName = (row.col2 ?? row.testname ?? "").ToLower();
+                    row.resultvaluetype = mp.resultvaluetype;
+                    if (string.Equals(row.resultvaluetype, "Title", StringComparison.OrdinalIgnoreCase))
+                    {
+                        row.printresultonly = true;
+                        row.enteredresult = "";
+                        row.unitname = "";
+                        row.normalvalue = "";
+                    }
+                }
+
+                if (mConfig.ResultProperties?.scode > 0 && (row.scode <= 0 || string.IsNullOrWhiteSpace(row.samplename)))
+                {
+                    row.scode = mConfig.ResultProperties.scode.Value;
+                    var matchedSample = sample?.FirstOrDefault(s => s.scode == row.scode);
+                    if (matchedSample != null) row.samplename = matchedSample.name ?? matchedSample.shortname;
+                }
+                else if (row.tcode > 0 && _testConfigs.TryGetValue(row.tcode, out var tcfgSample) && tcfgSample.TestMaster?.scode > 0 && (row.scode <= 0 || string.IsNullOrWhiteSpace(row.samplename)))
+                {
+                    row.scode = (int)tcfgSample.TestMaster.scode;
+                    var matchedSample = sample?.FirstOrDefault(s => s.scode == row.scode);
+                    if (matchedSample != null) row.samplename = matchedSample.name ?? matchedSample.shortname;
+                }
+                if (string.IsNullOrWhiteSpace(row.defaultunitvalue) && !string.IsNullOrWhiteSpace(mp.defaultvalue)) row.defaultunitvalue = mp.defaultvalue;
+                if (row.rtmcode <= 0 && mp.rtmcode.HasValue && mp.rtmcode.Value > 0) row.rtmcode = mp.rtmcode.Value;
+                if (string.IsNullOrWhiteSpace(row.footermessage) && !string.IsNullOrWhiteSpace(mp.footermessage)) row.footermessage = mp.footermessage;
+                if (string.IsNullOrWhiteSpace(row.conclusionforfixedtext) && !string.IsNullOrWhiteSpace(mp.conclusionforfixedtext) && !Guid.TryParse(mp.conclusionforfixedtext, out _)) row.conclusionforfixedtext = mp.conclusionforfixedtext;
+            }
+        }
+    }
+
+    private async Task ReloadNewNormalValuesAsync()
+    {
+        isLoading = true;
+        StateHasChanged();
+        try
+        {
+            InvalidateAllTestConfigs();
+            await LoadResults(forceRefreshMaster: true);
+            Toast.ShowSuccess("Latest normal values reloaded from Test Master.");
+        }
+        catch (Exception ex)
+        {
+            Toast.ShowError($"Failed to reload normal values: {ex.Message}");
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
 
     private bool IsRowEscalated(LabResultEntry row)
     {
