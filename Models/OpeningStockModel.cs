@@ -1,4 +1,6 @@
 using Microsoft.AspNetCore.Http;
+using System;
+using System.Collections.Generic;
 
 namespace medico_backend.InventoryModel
 {
@@ -31,6 +33,7 @@ namespace medico_backend.InventoryModel
         public DateTime? expirydate { get; set; }
         public decimal openingstrip { get; set; }
         public decimal openingloose { get; set; }
+        public decimal? mrp { get; set; }
     }
 
     // ─── Item info needed to calculate opening stock ──────────────────────────
@@ -64,6 +67,7 @@ namespace medico_backend.InventoryModel
         public decimal? opening_strip { get; set; }
         public decimal? openingloose { get; set; }
         public decimal? opening_loose { get; set; }
+        public decimal? mrp { get; set; }
         public string? rejectionreason { get; set; }
         public string? rejection_reason { get; set; }
     }

@@ -291,6 +291,11 @@ namespace LabCare.Services
                     rp.fromnormalvalue ??= 0;
                     rp.tonormalvalue ??= 0;
                     rp.istestimage ??= false;
+
+                    if (!string.IsNullOrWhiteSpace(rp.normalvalue) && string.IsNullOrWhiteSpace(rm.col4))
+                    {
+                        rm.col4 = rp.normalvalue;
+                    }
                 }
 
                 if (row.CalculatedFormulas != null)
@@ -603,6 +608,15 @@ namespace LabCare.Services
                 row.CalculatedFormulas ??= new();
                 row.DetailedNormalValues ??= new();
                 row.TextNormalValues ??= new();
+
+                if (string.IsNullOrWhiteSpace(row.ResultProperties.normalvalue) && !string.IsNullOrWhiteSpace(row.ResultMaster.col4))
+                {
+                    var c4 = row.ResultMaster.col4.Trim();
+                    if (c4 != "-" && c4 != "0" && c4 != "0-0" && c4 != "0 - 0" && c4 != "Normal 0")
+                    {
+                        row.ResultProperties.normalvalue = c4;
+                    }
+                }
             }
         }
 

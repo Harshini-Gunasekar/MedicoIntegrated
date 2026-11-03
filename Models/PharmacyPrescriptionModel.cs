@@ -34,6 +34,12 @@ public class PharmacyPrescriptionQueueRow
     public string? notes { get; set; }
     public string? instructions { get => notes; set => notes = value; }
 
+    public string? batch_no { get; set; }
+    public string? batchno { get => batch_no; set => batch_no = value; }
+    public DateTime? batch_expiry_date { get; set; }
+    public long? stockcode { get; set; }
+    public long? warehousecode { get; set; }
+
     public string status { get; set; } = "PENDING";
     public bool billed_status { get; set; } = false;
     public string? billno { get; set; }
@@ -79,6 +85,12 @@ public class PrescriptionQueueItem
     public string? route { get; set; }
     public string? notes { get; set; }
     public string? instructions { get => notes; set => notes = value; }
+
+    public string? batch_no { get; set; }
+    public string? batchno { get => batch_no; set => batch_no = value; }
+    public DateTime? batch_expiry_date { get; set; }
+    public long? stockcode { get; set; }
+    public long? warehousecode { get; set; }
 }
 public class MatchQueueItemRequest
 {

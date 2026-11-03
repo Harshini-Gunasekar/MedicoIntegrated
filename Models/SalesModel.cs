@@ -129,6 +129,8 @@ public class sales_detail
 
     public long? warehousecode { get; set; }
 
+    public long? stockcode { get; set; }
+
     public string? tenantcode { get; set; }
 
     public string? morning_dose { get; set; }

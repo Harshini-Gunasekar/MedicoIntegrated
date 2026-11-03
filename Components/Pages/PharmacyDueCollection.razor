@@ -16,6 +16,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject IHttpClientFactory ClientFactory
 @inject Booking.Services.RoleMasterService RoleService
+@inject Microsoft.Extensions.Configuration.IConfiguration Configuration
 @implements IDisposable
 
 <div class="due-collection-wrapper">
@@ -31,30 +32,33 @@
             </div>
         </div>
 
-        <div class="header-right-section">
-            <div class="header-summary-cards">
-                <div class="header-summary-card balance">
-                    <span class="header-summary-label">TOTAL BALANCE</span>
-                    <span class="header-summary-value text-balance">₹ @HeaderTotalBalance.ToString("N2")</span>
+        @if (activeTab == "collect")
+        {
+            <div class="header-right-section">
+                <div class="header-summary-cards">
+                    <div class="header-summary-card balance">
+                        <span class="header-summary-label">TOTAL BALANCE</span>
+                        <span class="header-summary-value text-balance">₹ @HeaderTotalBalance.ToString("N2")</span>
+                    </div>
+                    <div class="header-summary-card count">
+                        <span class="header-summary-label">BILL COUNT</span>
+                        <span class="header-summary-value text-count">@HeaderBillCount</span>
+                    </div>
+                    <div class="header-summary-card collected">
+                        <span class="header-summary-label">COLLECTED AMT</span>
+                        <span class="header-summary-value text-collected">₹ @HeaderCollectedAmount.ToString("N2")</span>
+                    </div>
+                    <div class="header-summary-card remaining">
+                        <span class="header-summary-label">REMAINING BAL</span>
+                        <span class="header-summary-value text-remaining">₹ @HeaderRemainingBalance.ToString("N2")</span>
+                    </div>
                 </div>
-                <div class="header-summary-card count">
-                    <span class="header-summary-label">@(activeTab == "history" ? "HISTORY COUNT" : "BILL COUNT")</span>
-                    <span class="header-summary-value text-count">@HeaderBillCount</span>
-                </div>
-                <div class="header-summary-card collected">
-                    <span class="header-summary-label">COLLECTED AMT</span>
-                    <span class="header-summary-value text-collected">₹ @HeaderCollectedAmount.ToString("N2")</span>
-                </div>
-                <div class="header-summary-card remaining">
-                    <span class="header-summary-label">REMAINING BAL</span>
-                    <span class="header-summary-value text-remaining">₹ @HeaderRemainingBalance.ToString("N2")</span>
-                </div>
-            </div>
 
-            <button class="btn-history-filter-trigger @(showCollectFilter ? "active" : "")" @onclick="ToggleCollectFilter">
-                <i class="bi bi-funnel"></i> Filter
-            </button>
-        </div>
+                <button class="btn-history-filter-trigger @(showCollectFilter ? "active" : "")" @onclick="ToggleCollectFilter">
+                    <i class="bi bi-funnel"></i> Filter
+                </button>
+            </div>
+        }
     </div>
 
     <!-- Navigation Tabs -->
@@ -266,7 +270,7 @@
                                 <div class="form-group-filter" style="width: 210px;">
                                     <label>AMOUNT</label>
                                     <div style="display: flex; align-items: center; gap: 0.4rem;">
-                                        <input @key="@("pharm_due_amount_allocate")" type="number" step="any" min="0" class="filter-input" placeholder="0.00"
+                                        <input @key="@("pharm_due_amount_allocate")" type="text" inputmode="decimal" class="filter-input" placeholder="0.00"
                                                @bind="totalAmountToAllocate" @bind:event="oninput" style="flex: 1;" />
                                         <button type="button" class="btn-link" @onclick="AutoAllocateAmount"
                                                 disabled="@(totalAmountToAllocate == null || totalAmountToAllocate <= 0 || pendingBills.Count == 0)"
@@ -977,7 +981,7 @@
 
     private decimal HeaderCollectedAmount => activeTab == "history"
         ? FilteredHistoryList.Sum(h => h.master?.totalcollectedamount ?? 0)
-        : (TotalCollectedEntered > 0 ? TotalCollectedEntered : (allHistoryList.Count > 0 && pendingBills.Count == 0 ? allHistoryList.Sum(h => h.master?.totalcollectedamount ?? 0) : TotalCollectedEntered));
+        : TotalCollectedEntered;
 
     private decimal HeaderRemainingBalance => activeTab == "history"
         ? FilteredHistoryList.Sum(h => h.master?.totalremainingamount ?? 0)
@@ -1125,6 +1129,12 @@
                 {
                     selectedCounter = cntCodeResult.Value;
                 }
+
+                var tRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (tRes.Success && !string.IsNullOrWhiteSpace(tRes.Value))
+                {
+                    TenantState.SetSession(tRes.Value, TenantState.AuthToken);
+                }
             }
             catch { }
 
@@ -1243,12 +1253,15 @@
                     catch { }
                 }
 
-                string[] clientNames = new[] { "LabCareUrl", "DoctorApi" };
+                string[] clientNames = new[] { "DoctorApi" };
                 foreach (var cName in clientNames)
                 {
                     try
                     {
-                        var client = ClientFactory.CreateClient(cName);
+                        var baseApi = Configuration["ApiBaseUrl"]?.TrimEnd('/');
+                        using var client = !string.IsNullOrEmpty(baseApi)
+                            ? new HttpClient { BaseAddress = new Uri(baseApi) }
+                            : ClientFactory.CreateClient("DoctorApi");
                         if (!string.IsNullOrEmpty(effectiveTenant))
                         {
                             client.DefaultRequestHeaders.Remove("tenant_code");
@@ -2168,12 +2181,23 @@
     // --- HISTORY TAB (Endpoint 5, 6, 4) ---
     private async Task LoadDueCollectionHistory()
     {
+        string effectiveTenant = TenantState?.TenantCode ?? "";
+        if (string.IsNullOrWhiteSpace(effectiveTenant))
+        {
+            try
+            {
+                var sRes = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (sRes.Success && !string.IsNullOrWhiteSpace(sRes.Value))
+                    effectiveTenant = sRes.Value;
+            }
+            catch {}
+        }
         loadingHistory = true;
         StateHasChanged();
 
         try
         {
-            var (success, message, data) = await DueService.GetAllDueCollectionsAsync();
+            var (success, message, data) = await DueService.GetAllDueCollectionsAsync(effectiveTenant);
             if (success)
             {
                 allHistoryList = data ?? new();

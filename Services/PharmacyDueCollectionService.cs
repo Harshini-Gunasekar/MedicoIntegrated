@@ -67,7 +67,21 @@ namespace Booking.Services
 
         private string GetConfiguredBaseUrl()
         {
-            var baseUrl = _config["ApiBaseUrl"] ?? _config["ApiSettings:MedicoApiUrl"] ?? _config["Environments:Live:ApiBaseUrl"] ?? "http://medicoapi.iscansoft.com";
+            var baseUrl = _config["ApiBaseUrl"] 
+                ?? _config["ApiSettings:MedicoApiUrl"] 
+                ?? _config["Environments:Live:ApiBaseUrl"];
+
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                var env = _config["Environment"] ?? "Live";
+                baseUrl = _config[$"Environments:{env}:ApiBaseUrl"];
+            }
+
+            if (string.IsNullOrWhiteSpace(baseUrl))
+            {
+                baseUrl = "http://medicoapi.iscansoft.com";
+            }
+
             if (!baseUrl.EndsWith("/"))
             {
                 baseUrl += "/";
@@ -114,13 +128,6 @@ namespace Booking.Services
                     
                     var url = $"api/ItemMaster/getpendingdues?{string.Join("&", qParams)}";
                     var response = await client.GetAsync(url);
-                    if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                    {
-                        var fallbackClient = new HttpClient { BaseAddress = new Uri("http://medicoapitest.reachbs.com/") };
-                        fallbackClient.DefaultRequestHeaders.Add("tenantcode", tenantCode);
-                        fallbackClient.DefaultRequestHeaders.Add("tenant_code", tenantCode);
-                        response = await fallbackClient.GetAsync(url);
-                    }
 
                     var json = await response.Content.ReadAsStringAsync();
                     if (!string.IsNullOrWhiteSpace(json))
@@ -270,12 +277,6 @@ namespace Booking.Services
                 var url = "api/ItemMaster/insertduecollection";
 
                 var response = await client.PostAsJsonAsync(url, request);
-                if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    var fallbackClient = new HttpClient { BaseAddress = new Uri("http://medicoapitest.reachbs.com/") };
-                    fallbackClient.DefaultRequestHeaders.Add("tenantcode", GetEffectiveTenantCode());
-                    response = await fallbackClient.PostAsJsonAsync(url, request);
-                }
 
                 var json = await response.Content.ReadAsStringAsync();
                 if (!string.IsNullOrWhiteSpace(json))
@@ -313,12 +314,6 @@ namespace Booking.Services
                 var url = "api/ItemMaster/insertbulkduecollection";
 
                 var response = await client.PostAsJsonAsync(url, request);
-                if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    var fallbackClient = new HttpClient { BaseAddress = new Uri("http://medicoapitest.reachbs.com/") };
-                    fallbackClient.DefaultRequestHeaders.Add("tenantcode", GetEffectiveTenantCode());
-                    response = await fallbackClient.PostAsJsonAsync(url, request);
-                }
 
                 var json = await response.Content.ReadAsStringAsync();
                 if (!string.IsNullOrWhiteSpace(json))
@@ -351,12 +346,6 @@ namespace Booking.Services
                 var url = "api/ItemMaster/updateduecollection";
 
                 var response = await client.PostAsJsonAsync(url, request);
-                if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    var fallbackClient = new HttpClient { BaseAddress = new Uri("http://medicoapitest.reachbs.com/") };
-                    fallbackClient.DefaultRequestHeaders.Add("tenantcode", GetEffectiveTenantCode());
-                    response = await fallbackClient.PostAsJsonAsync(url, request);
-                }
 
                 var json = await response.Content.ReadAsStringAsync();
                 if (!string.IsNullOrWhiteSpace(json))
@@ -394,12 +383,6 @@ namespace Booking.Services
                 var url = $"api/ItemMaster/deleteduecollection?duecollectioncode={dueCollectionCode}";
 
                 var response = await client.GetAsync(url);
-                if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    var fallbackClient = new HttpClient { BaseAddress = new Uri("http://medicoapitest.reachbs.com/") };
-                    fallbackClient.DefaultRequestHeaders.Add("tenantcode", GetEffectiveTenantCode());
-                    response = await fallbackClient.GetAsync(url);
-                }
 
                 var json = await response.Content.ReadAsStringAsync();
                 if (!string.IsNullOrWhiteSpace(json))
@@ -429,19 +412,20 @@ namespace Booking.Services
         /// 6) GET ALL DUE COLLECTIONS
         /// GET /api/ItemMaster/getallduecollections
         /// </summary>
-        public async Task<(bool Success, string Message, List<PharmacyDueCollectionRecord> Data)> GetAllDueCollectionsAsync()
+        public async Task<(bool Success, string Message, List<PharmacyDueCollectionRecord> Data)> GetAllDueCollectionsAsync(string? overrideTenant = null)
         {
             try
             {
-                var client = CreateHttpClient();
-                var url = "api/ItemMaster/getallduecollections";
+                var tenantCode = GetEffectiveTenantCode(overrideTenant);
+                var client = CreateHttpClient(tenantCode);
+                var url = !string.IsNullOrWhiteSpace(tenantCode)
+                    ? $"api/ItemMaster/getallduecollections?tenantcode={Uri.EscapeDataString(tenantCode)}"
+                    : "api/ItemMaster/getallduecollections";
 
                 var response = await client.GetAsync(url);
-                if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                if (!response.IsSuccessStatusCode && !string.IsNullOrWhiteSpace(tenantCode) && response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
-                    var fallbackClient = new HttpClient { BaseAddress = new Uri("http://medicoapitest.reachbs.com/") };
-                    fallbackClient.DefaultRequestHeaders.Add("tenantcode", GetEffectiveTenantCode());
-                    response = await fallbackClient.GetAsync(url);
+                    response = await client.GetAsync("api/ItemMaster/getallduecollections");
                 }
 
                 var json = await response.Content.ReadAsStringAsync();
@@ -450,12 +434,12 @@ namespace Booking.Services
                     var resObj = JsonSerializer.Deserialize<PharmacyAllDueCollectionsApiResponse>(json, _jsonOptions);
                     if (resObj != null)
                     {
-                        bool isSuccess = string.Equals(resObj.Status, "Success", StringComparison.OrdinalIgnoreCase);
-                        return (isSuccess, resObj.Message ?? "Success", resObj.Data ?? new List<PharmacyDueCollectionRecord>());
+                        bool isSuccess = string.IsNullOrEmpty(resObj.Status) || string.Equals(resObj.Status, "Success", StringComparison.OrdinalIgnoreCase);
+                        return (isSuccess, resObj.Message ?? (isSuccess ? "Success" : "Failed"), resObj.Data ?? new List<PharmacyDueCollectionRecord>());
                     }
                 }
 
-                return (false, $"HTTP Error {(int)response.StatusCode}", new List<PharmacyDueCollectionRecord>());
+                return (false, $"HTTP Error {(int)response.StatusCode}: {response.ReasonPhrase}", new List<PharmacyDueCollectionRecord>());
             }
             catch (Exception ex)
             {
@@ -476,12 +460,6 @@ namespace Booking.Services
                 var url = $"api/ItemMaster/getduecollectionbycode?duecollectioncode={dueCollectionCode}";
 
                 var response = await client.GetAsync(url);
-                if (!response.IsSuccessStatusCode && response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                {
-                    var fallbackClient = new HttpClient { BaseAddress = new Uri("http://medicoapitest.reachbs.com/") };
-                    fallbackClient.DefaultRequestHeaders.Add("tenantcode", GetEffectiveTenantCode());
-                    response = await fallbackClient.GetAsync(url);
-                }
 
                 var json = await response.Content.ReadAsStringAsync();
                 if (!string.IsNullOrWhiteSpace(json))

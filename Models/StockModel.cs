@@ -5,7 +5,7 @@ namespace Booking.Models
 {
     public class stock_master
     {
-         public long stockcode { get; set; }
+        public long stockcode { get; set; }
 
         public long itemcode { get; set; }
 
@@ -20,6 +20,14 @@ namespace Booking.Models
         public decimal soldqty { get; set; }
         public decimal damagedqty { get; set; }
         public decimal returnqty { get; set; }
+
+        // New fields for Stock Adjustment
+        public decimal adjustedqty { get; set; }
+        public DateTime? adjusteddate { get; set; }
+        public long? adjustedby { get; set; }
+        public string? adjustmentreason { get; set; }
+        public string? adjustmenttype { get; set; }
+
         public decimal closingstock { get; set; }
 
         public decimal unitcost { get; set; }

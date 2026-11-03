@@ -172,6 +172,13 @@ namespace medico_backend.Model
         public decimal? mrp { get; set; }
         public bool is_billed { get; set; } = false;
 
+        // Batch Details
+        public string? batchno { get; set; }
+        public string? batch_no { get => batchno; set => batchno = value; }
+        public DateTime? batch_expiry_date { get; set; }
+        public long? stockcode { get; set; }
+        public long? warehousecode { get; set; }
+
 
         public string? notes { get; set; }
         public string? instructions { get => notes; set => notes = value; }
@@ -256,7 +263,8 @@ namespace medico_backend.Model
     public class SaveCaseSheetRequest
     {
         // Visit identifiers
-        public string? op_id { get; set; } = string.Empty;
+        public string? op_id { get; set; }
+        public string? op_no { get; set; } = string.Empty;
         public string? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
@@ -365,8 +373,30 @@ namespace medico_backend.Model
         public decimal? mrp { get; set; }
         public string? batchno { get; set; }
         public string? batch_no { get => batchno; set => batchno = value; }
+        public DateTime? batch_expiry_date { get; set; }
+        public long? stockcode { get; set; }
+        public long? warehousecode { get; set; }
+
+        // UI / Frontend helpers (not sent to API)
+        [System.Text.Json.Serialization.JsonIgnore]
+        public List<BatchOptionViewModel>? availableBatches { get; set; }
+
+        [System.Text.Json.Serialization.JsonIgnore]
+        public decimal? availableStock { get; set; }
+
         public string? notes { get; set; }
         public string? instructions { get => notes; set => notes = value; }
+    }
+
+    public class BatchOptionViewModel
+    {
+        public long stockcode { get; set; }
+        public string batchno { get; set; } = string.Empty;
+        public DateTime? expirydate { get; set; }
+        public decimal closingstock { get; set; }
+        public decimal mrpunit { get; set; }
+        public decimal unitcost { get; set; }
+        public long warehousecode { get; set; }
     }
 
 
@@ -424,6 +454,7 @@ namespace medico_backend.Model
     {
         public string? sheet_id { get; set; }
         public string? op_id { get; set; }
+        public string? op_no { get; set; }
         public string? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
@@ -482,6 +513,7 @@ namespace medico_backend.Model
     {
         public decimal custid { get; set; }
         public string? op_id { get; set; }
+        public string? op_no { get; set; }
         public string? ip_id { get; set; }
         public DateTime? visit_date { get; set; }
         public int dcode { get; set; }

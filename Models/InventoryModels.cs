@@ -257,9 +257,10 @@ namespace Booking.Models
         public decimal currentstock { get; set; }
         public decimal minstock { get; set; }
         public decimal reorderlevel { get; set; }
-        public decimal packsize { get; set; }
+        public decimal packsize { get; set; } = 1;
         public bool isexpiry { get; set; }
         public int expiryalertdays { get; set; }
+        public bool batchrequired { get; set; }
         public bool expiryrequired { get; set; }
         public bool serialrequired { get; set; }
         public int brandcode { get; set; }
