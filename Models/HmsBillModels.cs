@@ -259,6 +259,13 @@ namespace Booking.Models
         public List<HmsPayModeCollectionRow> items { get; set; } = new();
     }
 
+    public class HmsCategoryPayModeItem
+    {
+        public string paymode { get; set; } = "";
+        public decimal? pmcode { get; set; }
+        public double amount { get; set; }
+    }
+
     public class HmsOpCategoryAmountRow
     {
         public string category { get; set; } = "";
@@ -267,6 +274,56 @@ namespace Booking.Models
         public int item_count { get; set; }
         public double gross_amount { get; set; }
         public double discount_amount { get; set; }
+        public List<HmsCategoryPayModeItem> paymodes { get; set; } = new();
+
+        public double CashAmount
+        {
+            get
+            {
+                if (paymodes != null && paymodes.Count > 0)
+                {
+                    return paymodes.Where(p => IsCash(p.paymode, p.pmcode)).Sum(p => p.amount);
+                }
+                return collected_amount;
+            }
+        }
+
+        public double UpiAmount
+        {
+            get
+            {
+                if (paymodes != null && paymodes.Count > 0)
+                {
+                    return paymodes.Where(p => IsUpi(p.paymode, p.pmcode)).Sum(p => p.amount);
+                }
+                return 0;
+            }
+        }
+
+        public static bool IsCash(string? mode, decimal? pmcode)
+        {
+            if (string.IsNullOrWhiteSpace(mode))
+            {
+                return pmcode == 1;
+            }
+            var m = mode.Trim().ToUpperInvariant();
+            if (m.Contains("GPAY") || m.Contains("UPI") || m.Contains("PAYTM") || m.Contains("PHONEPE") || m.Contains("ONLINE") || m.Contains("QR") || m.Contains("CARD") || m.Contains("ADVANCE"))
+            {
+                return false;
+            }
+            if (pmcode == 1) return true;
+            return m.Contains("CASH");
+        }
+
+        public static bool IsUpi(string? mode, decimal? pmcode)
+        {
+            if (string.IsNullOrWhiteSpace(mode))
+            {
+                return pmcode == 3 || pmcode == 4;
+            }
+            var m = mode.Trim().ToUpperInvariant();
+            return m.Contains("GPAY") || m.Contains("UPI") || m.Contains("PAYTM") || m.Contains("PHONEPE") || m.Contains("ONLINE") || m.Contains("QR") || m.Contains("CARD") || pmcode == 3;
+        }
         public double net_amount { get; set; }
         public double collected_amount { get; set; }
         public double due_amount { get; set; }
@@ -295,6 +352,7 @@ namespace Booking.Models
         public string bill_nos { get; set; } = "";
         public Dictionary<string, double> net_by_category { get; set; } = new();
         public Dictionary<string, double> collected_by_category { get; set; } = new();
+        public Dictionary<string, double> collected_by_paymode { get; set; } = new();
         public double net_amount { get; set; }
         public double collected_amount { get; set; }
         public double due_amount { get; set; }

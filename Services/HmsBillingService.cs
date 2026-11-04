@@ -182,7 +182,7 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.GetAsync($"api/HmsBilling/get-bill/{guid}");
+                var response = await GetClient().GetAsync($"api/HmsBilling/get-bill/{guid}");
                 if (response.IsSuccessStatusCode)
                 {
                     return await response.Content.ReadFromJsonAsync<HmsBillResponse>();

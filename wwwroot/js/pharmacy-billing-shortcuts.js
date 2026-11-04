@@ -12,20 +12,33 @@
             }
         },
 
+        dispose: function () {
+            this.dotNetHelper = null;
+        },
+
         focusElement: function (id) {
-            setTimeout(function () {
+            function tryFocus() {
                 var el = document.getElementById(id);
                 if (el) {
                     el.focus();
                     if (typeof el.select === 'function' && el.tagName !== 'SELECT' && el.type !== 'button') {
                         el.select();
                     }
+                    return true;
                 }
-            }, 40);
+                return false;
+            }
+            if (!tryFocus()) {
+                setTimeout(tryFocus, 60);
+                setTimeout(tryFocus, 180);
+            }
         },
 
         isModalActive: function () {
-            return document.querySelector('.purchase-bill-modal') !== null;
+            return document.querySelector('.modal-card') !== null ||
+                   document.querySelector('.modal-overlay') !== null ||
+                   document.querySelector('.purchase-items-table-wrapper') !== null ||
+                   document.querySelector('.purchase-bill-modal') !== null;
         },
 
         getNavSequence: function () {
@@ -41,17 +54,17 @@
             addIfFound('sales_counter_picker');
             addIfFound('sales_type_select');
 
-            // OP / IP / Counter specific fields
-            addIfFound('sales_ip_no_input');
+            // OP / IP / Counter specific fields in natural workflow order
             addIfFound('sales_patient_input');
             addIfFound('sales_mobile_input');
             addIfFound('sales_op_no_input');
-            addIfFound('sales_address_input');
+            addIfFound('sales_ip_no_input');
             addIfFound('sales_consultant_input');
+            addIfFound('sales_address_input');
             addIfFound('sales_billdate_input');
             addIfFound('sales_store_select');
 
-            // Table rows (item, batch, qty, disc)
+            // Table rows (item, batch, days, qty, disc)
             var rows = document.querySelectorAll('.purchase-items-table-wrapper tbody tr');
             rows.forEach(function (tr, rIdx) {
                 var item = document.getElementById('item-input-' + rIdx);
@@ -59,6 +72,9 @@
 
                 var batch = document.getElementById('batch-' + rIdx);
                 if (batch && batch.offsetParent !== null && !batch.disabled) seq.push(batch);
+
+                var days = document.getElementById('days-' + rIdx);
+                if (days && days.offsetParent !== null && !days.disabled) seq.push(days);
 
                 var qty = document.getElementById('qty-' + rIdx);
                 if (qty && qty.offsetParent !== null && !qty.disabled) seq.push(qty);
@@ -73,6 +89,7 @@
             addIfFound('sales_dis_amt_input');
             addIfFound('sales_remarks_input');
             addIfFound('sales_btn_save');
+            addIfFound('sales_btn_print');
 
             return seq;
         },
@@ -105,26 +122,31 @@
         attachListeners: function () {
             var self = this;
             window.addEventListener('keydown', function (e) {
-                if (!self.isModalActive() && e.key !== 'F8' && !(e.ctrlKey && (e.key === 'n' || e.key === 'N'))) {
+                if (!self.isModalActive() && e.key !== 'F8') {
                     return;
                 }
 
-                // 1. New Bill: Ctrl+N or F8
-                if ((e.ctrlKey && (e.key === 'n' || e.key === 'N')) || e.key === 'F8') {
+                // 1. New Bill: F8 only (Ctrl+N removed)
+                if (e.key === 'F8') {
                     e.preventDefault();
                     e.stopPropagation();
                     if (self.dotNetHelper) {
-                        self.dotNetHelper.invokeMethodAsync('HandlePharmacyGlobalShortcut', 'Ctrl+N');
+                        self.dotNetHelper.invokeMethodAsync('HandlePharmacyGlobalShortcut', 'F8');
                     }
                     return;
                 }
 
-                // 2. Switch Bill Tabs: Ctrl+1, Ctrl+2, Ctrl+3
-                if (e.ctrlKey && (e.key === '1' || e.key === '2' || e.key === '3')) {
+                // 2. Switch Bill Tabs: Ctrl+1/2/3 or Alt+1/2/3
+                var isTab1 = (e.ctrlKey || e.altKey) && (e.key === '1' || e.code === 'Digit1' || e.code === 'Numpad1');
+                var isTab2 = (e.ctrlKey || e.altKey) && (e.key === '2' || e.code === 'Digit2' || e.code === 'Numpad2');
+                var isTab3 = (e.ctrlKey || e.altKey) && (e.key === '3' || e.code === 'Digit3' || e.code === 'Numpad3');
+
+                if (isTab1 || isTab2 || isTab3) {
                     e.preventDefault();
                     e.stopPropagation();
+                    var tabKey = isTab1 ? 'Ctrl+1' : (isTab2 ? 'Ctrl+2' : 'Ctrl+3');
                     if (self.dotNetHelper) {
-                        self.dotNetHelper.invokeMethodAsync('HandlePharmacyGlobalShortcut', 'Ctrl+' + e.key);
+                        self.dotNetHelper.invokeMethodAsync('HandlePharmacyGlobalShortcut', tabKey);
                     }
                     return;
                 }
@@ -133,8 +155,17 @@
                 if (e.altKey && (e.key === 'Delete' || e.key === 'Del' || e.keyCode === 46)) {
                     e.preventDefault();
                     e.stopPropagation();
+                    var act = document.activeElement;
+                    var rowIdx = -1;
+                    if (act && act.id) {
+                        var m = act.id.match(/-(\d+)$/);
+                        if (m) rowIdx = parseInt(m[1], 10);
+                    }
                     if (self.dotNetHelper) {
-                        self.dotNetHelper.invokeMethodAsync('HandlePharmacyGlobalShortcut', 'Alt+Del');
+                        try {
+                            var param = rowIdx >= 0 ? ('Alt+Del:' + rowIdx) : 'Alt+Del';
+                            self.dotNetHelper.invokeMethodAsync('HandlePharmacyGlobalShortcut', param);
+                        } catch (err) { }
                     }
                     return;
                 }
@@ -145,9 +176,8 @@
                     e.stopPropagation();
                     if (self.dotNetHelper) {
                         self.dotNetHelper.invokeMethodAsync('HandlePharmacyGlobalShortcut', 'Ctrl+E');
-                    } else {
-                        self.focusElement('sales_paymode_select');
                     }
+                    self.focusElement('sales_paymode_select');
                     return;
                 }
 
@@ -219,22 +249,26 @@
                     return;
                 }
 
-                // 12. Enter: Move to next field (when not inside special autocomplete handling or textarea)
+                // 12. Enter: Move to next field in continuous sequence
                 if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey) {
                     var act = document.activeElement;
                     if (act && act.tagName === 'TEXTAREA') return;
 
-                    // If active element is a button, like save or clear, let native/blazor onclick execute
-                    if (act && act.tagName === 'BUTTON' && act.id !== 'sales_branch_picker' && act.id !== 'sales_counter_picker') {
+                    // If active element is save button or print button, let native click trigger
+                    if (act && (act.id === 'sales_btn_save' || act.id === 'sales_btn_print')) {
                         return;
                     }
 
-                    // If inside an item search input or batch input or consultant or patient input,
-                    // let the specific Blazor @onkeydown handle selecting the active dropdown item first.
-                    // But if it's a general input or select:
+                    // Handled fields where Enter advances focus
                     if (act && (
+                        act.id === 'sales_branch_picker' ||
+                        act.id === 'sales_counter_picker' ||
                         act.id === 'sales_type_select' ||
+                        act.id === 'sales_patient_input' ||
                         act.id === 'sales_mobile_input' ||
+                        act.id === 'sales_op_no_input' ||
+                        act.id === 'sales_ip_no_input' ||
+                        act.id === 'sales_consultant_input' ||
                         act.id === 'sales_address_input' ||
                         act.id === 'sales_billdate_input' ||
                         act.id === 'sales_store_select' ||

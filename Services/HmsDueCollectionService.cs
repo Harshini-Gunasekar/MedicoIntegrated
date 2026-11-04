@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -280,46 +280,7 @@ namespace Booking.Services
                 Console.WriteLine($"[GetAllAdvancePatientsAsync] API attempt: {ex.Message}");
             }
 
-            try
-            {
-                using var conn = new Npgsql.NpgsqlConnection("Host=103.108.220.19;Port=5432;Database=medico;Username=postgres;Password=wafewin;");
-                await conn.OpenAsync();
-
-                var sql = @"
-SELECT rm.custid, 
-       COALESCE(cm.name, lrm.name, 'Patient ' || rm.custid) as patient_name,
-       COALESCE(cm.mobile, '') as mobile,
-       COALESCE(cm.city, '') as city,
-       ROUND(COALESCE(SUM(CASE WHEN ra.requestguid IS NULL THEN ra.receiptamount ELSE 0 END), 0)::numeric, 2) as total_deposited,
-       ROUND(COALESCE(SUM(CASE WHEN ra.requestguid IS NOT NULL AND rref.receipttype != 'ADVANCE_REFUND' THEN ra.receiptamount ELSE 0 END), 0)::numeric, 2) as total_used,
-       ROUND(COALESCE(SUM(CASE WHEN rref.receipttype = 'ADVANCE_REFUND' THEN ra.receiptamount ELSE 0 END), 0)::numeric, 2) as total_refunded,
-       MAX(rm.receiptdate) as last_deposit_date
-FROM receipt_master rm
-LEFT JOIN receipt_advances ra ON rm.receiptguid = ra.receiptguid AND COALESCE(ra.deleted, false) = false
-LEFT JOIN receipt_master rref ON rref.receiptguid = ra.requestguid AND rref.receipttype = 'ADVANCE_REFUND'
-LEFT JOIN customerdb.customer_master cm ON cm.custid::numeric = rm.custid
-LEFT JOIN LATERAL (
-    SELECT name FROM lab_request_master 
-    WHERE custid = rm.custid AND COALESCE(isdeleted, false) = false 
-    ORDER BY requestdatetime DESC LIMIT 1
-) lrm ON true
-WHERE rm.receipttype = 'ADVANCE'
-  AND COALESCE(rm.isdeleted, false) = false
-GROUP BY rm.custid, cm.name, lrm.name, cm.mobile, cm.city
-ORDER BY MAX(rm.receiptdate) DESC";
-
-                var list = (await Dapper.SqlMapper.QueryAsync<HmsAdvancePatientItem>(conn, sql)).ToList();
-                foreach (var item in list)
-                {
-                    item.available_balance = Math.Round(Math.Max(item.total_deposited - item.total_used - item.total_refunded, 0), 2);
-                }
-                return list;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[GetAllAdvancePatientsAsync] DB fallback failed: {ex.Message}");
-                return new List<HmsAdvancePatientItem>();
-            }
+            return new List<HmsAdvancePatientItem>();
         }
 
         public async Task<(bool success, string message, HmsAdvanceCancelResponse? data)> CancelAdvanceAsync(HmsAdvanceCancelRequest request)
@@ -334,130 +295,24 @@ ORDER BY MAX(rm.receiptdate) DESC";
                     {
                         return (true, res.message ?? "Advance receipt cancelled successfully.", res.data);
                     }
+                    return (true, res?.message ?? "Advance receipt cancelled successfully.", null);
                 }
-                else if (response.StatusCode == System.Net.HttpStatusCode.BadRequest)
+                else
                 {
                     var err = await response.Content.ReadFromJsonAsync<HmsAdvanceCancelResponseWrapper>();
                     if (!string.IsNullOrWhiteSpace(err?.message))
                     {
                         return (false, err.message, null);
                     }
+                    return (false, $"Cancellation failed with status {response.StatusCode}", null);
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[CancelAdvanceAsync] API attempt: {ex.Message}");
-            }
-
-            try
-            {
-                using var conn = new Npgsql.NpgsqlConnection("Host=103.108.220.19;Port=5432;Database=medico;Username=postgres;Password=wafewin;");
-                await conn.OpenAsync();
-                using var tx = await conn.BeginTransactionAsync();
-
-                var receipt = await Dapper.SqlMapper.QueryFirstOrDefaultAsync<dynamic>(
-                    conn,
-                    @"SELECT receiptguid, receiptsnoprint, custid, receiptamount, receipttype, tenant_code
-                        FROM receipt_master
-                       WHERE receiptguid = @rg
-                         AND COALESCE(isdeleted, false) = false",
-                    new { rg = request.receiptguid }, tx);
-
-                if (receipt == null)
-                {
-                    await tx.RollbackAsync();
-                    return (false, "Receipt not found or already cancelled.", null);
-                }
-
-                decimal custid = (decimal)receipt.custid;
-                double receiptAmount = (double)receipt.receiptamount;
-                string receiptType = ((string)receipt.receipttype)?.ToUpperInvariant() ?? "ADVANCE";
-                string receiptNo = (string)receipt.receiptsnoprint;
-
-                var summaryBefore = await GetPatientAdvanceSummaryAsync(custid);
-                double balanceBefore = summaryBefore?.available_balance ?? 0;
-
-                if (receiptType == "ADVANCE")
-                {
-                    var usedAmount = await Dapper.SqlMapper.ExecuteScalarAsync<double>(
-                        conn,
-                        @"SELECT COALESCE(SUM(receiptamount), 0)
-                            FROM receipt_advances
-                           WHERE receiptguid = @rg
-                             AND requestguid IS NOT NULL
-                             AND COALESCE(deleted, false) = false",
-                        new { rg = request.receiptguid }, tx);
-
-                    if (usedAmount > 0)
-                    {
-                        await tx.RollbackAsync();
-                        return (false, $"Cannot cancel advance receipt {receiptNo} because ₹{usedAmount:N2} has already been adjusted against bills. Please cancel or revert those bill payments first.", null);
-                    }
-
-                    await Dapper.SqlMapper.ExecuteAsync(
-                        conn,
-                        @"UPDATE receipt_master SET isdeleted = true, deleted = true WHERE receiptguid = @rg",
-                        new { rg = request.receiptguid }, tx);
-
-                    await Dapper.SqlMapper.ExecuteAsync(
-                        conn,
-                        @"UPDATE receipt_advances SET deleted = true WHERE receiptguid = @rg",
-                        new { rg = request.receiptguid }, tx);
-
-                    await Dapper.SqlMapper.ExecuteAsync(
-                        conn,
-                        @"UPDATE balancecollectionby SET deleted = true WHERE receipt_guid = @rg",
-                        new { rg = request.receiptguid }, tx);
-                }
-                else if (receiptType == "ADVANCE_REFUND")
-                {
-                    await Dapper.SqlMapper.ExecuteAsync(
-                        conn,
-                        @"UPDATE receipt_master SET isdeleted = true, deleted = true WHERE receiptguid = @rg",
-                        new { rg = request.receiptguid }, tx);
-
-                    await Dapper.SqlMapper.ExecuteAsync(
-                        conn,
-                        @"UPDATE receipt_advances SET deleted = true WHERE requestguid = @rg",
-                        new { rg = request.receiptguid }, tx);
-
-                    await Dapper.SqlMapper.ExecuteAsync(
-                        conn,
-                        @"UPDATE balancecollectionby SET deleted = true WHERE receipt_guid = @rg",
-                        new { rg = request.receiptguid }, tx);
-                }
-                else
-                {
-                    await tx.RollbackAsync();
-                    return (false, $"Cannot cancel receipt with type '{receiptType}'. Only ADVANCE and ADVANCE_REFUND can be cancelled.", null);
-                }
-
-                await tx.CommitAsync();
-
-                double balanceAfter = receiptType == "ADVANCE"
-                    ? Math.Round(Math.Max(balanceBefore - receiptAmount, 0), 2)
-                    : Math.Round(balanceBefore + receiptAmount, 2);
-
-                var cancelResponse = new HmsAdvanceCancelResponse
-                {
-                    receipt_guid = request.receiptguid,
-                    receipt_no = receiptNo,
-                    custid = custid,
-                    cancelled_amount = receiptAmount,
-                    advance_balance_before = balanceBefore,
-                    advance_balance_after = balanceAfter,
-                    cancelled_date = DateTime.Now
-                };
-
-                return (true, $"Advance receipt {receiptNo} cancelled successfully.", cancelResponse);
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[CancelAdvanceAsync] DB fallback failed: {ex.Message}");
                 return (false, $"Cancellation error: {ex.Message}", null);
             }
         }
-
         public async Task<HmsAdvanceReceiptResponse?> RefundAdvanceAsync(HmsAdvanceRefundRequest request)
         {
             try
