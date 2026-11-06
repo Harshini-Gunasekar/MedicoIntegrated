@@ -11,6 +11,7 @@ namespace Booking.Models
         public DateTime? fromdate { get; set; }
         public DateTime? todate { get; set; }
         public decimal? custid { get; set; }
+        public string? custcode { get; set; }
         public int? dcode { get; set; }
         public bool? pendingonly { get; set; }
         public bool? iscashbill { get; set; }
@@ -67,6 +68,7 @@ namespace Booking.Models
         public string? barcode { get; set; }
         public DateTime? bill_date { get; set; }
         public decimal? custid { get; set; }
+        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public string? gender { get; set; }
         public string? mobileno { get; set; }

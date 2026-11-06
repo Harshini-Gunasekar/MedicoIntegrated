@@ -33,6 +33,7 @@ namespace Booking.Models
         public decimal unitcost { get; set; }
         public decimal stockvalue { get; set; }
         public decimal mrpunit { get; set; }
+        public decimal mrp { get => mrpunit; set { if (value > 0) mrpunit = value; } }
 
         public string? batchno { get; set; }
         public DateTime? manufacturingdate { get; set; }

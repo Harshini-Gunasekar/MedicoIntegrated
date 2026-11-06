@@ -61,6 +61,7 @@ namespace Booking.Models
             DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
 
         public string? patient_name { get; set; }
+        public string? custcode { get; set; }
         public string? mobile { get; set; }
 
         [JsonConverter(typeof(FlexibleNullableBoolConverter))]
@@ -312,6 +313,7 @@ namespace Booking.Models
         public string? op_no { get; set; }
         public decimal custid { get; set; }
         public string? patient_name { get; set; }
+        public string? custcode { get; set; }
         public int dcode { get; set; }
 
         [JsonConverter(typeof(FlexibleDateOnlyConverter))]

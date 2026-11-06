@@ -203,6 +203,7 @@ builder.Services.AddScoped<MedicoAi.Services.MedicoApiService>();
 builder.Services.AddScoped<MedicoAi.Services.VitalsSignalRService>();
 builder.Services.AddScoped<MedicoAi.Services.OllamaAiService>();
 builder.Services.AddSingleton<Booking.Services.NetworkInfoService>();
+builder.Services.AddSingleton<Booking.Services.PatientUhidService>();
 builder.Services.AddScoped<LabCare.Services.TestService>(sp =>
 {
     var client = sp.GetRequiredService<IHttpClientFactory>().CreateClient("DoctorApi");

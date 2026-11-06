@@ -10,6 +10,7 @@ namespace Booking.Models
         public Guid? ip_id { get; set; }
         public string? sheet_id { get; set; }
         public decimal custid { get; set; }
+        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public string? gender { get; set; }
         public string? dateofbirth { get; set; } // YYYY-MM-DD
@@ -106,6 +107,7 @@ namespace Booking.Models
         public string? item_name { get; set; }
         public string? particulars { get; set; }
         public decimal? custid { get; set; }
+        public string? custcode { get; set; }
         public string? opvisitid { get; set; }
         public Guid? ip_id { get; set; }
         public int? bedcode { get; set; }
@@ -118,6 +120,7 @@ namespace Booking.Models
     {
         public string op_id { get; set; } = string.Empty;
         public decimal custid { get; set; }
+        public string? custcode { get; set; }
         public int? tcode { get; set; }
         public double rate { get; set; }
         public double amount { get; set; }
@@ -348,6 +351,7 @@ namespace Booking.Models
         public string? token_no { get; set; }
         public DateTime? visit_date { get; set; }
         public decimal? custid { get; set; }
+        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public string bill_nos { get; set; } = "";
         public Dictionary<string, double> net_by_category { get; set; } = new();
@@ -383,6 +387,7 @@ namespace Booking.Models
         public DateTime? visit_date { get; set; }
         public string? patient_name { get; set; }
         public decimal? custid { get; set; }
+        public string? custcode { get; set; }
         public string requestguid { get; set; } = "";
         public string? bill_no { get; set; }
         public string? item_name { get; set; }

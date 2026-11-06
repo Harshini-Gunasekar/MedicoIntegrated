@@ -10,6 +10,7 @@
 @inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage _sessionStorage
 @inject Booking.Services.WalkinStateService WalkinStateSvc
 @inject Booking.Services.RoleMasterService RoleService
+@inject Booking.Services.PatientUhidService UhidService
 @implements IDisposable
 @using Booking.Helpers
 @using Booking.Models
@@ -249,7 +250,7 @@
                                             }
                                         }
                                     </td>
-                                    <td><span class="badge bg-light text-dark border font-mono">@(book.custid > 0 ? book.custid.ToString() : "-")</span></td>
+                                    <td><span class="badge bg-light text-dark border font-mono">@GetPatientUhid(book)</span></td>
                                     <td><span class="patient-phone-val">@GetPatientPhone(book)</span></td>
                                     <td class="doctor-name-val">Dr. @GetDoctorName(book.dcode)</td>
                                     @if (labSetting.is_slot_required != false)
@@ -421,12 +422,12 @@
                                              @onclick="() => SelectCustomerPatient(pat)"
                                              @onmouseover="() => activePatientIndex = patIdx">
                                             <div>
-                                                <span style="font-weight: 600; color: #0f172a;">@pat.name (CUST-@pat.custid)</span>
+                                                <span style="font-weight: 600; color: #0f172a;">@pat.name (@GetPatientSearchUhid(pat))</span>
                                                 <div style="font-size: 0.8em; color: #64748b;">
                                                     📞 @pat.mobile
                                                 </div>
                                             </div>
-                                            <span class="autocomplete-code">@pat.custcode</span>
+                                            <span class="autocomplete-code">@GetPatientSearchUhid(pat)</span>
                                         </div>
                                     }
                                 </div>
@@ -638,7 +639,7 @@
                 <div style="display: flex; flex-direction: column; gap: 1.25rem;">
                     <div class="reschedule-original-summary" style="margin-bottom: 0; padding: 1.25rem; border-radius: 10px; background: #f8fafc; border: 1px solid #e2e8f0; display:flex; flex-direction:column; justify-content:center;">
                         <div style="font-weight:800; text-transform:uppercase; font-size:0.75rem; margin-bottom:0.6rem; color:#475569; border-bottom:1px solid #cbd5e1; padding-bottom:0.25rem; letter-spacing: 0.5px;">Original Slot</div>
-                        <div style="font-size:0.85rem; margin-bottom:0.3rem;">UHID: <b>@selectedBookingToReschedule?.custid</b></div>
+                        <div style="font-size:0.85rem; margin-bottom:0.3rem;">UHID: <b>@GetPatientUhid(selectedBookingToReschedule)</b></div>
                         <div style="font-size:0.85rem; margin-bottom:0.3rem;">Doctor: <b>Dr. @GetDoctorName(selectedBookingToReschedule!.dcode)</b></div>
                         <div style="font-size:0.85rem; line-height: 1.4;">Time: <b>@selectedBookingToReschedule.appointment_date.ToString("dd MMM yyyy")</b><br/><b>@FormatTime(selectedBookingToReschedule.slot_start_time) - @FormatTime(selectedBookingToReschedule.slot_end_time)</b></div>
                     </div>
@@ -1265,6 +1266,10 @@
                 }
 
                 searchedPatients = list.Take(10).ToList();
+                if (searchedPatients.Any())
+                {
+                    await UhidService.EnrichCustomersAsync(searchedPatients, TenantState?.TenantCode);
+                }
                 showPatientDropdown = searchedPatients.Count > 0;
                 activePatientIndex = -1;
             }
@@ -1344,7 +1349,8 @@
     private void SelectCustomerPatient(SharedComponents.Rcl.Models.CustomerModel pat)
     {
         walkinCustid = pat.custid;
-        patientSearchQuery = $"{pat.name} (CUST-{pat.custid})";
+        string resolvedUhid = UhidService.GetUhid(pat.custid, pat.custcode, TenantState?.TenantCode);
+        patientSearchQuery = $"{pat.name} ({resolvedUhid})";
         showPatientDropdown = false;
         activePatientIndex = -1;
         _ = SaveWalkinDraftAsync();
@@ -1497,14 +1503,14 @@
     {
         if (!string.IsNullOrWhiteSpace(book.patient_name)) return book.patient_name;
         var pat = allCustomers.FirstOrDefault(c => c.custid == book.custid);
-        if (pat == null) return $"CUST-{book.custid}";
+        if (pat == null) return UhidService.GetUhid(book.custid, null, TenantState?.TenantCode);
         return string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials;
     }
 
     private string GetPatientName(decimal custid)
     {
         var pat = allCustomers.FirstOrDefault(c => c.custid == custid);
-        if (pat == null) return $"CUST-{custid}";
+        if (pat == null) return UhidService.GetUhid(custid, null, TenantState?.TenantCode);
         return string.IsNullOrEmpty(pat.namewithinitials) ? pat.name : pat.namewithinitials;
     }
 
@@ -2648,5 +2654,44 @@
         {
             bookingInProgress = false;
         }
+    }
+
+    private string GetPatientSearchUhid(SharedComponents.Rcl.Models.CustomerModel? pat)
+    {
+        if (pat == null) return "-";
+        var cleanDirect = PatientUhidService.CleanUhid(pat.tenantcustcode) ?? PatientUhidService.CleanUhid(pat.custcode);
+        if (!string.IsNullOrWhiteSpace(cleanDirect)) return cleanDirect;
+
+        var uhid = UhidService.GetUhid(pat.custid, pat.custcode, TenantState?.TenantCode);
+        var cleanUhid = PatientUhidService.CleanUhid(uhid);
+        if (!string.IsNullOrWhiteSpace(cleanUhid)) return cleanUhid;
+
+        return "-";
+    }
+
+    private string GetPatientUhid(AppointmentBookingModel? book)
+    {
+        if (book == null) return "-";
+        var cleanDirect = PatientUhidService.CleanUhid(book.custcode);
+        if (!string.IsNullOrWhiteSpace(cleanDirect))
+            return cleanDirect;
+
+        if (book.custid > 0)
+        {
+            var uhid = UhidService.GetUhid(book.custid, book.custcode, TenantState?.TenantCode);
+            var cleanUhid = PatientUhidService.CleanUhid(uhid);
+            if (!string.IsNullOrWhiteSpace(cleanUhid))
+                return cleanUhid;
+
+            var pat = allCustomers.FirstOrDefault(c => c.custid == book.custid);
+            if (pat != null)
+            {
+                var c1 = PatientUhidService.CleanUhid(pat.custcode);
+                if (!string.IsNullOrWhiteSpace(c1)) return c1;
+                var c2 = PatientUhidService.CleanUhid(pat.tenantcustcode);
+                if (!string.IsNullOrWhiteSpace(c2)) return c2;
+            }
+        }
+        return "-";
     }
 }

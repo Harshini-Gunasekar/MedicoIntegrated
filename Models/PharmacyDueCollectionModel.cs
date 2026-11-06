@@ -26,6 +26,9 @@ namespace Booking.Models
         [JsonPropertyName("patientid")]
         public string? patientid { get; set; }
 
+        [JsonPropertyName("custcode")]
+        public string? custcode { get; set; }
+
         [JsonPropertyName("patientname")]
         public string? patientname { get; set; }
 
@@ -176,6 +179,9 @@ namespace Booking.Models
         [JsonPropertyName("patientid")]
         public string? patientid { get; set; }
 
+        [JsonPropertyName("custcode")]
+        public string? custcode { get; set; }
+
         [JsonPropertyName("patientname")]
         public string? patientname { get; set; }
 
@@ -216,6 +222,9 @@ namespace Booking.Models
 
         [JsonPropertyName("patientid")]
         public string? patientid { get; set; }
+
+        [JsonPropertyName("custcode")]
+        public string? custcode { get; set; }
 
         [JsonPropertyName("mobileno")]
         public string? mobileno { get; set; }
@@ -299,6 +308,9 @@ namespace Booking.Models
 
         [JsonPropertyName("patientid")]
         public string? patientid { get; set; }
+
+        [JsonPropertyName("custcode")]
+        public string? custcode { get; set; }
 
         [JsonPropertyName("patientname")]
         public string? patientname { get; set; }

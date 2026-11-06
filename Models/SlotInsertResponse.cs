@@ -8,4 +8,10 @@ namespace Booking.Models
         public List<string> skipped { get; set; } = new();
         public List<object> failed { get; set; } = new();
     }
+
+    public class SlotUpdateResponse
+    {
+        public List<object> updated { get; set; } = new();
+        public List<object> failed { get; set; } = new();
+    }
 }
