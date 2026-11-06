@@ -2,6 +2,7 @@
 @page "/sales"
 @using Booking.Models
 @using medico_backend.Model
+@using static medico_backend.Model.IpBedsideChartModel
 @using Medico_Backend.Model
 @using System.Net.Http.Json
 @using System.Text.Json
@@ -22,6 +23,7 @@
 @inject Booking.Services.CounterMasterService CounterMasterService
 @inject Booking.Services.HmsBillingService HmsBillingService
 @inject LabCare.Services.UserService UserService
+@inject Booking.Services.NurseNotesService NurseNotesService
 @inject IConfiguration Configuration
 @implements IDisposable
 
@@ -2030,6 +2032,14 @@
                                         {
                                             <span> | Dosage: <strong style="color: #475569;">@item.Dosage</strong></span>
                                         }
+                                        @if (!string.IsNullOrWhiteSpace(item.BatchNo))
+                                        {
+                                            <span> | Batch: <strong style="color: #059669; font-weight: 700;">@item.BatchNo</strong></span>
+                                        }
+                                        @if (item.ExpiryDate.HasValue)
+                                        {
+                                            <span> | Exp: <strong style="color: #059669;">@item.ExpiryDate.Value.ToString("MM/yy")</strong></span>
+                                        }
                                     </div>
                                     @if (!string.IsNullOrWhiteSpace(item.Instructions))
                                     {
@@ -2295,6 +2305,7 @@
     private List<OPRegistrationModel.OpRegistrationModel> OpRegistrationList = new();
     private List<IPRegistrationModel.IpRegistrationModel> IpRegistrationList = new();
     private List<DoctorMasterModel> DoctorList = new();
+    private Guid? CurrentIpId = null;
 
     public class PendingPrescriptionDisplayItem
     {
@@ -2634,6 +2645,169 @@
         }
 
         return false;
+    }
+
+    private Guid? ResolvePatientIpId(long custId)
+    {
+        if (CurrentIpId.HasValue && CurrentIpId.Value != Guid.Empty)
+        {
+            return CurrentIpId.Value;
+        }
+
+        var pid = CurrentRequest?.master?.patientid ?? PatientIdSearchText;
+        if (!string.IsNullOrWhiteSpace(pid))
+        {
+            var cleanPid = pid.Trim();
+            var ip = IpRegistrationList
+                .Where(i => !i.isdeleted && (string.Equals(i.ip_no?.Trim(), cleanPid, StringComparison.OrdinalIgnoreCase) || i.custid.ToString() == cleanPid))
+                .OrderByDescending(i => i.dischargedate == null)
+                .ThenByDescending(i => i.admitdate)
+                .FirstOrDefault();
+            if (ip != null && ip.ip_id != Guid.Empty)
+            {
+                CurrentIpId = ip.ip_id;
+                return ip.ip_id;
+            }
+        }
+
+        if (custId > 0)
+        {
+            var ip = IpRegistrationList
+                .Where(i => !i.isdeleted && (long)i.custid == custId)
+                .OrderByDescending(i => i.dischargedate == null)
+                .ThenByDescending(i => i.admitdate)
+                .FirstOrDefault();
+            if (ip != null && ip.ip_id != Guid.Empty)
+            {
+                CurrentIpId = ip.ip_id;
+                return ip.ip_id;
+            }
+        }
+
+        var mob = CurrentRequest?.master?.mobileno ?? PatientMobileSearchText;
+        if (!string.IsNullOrWhiteSpace(mob))
+        {
+            var cleanMob = mob.Trim();
+            var ip = IpRegistrationList
+                .Where(i => !i.isdeleted && !string.IsNullOrWhiteSpace(i.mobile) && i.mobile.Trim() == cleanMob)
+                .OrderByDescending(i => i.dischargedate == null)
+                .ThenByDescending(i => i.admitdate)
+                .FirstOrDefault();
+            if (ip != null && ip.ip_id != Guid.Empty)
+            {
+                CurrentIpId = ip.ip_id;
+                return ip.ip_id;
+            }
+        }
+
+        var pName = CurrentRequest?.master?.patientname ?? PatientNameSearchText;
+        if (!string.IsNullOrWhiteSpace(pName))
+        {
+            var cleanName = pName.Split('(')[0].Trim();
+            var ip = IpRegistrationList
+                .Where(i => !i.isdeleted && !string.IsNullOrWhiteSpace(i.patient_name) && string.Equals(i.patient_name.Trim(), cleanName, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(i => i.dischargedate == null)
+                .ThenByDescending(i => i.admitdate)
+                .FirstOrDefault();
+            if (ip != null && ip.ip_id != Guid.Empty)
+            {
+                CurrentIpId = ip.ip_id;
+                return ip.ip_id;
+            }
+        }
+
+        return null;
+    }
+
+    private bool IsNurseMedBilled(NurseMedicineModel med, long custId)
+    {
+        if (med == null) return true;
+        if (med.isdeleted) return true;
+        if (string.Equals(med.status, "BILLED", StringComparison.OrdinalIgnoreCase)) return true;
+        if (med.med_id != Guid.Empty && BilledPrDetIds.Contains(med.med_id)) return true;
+
+        long itemCode = med.drug_code.HasValue ? (long)med.drug_code.Value : 0;
+        if (IsItemBilledForPatient(custId, CurrentRequest?.master?.patientid ?? PatientIdSearchText, CurrentRequest?.master?.patientname ?? PatientNameSearchText, itemCode, med.medicine_name, null, med.med_id, med.created_at))
+        {
+            return true;
+        }
+
+        return false;
+    }
+
+    private void AddNurseMedToPendingPrescriptions(NurseMedicineModel nm)
+    {
+        if (nm == null) return;
+        long itemCode = nm.drug_code.HasValue ? (long)nm.drug_code.Value : 0;
+        string drugName = !string.IsNullOrWhiteSpace(nm.medicine_name) ? nm.medicine_name : "Medicine";
+
+        var matchedItem = ItemList.FirstOrDefault(i => (itemCode > 0 && i.itemcode == itemCode) ||
+            string.Equals(i.itemname, drugName, StringComparison.OrdinalIgnoreCase) ||
+            (!string.IsNullOrWhiteSpace(i.itemname) && i.itemname.Trim().Equals(drugName.Trim(), StringComparison.OrdinalIgnoreCase)));
+
+        if (matchedItem == null && drugName.Length >= 3)
+        {
+            matchedItem = ItemList.FirstOrDefault(i => i.itemname != null && i.itemname.Contains(drugName, StringComparison.OrdinalIgnoreCase));
+        }
+
+        if (matchedItem != null && itemCode == 0)
+        {
+            itemCode = matchedItem.itemcode;
+        }
+
+        decimal unitMrp = matchedItem != null ? GetItemUnitMrp(matchedItem) : (nm.mrp ?? nm.rate ?? 0);
+        bool isTab = IsTabletItem(itemCode, drugName);
+
+        string mDose = !string.IsNullOrWhiteSpace(nm.morning_dose) ? nm.morning_dose : (!string.IsNullOrWhiteSpace(nm.morning) ? nm.morning : "0");
+        string aDose = !string.IsNullOrWhiteSpace(nm.afternoon_dose) ? nm.afternoon_dose : (!string.IsNullOrWhiteSpace(nm.afternoon) ? nm.afternoon : "0");
+        string eDose = !string.IsNullOrWhiteSpace(nm.evening_dose) ? nm.evening_dose : (!string.IsNullOrWhiteSpace(nm.evening) ? nm.evening : "0");
+        string nDose = !string.IsNullOrWhiteSpace(nm.night_dose) ? nm.night_dose : (!string.IsNullOrWhiteSpace(nm.night) ? nm.night : "0");
+        decimal dailyDose = CalculateDailyDose(mDose, aDose, eDose, nDose);
+
+        int itemDays = nm.days.HasValue && nm.days.Value > 0 ? nm.days.Value : 1;
+        decimal finalQty = nm.quantity > 0 ? nm.quantity : (nm.dose.HasValue && nm.dose.Value > 0 ? nm.dose.Value : 1);
+        if (finalQty <= 0)
+        {
+            finalQty = isTab ? CalculatePrescriptionQuantity(true, dailyDose, itemDays) : 1;
+        }
+        decimal estimatedAmt = unitMrp * finalQty;
+
+        var dosageParts = new List<string>();
+        if (!string.IsNullOrWhiteSpace(mDose) && mDose != "0") dosageParts.Add($"M: {mDose}");
+        if (!string.IsNullOrWhiteSpace(aDose) && aDose != "0") dosageParts.Add($"A: {aDose}");
+        if (!string.IsNullOrWhiteSpace(eDose) && eDose != "0") dosageParts.Add($"E: {eDose}");
+        if (!string.IsNullOrWhiteSpace(nDose) && nDose != "0") dosageParts.Add($"N: {nDose}");
+        string dosageStr = string.Join(", ", dosageParts);
+
+        var bNo = !string.IsNullOrWhiteSpace(nm.batch_no) ? nm.batch_no : nm.batchno;
+        if (bNo == "-") bNo = null;
+
+        PendingPrescriptions.Add(new PendingPrescriptionDisplayItem
+        {
+            DrugName = drugName,
+            MatchedItemCode = itemCode > 0 ? itemCode : null,
+            MatchedItemName = matchedItem?.itemname ?? drugName,
+            ItemTypeName = GetItemTypeName(matchedItem),
+            Qty = finalQty,
+            Days = itemDays,
+            Duration = itemDays.ToString(),
+            Dosage = !string.IsNullOrWhiteSpace(dosageStr) ? dosageStr : null,
+            Morning = mDose,
+            Afternoon = aDose,
+            Evening = eDose,
+            Night = nDose,
+            Instructions = !string.IsNullOrWhiteSpace(nm.notes) ? nm.notes : (!string.IsNullOrWhiteSpace(nm.remarks) ? nm.remarks : null),
+            EstimatedRate = unitMrp,
+            EstimatedAmount = estimatedAmt,
+            Date = nm.created_at,
+            PrDetId = nm.med_id,
+            BatchNo = bNo,
+            ExpiryDate = nm.batch_expiry_date,
+            StockCode = nm.stockcode,
+            WarehouseCode = nm.warehousecode,
+            Source = "Nurse Notes",
+            IsAdded = IsPrescriptionItemInGrid(itemCode, null, drugName, nm.med_id)
+        });
     }
 
     private async Task SaveBilledPrescriptionsToSessionAsync()
@@ -4341,6 +4515,7 @@
 
     private async Task SelectIpPatient(IPRegistrationModel.IpRegistrationModel ip)
     {
+        CurrentIpId = ip.ip_id;
         CurrentRequest.master.patientid = !string.IsNullOrWhiteSpace(ip.ip_no) ? ip.ip_no : ip.custid.ToString();
         CurrentRequest.master.patientname = FormatPatientNameWithAgeGender(ip.patient_name, (long)ip.custid);
         CurrentRequest.master.customername = CurrentRequest.master.patientname;
@@ -4638,6 +4813,30 @@
 
             await HydratePatientSavedSalesAsync(custId, CurrentRequest?.master?.patientid ?? PatientIdSearchText, CurrentRequest?.master?.patientname ?? PatientNameSearchText);
 
+            // 0. Fetch Nurse Notes medicines for IP admissions so batch numbers are always retrieved
+            Guid? ipId = ResolvePatientIpId(custId);
+            List<NurseMedicineModel>? nurseMeds = null;
+            if (ipId.HasValue && ipId.Value != Guid.Empty && NurseNotesService != null)
+            {
+                try
+                {
+                    var effTenant = !string.IsNullOrWhiteSpace(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? "0010");
+                    nurseMeds = await NurseNotesService.GetMedicinesAsync(ipId.Value, effTenant, 1);
+                    if (nurseMeds == null || !nurseMeds.Any())
+                    {
+                        var summary = await NurseNotesService.GetSummaryAsync(ipId.Value, effTenant, 1);
+                        if (summary?.medicine != null && summary.medicine.Any())
+                        {
+                            nurseMeds = summary.medicine;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[SalesMaster] Error fetching nurse notes medicines for IP {ipId}: {ex.Message}");
+                }
+            }
+
             List<PharmacyPrescriptionQueueRow>? rows = null;
 
             // 1. Try fetching from pharmacy queue with standard tenant headers
@@ -4739,6 +4938,55 @@
                     if (!string.IsNullOrWhiteSpace(nDose) && nDose != "0") dosageParts.Add($"N: {nDose}");
                     string dosageStr = string.Join(", ", dosageParts);
 
+                    string? rowBatch = !string.IsNullOrWhiteSpace(row.batch_no) ? row.batch_no : row.batchno;
+                    DateTime? rowExpiry = row.batch_expiry_date;
+                    long? rowStockCode = row.stockcode;
+                    long? rowWarehouseCode = row.warehousecode;
+
+                    // Fetch/enrich batch from Nurse Notes
+                    if (nurseMeds != null && nurseMeds.Any())
+                    {
+                        var matchedNurseMed = nurseMeds.FirstOrDefault(nm =>
+                            !nm.isdeleted &&
+                            !string.Equals(nm.status, "BILLED", StringComparison.OrdinalIgnoreCase) &&
+                            !string.IsNullOrWhiteSpace(nm.batch_no ?? nm.batchno) &&
+                            (nm.batch_no ?? nm.batchno) != "-" &&
+                            (
+                                (row.pr_det_id.HasValue && row.pr_det_id.Value != Guid.Empty && nm.med_id == row.pr_det_id.Value) ||
+                                (row.matched_itemcode.HasValue && row.matched_itemcode.Value > 0 && nm.drug_code.HasValue && (long)nm.drug_code.Value == row.matched_itemcode.Value) ||
+                                (itemCode > 0 && nm.drug_code.HasValue && (long)nm.drug_code.Value == itemCode) ||
+                                (!string.IsNullOrWhiteSpace(row.drug_name) && !string.IsNullOrWhiteSpace(nm.medicine_name) && string.Equals(row.drug_name.Trim(), nm.medicine_name.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrWhiteSpace(row.matched_itemname) && !string.IsNullOrWhiteSpace(nm.medicine_name) && string.Equals(row.matched_itemname.Trim(), nm.medicine_name.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                                (!string.IsNullOrWhiteSpace(drugName) && !string.IsNullOrWhiteSpace(nm.medicine_name) && string.Equals(drugName.Trim(), nm.medicine_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                            )
+                        );
+
+                        if (matchedNurseMed != null)
+                        {
+                            var nb = !string.IsNullOrWhiteSpace(matchedNurseMed.batch_no) ? matchedNurseMed.batch_no : matchedNurseMed.batchno;
+                            if (!string.IsNullOrWhiteSpace(nb) && nb != "-")
+                            {
+                                rowBatch = nb;
+                            }
+                            if (matchedNurseMed.batch_expiry_date.HasValue)
+                            {
+                                rowExpiry = matchedNurseMed.batch_expiry_date.Value;
+                            }
+                            if (matchedNurseMed.stockcode.HasValue && matchedNurseMed.stockcode.Value > 0)
+                            {
+                                rowStockCode = matchedNurseMed.stockcode.Value;
+                            }
+                            if (matchedNurseMed.warehousecode.HasValue && matchedNurseMed.warehousecode.Value > 0)
+                            {
+                                rowWarehouseCode = matchedNurseMed.warehousecode.Value;
+                            }
+                            if (!row.pr_det_id.HasValue || row.pr_det_id.Value == Guid.Empty)
+                            {
+                                row.pr_det_id = matchedNurseMed.med_id;
+                            }
+                        }
+                    }
+
                     PendingPrescriptions.Add(new PendingPrescriptionDisplayItem
                     {
                         DrugName = drugName,
@@ -4759,14 +5007,34 @@
                         Date = row.created_at,
                         QueueId = row.queue_id,
                         PrDetId = row.pr_det_id,
-                        BatchNo = !string.IsNullOrWhiteSpace(row.batch_no) ? row.batch_no : row.batchno,
-                        ExpiryDate = row.batch_expiry_date,
-                        StockCode = row.stockcode,
-                        WarehouseCode = row.warehousecode,
+                        BatchNo = rowBatch,
+                        ExpiryDate = rowExpiry,
+                        StockCode = rowStockCode,
+                        WarehouseCode = rowWarehouseCode,
                         Source = "Pharmacy Queue",
                         RawQueueRow = row,
                         IsAdded = IsPrescriptionItemInGrid(itemCode, row.queue_id, drugName, row.pr_det_id)
                     });
+                }
+
+                // Also append any unbilled Nurse Notes medicines not returned by pharmacy queue
+                if (nurseMeds != null && nurseMeds.Any())
+                {
+                    var unbilledNurseMeds = nurseMeds.Where(nm =>
+                        !nm.isdeleted &&
+                        !string.Equals(nm.status, "BILLED", StringComparison.OrdinalIgnoreCase) &&
+                        !IsNurseMedBilled(nm, custId) &&
+                        !PendingPrescriptions.Any(p =>
+                            (p.PrDetId.HasValue && p.PrDetId.Value == nm.med_id) ||
+                            (nm.drug_code.HasValue && nm.drug_code.Value > 0 && p.MatchedItemCode.HasValue && p.MatchedItemCode.Value == (long)nm.drug_code.Value) ||
+                            (!string.IsNullOrWhiteSpace(nm.medicine_name) && string.Equals(p.DrugName?.Trim(), nm.medicine_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                        )
+                    ).ToList();
+
+                    foreach (var nm in unbilledNurseMeds)
+                    {
+                        AddNurseMedToPendingPrescriptions(nm);
+                    }
                 }
 
                 StateHasChanged();
@@ -4864,6 +5132,52 @@
                             if (!string.IsNullOrWhiteSpace(nDose) && nDose != "0") dosageParts.Add($"N: {nDose}");
                             string dosageStr = string.Join(", ", dosageParts);
 
+                            string? csBatch = !string.IsNullOrWhiteSpace(item.batchno) ? item.batchno : item.batch_no;
+                            DateTime? csExpiry = item.batch_expiry_date;
+                            long? csStockCode = item.stockcode;
+                            long? csWarehouseCode = item.warehousecode;
+
+                            // Fetch/enrich batch from Nurse Notes
+                            if (nurseMeds != null && nurseMeds.Any())
+                            {
+                                var matchedNurseMed = nurseMeds.FirstOrDefault(nm =>
+                                    !nm.isdeleted &&
+                                    !string.Equals(nm.status, "BILLED", StringComparison.OrdinalIgnoreCase) &&
+                                    !string.IsNullOrWhiteSpace(nm.batch_no ?? nm.batchno) &&
+                                    (nm.batch_no ?? nm.batchno) != "-" &&
+                                    (
+                                        (item.pr_det_id != Guid.Empty && nm.med_id == item.pr_det_id) ||
+                                        (itemCode > 0 && nm.drug_code.HasValue && (long)nm.drug_code.Value == itemCode) ||
+                                        (!string.IsNullOrWhiteSpace(drugName) && !string.IsNullOrWhiteSpace(nm.medicine_name) && string.Equals(drugName.Trim(), nm.medicine_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                                    )
+                                );
+
+                                if (matchedNurseMed != null)
+                                {
+                                    var nb = !string.IsNullOrWhiteSpace(matchedNurseMed.batch_no) ? matchedNurseMed.batch_no : matchedNurseMed.batchno;
+                                    if (!string.IsNullOrWhiteSpace(nb) && nb != "-")
+                                    {
+                                        csBatch = nb;
+                                    }
+                                    if (matchedNurseMed.batch_expiry_date.HasValue)
+                                    {
+                                        csExpiry = matchedNurseMed.batch_expiry_date.Value;
+                                    }
+                                    if (matchedNurseMed.stockcode.HasValue && matchedNurseMed.stockcode.Value > 0)
+                                    {
+                                        csStockCode = matchedNurseMed.stockcode.Value;
+                                    }
+                                    if (matchedNurseMed.warehousecode.HasValue && matchedNurseMed.warehousecode.Value > 0)
+                                    {
+                                        csWarehouseCode = matchedNurseMed.warehousecode.Value;
+                                    }
+                                    if (item.pr_det_id == Guid.Empty)
+                                    {
+                                        item.pr_det_id = matchedNurseMed.med_id;
+                                    }
+                                }
+                            }
+
                             PendingPrescriptions.Add(new PendingPrescriptionDisplayItem
                             {
                                 DrugName = drugName,
@@ -4883,19 +5197,59 @@
                                 EstimatedAmount = estimatedAmt,
                                 Date = latestWithPrescription.visit_date,
                                 PrDetId = item.pr_det_id,
-                                BatchNo = !string.IsNullOrWhiteSpace(item.batchno) ? item.batchno : item.batch_no,
-                                ExpiryDate = item.batch_expiry_date,
-                                StockCode = item.stockcode,
-                                WarehouseCode = item.warehousecode,
+                                BatchNo = csBatch,
+                                ExpiryDate = csExpiry,
+                                StockCode = csStockCode,
+                                WarehouseCode = csWarehouseCode,
                                 Source = "Case Sheet",
                                 RawCaseSheetRow = item,
                                 IsAdded = IsPrescriptionItemInGrid(itemCode, null, drugName, item.pr_det_id)
                             });
                         }
 
+                        // Also append any unbilled Nurse Notes medicines not returned by CaseSheet
+                        if (nurseMeds != null && nurseMeds.Any())
+                        {
+                            var unbilledNurseMeds = nurseMeds.Where(nm =>
+                                !nm.isdeleted &&
+                                !string.Equals(nm.status, "BILLED", StringComparison.OrdinalIgnoreCase) &&
+                                !IsNurseMedBilled(nm, custId) &&
+                                !PendingPrescriptions.Any(p =>
+                                    (p.PrDetId.HasValue && p.PrDetId.Value == nm.med_id) ||
+                                    (nm.drug_code.HasValue && nm.drug_code.Value > 0 && p.MatchedItemCode.HasValue && p.MatchedItemCode.Value == (long)nm.drug_code.Value) ||
+                                    (!string.IsNullOrWhiteSpace(nm.medicine_name) && string.Equals(p.DrugName?.Trim(), nm.medicine_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                                )
+                            ).ToList();
+
+                            foreach (var nm in unbilledNurseMeds)
+                            {
+                                AddNurseMedToPendingPrescriptions(nm);
+                            }
+                        }
+
                         StateHasChanged();
                         return;
                     }
+                }
+            }
+
+            // 4. Fallback directly to unbilled Nurse Notes medicines if neither queue nor CaseSheet had unbilled items
+            if (nurseMeds != null && nurseMeds.Any())
+            {
+                var unbilledNurseMeds = nurseMeds.Where(nm =>
+                    !nm.isdeleted &&
+                    !string.Equals(nm.status, "BILLED", StringComparison.OrdinalIgnoreCase) &&
+                    !IsNurseMedBilled(nm, custId)
+                ).ToList();
+
+                if (unbilledNurseMeds.Any())
+                {
+                    foreach (var nm in unbilledNurseMeds)
+                    {
+                        AddNurseMedToPendingPrescriptions(nm);
+                    }
+                    StateHasChanged();
+                    return;
                 }
             }
         }
@@ -5170,7 +5524,7 @@
             detail.duration = item.Duration ?? itemDays.ToString();
             detail.quantity = calculatedQty; // Preserve calculated prescription quantity
 
-            // Populate batch details from CaseSheet / Prescription
+            // Populate batch details from CaseSheet / Prescription / Nurse Notes
             string? targetBatch = !string.IsNullOrWhiteSpace(item.BatchNo) ? CleanBatchNo(item.BatchNo) : null;
             DateTime? targetExpiry = item.ExpiryDate;
             long? targetStockCode = item.StockCode;
@@ -5206,7 +5560,7 @@
 
                 // Match with StockList for pricing and pack details
                 var matchedStock = StockList.FirstOrDefault(s =>
-                    s.warehousecode == SelectedWarehouseCode &&
+                    (SelectedWarehouseCode <= 0 || s.warehousecode == SelectedWarehouseCode) &&
                     s.itemcode == detail.itemcode &&
                     CleanBatchNo(s.batchno) == targetBatch &&
                     s.closingstock > 0);
@@ -5215,6 +5569,12 @@
                 {
                     matchedStock = StockList.FirstOrDefault(s =>
                         s.itemcode == detail.itemcode &&
+                        CleanBatchNo(s.batchno) == targetBatch);
+                }
+
+                if (matchedStock == null)
+                {
+                    matchedStock = StockList.FirstOrDefault(s =>
                         CleanBatchNo(s.batchno) == targetBatch);
                 }
 
@@ -5230,8 +5590,26 @@
                         detail.stockcode = matchedStock.stockcode;
                     }
                 }
+                else
+                {
+                    PopulateDetailPricing(detail, null);
+                }
+
+                if (detail.expirydate.HasValue)
+                {
+                    ExpiryDateTexts[detail.GetHashCode()] = detail.expirydate.Value.ToString("MM/yy", System.Globalization.CultureInfo.InvariantCulture);
+                }
 
                 CalculateRow(detail);
+            }
+        }
+        else if (!string.IsNullOrWhiteSpace(item.BatchNo))
+        {
+            detail.batchno = CleanBatchNo(item.BatchNo);
+            detail.expirydate = item.ExpiryDate;
+            if (detail.expirydate.HasValue)
+            {
+                ExpiryDateTexts[detail.GetHashCode()] = detail.expirydate.Value.ToString("MM/yy", System.Globalization.CultureInfo.InvariantCulture);
             }
         }
 
@@ -9118,6 +9496,22 @@
                     try {
                         await client.PostAsJsonAsync("api/OpPrescription/mark-billed", new { pr_det_ids = prDetIdsToUpdate, salescode = CurrentRequest.master.salescode, billno = CurrentRequest.master.billno });
                     } catch { }
+                    if (NurseNotesService != null)
+                    {
+                        var effTenant = !string.IsNullOrWhiteSpace(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? "0010");
+                        foreach (var medId in prDetIdsToUpdate)
+                        {
+                            try
+                            {
+                                await NurseNotesService.UpdateMedicineAsync(new UpdateMedicineRequest
+                                {
+                                    med_id = medId,
+                                    status = "BILLED"
+                                }, effTenant, 1);
+                            }
+                            catch { }
+                        }
+                    }
                 }
 
                 // 4. Remove all billed items from pending prescriptions in all tabs

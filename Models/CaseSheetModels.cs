@@ -349,6 +349,18 @@ namespace medico_backend.Model
     public class CaseSheetPrescriptionItem
     {
         public int sno { get; set; }
+        public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+        public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
+        public string? entry_date_str
+        {
+            get => entry_date.ToString("yyyy-MM-dd");
+            set { if (DateOnly.TryParse(value, out var d)) entry_date = d; }
+        }
+        public string? entry_time_str
+        {
+            get => entry_time.ToString("HH:mm");
+            set { if (TimeOnly.TryParse(value, out var t)) entry_time = t; }
+        }
         public string? diag_id { get; set; } // link to specific diagnosis
         public string drug_name { get; set; } = string.Empty;
         public decimal? drug_code { get; set; }

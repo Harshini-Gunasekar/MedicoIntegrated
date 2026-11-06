@@ -14,8 +14,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid temp_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public decimal temperature { get; set; }
             public string unit { get; set; } = "F";
@@ -66,8 +66,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid io_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public string io_type { get; set; } = "INPUT";   // INPUT / OUTPUT
             public string particulars { get; set; } = string.Empty;
@@ -118,8 +118,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid service_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public string service_name { get; set; } = string.Empty;
             public string? action { get; set; }
@@ -174,8 +174,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid med_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public string medicine_name { get; set; } = string.Empty;
             public decimal? dose { get; set; }
@@ -332,8 +332,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid other_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public string note { get; set; } = string.Empty;
             public int? usercode { get; set; }
@@ -397,8 +397,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid visit_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public string doctor_name { get; set; } = string.Empty;
             public string? specialization { get; set; }
@@ -452,8 +452,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid schedule_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public DateOnly scheduled_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
             public TimeOnly scheduled_time { get; set; }
@@ -554,8 +554,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid diabetic_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
             public string shift { get; set; } = "MORNING";
             public string reading_type { get; set; } = "RANDOM";
             public decimal blood_sugar { get; set; }

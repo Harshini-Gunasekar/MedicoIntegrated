@@ -1,12 +1,10 @@
 using System;
 using System.Collections.Generic;
-using System.Data;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
-using Dapper;
-using Npgsql;
+using Microsoft.Extensions.Configuration;
 using medico_backend.Model;
 
 namespace Booking.Services
@@ -743,58 +741,6 @@ namespace Booking.Services
         #region Advance Requests Queue & Refund History
 
         private static readonly List<AdvanceRequestItem> _advanceRequests = new();
-        private static bool _advanceRequestTableRan = false;
-        private static readonly object _advanceRequestTableLock = new object();
-
-        private void EnsureAdvanceRequestTable(IDbConnection db)
-        {
-            if (_advanceRequestTableRan) return;
-            lock (_advanceRequestTableLock)
-            {
-                if (_advanceRequestTableRan) return;
-                try
-                {
-                    db.Execute(@"
-                        CREATE TABLE IF NOT EXISTS hms_advance_request (
-                            request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                            request_no VARCHAR(50),
-                            request_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                            custid NUMERIC(18,2) NOT NULL,
-                            patient_name VARCHAR(200),
-                            mobile_no VARCHAR(50),
-                            opvisitid VARCHAR(100),
-                            ip_id UUID,
-                            amount NUMERIC(18,2) NOT NULL,
-                            purpose VARCHAR(250),
-                            remarks TEXT,
-                            status VARCHAR(50) DEFAULT 'PENDING',
-                            requested_by INT,
-                            requested_by_name VARCHAR(150),
-                            target_cntcode INT,
-                            target_bhcode INT,
-                            collected_by INT,
-                            collected_by_name VARCHAR(150),
-                            collected_date TIMESTAMP WITH TIME ZONE,
-                            receiptguid VARCHAR(100),
-                            receiptsnoprint VARCHAR(100),
-                            cancel_reason TEXT,
-                            cancelled_by INT,
-                            cancelled_date TIMESTAMP WITH TIME ZONE,
-                            tenant_code VARCHAR(50) NOT NULL DEFAULT 'DEFAULT',
-                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                        );
-                        CREATE INDEX IF NOT EXISTS idx_adv_req_tenant_status ON hms_advance_request (tenant_code, status);
-                        CREATE INDEX IF NOT EXISTS idx_adv_req_custid ON hms_advance_request (custid, tenant_code);
-                        ALTER TABLE hms_advance_request ADD COLUMN IF NOT EXISTS request_type VARCHAR(50) DEFAULT 'ADVANCE';
-                        ALTER TABLE hms_advance_request ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50);
-                        ALTER TABLE hms_advance_request ADD COLUMN IF NOT EXISTS reference_no VARCHAR(100);
-                    ");
-                    _advanceRequestTableRan = true;
-                }
-                catch { }
-            }
-        }
 
         public async Task<List<AdvanceRequestItem>> GetAdvanceRequestsAsync(string status = "PENDING", DateTime? fromDate = null, DateTime? toDate = null)
         {
@@ -840,61 +786,7 @@ namespace Booking.Services
                 Console.WriteLine($"[GetAdvanceRequestsAsync] API call: {ex.Message}");
             }
 
-            // 2. Direct DB fallback
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    string where = " WHERE 1=1 ";
-                    var p = new DynamicParameters();
-                    if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "ALL", StringComparison.OrdinalIgnoreCase))
-                    {
-                        where += " AND (UPPER(status) = UPPER(@st) OR (UPPER(@st) = 'RECEIVED' AND UPPER(status) = 'COLLECTED')) ";
-                        p.Add("st", status);
-                    }
-                    if (fromDate.HasValue)
-                    {
-                        where += " AND request_date >= @from ";
-                        p.Add("from", fromDate.Value.Date);
-                    }
-                    if (toDate.HasValue)
-                    {
-                        where += " AND request_date <= @to ";
-                        p.Add("to", toDate.Value.Date.AddDays(1).AddSeconds(-1));
-                    }
-                    var rows = (await db.QueryAsync<HmsAdvanceRequestRow>(
-                        $@"SELECT * FROM hms_advance_request {where} ORDER BY request_date DESC LIMIT 100", p)).ToList();
-                    if (rows.Count > 0)
-                    {
-                        return rows.Select(r => new AdvanceRequestItem
-                        {
-                            request_id = r.request_id,
-                            request_no = r.request_no,
-                            request_time = r.request_date,
-                            custid = r.custid,
-                            custcode = string.IsNullOrWhiteSpace(r.custcode) ? $"CUST-{r.custid}" : r.custcode,
-                            patient_name = r.patient_name,
-                            mobile = r.mobile_no,
-                            amount = r.amount,
-                            source_type = r.purpose ?? "Billing",
-                            notes = r.remarks,
-                            status = r.status == "COLLECTED" ? "RECEIVED" : r.status,
-                            target_cntcode = r.target_cntcode,
-                            receiptguid = r.receiptguid,
-                            receiptsnoprint = r.receiptsnoprint
-                        }).ToList();
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[GetAdvanceRequestsAsync] DB query: {ex.Message}");
-            }
-
-            // 3. In-memory fallback
+            // Fallback
             lock (_advanceRequests)
             {
                 var query = _advanceRequests.AsEnumerable();
@@ -939,34 +831,7 @@ namespace Booking.Services
             }
             catch { }
 
-            // 2. Direct DB fallback
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    var sum = await db.QueryFirstOrDefaultAsync<HmsAdvanceRequestListSummary>(@"
-                        SELECT 
-                            COALESCE(COUNT(CASE WHEN status = 'PENDING' THEN 1 END), 0) AS pending_count,
-                            COALESCE(SUM(CASE WHEN status = 'PENDING' THEN amount ELSE 0 END), 0) AS pending_amount,
-                            COALESCE(COUNT(CASE WHEN status IN ('COLLECTED', 'RECEIVED') THEN 1 END), 0) AS collected_count,
-                            COALESCE(SUM(CASE WHEN status IN ('COLLECTED', 'RECEIVED') THEN amount ELSE 0 END), 0) AS collected_amount
-                        FROM hms_advance_request");
-                    if (sum != null)
-                    {
-                        summary.pending_count = sum.pending_count;
-                        summary.pending_amount = sum.pending_amount;
-                        summary.received_count = sum.collected_count;
-                        summary.received_amount = sum.collected_amount;
-                        return summary;
-                    }
-                }
-            }
-            catch { }
-
-            // 3. In-memory calculation
+            // 2. In-memory calculation
             var all = await GetAdvanceRequestsAsync("ALL");
             var today = DateTime.UtcNow.Date;
             summary.pending_count = all.Count(r => r.status == "PENDING");
@@ -1012,52 +877,7 @@ namespace Booking.Services
                 Console.WriteLine($"[CreateAdvanceRequestAsync] API error: {ex.Message}");
             }
 
-            // 2. Direct DB fallback
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    string reqNo = $"AR-{DateTime.Now:yyyyMMdd}-{DateTime.Now:HHmmss}";
-                    var newId = Guid.NewGuid();
-                    await db.ExecuteAsync(@"
-                        INSERT INTO hms_advance_request (
-                            request_id, request_no, request_date, custid, patient_name, mobile_no,
-                            amount, purpose, remarks, status, target_cntcode, requested_by, requested_by_name,
-                            tenant_code, created_at, updated_at
-                        ) VALUES (
-                            @id, @no, now(), @cid, @pname, @mob,
-                            @amt, @purp, @rem, 'PENDING', @cnt, @reqBy, @reqByName,
-                            @t, now(), now()
-                        )", new
-                    {
-                        id = newId,
-                        no = reqNo,
-                        cid = request.custid,
-                        pname = request.patient_name,
-                        mob = request.mobile,
-                        amt = request.amount,
-                        purp = request.source_type,
-                        rem = request.notes,
-                        cnt = request.target_cntcode,
-                        reqBy = request.requested_by,
-                        reqByName = request.requested_by_name,
-                        t = string.IsNullOrWhiteSpace(request.tenant_code) ? "DEFAULT" : request.tenant_code
-                    });
-                    request.request_id = newId;
-                    request.request_no = reqNo;
-                    request.status = "PENDING";
-                    return request;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[CreateAdvanceRequestAsync] DB error: {ex.Message}");
-            }
-
-            // 3. In-memory fallback
+            // Fallback
             lock (_advanceRequests)
             {
                 if (string.IsNullOrWhiteSpace(request.request_no))
@@ -1086,25 +906,7 @@ namespace Booking.Services
             }
             catch { }
 
-            // 2. Direct DB fallback
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    int affected = await db.ExecuteAsync(@"
-                        UPDATE hms_advance_request
-                        SET status = 'CANCELLED', cancel_reason = @r, cancelled_date = now(), updated_at = now()
-                        WHERE request_no = @no OR (request_id = @id AND @id != '00000000-0000-0000-0000-000000000000'::uuid)",
-                        new { no = requestNo, r = reason, id = requestId ?? Guid.Empty });
-                    if (affected > 0) return true;
-                }
-            }
-            catch { }
-
-            // 3. In-memory fallback
+            // Fallback
             lock (_advanceRequests)
             {
                 var match = _advanceRequests.FirstOrDefault(r => r.request_no == requestNo || (requestId.HasValue && r.request_id == requestId.Value));
@@ -1152,22 +954,6 @@ namespace Booking.Services
             var depositRes = await DepositAdvanceAsync(depositReq);
             if (depositRes != null)
             {
-                try
-                {
-                    var connStr = _config?.GetConnectionString("conn");
-                    if (!string.IsNullOrWhiteSpace(connStr))
-                    {
-                        using var db = new NpgsqlConnection(connStr);
-                        EnsureAdvanceRequestTable(db);
-                        await db.ExecuteAsync(@"
-                            UPDATE hms_advance_request
-                            SET status = 'COLLECTED', receiptguid = @rg, receiptsnoprint = @rn, collected_date = now(), updated_at = now()
-                            WHERE request_no = @no OR (request_id = @id AND @id != '00000000-0000-0000-0000-000000000000'::uuid)",
-                            new { no = requestNo, rg = depositRes.receipt_guid, rn = depositRes.receipt_no, id = requestId ?? Guid.Empty });
-                    }
-                }
-                catch { }
-
                 UpdateLocalRequestStatus(requestNo, "RECEIVED", depositRes.receipt_guid, depositRes.receipt_no);
                 return (true, "Advance collection received successfully.", depositRes);
             }
@@ -1246,100 +1032,7 @@ namespace Booking.Services
                 Console.WriteLine($"[GetPatientDepositsAsync] API error: {ex.Message}");
             }
 
-            // 2. Direct DB fallback using the backend CTE
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    string t = string.IsNullOrWhiteSpace(tenantCode) ? "DEFAULT" : tenantCode;
-                    var p = new DynamicParameters();
-                    p.Add("t", t);
-
-                    string outerWhere = " WHERE 1=1 ";
-                    string st = (balanceStatus ?? "ALL").ToUpperInvariant();
-                    if (st == "HAS_BALANCE" || st == "REFUNDABLE") outerWhere += " AND available_balance > 0.05 ";
-                    else if (st == "ZERO_BALANCE" || st == "EXHAUSTED") outerWhere += " AND available_balance <= 0.05 ";
-
-                    if (!string.IsNullOrWhiteSpace(search))
-                    {
-                        outerWhere += @" AND (patient_name ILIKE @s OR custcode ILIKE @s OR mobile_no ILIKE @s OR custid::text ILIKE @s) ";
-                        p.Add("s", $"%{search.Trim()}%");
-                    }
-
-                    string sql = $@"
-                        WITH base_adv AS (
-                            SELECT 
-                                rm.custid,
-                                MIN(rm.receiptdate) AS first_deposit_date,
-                                MAX(rm.receiptdate) AS last_deposit_date,
-                                COUNT(DISTINCT rm.receiptguid) AS deposit_count,
-                                SUM(CASE WHEN ra.requestguid IS NULL THEN ra.receiptamount ELSE 0 END) AS total_deposited,
-                                SUM(CASE WHEN ra.requestguid IS NOT NULL AND (rref.receipttype IS NULL OR rref.receipttype != 'ADVANCE_REFUND') THEN ra.receiptamount ELSE 0 END) AS total_used,
-                                SUM(CASE WHEN rref.receipttype = 'ADVANCE_REFUND' THEN ra.receiptamount ELSE 0 END) AS total_refunded
-                            FROM receipt_master rm
-                            INNER JOIN receipt_advances ra 
-                                    ON ra.receiptguid = rm.receiptguid 
-                                   AND COALESCE(ra.deleted, false) = false
-                            LEFT JOIN receipt_master rref 
-                                   ON rref.receiptguid = ra.requestguid 
-                                  AND rref.receipttype = 'ADVANCE_REFUND'
-                            WHERE (@t = '' OR @t = 'DEFAULT' OR rm.tenant_code = @t)
-                              AND rm.receipttype = 'ADVANCE'
-                              AND COALESCE(rm.isdeleted, false) = false
-                              AND COALESCE(rm.deleted, false) = false
-                            GROUP BY rm.custid
-                        ),
-                        pat_agg AS (
-                            SELECT
-                                b.custid,
-                                COALESCE(cm.custcode, '') AS custcode,
-                                COALESCE(cm.name, 'Patient #' || b.custid::text) AS patient_name,
-                                COALESCE(cm.mobile, '') AS mobile_no,
-                                b.total_deposited,
-                                b.total_used,
-                                b.total_refunded,
-                                (b.total_deposited - b.total_used - b.total_refunded) AS available_balance,
-                                b.first_deposit_date,
-                                b.last_deposit_date,
-                                b.deposit_count
-                            FROM base_adv b
-                            LEFT JOIN customerdb.customer_master cm ON cm.custid::numeric = b.custid
-                        )
-                        SELECT * FROM pat_agg
-                        {outerWhere}
-                        ORDER BY last_deposit_date DESC NULLS LAST
-                        LIMIT 100";
-
-                    var rows = (await db.QueryAsync<HmsPatientAdvanceDepositRow>(sql, p)).ToList();
-                    var list = rows.Select(x => new HmsAdvancePatientItem
-                    {
-                        custid = x.custid,
-                        custcode = !string.IsNullOrWhiteSpace(x.custcode) ? x.custcode : x.custid.ToString(),
-                        patient_name = x.patient_name,
-                        mobile = x.mobile_no,
-                        total_deposited = x.total_deposited,
-                        total_used = x.total_used,
-                        total_refunded = x.total_refunded,
-                        available_balance = x.available_balance,
-                        last_deposit_date = x.last_deposit_date
-                    }).ToList();
-
-                    summary.total_deposited_sum = list.Sum(x => x.total_deposited);
-                    summary.total_used_sum = list.Sum(x => x.total_used);
-                    summary.total_refunded_sum = list.Sum(x => x.total_refunded);
-                    summary.total_available_sum = list.Sum(x => x.available_balance);
-
-                    return (list, summary);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[GetPatientDepositsAsync] DB query error: {ex.Message}");
-            }
-
-            // 3. Fallback to GetAllAdvancePatientsAsync
+            // Fallback to GetAllAdvancePatientsAsync
             var allPatients = await GetAllAdvancePatientsAsync(tenantCode);
             var query = allPatients.AsEnumerable();
 
@@ -1405,64 +1098,6 @@ namespace Booking.Services
             }
             catch { }
 
-            // 2. Direct DB fallback
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    string t = string.IsNullOrWhiteSpace(tenantCode) ? "DEFAULT" : tenantCode;
-                    string sql = @"
-                    SELECT rm.receiptguid,
-                           rm.receiptsnoprint,
-                           rm.receiptdate,
-                           rm.custid,
-                           COALESCE(cm.custcode, 'CUST-' || rm.custid) as custcode,
-                           COALESCE(cm.name, 'Patient ' || rm.custid) as patient_name,
-                           COALESCE(cm.mobile, '') as mobile,
-                           COALESCE(rm.amounttotal, rm.amountpaid, 0) as refund_amount,
-                           COALESCE(um.user_name, rm.usercode::text, 'Staff') as processed_by,
-                           COALESCE(c.counter_name, 'Counter ' || rm.cntcode) as counter_name,
-                           rm.paymentreference as remarks
-                    FROM receipt_master rm
-                    LEFT JOIN customerdb.customer_master cm ON cm.custid::numeric = rm.custid
-                    LEFT JOIN user_master um ON um.user_id = rm.usercode
-                    LEFT JOIN counter_master c ON c.cntcode = rm.cntcode
-                    WHERE rm.receipttype = 'ADVANCE_REFUND'
-                      AND COALESCE(rm.isdeleted, false) = false
-                      AND COALESCE(rm.deleted, false) = false
-                      AND (@t = '' OR @t = 'DEFAULT' OR rm.tenant_code = @t)
-                      AND (@from IS NULL OR rm.receiptdate >= @from)
-                      AND (@to IS NULL OR rm.receiptdate <= @to)
-                    ORDER BY rm.receiptdate DESC
-                    LIMIT 100";
-
-                    var rows = (await db.QueryAsync<AdvanceRefundHistoryItem>(sql, new
-                    {
-                        t = t,
-                        from = fromDate?.Date,
-                        to = toDate?.Date.AddDays(1).AddSeconds(-1)
-                    })).ToList();
-
-                    if (!string.IsNullOrWhiteSpace(search))
-                    {
-                        rows = rows.Where(r =>
-                            (r.patient_name != null && r.patient_name.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
-                            (r.receiptsnoprint != null && r.receiptsnoprint.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
-                            (r.mobile != null && r.mobile.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
-                            r.custid.ToString().Contains(search)
-                        ).ToList();
-                    }
-
-                    return rows;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[GetRefundHistoryAsync] DB query: {ex.Message}");
-            }
-
             return new List<AdvanceRefundHistoryItem>();
         }
 
@@ -1511,64 +1146,6 @@ namespace Booking.Services
                 }
             }
             catch { }
-
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    string reqNo = $"REFR-{DateTime.Now:yyyyMMdd}-{DateTime.Now:HHmmss}";
-                    var newId = Guid.NewGuid();
-                    await db.ExecuteAsync(@"
-                        INSERT INTO hms_advance_request (
-                            request_id, request_no, request_date, custid, patient_name, mobile_no,
-                            amount, purpose, remarks, status, request_type, target_cntcode, target_bhcode, requested_by, requested_by_name,
-                            tenant_code, created_at, updated_at
-                        ) VALUES (
-                            @id, @no, now(), @cid, @pname, @mob,
-                            @amt, @purp, @rem, 'PENDING', 'REFUND', @cnt, @bh, @reqBy, @reqByName,
-                            @t, now(), now()
-                        )", new
-                    {
-                        id = newId,
-                        no = reqNo,
-                        cid = req.custid,
-                        pname = req.patient_name,
-                        mob = req.mobile_no,
-                        amt = req.refund_amount,
-                        purp = req.reason ?? "Discharge Refund",
-                        rem = req.remarks,
-                        cnt = req.target_cntcode,
-                        bh = req.target_bhcode,
-                        reqBy = req.usercode,
-                        reqByName = req.user_name,
-                        t = string.IsNullOrWhiteSpace(req.tenant_code) ? "DEFAULT" : req.tenant_code
-                    });
-
-                    var item = new AdvanceRequestItem
-                    {
-                        request_id = newId,
-                        request_no = reqNo,
-                        request_time = DateTime.UtcNow,
-                        custid = req.custid,
-                        custcode = $"CUST-{req.custid}",
-                        patient_name = req.patient_name ?? "",
-                        mobile = req.mobile_no,
-                        amount = req.refund_amount,
-                        source_type = req.reason ?? "Discharge Refund",
-                        notes = req.remarks,
-                        status = "PENDING",
-                        request_type = "REFUND"
-                    };
-                    return (true, "Advance refund request sent to cash counter.", item);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[CreateRefundRequestAsync] DB error: {ex.Message}");
-            }
 
             var inMemItem = new AdvanceRequestItem
             {
@@ -1630,47 +1207,6 @@ namespace Booking.Services
             }
             catch { }
 
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    string where = " WHERE (request_type = 'REFUND' OR request_no LIKE 'REFR-%') ";
-                    var p = new DynamicParameters();
-                    if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "ALL", StringComparison.OrdinalIgnoreCase))
-                    {
-                        where += " AND UPPER(status) = UPPER(@st) ";
-                        p.Add("st", status);
-                    }
-                    var rows = (await db.QueryAsync<HmsAdvanceRequestRow>(
-                        $@"SELECT * FROM hms_advance_request {where} ORDER BY request_date DESC LIMIT 100", p)).ToList();
-                    if (rows.Count > 0)
-                    {
-                        return rows.Select(r => new AdvanceRequestItem
-                        {
-                            request_id = r.request_id,
-                            request_no = r.request_no,
-                            request_time = r.request_date,
-                            custid = r.custid,
-                            custcode = string.IsNullOrWhiteSpace(r.custcode) ? $"CUST-{r.custid}" : r.custcode,
-                            patient_name = r.patient_name,
-                            mobile = r.mobile_no,
-                            amount = r.amount,
-                            source_type = r.purpose ?? "Refund",
-                            notes = r.remarks,
-                            status = r.status,
-                            request_type = "REFUND",
-                            target_cntcode = r.target_cntcode,
-                            receiptguid = r.receiptguid,
-                            receiptsnoprint = r.receiptsnoprint
-                        }).ToList();
-                    }
-                }
-            }
-            catch { }
-
             lock (_advanceRequests)
             {
                 var q = _advanceRequests.Where(r => r.request_type == "REFUND" || r.request_no.StartsWith("REFR-"));
@@ -1683,45 +1219,6 @@ namespace Booking.Services
         public async Task<RefundRequestsSummary> GetRefundRequestsSummaryAsync()
         {
             var summary = new RefundRequestsSummary();
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    var sum = await db.QueryFirstOrDefaultAsync<RefundRequestsSummary>(@"
-                        SELECT 
-                            COALESCE(COUNT(CASE WHEN UPPER(status) = 'PENDING' THEN 1 END), 0) AS pending_count,
-                            COALESCE(SUM(CASE WHEN UPPER(status) = 'PENDING' THEN amount ELSE 0 END), 0) AS pending_amount,
-                            COALESCE(COUNT(CASE WHEN UPPER(status) IN ('REFUNDED', 'COLLECTED', 'RECEIVED') THEN 1 END), 0) AS refunded_count,
-                            COALESCE(SUM(CASE WHEN UPPER(status) IN ('REFUNDED', 'COLLECTED', 'RECEIVED') THEN amount ELSE 0 END), 0) AS refunded_amount
-                        FROM hms_advance_request
-                        WHERE (UPPER(request_type) = 'REFUND' OR request_no LIKE 'REFR-%')");
-                    if (sum != null)
-                    {
-                        return sum;
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[GetRefundRequestsSummaryAsync] DB error: {ex.Message}");
-            }
-
-            try
-            {
-                var allRefunds = await GetRefundRequestsAsync("ALL");
-                if (allRefunds != null && allRefunds.Count > 0)
-                {
-                    summary.pending_count = allRefunds.Count(r => string.Equals(r.status, "PENDING", StringComparison.OrdinalIgnoreCase));
-                    summary.pending_amount = allRefunds.Where(r => string.Equals(r.status, "PENDING", StringComparison.OrdinalIgnoreCase)).Sum(r => r.amount);
-                    summary.refunded_count = allRefunds.Count(r => string.Equals(r.status, "REFUNDED", StringComparison.OrdinalIgnoreCase) || string.Equals(r.status, "COLLECTED", StringComparison.OrdinalIgnoreCase));
-                    summary.refunded_amount = allRefunds.Where(r => string.Equals(r.status, "REFUNDED", StringComparison.OrdinalIgnoreCase) || string.Equals(r.status, "COLLECTED", StringComparison.OrdinalIgnoreCase)).Sum(r => r.amount);
-                    return summary;
-                }
-            }
-            catch { }
 
             lock (_advanceRequests)
             {
@@ -1750,62 +1247,7 @@ namespace Booking.Services
             }
             catch { }
 
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    var row = await db.QueryFirstOrDefaultAsync<HmsAdvanceRequestRow>(
-                        "SELECT * FROM hms_advance_request WHERE request_id = @id", new { id = req.request_id });
-
-                    if (row != null)
-                    {
-                        var refundReq = new HmsAdvanceRefundRequest
-                        {
-                            custid = row.custid,
-                            refund_amount = req.amount.HasValue && req.amount.Value > 0 ? req.amount.Value : row.amount,
-                            enteredbhcode = req.enteredbhcode ?? 1,
-                            cntcode = req.cntcode ?? 1,
-                            usercode = req.usercode ?? 15,
-                            computercode = req.computercode ?? 1,
-                            reason = row.purpose ?? "Refund request processed",
-                            remarks = req.remarks ?? $"Mode: {req.payment_mode}, Ref: {req.reference_no}"
-                        };
-
-                        var refundRes = await RefundAdvanceAsync(refundReq);
-                        if (refundRes != null)
-                        {
-                            await db.ExecuteAsync(@"
-                                UPDATE hms_advance_request
-                                SET status = 'REFUNDED', collected_date = now(), receiptguid = @rg, receiptsnoprint = @rn,
-                                    collected_by = @uc, collected_by_name = @uname, payment_mode = @pm, reference_no = @ref, updated_at = now()
-                                WHERE request_id = @id",
-                                new { id = req.request_id, rg = refundRes.receipt_guid, rn = refundRes.receipt_no, uc = req.usercode, uname = req.user_name, pm = req.payment_mode, @ref = req.reference_no });
-
-                            lock (_advanceRequests)
-                            {
-                                var inMem = _advanceRequests.FirstOrDefault(r => r.request_id == req.request_id || (r.custid == row.custid && r.request_type == "REFUND"));
-                                if (inMem != null)
-                                {
-                                    inMem.status = "REFUNDED";
-                                    inMem.receiptsnoprint = refundRes.receipt_no;
-                                    inMem.receiptguid = refundRes.receipt_guid;
-                                }
-                            }
-
-                            return (true, "Advance refund processed successfully.", refundRes);
-                        }
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[ProcessRefundRequestAsync] error: {ex.Message}");
-            }
-
-            return (false, "Failed to process refund request.", null);
+            return (false, "Failed to process refund request via API endpoint.", null);
         }
 
         public async Task<bool> CancelAnyAdvanceRequestAsync(Guid requestId, string? cancelReason = null, int? userCode = null)
@@ -1820,23 +1262,6 @@ namespace Booking.Services
                 };
                 var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/request/cancel", reqDto);
                 if (response.IsSuccessStatusCode) return true;
-            }
-            catch { }
-
-            try
-            {
-                var connStr = _config?.GetConnectionString("conn");
-                if (!string.IsNullOrWhiteSpace(connStr))
-                {
-                    using var db = new NpgsqlConnection(connStr);
-                    EnsureAdvanceRequestTable(db);
-                    int affected = await db.ExecuteAsync(@"
-                        UPDATE hms_advance_request
-                        SET status = 'CANCELLED', cancel_reason = @r, cancelled_by = @uc, cancelled_date = now(), updated_at = now()
-                        WHERE request_id = @id",
-                        new { r = cancelReason, uc = userCode, id = requestId });
-                    if (affected > 0) return true;
-                }
             }
             catch { }
 
