@@ -69,6 +69,9 @@ namespace medico_backend.Model
             public string? patient_name { get; set; }
 
             [Write(false)]
+            public string? custcode { get; set; }
+
+            [Write(false)]
             public string? name { get; set; }
 
             [Write(false)]

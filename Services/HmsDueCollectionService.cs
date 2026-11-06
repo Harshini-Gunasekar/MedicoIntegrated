@@ -1,9 +1,12 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
+using System.Data;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading.Tasks;
+using Dapper;
+using Npgsql;
 using medico_backend.Model;
 
 namespace Booking.Services
@@ -12,9 +15,12 @@ namespace Booking.Services
     {
         private readonly HttpClient _http;
 
-        public HmsDueCollectionService(HttpClient http)
+        private readonly IConfiguration? _config;
+
+        public HmsDueCollectionService(HttpClient http, IConfiguration? config = null)
         {
             _http = http;
+            _config = config;
         }
 
         public async Task<HmsDueBillsResponse?> GetDueBillsResponseAsync(HmsAllDueFilterRequest filter)
@@ -733,6 +739,1120 @@ namespace Booking.Services
         }
 
         #endregion
+
+        #region Advance Requests Queue & Refund History
+
+        private static readonly List<AdvanceRequestItem> _advanceRequests = new();
+        private static bool _advanceRequestTableRan = false;
+        private static readonly object _advanceRequestTableLock = new object();
+
+        private void EnsureAdvanceRequestTable(IDbConnection db)
+        {
+            if (_advanceRequestTableRan) return;
+            lock (_advanceRequestTableLock)
+            {
+                if (_advanceRequestTableRan) return;
+                try
+                {
+                    db.Execute(@"
+                        CREATE TABLE IF NOT EXISTS hms_advance_request (
+                            request_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                            request_no VARCHAR(50),
+                            request_date TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            custid NUMERIC(18,2) NOT NULL,
+                            patient_name VARCHAR(200),
+                            mobile_no VARCHAR(50),
+                            opvisitid VARCHAR(100),
+                            ip_id UUID,
+                            amount NUMERIC(18,2) NOT NULL,
+                            purpose VARCHAR(250),
+                            remarks TEXT,
+                            status VARCHAR(50) DEFAULT 'PENDING',
+                            requested_by INT,
+                            requested_by_name VARCHAR(150),
+                            target_cntcode INT,
+                            target_bhcode INT,
+                            collected_by INT,
+                            collected_by_name VARCHAR(150),
+                            collected_date TIMESTAMP WITH TIME ZONE,
+                            receiptguid VARCHAR(100),
+                            receiptsnoprint VARCHAR(100),
+                            cancel_reason TEXT,
+                            cancelled_by INT,
+                            cancelled_date TIMESTAMP WITH TIME ZONE,
+                            tenant_code VARCHAR(50) NOT NULL DEFAULT 'DEFAULT',
+                            created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                            updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        );
+                        CREATE INDEX IF NOT EXISTS idx_adv_req_tenant_status ON hms_advance_request (tenant_code, status);
+                        CREATE INDEX IF NOT EXISTS idx_adv_req_custid ON hms_advance_request (custid, tenant_code);
+                        ALTER TABLE hms_advance_request ADD COLUMN IF NOT EXISTS request_type VARCHAR(50) DEFAULT 'ADVANCE';
+                        ALTER TABLE hms_advance_request ADD COLUMN IF NOT EXISTS payment_mode VARCHAR(50);
+                        ALTER TABLE hms_advance_request ADD COLUMN IF NOT EXISTS reference_no VARCHAR(100);
+                    ");
+                    _advanceRequestTableRan = true;
+                }
+                catch { }
+            }
+        }
+
+        public async Task<List<AdvanceRequestItem>> GetAdvanceRequestsAsync(string status = "PENDING", DateTime? fromDate = null, DateTime? toDate = null)
+        {
+            // 1. Try Backend API
+            try
+            {
+                var reqObj = new
+                {
+                    status = string.IsNullOrWhiteSpace(status) || string.Equals(status, "ALL", StringComparison.OrdinalIgnoreCase) ? null : (status == "RECEIVED" ? "COLLECTED" : status),
+                    fromdate = fromDate.HasValue ? fromDate.Value.ToString("yyyy-MM-dd") : null,
+                    todate = toDate.HasValue ? toDate.Value.ToString("yyyy-MM-dd") : null,
+                    page = 1,
+                    pagesize = 100
+                };
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/requests", reqObj);
+                if (response.IsSuccessStatusCode)
+                {
+                    var apiRes = await response.Content.ReadFromJsonAsync<HmsAdvanceRequestsBackendResponse>();
+                    if (apiRes?.data != null)
+                    {
+                        return apiRes.data.Select(r => new AdvanceRequestItem
+                        {
+                            request_id = r.request_id,
+                            request_no = r.request_no,
+                            request_time = r.request_date,
+                            custid = r.custid,
+                            custcode = string.IsNullOrWhiteSpace(r.custcode) ? $"CUST-{r.custid}" : r.custcode,
+                            patient_name = r.patient_name,
+                            mobile = r.mobile_no,
+                            amount = r.amount,
+                            source_type = r.purpose ?? "Billing",
+                            notes = r.remarks,
+                            status = r.status == "COLLECTED" ? "RECEIVED" : r.status,
+                            target_cntcode = r.target_cntcode,
+                            receiptguid = r.receiptguid,
+                            receiptsnoprint = r.receiptsnoprint
+                        }).ToList();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GetAdvanceRequestsAsync] API call: {ex.Message}");
+            }
+
+            // 2. Direct DB fallback
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    string where = " WHERE 1=1 ";
+                    var p = new DynamicParameters();
+                    if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "ALL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        where += " AND (UPPER(status) = UPPER(@st) OR (UPPER(@st) = 'RECEIVED' AND UPPER(status) = 'COLLECTED')) ";
+                        p.Add("st", status);
+                    }
+                    if (fromDate.HasValue)
+                    {
+                        where += " AND request_date >= @from ";
+                        p.Add("from", fromDate.Value.Date);
+                    }
+                    if (toDate.HasValue)
+                    {
+                        where += " AND request_date <= @to ";
+                        p.Add("to", toDate.Value.Date.AddDays(1).AddSeconds(-1));
+                    }
+                    var rows = (await db.QueryAsync<HmsAdvanceRequestRow>(
+                        $@"SELECT * FROM hms_advance_request {where} ORDER BY request_date DESC LIMIT 100", p)).ToList();
+                    if (rows.Count > 0)
+                    {
+                        return rows.Select(r => new AdvanceRequestItem
+                        {
+                            request_id = r.request_id,
+                            request_no = r.request_no,
+                            request_time = r.request_date,
+                            custid = r.custid,
+                            custcode = string.IsNullOrWhiteSpace(r.custcode) ? $"CUST-{r.custid}" : r.custcode,
+                            patient_name = r.patient_name,
+                            mobile = r.mobile_no,
+                            amount = r.amount,
+                            source_type = r.purpose ?? "Billing",
+                            notes = r.remarks,
+                            status = r.status == "COLLECTED" ? "RECEIVED" : r.status,
+                            target_cntcode = r.target_cntcode,
+                            receiptguid = r.receiptguid,
+                            receiptsnoprint = r.receiptsnoprint
+                        }).ToList();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GetAdvanceRequestsAsync] DB query: {ex.Message}");
+            }
+
+            // 3. In-memory fallback
+            lock (_advanceRequests)
+            {
+                var query = _advanceRequests.AsEnumerable();
+                if (!string.Equals(status, "ALL", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrWhiteSpace(status))
+                    query = query.Where(r => string.Equals(r.status, status, StringComparison.OrdinalIgnoreCase) || (string.Equals(status, "RECEIVED", StringComparison.OrdinalIgnoreCase) && string.Equals(r.status, "COLLECTED", StringComparison.OrdinalIgnoreCase)));
+                if (fromDate.HasValue)
+                    query = query.Where(r => r.request_time.Date >= fromDate.Value.Date);
+                if (toDate.HasValue)
+                    query = query.Where(r => r.request_time.Date <= toDate.Value.Date);
+
+                return query.OrderByDescending(r => r.request_time).ToList();
+            }
+        }
+
+        public async Task<AdvanceRequestsSummary> GetAdvanceRequestsSummaryAsync(DateTime? fromDate = null, DateTime? toDate = null)
+        {
+            var summary = new AdvanceRequestsSummary();
+
+            // 1. Try Backend API
+            try
+            {
+                var reqObj = new
+                {
+                    fromdate = fromDate.HasValue ? fromDate.Value.ToString("yyyy-MM-dd") : null,
+                    todate = toDate.HasValue ? toDate.Value.ToString("yyyy-MM-dd") : null,
+                    page = 1,
+                    pagesize = 1
+                };
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/requests", reqObj);
+                if (response.IsSuccessStatusCode)
+                {
+                    var apiRes = await response.Content.ReadFromJsonAsync<HmsAdvanceRequestsBackendResponse>();
+                    if (apiRes?.summary != null)
+                    {
+                        summary.pending_count = apiRes.summary.pending_count;
+                        summary.pending_amount = apiRes.summary.pending_amount;
+                        summary.received_count = apiRes.summary.collected_count;
+                        summary.received_amount = apiRes.summary.collected_amount;
+                        return summary;
+                    }
+                }
+            }
+            catch { }
+
+            // 2. Direct DB fallback
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    var sum = await db.QueryFirstOrDefaultAsync<HmsAdvanceRequestListSummary>(@"
+                        SELECT 
+                            COALESCE(COUNT(CASE WHEN status = 'PENDING' THEN 1 END), 0) AS pending_count,
+                            COALESCE(SUM(CASE WHEN status = 'PENDING' THEN amount ELSE 0 END), 0) AS pending_amount,
+                            COALESCE(COUNT(CASE WHEN status IN ('COLLECTED', 'RECEIVED') THEN 1 END), 0) AS collected_count,
+                            COALESCE(SUM(CASE WHEN status IN ('COLLECTED', 'RECEIVED') THEN amount ELSE 0 END), 0) AS collected_amount
+                        FROM hms_advance_request");
+                    if (sum != null)
+                    {
+                        summary.pending_count = sum.pending_count;
+                        summary.pending_amount = sum.pending_amount;
+                        summary.received_count = sum.collected_count;
+                        summary.received_amount = sum.collected_amount;
+                        return summary;
+                    }
+                }
+            }
+            catch { }
+
+            // 3. In-memory calculation
+            var all = await GetAdvanceRequestsAsync("ALL");
+            var today = DateTime.UtcNow.Date;
+            summary.pending_count = all.Count(r => r.status == "PENDING");
+            summary.pending_amount = all.Where(r => r.status == "PENDING").Sum(r => r.amount);
+            summary.received_count = all.Count(r => (r.status == "RECEIVED" || r.status == "COLLECTED") && r.request_time.Date == today);
+            summary.received_amount = all.Where(r => (r.status == "RECEIVED" || r.status == "COLLECTED") && r.request_time.Date == today).Sum(r => r.amount);
+            return summary;
+        }
+
+        public async Task<AdvanceRequestItem> CreateAdvanceRequestAsync(AdvanceRequestItem request)
+        {
+            // 1. Try Backend API
+            try
+            {
+                var reqDto = new
+                {
+                    custid = request.custid,
+                    patient_name = request.patient_name,
+                    mobile_no = request.mobile,
+                    amount = request.amount,
+                    purpose = request.source_type,
+                    remarks = request.notes,
+                    target_cntcode = request.target_cntcode,
+                    usercode = request.requested_by,
+                    user_name = request.requested_by_name
+                };
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/request", reqDto);
+                if (response.IsSuccessStatusCode)
+                {
+                    var wrapper = await response.Content.ReadFromJsonAsync<HmsAdvanceRequestCreateBackendResponse>();
+                    if (wrapper?.data != null)
+                    {
+                        request.request_id = wrapper.data.request_id;
+                        request.request_no = wrapper.data.request_no;
+                        request.request_time = wrapper.data.request_date;
+                        request.status = wrapper.data.status;
+                        return request;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CreateAdvanceRequestAsync] API error: {ex.Message}");
+            }
+
+            // 2. Direct DB fallback
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    string reqNo = $"AR-{DateTime.Now:yyyyMMdd}-{DateTime.Now:HHmmss}";
+                    var newId = Guid.NewGuid();
+                    await db.ExecuteAsync(@"
+                        INSERT INTO hms_advance_request (
+                            request_id, request_no, request_date, custid, patient_name, mobile_no,
+                            amount, purpose, remarks, status, target_cntcode, requested_by, requested_by_name,
+                            tenant_code, created_at, updated_at
+                        ) VALUES (
+                            @id, @no, now(), @cid, @pname, @mob,
+                            @amt, @purp, @rem, 'PENDING', @cnt, @reqBy, @reqByName,
+                            @t, now(), now()
+                        )", new
+                    {
+                        id = newId,
+                        no = reqNo,
+                        cid = request.custid,
+                        pname = request.patient_name,
+                        mob = request.mobile,
+                        amt = request.amount,
+                        purp = request.source_type,
+                        rem = request.notes,
+                        cnt = request.target_cntcode,
+                        reqBy = request.requested_by,
+                        reqByName = request.requested_by_name,
+                        t = string.IsNullOrWhiteSpace(request.tenant_code) ? "DEFAULT" : request.tenant_code
+                    });
+                    request.request_id = newId;
+                    request.request_no = reqNo;
+                    request.status = "PENDING";
+                    return request;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CreateAdvanceRequestAsync] DB error: {ex.Message}");
+            }
+
+            // 3. In-memory fallback
+            lock (_advanceRequests)
+            {
+                if (string.IsNullOrWhiteSpace(request.request_no))
+                {
+                    request.request_no = $"AR-{DateTime.Now:yyyyMMdd}-{(_advanceRequests.Count + 101):D4}";
+                }
+                request.request_time = DateTime.UtcNow;
+                request.status = "PENDING";
+                _advanceRequests.Insert(0, request);
+            }
+            return request;
+        }
+
+        public async Task<bool> CancelAdvanceRequestAsync(string requestNo, string? reason = null, Guid? requestId = null)
+        {
+            // 1. Try Backend API
+            try
+            {
+                var reqDto = new
+                {
+                    request_id = requestId ?? Guid.Empty,
+                    cancel_reason = reason ?? "Cancelled by user"
+                };
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/request/cancel", reqDto);
+                if (response.IsSuccessStatusCode) return true;
+            }
+            catch { }
+
+            // 2. Direct DB fallback
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    int affected = await db.ExecuteAsync(@"
+                        UPDATE hms_advance_request
+                        SET status = 'CANCELLED', cancel_reason = @r, cancelled_date = now(), updated_at = now()
+                        WHERE request_no = @no OR (request_id = @id AND @id != '00000000-0000-0000-0000-000000000000'::uuid)",
+                        new { no = requestNo, r = reason, id = requestId ?? Guid.Empty });
+                    if (affected > 0) return true;
+                }
+            }
+            catch { }
+
+            // 3. In-memory fallback
+            lock (_advanceRequests)
+            {
+                var match = _advanceRequests.FirstOrDefault(r => r.request_no == requestNo || (requestId.HasValue && r.request_id == requestId.Value));
+                if (match != null)
+                {
+                    match.status = "CANCELLED";
+                    if (!string.IsNullOrWhiteSpace(reason)) match.notes = (match.notes ?? "") + $" [Cancelled: {reason}]";
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        public async Task<(bool success, string? message, HmsAdvanceReceiptResponse? receipt)> ReceiveAdvanceRequestAsync(
+            string requestNo, HmsAdvanceDepositRequest depositReq, Guid? requestId = null)
+        {
+            // 1. Try Backend API
+            try
+            {
+                var collectDto = new
+                {
+                    request_id = requestId ?? Guid.Empty,
+                    amount = depositReq.amount,
+                    collection_type = string.IsNullOrWhiteSpace(depositReq.collection_type) ? "CASH" : depositReq.collection_type,
+                    enteredbhcode = depositReq.enteredbhcode,
+                    cntcode = depositReq.cntcode,
+                    usercode = depositReq.usercode,
+                    computercode = depositReq.computercode,
+                    remarks = depositReq.remarks
+                };
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/request/receive", collectDto);
+                if (response.IsSuccessStatusCode)
+                {
+                    var wrapper = await response.Content.ReadFromJsonAsync<HmsAdvanceReceiptResponseWrapper>();
+                    if (wrapper?.data != null)
+                    {
+                        UpdateLocalRequestStatus(requestNo, "RECEIVED", wrapper.data.receipt_guid, wrapper.data.receipt_no);
+                        return (true, "Advance collection received successfully.", wrapper.data);
+                    }
+                }
+            }
+            catch { }
+
+            // 2. Fallback to standard advance deposit
+            var depositRes = await DepositAdvanceAsync(depositReq);
+            if (depositRes != null)
+            {
+                try
+                {
+                    var connStr = _config?.GetConnectionString("conn");
+                    if (!string.IsNullOrWhiteSpace(connStr))
+                    {
+                        using var db = new NpgsqlConnection(connStr);
+                        EnsureAdvanceRequestTable(db);
+                        await db.ExecuteAsync(@"
+                            UPDATE hms_advance_request
+                            SET status = 'COLLECTED', receiptguid = @rg, receiptsnoprint = @rn, collected_date = now(), updated_at = now()
+                            WHERE request_no = @no OR (request_id = @id AND @id != '00000000-0000-0000-0000-000000000000'::uuid)",
+                            new { no = requestNo, rg = depositRes.receipt_guid, rn = depositRes.receipt_no, id = requestId ?? Guid.Empty });
+                    }
+                }
+                catch { }
+
+                UpdateLocalRequestStatus(requestNo, "RECEIVED", depositRes.receipt_guid, depositRes.receipt_no);
+                return (true, "Advance collection received successfully.", depositRes);
+            }
+
+            return (false, "Failed to record advance deposit receipt.", null);
+        }
+
+        private void UpdateLocalRequestStatus(string requestNo, string status, string? receiptGuid, string? receiptNo)
+        {
+            lock (_advanceRequests)
+            {
+                var match = _advanceRequests.FirstOrDefault(r => r.request_no == requestNo);
+                if (match != null)
+                {
+                    match.status = status;
+                    match.receiptguid = receiptGuid;
+                    match.receiptsnoprint = receiptNo;
+                }
+            }
+        }
+
+        public async Task<(List<HmsAdvancePatientItem> data, PatientDepositsSummary summary)> GetPatientDepositsAsync(
+            string balanceStatus = "HAS_BALANCE", string? search = null, string? tenantCode = null)
+        {
+            var summary = new PatientDepositsSummary();
+
+            // 1. Try Backend API
+            try
+            {
+                var reqObj = new
+                {
+                    balance_status = balanceStatus,
+                    search = search,
+                    page = 1,
+                    pagesize = 100
+                };
+                var res = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/patient-deposits", reqObj);
+                if (res.IsSuccessStatusCode)
+                {
+                    var pRes = await res.Content.ReadFromJsonAsync<HmsPatientAdvanceDepositBackendResponse>();
+                    if (pRes?.data != null && pRes.data.Count > 0)
+                    {
+                        var list = pRes.data.Select(x => new HmsAdvancePatientItem
+                        {
+                            custid = x.custid,
+                            custcode = !string.IsNullOrWhiteSpace(x.custcode) ? x.custcode : x.custid.ToString(),
+                            patient_name = x.patient_name,
+                            mobile = x.mobile_no,
+                            total_deposited = x.total_deposited,
+                            total_used = x.total_used,
+                            total_refunded = x.total_refunded,
+                            available_balance = x.available_balance,
+                            last_deposit_date = x.last_deposit_date
+                        }).ToList();
+
+                        if (pRes.summary != null)
+                        {
+                            summary.total_deposited_sum = pRes.summary.total_deposited;
+                            summary.total_used_sum = pRes.summary.total_used;
+                            summary.total_refunded_sum = pRes.summary.total_refunded;
+                            summary.total_available_sum = pRes.summary.total_available_balance;
+                        }
+                        else
+                        {
+                            summary.total_deposited_sum = list.Sum(x => x.total_deposited);
+                            summary.total_used_sum = list.Sum(x => x.total_used);
+                            summary.total_refunded_sum = list.Sum(x => x.total_refunded);
+                            summary.total_available_sum = list.Sum(x => x.available_balance);
+                        }
+                        return (list, summary);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GetPatientDepositsAsync] API error: {ex.Message}");
+            }
+
+            // 2. Direct DB fallback using the backend CTE
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    string t = string.IsNullOrWhiteSpace(tenantCode) ? "DEFAULT" : tenantCode;
+                    var p = new DynamicParameters();
+                    p.Add("t", t);
+
+                    string outerWhere = " WHERE 1=1 ";
+                    string st = (balanceStatus ?? "ALL").ToUpperInvariant();
+                    if (st == "HAS_BALANCE" || st == "REFUNDABLE") outerWhere += " AND available_balance > 0.05 ";
+                    else if (st == "ZERO_BALANCE" || st == "EXHAUSTED") outerWhere += " AND available_balance <= 0.05 ";
+
+                    if (!string.IsNullOrWhiteSpace(search))
+                    {
+                        outerWhere += @" AND (patient_name ILIKE @s OR custcode ILIKE @s OR mobile_no ILIKE @s OR custid::text ILIKE @s) ";
+                        p.Add("s", $"%{search.Trim()}%");
+                    }
+
+                    string sql = $@"
+                        WITH base_adv AS (
+                            SELECT 
+                                rm.custid,
+                                MIN(rm.receiptdate) AS first_deposit_date,
+                                MAX(rm.receiptdate) AS last_deposit_date,
+                                COUNT(DISTINCT rm.receiptguid) AS deposit_count,
+                                SUM(CASE WHEN ra.requestguid IS NULL THEN ra.receiptamount ELSE 0 END) AS total_deposited,
+                                SUM(CASE WHEN ra.requestguid IS NOT NULL AND (rref.receipttype IS NULL OR rref.receipttype != 'ADVANCE_REFUND') THEN ra.receiptamount ELSE 0 END) AS total_used,
+                                SUM(CASE WHEN rref.receipttype = 'ADVANCE_REFUND' THEN ra.receiptamount ELSE 0 END) AS total_refunded
+                            FROM receipt_master rm
+                            INNER JOIN receipt_advances ra 
+                                    ON ra.receiptguid = rm.receiptguid 
+                                   AND COALESCE(ra.deleted, false) = false
+                            LEFT JOIN receipt_master rref 
+                                   ON rref.receiptguid = ra.requestguid 
+                                  AND rref.receipttype = 'ADVANCE_REFUND'
+                            WHERE (@t = '' OR @t = 'DEFAULT' OR rm.tenant_code = @t)
+                              AND rm.receipttype = 'ADVANCE'
+                              AND COALESCE(rm.isdeleted, false) = false
+                              AND COALESCE(rm.deleted, false) = false
+                            GROUP BY rm.custid
+                        ),
+                        pat_agg AS (
+                            SELECT
+                                b.custid,
+                                COALESCE(cm.custcode, '') AS custcode,
+                                COALESCE(cm.name, 'Patient #' || b.custid::text) AS patient_name,
+                                COALESCE(cm.mobile, '') AS mobile_no,
+                                b.total_deposited,
+                                b.total_used,
+                                b.total_refunded,
+                                (b.total_deposited - b.total_used - b.total_refunded) AS available_balance,
+                                b.first_deposit_date,
+                                b.last_deposit_date,
+                                b.deposit_count
+                            FROM base_adv b
+                            LEFT JOIN customerdb.customer_master cm ON cm.custid::numeric = b.custid
+                        )
+                        SELECT * FROM pat_agg
+                        {outerWhere}
+                        ORDER BY last_deposit_date DESC NULLS LAST
+                        LIMIT 100";
+
+                    var rows = (await db.QueryAsync<HmsPatientAdvanceDepositRow>(sql, p)).ToList();
+                    var list = rows.Select(x => new HmsAdvancePatientItem
+                    {
+                        custid = x.custid,
+                        custcode = !string.IsNullOrWhiteSpace(x.custcode) ? x.custcode : x.custid.ToString(),
+                        patient_name = x.patient_name,
+                        mobile = x.mobile_no,
+                        total_deposited = x.total_deposited,
+                        total_used = x.total_used,
+                        total_refunded = x.total_refunded,
+                        available_balance = x.available_balance,
+                        last_deposit_date = x.last_deposit_date
+                    }).ToList();
+
+                    summary.total_deposited_sum = list.Sum(x => x.total_deposited);
+                    summary.total_used_sum = list.Sum(x => x.total_used);
+                    summary.total_refunded_sum = list.Sum(x => x.total_refunded);
+                    summary.total_available_sum = list.Sum(x => x.available_balance);
+
+                    return (list, summary);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GetPatientDepositsAsync] DB query error: {ex.Message}");
+            }
+
+            // 3. Fallback to GetAllAdvancePatientsAsync
+            var allPatients = await GetAllAdvancePatientsAsync(tenantCode);
+            var query = allPatients.AsEnumerable();
+
+            if (string.Equals(balanceStatus, "HAS_BALANCE", StringComparison.OrdinalIgnoreCase))
+                query = query.Where(p => p.available_balance > 0);
+            else if (string.Equals(balanceStatus, "ZERO_BALANCE", StringComparison.OrdinalIgnoreCase))
+                query = query.Where(p => p.available_balance <= 0);
+
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                query = query.Where(p =>
+                    (p.patient_name != null && p.patient_name.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                    (p.mobile != null && p.mobile.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                    p.custid.ToString().Contains(search)
+                );
+            }
+
+            var filtered = query.ToList();
+            summary.total_deposited_sum = filtered.Sum(x => x.total_deposited);
+            summary.total_used_sum = filtered.Sum(x => x.total_used);
+            summary.total_refunded_sum = filtered.Sum(x => x.total_refunded);
+            summary.total_available_sum = filtered.Sum(x => x.available_balance);
+
+            return (filtered, summary);
+        }
+
+        public async Task<List<AdvanceRefundHistoryItem>> GetRefundHistoryAsync(
+            DateTime? fromDate = null, DateTime? toDate = null, string? search = null, string? tenantCode = null)
+        {
+            // 1. Try Backend API
+            try
+            {
+                var reqObj = new
+                {
+                    search = search,
+                    fromdate = fromDate?.ToString("yyyy-MM-dd"),
+                    todate = toDate?.ToString("yyyy-MM-dd"),
+                    page = 1,
+                    pagesize = 100
+                };
+                var apiRes = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/refund-history", reqObj);
+                if (apiRes.IsSuccessStatusCode)
+                {
+                    var rRes = await apiRes.Content.ReadFromJsonAsync<HmsAdvanceRefundBackendResponse>();
+                    if (rRes?.data != null && rRes.data.Count > 0)
+                    {
+                        return rRes.data.Select(x => new AdvanceRefundHistoryItem
+                        {
+                            receiptguid = x.receiptguid,
+                            receiptsnoprint = x.receipt_no ?? x.receiptguid,
+                            receiptdate = x.receiptdate,
+                            custid = x.custid,
+                            custcode = x.custcode,
+                            patient_name = x.patient_name,
+                            mobile = x.mobile_no,
+                            refund_amount = x.refund_amount,
+                            processed_by = x.enteredby_name,
+                            counter_name = x.counter_name,
+                            remarks = x.remarks
+                        }).ToList();
+                    }
+                }
+            }
+            catch { }
+
+            // 2. Direct DB fallback
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    string t = string.IsNullOrWhiteSpace(tenantCode) ? "DEFAULT" : tenantCode;
+                    string sql = @"
+                    SELECT rm.receiptguid,
+                           rm.receiptsnoprint,
+                           rm.receiptdate,
+                           rm.custid,
+                           COALESCE(cm.custcode, 'CUST-' || rm.custid) as custcode,
+                           COALESCE(cm.name, 'Patient ' || rm.custid) as patient_name,
+                           COALESCE(cm.mobile, '') as mobile,
+                           COALESCE(rm.amounttotal, rm.amountpaid, 0) as refund_amount,
+                           COALESCE(um.user_name, rm.usercode::text, 'Staff') as processed_by,
+                           COALESCE(c.counter_name, 'Counter ' || rm.cntcode) as counter_name,
+                           rm.paymentreference as remarks
+                    FROM receipt_master rm
+                    LEFT JOIN customerdb.customer_master cm ON cm.custid::numeric = rm.custid
+                    LEFT JOIN user_master um ON um.user_id = rm.usercode
+                    LEFT JOIN counter_master c ON c.cntcode = rm.cntcode
+                    WHERE rm.receipttype = 'ADVANCE_REFUND'
+                      AND COALESCE(rm.isdeleted, false) = false
+                      AND COALESCE(rm.deleted, false) = false
+                      AND (@t = '' OR @t = 'DEFAULT' OR rm.tenant_code = @t)
+                      AND (@from IS NULL OR rm.receiptdate >= @from)
+                      AND (@to IS NULL OR rm.receiptdate <= @to)
+                    ORDER BY rm.receiptdate DESC
+                    LIMIT 100";
+
+                    var rows = (await db.QueryAsync<AdvanceRefundHistoryItem>(sql, new
+                    {
+                        t = t,
+                        from = fromDate?.Date,
+                        to = toDate?.Date.AddDays(1).AddSeconds(-1)
+                    })).ToList();
+
+                    if (!string.IsNullOrWhiteSpace(search))
+                    {
+                        rows = rows.Where(r =>
+                            (r.patient_name != null && r.patient_name.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                            (r.receiptsnoprint != null && r.receiptsnoprint.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                            (r.mobile != null && r.mobile.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                            r.custid.ToString().Contains(search)
+                        ).ToList();
+                    }
+
+                    return rows;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GetRefundHistoryAsync] DB query: {ex.Message}");
+            }
+
+            return new List<AdvanceRefundHistoryItem>();
+        }
+
+        // ─────────────────────────────────────────────────────────────────────────
+        // ADVANCE REFUND REQUESTS & PROCESSING (REQUEST FLOW & CANCEL)
+        // ─────────────────────────────────────────────────────────────────────────
+        public async Task<(bool success, string message, AdvanceRequestItem? data)> CreateRefundRequestAsync(HmsCreateRefundRequestDto req)
+        {
+            if (req.custid <= 0)
+                return (false, "Patient custid is required.", null);
+            if (req.refund_amount <= 0)
+                return (false, "Refund amount must be greater than zero.", null);
+
+            var summary = await GetPatientAdvanceSummaryAsync(req.custid);
+            double availableBal = summary?.available_balance ?? 0;
+            if (req.refund_amount > availableBal)
+            {
+                return (false, $"Requested refund amount (₹{req.refund_amount:N2}) exceeds available advance balance (₹{availableBal:N2}).", null);
+            }
+
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/refund-request", req);
+                if (response.IsSuccessStatusCode)
+                {
+                    var wrapper = await response.Content.ReadFromJsonAsync<HmsAdvanceRequestCreateBackendResponse>();
+                    if (wrapper?.data != null)
+                    {
+                        var item = new AdvanceRequestItem
+                        {
+                            request_id = wrapper.data.request_id,
+                            request_no = wrapper.data.request_no,
+                            request_time = wrapper.data.request_date,
+                            custid = wrapper.data.custid,
+                            custcode = !string.IsNullOrWhiteSpace(wrapper.data.custcode) ? wrapper.data.custcode : $"CUST-{wrapper.data.custid}",
+                            patient_name = wrapper.data.patient_name,
+                            mobile = wrapper.data.mobile_no,
+                            amount = wrapper.data.amount,
+                            source_type = wrapper.data.purpose ?? "Discharge Refund",
+                            notes = wrapper.data.remarks,
+                            status = wrapper.data.status,
+                            request_type = "REFUND"
+                        };
+                        return (true, "Advance refund request sent to cash counter.", item);
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    string reqNo = $"REFR-{DateTime.Now:yyyyMMdd}-{DateTime.Now:HHmmss}";
+                    var newId = Guid.NewGuid();
+                    await db.ExecuteAsync(@"
+                        INSERT INTO hms_advance_request (
+                            request_id, request_no, request_date, custid, patient_name, mobile_no,
+                            amount, purpose, remarks, status, request_type, target_cntcode, target_bhcode, requested_by, requested_by_name,
+                            tenant_code, created_at, updated_at
+                        ) VALUES (
+                            @id, @no, now(), @cid, @pname, @mob,
+                            @amt, @purp, @rem, 'PENDING', 'REFUND', @cnt, @bh, @reqBy, @reqByName,
+                            @t, now(), now()
+                        )", new
+                    {
+                        id = newId,
+                        no = reqNo,
+                        cid = req.custid,
+                        pname = req.patient_name,
+                        mob = req.mobile_no,
+                        amt = req.refund_amount,
+                        purp = req.reason ?? "Discharge Refund",
+                        rem = req.remarks,
+                        cnt = req.target_cntcode,
+                        bh = req.target_bhcode,
+                        reqBy = req.usercode,
+                        reqByName = req.user_name,
+                        t = string.IsNullOrWhiteSpace(req.tenant_code) ? "DEFAULT" : req.tenant_code
+                    });
+
+                    var item = new AdvanceRequestItem
+                    {
+                        request_id = newId,
+                        request_no = reqNo,
+                        request_time = DateTime.UtcNow,
+                        custid = req.custid,
+                        custcode = $"CUST-{req.custid}",
+                        patient_name = req.patient_name ?? "",
+                        mobile = req.mobile_no,
+                        amount = req.refund_amount,
+                        source_type = req.reason ?? "Discharge Refund",
+                        notes = req.remarks,
+                        status = "PENDING",
+                        request_type = "REFUND"
+                    };
+                    return (true, "Advance refund request sent to cash counter.", item);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[CreateRefundRequestAsync] DB error: {ex.Message}");
+            }
+
+            var inMemItem = new AdvanceRequestItem
+            {
+                request_id = Guid.NewGuid(),
+                request_no = $"REFR-{DateTime.Now:yyyyMMdd}-{(_advanceRequests.Count + 101):D4}",
+                request_time = DateTime.UtcNow,
+                custid = req.custid,
+                custcode = $"CUST-{req.custid}",
+                patient_name = req.patient_name ?? "",
+                mobile = req.mobile_no,
+                amount = req.refund_amount,
+                source_type = req.reason ?? "Discharge Refund",
+                notes = req.remarks,
+                status = "PENDING",
+                request_type = "REFUND"
+            };
+            lock (_advanceRequests)
+            {
+                _advanceRequests.Insert(0, inMemItem);
+            }
+            return (true, "Advance refund request sent to cash counter.", inMemItem);
+        }
+
+        public async Task<List<AdvanceRequestItem>> GetRefundRequestsAsync(string status = "PENDING", int? cntcode = null, string? tenantCode = null)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/refund-requests", new
+                {
+                    status = status == "ALL" ? null : status,
+                    cntcode = cntcode,
+                    page = 1,
+                    pagesize = 50
+                });
+                if (response.IsSuccessStatusCode)
+                {
+                    var apiRes = await response.Content.ReadFromJsonAsync<HmsAdvanceRequestsBackendResponse>();
+                    if (apiRes?.data != null && apiRes.data.Count > 0)
+                    {
+                        return apiRes.data.Select(r => new AdvanceRequestItem
+                        {
+                            request_id = r.request_id,
+                            request_no = r.request_no,
+                            request_time = r.request_date,
+                            custid = r.custid,
+                            custcode = string.IsNullOrWhiteSpace(r.custcode) ? $"CUST-{r.custid}" : r.custcode,
+                            patient_name = r.patient_name,
+                            mobile = r.mobile_no,
+                            amount = r.amount,
+                            source_type = r.purpose ?? "Refund",
+                            notes = r.remarks,
+                            status = r.status,
+                            request_type = "REFUND",
+                            receiptguid = r.receiptguid,
+                            receiptsnoprint = r.receiptsnoprint
+                        }).ToList();
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    string where = " WHERE (request_type = 'REFUND' OR request_no LIKE 'REFR-%') ";
+                    var p = new DynamicParameters();
+                    if (!string.IsNullOrWhiteSpace(status) && !string.Equals(status, "ALL", StringComparison.OrdinalIgnoreCase))
+                    {
+                        where += " AND UPPER(status) = UPPER(@st) ";
+                        p.Add("st", status);
+                    }
+                    var rows = (await db.QueryAsync<HmsAdvanceRequestRow>(
+                        $@"SELECT * FROM hms_advance_request {where} ORDER BY request_date DESC LIMIT 100", p)).ToList();
+                    if (rows.Count > 0)
+                    {
+                        return rows.Select(r => new AdvanceRequestItem
+                        {
+                            request_id = r.request_id,
+                            request_no = r.request_no,
+                            request_time = r.request_date,
+                            custid = r.custid,
+                            custcode = string.IsNullOrWhiteSpace(r.custcode) ? $"CUST-{r.custid}" : r.custcode,
+                            patient_name = r.patient_name,
+                            mobile = r.mobile_no,
+                            amount = r.amount,
+                            source_type = r.purpose ?? "Refund",
+                            notes = r.remarks,
+                            status = r.status,
+                            request_type = "REFUND",
+                            target_cntcode = r.target_cntcode,
+                            receiptguid = r.receiptguid,
+                            receiptsnoprint = r.receiptsnoprint
+                        }).ToList();
+                    }
+                }
+            }
+            catch { }
+
+            lock (_advanceRequests)
+            {
+                var q = _advanceRequests.Where(r => r.request_type == "REFUND" || r.request_no.StartsWith("REFR-"));
+                if (!string.Equals(status, "ALL", StringComparison.OrdinalIgnoreCase))
+                    q = q.Where(r => string.Equals(r.status, status, StringComparison.OrdinalIgnoreCase));
+                return q.OrderByDescending(r => r.request_time).ToList();
+            }
+        }
+
+        public async Task<RefundRequestsSummary> GetRefundRequestsSummaryAsync()
+        {
+            var summary = new RefundRequestsSummary();
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    var sum = await db.QueryFirstOrDefaultAsync<RefundRequestsSummary>(@"
+                        SELECT 
+                            COALESCE(COUNT(CASE WHEN UPPER(status) = 'PENDING' THEN 1 END), 0) AS pending_count,
+                            COALESCE(SUM(CASE WHEN UPPER(status) = 'PENDING' THEN amount ELSE 0 END), 0) AS pending_amount,
+                            COALESCE(COUNT(CASE WHEN UPPER(status) IN ('REFUNDED', 'COLLECTED', 'RECEIVED') THEN 1 END), 0) AS refunded_count,
+                            COALESCE(SUM(CASE WHEN UPPER(status) IN ('REFUNDED', 'COLLECTED', 'RECEIVED') THEN amount ELSE 0 END), 0) AS refunded_amount
+                        FROM hms_advance_request
+                        WHERE (UPPER(request_type) = 'REFUND' OR request_no LIKE 'REFR-%')");
+                    if (sum != null)
+                    {
+                        return sum;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[GetRefundRequestsSummaryAsync] DB error: {ex.Message}");
+            }
+
+            try
+            {
+                var allRefunds = await GetRefundRequestsAsync("ALL");
+                if (allRefunds != null && allRefunds.Count > 0)
+                {
+                    summary.pending_count = allRefunds.Count(r => string.Equals(r.status, "PENDING", StringComparison.OrdinalIgnoreCase));
+                    summary.pending_amount = allRefunds.Where(r => string.Equals(r.status, "PENDING", StringComparison.OrdinalIgnoreCase)).Sum(r => r.amount);
+                    summary.refunded_count = allRefunds.Count(r => string.Equals(r.status, "REFUNDED", StringComparison.OrdinalIgnoreCase) || string.Equals(r.status, "COLLECTED", StringComparison.OrdinalIgnoreCase));
+                    summary.refunded_amount = allRefunds.Where(r => string.Equals(r.status, "REFUNDED", StringComparison.OrdinalIgnoreCase) || string.Equals(r.status, "COLLECTED", StringComparison.OrdinalIgnoreCase)).Sum(r => r.amount);
+                    return summary;
+                }
+            }
+            catch { }
+
+            lock (_advanceRequests)
+            {
+                var refunds = _advanceRequests.Where(r => r.request_type == "REFUND" || r.request_no.StartsWith("REFR-")).ToList();
+                summary.pending_count = refunds.Count(r => r.status == "PENDING");
+                summary.pending_amount = refunds.Where(r => r.status == "PENDING").Sum(r => r.amount);
+                summary.refunded_count = refunds.Count(r => r.status == "REFUNDED" || r.status == "COLLECTED");
+                summary.refunded_amount = refunds.Where(r => r.status == "REFUNDED" || r.status == "COLLECTED").Sum(r => r.amount);
+            }
+            return summary;
+        }
+
+        public async Task<(bool success, string message, HmsAdvanceReceiptResponse? receipt)> ProcessRefundRequestAsync(HmsProcessRefundRequestDto req)
+        {
+            try
+            {
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/refund-request/process", req);
+                if (response.IsSuccessStatusCode)
+                {
+                    var wrapper = await response.Content.ReadFromJsonAsync<HmsAdvanceReceiptResponseWrapper>();
+                    if (wrapper?.data != null)
+                    {
+                        return (true, "Advance refund processed successfully.", wrapper.data);
+                    }
+                }
+            }
+            catch { }
+
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    var row = await db.QueryFirstOrDefaultAsync<HmsAdvanceRequestRow>(
+                        "SELECT * FROM hms_advance_request WHERE request_id = @id", new { id = req.request_id });
+
+                    if (row != null)
+                    {
+                        var refundReq = new HmsAdvanceRefundRequest
+                        {
+                            custid = row.custid,
+                            refund_amount = req.amount.HasValue && req.amount.Value > 0 ? req.amount.Value : row.amount,
+                            enteredbhcode = req.enteredbhcode ?? 1,
+                            cntcode = req.cntcode ?? 1,
+                            usercode = req.usercode ?? 15,
+                            computercode = req.computercode ?? 1,
+                            reason = row.purpose ?? "Refund request processed",
+                            remarks = req.remarks ?? $"Mode: {req.payment_mode}, Ref: {req.reference_no}"
+                        };
+
+                        var refundRes = await RefundAdvanceAsync(refundReq);
+                        if (refundRes != null)
+                        {
+                            await db.ExecuteAsync(@"
+                                UPDATE hms_advance_request
+                                SET status = 'REFUNDED', collected_date = now(), receiptguid = @rg, receiptsnoprint = @rn,
+                                    collected_by = @uc, collected_by_name = @uname, payment_mode = @pm, reference_no = @ref, updated_at = now()
+                                WHERE request_id = @id",
+                                new { id = req.request_id, rg = refundRes.receipt_guid, rn = refundRes.receipt_no, uc = req.usercode, uname = req.user_name, pm = req.payment_mode, @ref = req.reference_no });
+
+                            lock (_advanceRequests)
+                            {
+                                var inMem = _advanceRequests.FirstOrDefault(r => r.request_id == req.request_id || (r.custid == row.custid && r.request_type == "REFUND"));
+                                if (inMem != null)
+                                {
+                                    inMem.status = "REFUNDED";
+                                    inMem.receiptsnoprint = refundRes.receipt_no;
+                                    inMem.receiptguid = refundRes.receipt_guid;
+                                }
+                            }
+
+                            return (true, "Advance refund processed successfully.", refundRes);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ProcessRefundRequestAsync] error: {ex.Message}");
+            }
+
+            return (false, "Failed to process refund request.", null);
+        }
+
+        public async Task<bool> CancelAnyAdvanceRequestAsync(Guid requestId, string? cancelReason = null, int? userCode = null)
+        {
+            try
+            {
+                var reqDto = new
+                {
+                    request_id = requestId,
+                    cancel_reason = cancelReason ?? "Cancelled by user",
+                    usercode = userCode
+                };
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/request/cancel", reqDto);
+                if (response.IsSuccessStatusCode) return true;
+            }
+            catch { }
+
+            try
+            {
+                var connStr = _config?.GetConnectionString("conn");
+                if (!string.IsNullOrWhiteSpace(connStr))
+                {
+                    using var db = new NpgsqlConnection(connStr);
+                    EnsureAdvanceRequestTable(db);
+                    int affected = await db.ExecuteAsync(@"
+                        UPDATE hms_advance_request
+                        SET status = 'CANCELLED', cancel_reason = @r, cancelled_by = @uc, cancelled_date = now(), updated_at = now()
+                        WHERE request_id = @id",
+                        new { r = cancelReason, uc = userCode, id = requestId });
+                    if (affected > 0) return true;
+                }
+            }
+            catch { }
+
+            lock (_advanceRequests)
+            {
+                var match = _advanceRequests.FirstOrDefault(r => r.request_id == requestId);
+                if (match != null)
+                {
+                    match.status = "CANCELLED";
+                    if (!string.IsNullOrWhiteSpace(cancelReason)) match.notes = (match.notes ?? "") + $" [Cancelled: {cancelReason}]";
+                    return true;
+                }
+            }
+            return false;
+        }
+        #endregion
     }
 }
 
@@ -794,6 +1914,7 @@ namespace medico_backend.Model
     public class HmsAdvancePatientItem
     {
         public decimal custid { get; set; }
+        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public string? mobile { get; set; }
         public string? city { get; set; }
@@ -835,4 +1956,229 @@ namespace medico_backend.Model
         public string? message { get; set; }
         public HmsAdvanceCancelResponse? data { get; set; }
     }
+
+    public class AdvanceRequestItem
+    {
+        public Guid request_id { get; set; }
+        public string request_no { get; set; } = string.Empty;
+        public DateTime request_time { get; set; } = DateTime.UtcNow;
+        public decimal custid { get; set; }
+        public string custcode { get; set; } = string.Empty;
+        public string patient_name { get; set; } = string.Empty;
+        public string? mobile { get; set; }
+        public double amount { get; set; }
+        public string source_type { get; set; } = "Billing";
+        public string? notes { get; set; }
+        public string status { get; set; } = "PENDING"; // PENDING, RECEIVED, CANCELLED
+        public string request_type { get; set; } = "ADVANCE";
+        public string? payment_mode { get; set; }
+        public string? reference_no { get; set; }
+        public int? target_cntcode { get; set; }
+        public int? requested_by { get; set; }
+        public string? requested_by_name { get; set; }
+        public string tenant_code { get; set; } = "DEFAULT";
+        public string? receiptguid { get; set; }
+        public string? receiptsnoprint { get; set; }
+    }
+
+    public class HmsAdvanceRequestsBackendResponse
+    {
+        public bool success { get; set; }
+        public int totalCount { get; set; }
+        public int page { get; set; }
+        public int pagesize { get; set; }
+        public HmsAdvanceRequestListSummary? summary { get; set; }
+        public List<HmsAdvanceRequestRow>? data { get; set; }
+    }
+
+    public class HmsAdvanceRequestCreateBackendResponse
+    {
+        public bool success { get; set; }
+        public string? message { get; set; }
+        public HmsAdvanceRequestRow? data { get; set; }
+    }
+
+    public class HmsAdvanceRequestRow
+    {
+        public Guid request_id { get; set; }
+        public string request_no { get; set; } = string.Empty;
+        public DateTime request_date { get; set; } = DateTime.UtcNow;
+        public decimal custid { get; set; }
+        public string custcode { get; set; } = string.Empty;
+        public string patient_name { get; set; } = string.Empty;
+        public string? mobile_no { get; set; }
+        public string? opvisitid { get; set; }
+        public Guid? ip_id { get; set; }
+        public double amount { get; set; }
+        public string? purpose { get; set; }
+        public string? remarks { get; set; }
+        public string status { get; set; } = "PENDING";
+        public string? request_type { get; set; }
+        public string? payment_mode { get; set; }
+        public string? reference_no { get; set; }
+        public int? requested_by { get; set; }
+        public string? requested_by_name { get; set; }
+        public int? target_cntcode { get; set; }
+        public int? target_bhcode { get; set; }
+        public int? collected_by { get; set; }
+        public string? collected_by_name { get; set; }
+        public DateTime? collected_date { get; set; }
+        public string? receiptguid { get; set; }
+        public string? receiptsnoprint { get; set; }
+        public string? cancel_reason { get; set; }
+        public int? cancelled_by { get; set; }
+        public DateTime? cancelled_date { get; set; }
+        public string tenant_code { get; set; } = string.Empty;
+    }
+
+    public class HmsAdvanceRequestListSummary
+    {
+        public int total_requests { get; set; }
+        public int pending_count { get; set; }
+        public double pending_amount { get; set; }
+        public int collected_count { get; set; }
+        public double collected_amount { get; set; }
+        public int cancelled_count { get; set; }
+        public double cancelled_amount { get; set; }
+    }
+
+    public class HmsPatientAdvanceDepositBackendResponse
+    {
+        public bool success { get; set; }
+        public int totalCount { get; set; }
+        public int page { get; set; }
+        public int pagesize { get; set; }
+        public HmsPatientAdvanceDepositSummary? summary { get; set; }
+        public List<HmsPatientAdvanceDepositRow>? data { get; set; }
+    }
+
+    public class HmsPatientAdvanceDepositSummary
+    {
+        public int total_patients { get; set; }
+        public double total_deposited { get; set; }
+        public double total_used { get; set; }
+        public double total_refunded { get; set; }
+        public double total_available_balance { get; set; }
+    }
+
+    public class HmsPatientAdvanceDepositRow
+    {
+        public decimal custid { get; set; }
+        public string custcode { get; set; } = string.Empty;
+        public string patient_name { get; set; } = string.Empty;
+        public string mobile_no { get; set; } = string.Empty;
+        public string gender { get; set; } = string.Empty;
+        public int age { get; set; }
+        public double total_deposited { get; set; }
+        public double total_used { get; set; }
+        public double total_refunded { get; set; }
+        public double available_balance { get; set; }
+        public DateTime? first_deposit_date { get; set; }
+        public DateTime? last_deposit_date { get; set; }
+        public string? last_receipt_no { get; set; }
+        public int deposit_count { get; set; }
+        public string status { get; set; } = "ACTIVE";
+    }
+
+    public class HmsAdvanceRefundBackendResponse
+    {
+        public bool success { get; set; }
+        public int totalCount { get; set; }
+        public int page { get; set; }
+        public int pagesize { get; set; }
+        public HmsAdvanceRefundSummary? summary { get; set; }
+        public List<HmsAdvanceRefundHistoryRow>? data { get; set; }
+    }
+
+    public class HmsAdvanceRefundSummary
+    {
+        public int total_refunds { get; set; }
+        public double total_refund_amount { get; set; }
+    }
+
+    public class HmsAdvanceRefundHistoryRow
+    {
+        public string receiptguid { get; set; } = string.Empty;
+        public string? receipt_no { get; set; }
+        public string? receiptbarcode { get; set; }
+        public DateTime receiptdate { get; set; }
+        public decimal custid { get; set; }
+        public string custcode { get; set; } = string.Empty;
+        public string patient_name { get; set; } = string.Empty;
+        public string? mobile_no { get; set; }
+        public double refund_amount { get; set; }
+        public string? payment_mode { get; set; }
+        public string? enteredby_name { get; set; }
+        public string? counter_name { get; set; }
+        public string? remarks { get; set; }
+    }
+
+    public class AdvanceRequestsSummary
+    {
+        public int pending_count { get; set; }
+        public double pending_amount { get; set; }
+        public int received_count { get; set; }
+        public double received_amount { get; set; }
+    }
+
+    public class PatientDepositsSummary
+    {
+        public double total_deposited_sum { get; set; }
+        public double total_used_sum { get; set; }
+        public double total_refunded_sum { get; set; }
+        public double total_available_sum { get; set; }
+    }
+
+    public class AdvanceRefundHistoryItem
+    {
+        public string receiptguid { get; set; } = string.Empty;
+        public string receiptsnoprint { get; set; } = string.Empty;
+        public DateTime? receiptdate { get; set; }
+        public decimal custid { get; set; }
+        public string custcode { get; set; } = string.Empty;
+        public string patient_name { get; set; } = string.Empty;
+        public string? mobile { get; set; }
+        public double refund_amount { get; set; }
+        public string? processed_by { get; set; }
+        public string? counter_name { get; set; }
+        public string? remarks { get; set; }
+    }
 }
+    public class HmsCreateRefundRequestDto
+    {
+        public decimal custid { get; set; }
+        public string? patient_name { get; set; }
+        public string? mobile_no { get; set; }
+        public string? opvisitid { get; set; }
+        public Guid? ip_id { get; set; }
+        public double refund_amount { get; set; }
+        public string? reason { get; set; }
+        public string? remarks { get; set; }
+        public int? target_cntcode { get; set; }
+        public int? target_bhcode { get; set; }
+        public int? usercode { get; set; }
+        public string? user_name { get; set; }
+        public string? tenant_code { get; set; }
+    }
+
+    public class HmsProcessRefundRequestDto
+    {
+        public Guid request_id { get; set; }
+        public double? amount { get; set; }
+        public string payment_mode { get; set; } = "CASH";
+        public string? reference_no { get; set; }
+        public int? enteredbhcode { get; set; }
+        public int? cntcode { get; set; }
+        public int? usercode { get; set; }
+        public string? user_name { get; set; }
+        public int? computercode { get; set; }
+        public string? remarks { get; set; }
+    }
+
+    public class RefundRequestsSummary
+    {
+        public int pending_count { get; set; }
+        public double pending_amount { get; set; }
+        public int refunded_count { get; set; }
+        public double refunded_amount { get; set; }
+    }
