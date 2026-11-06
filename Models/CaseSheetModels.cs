@@ -351,7 +351,6 @@ namespace medico_backend.Model
         public int sno { get; set; }
         public string? diag_id { get; set; } // link to specific diagnosis
         public string drug_name { get; set; } = string.Empty;
-        public string? medicine_name { get => drug_name; set { if (!string.IsNullOrWhiteSpace(value)) drug_name = value; } }
         public decimal? drug_code { get; set; }
         public string? generic_name { get; set; }
         public string? drug_category { get; set; }
@@ -364,8 +363,6 @@ namespace medico_backend.Model
         public string? evening_dose { get; set; }
         public string? night_dose { get; set; }
         public string? dose_unit { get; set; }   // mg / ml / tab / etc.
-        public string? frequency { get; set; }
-        public bool? is_authorized { get; set; } = true;
         public bool before_food { get; set; } = false;
         public bool after_food { get; set; } = false;
         public int? days { get; set; }
@@ -386,13 +383,6 @@ namespace medico_backend.Model
 
         [System.Text.Json.Serialization.JsonIgnore]
         public decimal? availableStock { get; set; }
-
-        // Entry date/time (editable by user before saving)
-        [System.Text.Json.Serialization.JsonIgnore]
-        public string entry_date_str { get; set; } = DateTime.Now.ToString("yyyy-MM-dd");   // bound to date input
-
-        [System.Text.Json.Serialization.JsonIgnore]
-        public string entry_time_str { get; set; } = DateTime.Now.ToString("HH:mm");        // bound to time input
 
         public string? notes { get; set; }
         public string? instructions { get => notes; set => notes = value; }

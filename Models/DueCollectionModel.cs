@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.Collections.Generic;
 using Dapper.Contrib.Extensions;
@@ -300,13 +300,9 @@ namespace medico_backend.Model
         public double refund_amount { get; set; }
         public int? enteredbhcode { get; set; }
         public int? cntcode { get; set; }
-        public int? cash_counter_code { get; set; }
         public string? cnttid { get; set; }
         public int? usercode { get; set; }
         public int? computercode { get; set; }
-        public string? reason { get; set; }
-        public string? payment_mode { get; set; }
-        public string? reference_no { get; set; }
         public string? remarks { get; set; }
     }
 
@@ -350,7 +346,6 @@ namespace medico_backend.Model
         public DateTime? bill_date { get; set; }
         public string? bill_type { get; set; }
         public decimal? custid { get; set; }
-        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public string? mobileno { get; set; }
         public string? opvisitid { get; set; }
@@ -451,7 +446,6 @@ namespace medico_backend.Model
         public string? receipt_barcode { get; set; }
         public string? receipt_type { get; set; }
         public decimal? custid { get; set; }
-        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public double amount { get; set; }
         public string? collection_type { get; set; }
@@ -462,7 +456,6 @@ namespace medico_backend.Model
     public class HmsPatientAdvanceSummary
     {
         public decimal custid { get; set; }
-        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public double total_advance_deposited { get; set; }
         public double total_advance_used { get; set; }
@@ -480,7 +473,6 @@ namespace medico_backend.Model
         public double receiptamount { get; set; }
         public DateTime? receiptdate { get; set; }
         public string? receiptsnoprint { get; set; }
-        public string? bill_no { get; set; }
         public string? transaction_type { get; set; }
     }
 
@@ -545,7 +537,6 @@ namespace medico_backend.Model
         public DateTime? bill_date { get; set; }
         public string? bill_type { get; set; }
         public decimal? custid { get; set; }
-        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public string? mobileno { get; set; }
         public string? opvisitid { get; set; }
@@ -597,7 +588,6 @@ namespace medico_backend.Model
         public DateTime? receiptdate { get; set; }
         public double? amount { get; set; }
         public int? custid { get; set; }
-        public string? custcode { get; set; }
         public string? patient_name { get; set; }
         public string? mobileno { get; set; }
         public string? bill_no { get; set; }

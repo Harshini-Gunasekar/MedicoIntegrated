@@ -70,9 +70,6 @@ namespace Booking.Models
             public string? patient_name { get; set; }
 
             [Write(false)]
-            public string? custcode { get; set; }
-
-            [Write(false)]
             public string? mobile { get; set; }
 
             [Write(false)]

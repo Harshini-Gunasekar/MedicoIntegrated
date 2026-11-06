@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Net.Http.Json;
@@ -391,10 +391,6 @@ namespace Booking.Services
 
                 var response = await _http.SendAsync(req);
                 var raw = await response.Content.ReadAsStringAsync();
-                if (!response.IsSuccessStatusCode)
-                {
-                    Console.WriteLine($"[NurseNotesService] AddMedicineAsync failed: HTTP {(int)response.StatusCode} | Body: {raw}");
-                }
                 return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Medicine record added."));
             }
             catch (Exception ex)
@@ -412,15 +408,6 @@ namespace Booking.Services
                 AddTenantHeaders(req, tenantCode, userCode);
 
                 var response = await _http.SendAsync(req);
-                if (!response.IsSuccessStatusCode && (response.StatusCode == System.Net.HttpStatusCode.MethodNotAllowed || response.StatusCode == System.Net.HttpStatusCode.NotFound))
-                {
-                    // Fallback to PUT
-                    using var putReq = new HttpRequestMessage(HttpMethod.Put, "api/IpBedsideChart/medicine/update");
-                    putReq.Content = JsonContent.Create(request);
-                    AddTenantHeaders(putReq, tenantCode, userCode);
-                    response = await _http.SendAsync(putReq);
-                }
-
                 var raw = await response.Content.ReadAsStringAsync();
                 return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Medicine record updated."));
             }
@@ -464,60 +451,6 @@ namespace Booking.Services
             catch (Exception ex)
             {
                 return (false, $"Error deleting medicine: {ex.Message}");
-            }
-        }
-
-        public async Task<(bool Success, string Message)> SaveNursePrescriptionAsync(SaveNursePrescriptionRequest request, string? tenantCode = null, int? userCode = null)
-        {
-            try
-            {
-                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
-                    request.usercode = userCode.Value;
-                if (request.usercode <= 0)
-                    request.usercode = 1;
-
-                using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/prescription/save");
-                req.Content = JsonContent.Create(request);
-                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
-
-                var response = await _http.SendAsync(req);
-                var raw = await response.Content.ReadAsStringAsync();
-                return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Prescription saved successfully."));
-            }
-            catch (Exception ex)
-            {
-                return (false, $"Error saving prescription: {ex.Message}");
-            }
-        }
-
-        public async Task<(bool Success, string Message)> SendMedicinesToPharmacyAsync(Guid ipId, decimal custId = 0, int userCode = 1, string? tenantCode = null)
-        {
-            try
-            {
-                // 1. Try dedicated endpoint: POST api/IpBedsideChart/medicine/send-to-pharmacy
-                using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/medicine/send-to-pharmacy");
-                req.Content = JsonContent.Create(new { ip_id = ipId });
-                AddTenantHeaders(req, tenantCode, userCode);
-
-                var response = await _http.SendAsync(req);
-                if (response.IsSuccessStatusCode)
-                {
-                    var raw = await response.Content.ReadAsStringAsync();
-                    return (true, ParseResponseMessage(raw, true, "Medicines dispatched to pharmacy queue successfully."));
-                }
-
-                // 2. Fallback to BedsideChart Authorize which marks medications authorized & pushes to pharmacy
-                var authReq = new AuthorizeNurseNotesRequest
-                {
-                    ip_id = ipId,
-                    custid = custId,
-                    usercode = userCode
-                };
-                return await AuthorizeNurseNotesAsync(authReq, tenantCode, userCode);
-            }
-            catch (Exception ex)
-            {
-                return (false, $"Error sending medicines to pharmacy: {ex.Message}");
             }
         }
 
@@ -993,18 +926,6 @@ namespace Booking.Services
                 if (doc.RootElement.TryGetProperty("data", out var dataVal) && dataVal.ValueKind == JsonValueKind.Array)
                 {
                     return JsonSerializer.Deserialize<List<T>>(dataVal.GetRawText(), _jsonOptions) ?? new();
-                }
-                if (doc.RootElement.TryGetProperty("medicine", out var medVal) && medVal.ValueKind == JsonValueKind.Array)
-                {
-                    return JsonSerializer.Deserialize<List<T>>(medVal.GetRawText(), _jsonOptions) ?? new();
-                }
-                if (doc.RootElement.TryGetProperty("medicines", out var medsVal) && medsVal.ValueKind == JsonValueKind.Array)
-                {
-                    return JsonSerializer.Deserialize<List<T>>(medsVal.GetRawText(), _jsonOptions) ?? new();
-                }
-                if (doc.RootElement.TryGetProperty("result", out var resVal) && resVal.ValueKind == JsonValueKind.Array)
-                {
-                    return JsonSerializer.Deserialize<List<T>>(resVal.GetRawText(), _jsonOptions) ?? new();
                 }
             }
             catch (Exception ex)
