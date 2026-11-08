@@ -15,6 +15,12 @@
     public DateTime? createddate { get; set; }
     public string? tenantcode { get; set; }
 
+    public long? receivedby { get; set; }
+    public DateTime? receiveddate { get; set; }
+    public long? reversedby { get; set; }
+    public DateTime? reverseddate { get; set; }
+    public string? reversereason { get; set; }
+
     public List<stock_transfer_detail>? details { get; set; }
 }
  public class stock_transfer_detail
