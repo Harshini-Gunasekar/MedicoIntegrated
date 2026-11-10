@@ -49,7 +49,13 @@ namespace Booking.Models
         public string? authorisationno { get; set; }
         public string? concessionreason { get; set; }
         public string? card_refno { get; set; }
+        public string reference_no { get; set; } = string.Empty;
         public string? bank_app { get; set; }
+        public bool? revert_all_advance { get; set; }
+        public double? revert_advance_amount { get; set; }
+        public decimal? revert_pmcode { get; set; }
+        public string? revert_reference_no { get; set; }
+        public string? revert_reason { get; set; }
         public List<string>? unbilled_charge_ids { get; set; } = new();
 
         public List<HmsBillItemModel> items { get; set; } = new();
@@ -394,5 +400,4 @@ namespace Booking.Models
         public double paid { get; set; }
     }
 }
-
 

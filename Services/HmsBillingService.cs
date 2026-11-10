@@ -199,6 +199,7 @@ namespace Booking.Services
         {
             try
             {
+                model.reference_no ??= string.Empty;
                 var response = await _http.PostAsJsonAsync("api/HmsBilling/update-bill", model);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 
@@ -1481,5 +1482,4 @@ namespace Booking.Services
         }
     }
 }
-
 

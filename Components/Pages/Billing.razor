@@ -1103,6 +1103,7 @@
     private string? savedRequestGuid = null;
     private bool printWithLetterhead = true;
     private bool isPrintingSavedBill = false;
+    private HmsAdvanceUsageResponse? billAdvanceUsage;
 
     // Shift Open Prompt Modal state
     private bool showOpenShiftPromptModal = false;
@@ -1631,6 +1632,8 @@
 
     private async Task CheckPatientAdvanceAsync(decimal custId)
     {
+        billAdvanceUsage = null;
+
         if (custId <= 0)
         {
             patientAdvanceAvailable = 0;
@@ -1654,6 +1657,11 @@
             }
             
             AutoApplyAdvanceIfAvailable();
+            if (!string.IsNullOrWhiteSpace(billModel.requestguid))
+            {
+                var usage = await DueCollectionService.GetAdvanceUsageAsync(billModel.requestguid);
+                billAdvanceUsage = usage.data;
+            }
             StateHasChanged();
         }
         catch (Exception ex)
@@ -4577,6 +4585,37 @@
             advanceUsed += billModel.pmc2_amount.Value;
         if (billModel.pmc3.HasValue && advancePaymodeCodes.Contains(billModel.pmc3.Value) && (billModel.pmc3_amount ?? 0) > 0)
             advanceUsed += billModel.pmc3_amount.Value;
+
+        billModel.revert_all_advance = null;
+        billModel.revert_advance_amount = null;
+        billModel.revert_pmcode = null;
+        billModel.revert_reference_no = null;
+        billModel.revert_reason = null;
+
+        // When an existing bill previously used Advance and is changed to another
+        // paymode, return the previous advance automatically during the update.
+        if (!string.IsNullOrEmpty(billModel.requestguid) &&
+            billAdvanceUsage?.can_revert == true &&
+            advanceUsed <= 0)
+        {
+            var replacementPaymode = new[]
+            {
+                (billModel.pmc1, billModel.pmc1_amount),
+                (billModel.pmc2, billModel.pmc2_amount),
+                (billModel.pmc3, billModel.pmc3_amount)
+            }
+            .FirstOrDefault(p => p.Item1.HasValue &&
+                                 !advancePaymodeCodes.Contains(p.Item1.Value) &&
+                                 (p.Item2 ?? 0) > 0);
+
+            if (replacementPaymode.Item1.HasValue)
+            {
+                billModel.revert_all_advance = true;
+                billModel.revert_advance_amount = billAdvanceUsage.total_advance_used;
+                billModel.revert_pmcode = (decimal)replacementPaymode.Item1.Value;
+                billModel.revert_reason = "Advance paymode changed during bill edit";
+            }
+        }
 
         if (advanceUsed > 0 && advanceUsed > (patientAdvanceAvailable + 0.01))
         {

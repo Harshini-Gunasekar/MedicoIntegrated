@@ -3896,8 +3896,12 @@
             detail.packsize = 1;
         }
 
-        // MRP is the total mrp (for strip) get that from purchase master for selected batch; if no batch then get mrp from itemmaster
-        detail.mrp = GetPurchaseMrpForItem(detail.itemcode, detail.batchno);
+        // Stock Master stores mrpunit as the per-unit MRP. Convert it back to
+        // the full-pack MRP for display and keep the per-unit value as unit cost.
+        var stockUnitMrp = stock != null && stock.mrpunit > 0 ? stock.mrpunit : 0;
+        detail.mrp = stockUnitMrp > 0
+            ? Math.Round(stockUnitMrp * detail.packsize, 2)
+            : GetPurchaseMrpForItem(detail.itemcode, detail.batchno);
         if (detail.mrp <= 0 && matched != null && matched.mrp > 0)
         {
             detail.mrp = matched.mrp;
@@ -3907,9 +3911,10 @@
             detail.mrp = matched.salesrate;
         }
 
-        // Unit cost is mrp / packsize
         decimal pSize = detail.packsize > 0 ? detail.packsize : 1;
-        detail.unitcost = detail.mrp > 0 ? Math.Round(detail.mrp / pSize, 2) : 0;
+        detail.unitcost = stockUnitMrp > 0
+            ? Math.Round(stockUnitMrp, 2)
+            : (detail.mrp > 0 ? Math.Round(detail.mrp / pSize, 2) : 0);
 
         // Rate is synced with unitcost
         detail.rate = detail.unitcost;
@@ -4854,31 +4859,11 @@
                 Console.WriteLine("Pharmacy queue default tenant request exception: " + ex.Message);
             }
 
-            // 2. If no valid queue rows found, retry pharmacy queue with tenantcode header "0010"
-            if (rows == null || !rows.Any(r => !IsQueueRowBilledOrDispensed(r, custId)))
-            {
-                try
-                {
-                    var client = CreateClient();
-                    client.DefaultRequestHeaders.Remove("tenantcode");
-                    client.DefaultRequestHeaders.Add("tenantcode", "0010");
-                    var responseString = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}&billed=false");
-                    if (!string.IsNullOrWhiteSpace(responseString))
-                    {
-                        var parsed = ParsePharmacyQueueJson(responseString);
-                        if (parsed != null && parsed.Any())
-                        {
-                            rows = parsed;
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine("Pharmacy queue 0010 tenant request exception: " + ex.Message);
-                }
-            }
-
-            var validRows = rows?.Where(r => !IsQueueRowBilledOrDispensed(r, custId)).ToList();
+            // Keep only records belonging to the selected patient. This protects the
+            // patient-specific view if the API returns unfiltered tenant rows.
+            var validRows = rows?
+                .Where(r => r.custid == custId && !IsQueueRowBilledOrDispensed(r, custId))
+                .ToList();
 
             if (validRows != null && validRows.Any())
             {
@@ -8437,21 +8422,16 @@
                 }
             }
 
-            // 4. Query pharmacy queue (both default and tenant 0010)
+            // 4. Query the selected patient's pharmacy queue
             if (custId > 0 && CurrentRequest.details.Any(d => string.IsNullOrWhiteSpace(d.instructions)))
             {
                 try
                 {
                     var client = CreateClient();
                     var qResp = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}");
-                    var qRows = ParsePharmacyQueueJson(qResp);
-                    if (qRows == null || !qRows.Any())
-                    {
-                        client.DefaultRequestHeaders.Remove("tenantcode");
-                        client.DefaultRequestHeaders.Add("tenantcode", "0010");
-                        qResp = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}");
-                        qRows = ParsePharmacyQueueJson(qResp);
-                    }
+                    var qRows = ParsePharmacyQueueJson(qResp)?
+                        .Where(q => q.custid == custId)
+                        .ToList();
                     if (qRows != null && qRows.Any())
                     {
                         foreach (var d in CurrentRequest.details.Where(d => string.IsNullOrWhiteSpace(d.instructions)))
@@ -8637,6 +8617,111 @@
         detail.taxamount = 0;
         detail.totalamount = afterDiscount;
         CalculateTotals();
+    }
+
+    private async Task<bool> VerifySalesSavedAsync(HttpClient client, string responseBody)
+    {
+        var savedRequest = ParseRequestResponse(responseBody);
+        var savedSalesCode = savedRequest?.master?.salescode ?? 0;
+        var savedBillNo = savedRequest?.master?.billno;
+
+        if (savedSalesCode <= 0)
+        {
+            savedSalesCode = CurrentRequest.master.salescode;
+        }
+
+        if (string.IsNullOrWhiteSpace(savedBillNo))
+        {
+            savedBillNo = CurrentRequest.master.billno;
+        }
+
+        if (savedSalesCode > 0 || !string.IsNullOrWhiteSpace(savedBillNo))
+        {
+            for (var attempt = 0; attempt < 3; attempt++)
+            {
+                try
+                {
+                    HttpResponseMessage verificationResponse;
+                    if (savedSalesCode > 0)
+                    {
+                        verificationResponse = await client.GetAsync($"api/ItemMaster/getsalesbycode?salescode={savedSalesCode}&tenantcode={DefaultTenant}");
+                    }
+                    else
+                    {
+                        verificationResponse = await client.GetAsync($"api/ItemMaster/getsalesbybillno?billno={Uri.EscapeDataString(savedBillNo!)}&tenantcode={DefaultTenant}");
+                    }
+
+                    if (verificationResponse.IsSuccessStatusCode)
+                    {
+                        var verificationBody = await verificationResponse.Content.ReadAsStringAsync();
+                        var persistedRequest = ParseRequestResponse(verificationBody, savedSalesCode > 0 ? savedSalesCode : null, savedBillNo);
+                        if (persistedRequest?.master != null &&
+                            (savedSalesCode <= 0 || persistedRequest.master.salescode == savedSalesCode) &&
+                            (string.IsNullOrWhiteSpace(savedBillNo) ||
+                             string.Equals(persistedRequest.master.billno, savedBillNo, StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(persistedRequest.master.invoiceno, savedBillNo, StringComparison.OrdinalIgnoreCase)) &&
+                            persistedRequest.details.Any())
+                        {
+                            return true;
+                        }
+                    }
+                }
+                catch (HttpRequestException ex)
+                {
+                    Console.WriteLine($"[SalesMaster] Save verification request failed: {ex.Message}");
+                }
+
+                if (attempt < 2)
+                {
+                    await Task.Delay(300);
+                }
+            }
+        }
+        else
+        {
+            Console.WriteLine("[SalesMaster] Save response did not contain a sales identifier; checking the sales list.");
+        }
+
+        // Some successful save responses do not include the generated sales code
+        // or bill number. Confirm persistence from the sales list before reporting
+        // a false save failure.
+        try
+        {
+            var listResponse = await client.GetAsync("api/ItemMaster/getsales");
+            if (listResponse.IsSuccessStatusCode)
+            {
+                var listBody = await listResponse.Content.ReadAsStringAsync();
+                var savedSales = ParseSalesListResponse(listBody, out _);
+                var expectedCustomer = CurrentRequest.master.customercode;
+                var expectedPatientId = CurrentRequest.master.patientid?.Trim();
+                var expectedPatientName = CurrentRequest.master.patientname?.Trim();
+                var expectedBillDate = CurrentRequest.master.billdate.Date;
+
+                var matchedSale = savedSales
+                    .Where(s => s.billdate.Date == expectedBillDate &&
+                        ((!expectedCustomer.HasValue || expectedCustomer.Value <= 0) ||
+                         s.customercode == expectedCustomer.Value) &&
+                        (string.IsNullOrWhiteSpace(expectedPatientId) ||
+                         string.Equals(s.patientid?.Trim(), expectedPatientId, StringComparison.OrdinalIgnoreCase)) &&
+                        (string.IsNullOrWhiteSpace(expectedPatientName) ||
+                         string.Equals(s.patientname?.Trim(), expectedPatientName, StringComparison.OrdinalIgnoreCase)))
+                    .OrderByDescending(s => s.createddate)
+                    .FirstOrDefault();
+
+                if (matchedSale != null)
+                {
+                    CurrentRequest.master.salescode = matchedSale.salescode;
+                    CurrentRequest.master.billno = matchedSale.billno;
+                    return true;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SalesMaster] Sales list persistence fallback failed: {ex.Message}");
+        }
+
+        return false;
     }
 
     private decimal? GetMasterDiscountPercentage() => CurrentRequest.master.discountpercentage == 0 ? null : CurrentRequest.master.discountpercentage;
@@ -9406,7 +9491,16 @@
                 {
                     var msg = string.IsNullOrEmpty(innerErrorMessage) ? "Backend operation returned unsuccessful status." : innerErrorMessage;
                     Console.WriteLine($"[SalesMaster] API returned 200 OK but inner payload indicates failure: {msg}");
-                    ShowFormattedBackendMessage(msg);
+                    if (!await VerifySalesSavedAsync(client, responseBody))
+                    {
+                        ShowFormattedBackendMessage(msg);
+                        return;
+                    }
+                }
+                else if (!await VerifySalesSavedAsync(client, responseBody))
+                {
+                    Console.WriteLine("[SalesMaster] Save API returned success, but the bill could not be verified as persisted.");
+                    ToastService.ShowError("Bill was not saved. Please try again.");
                     return;
                 }
 
