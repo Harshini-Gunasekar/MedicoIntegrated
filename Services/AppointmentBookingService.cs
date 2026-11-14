@@ -732,9 +732,29 @@ namespace Booking.Services
         {
             try
             {
-                var encodedStatus = Uri.EscapeDataString(visitStatus ?? string.Empty);
+                var normalizedStatus = visitStatus?.Trim().ToUpperInvariant() switch
+                {
+                    "IN CONSULTATION" or "IN_CONSULTATION" or "ON GOING" or "ONGOING" or "CONSULTING" => "IN_CONSULTATION",
+                    "WAITING" or "QUEUE" or "WAIT" => "WAITING",
+                    "COMPLETED" or "VISITED" or "CONFIRMED" => "COMPLETED",
+                    "CANCELLED" or "CANCELED" or "NOT ATTENDED" => "CANCELLED",
+                    "RESCHEDULED" or "REBOOKED" => "RESCHEDULED",
+                    _ => visitStatus?.Trim().ToUpperInvariant() ?? string.Empty
+                };
+
+                var encodedStatus = Uri.EscapeDataString(normalizedStatus);
                 var response = await _http.PostAsync($"api/OpRegistration/update-visit-status?op_id={opId}&visit_status={encodedStatus}", null);
-                return response.IsSuccessStatusCode;
+                if (response.IsSuccessStatusCode)
+                {
+                    var content = await response.Content.ReadAsStringAsync();
+                    if (content.Contains("Invalid status", StringComparison.OrdinalIgnoreCase))
+                    {
+                        Console.WriteLine($"[UpdateOpStatusAsync] Backend rejected status: {content}");
+                        return false;
+                    }
+                    return true;
+                }
+                return false;
             }
             catch (Exception ex)
             {

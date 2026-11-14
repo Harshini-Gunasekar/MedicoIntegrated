@@ -2076,6 +2076,20 @@
                                     <button type="button" class="btn-save" style="font-size: 0.75rem; padding: 0.35rem 0.85rem; font-weight: 600; background: #10b981; color: white; border: none; border-radius: 4px; cursor: pointer; white-space: nowrap;" @onclick="() => AddPrescriptionItemToGrid(item)">
                                         Add to Grid
                                     </button>
+                                    <button type="button"
+                                            style="height: 28px; width: 30px; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #fecaca; border-radius: 4px; background: #fef2f2; color: #dc2626; cursor: @(IsCancellingQueue(item) ? "wait" : "pointer");"
+                                            title="Delete unbilled item"
+                                            @onclick="() => CancelUnbilledQueueItemAsync(item)"
+                                            disabled="@IsCancellingQueue(item)">
+                                        @if (IsCancellingQueue(item))
+                                        {
+                                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="width: 0.75rem; height: 0.75rem;"></span>
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-trash3-fill" style="color: #dc2626; font-size: 0.85rem;"></i>
+                                        }
+                                    </button>
                                 }
                             </div>
                         </div>
@@ -2341,10 +2355,15 @@
     private List<PendingPrescriptionDisplayItem> PendingPrescriptions = new();
     private bool showUnbilledPrescriptionModal = false;
     private bool loadingPendingPrescriptions = false;
+    private readonly HashSet<Guid> CancellingQueueIds = new();
+    private readonly HashSet<Guid> CancellingItemIds = new();
 
     private static HashSet<Guid> BilledQueueIds = new();
     private static HashSet<Guid> BilledPrDetIds = new();
     private static HashSet<string> BilledPatientItemKeys = new();
+    private static readonly HashSet<Guid> CancelledQueueIds = new();
+    private static readonly HashSet<Guid> CancelledPrDetIds = new();
+    private static readonly HashSet<string> CancelledItemKeys = new(StringComparer.OrdinalIgnoreCase);
     private static List<sales_request> AllSavedSalesRequests = new();
 
     // Cache to ensure doctor instructions persist across edits even if backend table schema omits instructions
@@ -2617,11 +2636,20 @@
                 return true;
             }
         }
-        if (r.queue_id != Guid.Empty && BilledQueueIds.Contains(r.queue_id)) return true;
-        if (r.pr_det_id.HasValue && r.pr_det_id.Value != Guid.Empty && BilledPrDetIds.Contains(r.pr_det_id.Value)) return true;
+        if (r.queue_id != Guid.Empty && (BilledQueueIds.Contains(r.queue_id) || CancelledQueueIds.Contains(r.queue_id))) return true;
+        if (r.pr_det_id.HasValue && r.pr_det_id.Value != Guid.Empty && (BilledPrDetIds.Contains(r.pr_det_id.Value) || CancelledPrDetIds.Contains(r.pr_det_id.Value))) return true;
 
         string drugName = !string.IsNullOrWhiteSpace(r.matched_itemname) ? r.matched_itemname : (r.drug_name ?? "");
         long itemCode = r.matched_itemcode ?? 0;
+
+        if (custId > 0 && !string.IsNullOrWhiteSpace(drugName))
+        {
+            var cleanDrugNorm = System.Text.RegularExpressions.Regex.Replace(drugName.Trim().ToUpperInvariant(), @"[^A-Z0-9]", "");
+            if (!string.IsNullOrWhiteSpace(cleanDrugNorm) && CancelledItemKeys.Contains($"{custId}_{cleanDrugNorm}"))
+            {
+                return true;
+            }
+        }
 
         if (IsItemBilledForPatient(custId, CurrentRequest?.master?.patientid ?? PatientIdSearchText, CurrentRequest?.master?.patientname ?? PatientNameSearchText, itemCode, drugName, r.queue_id, r.pr_det_id, r.created_at))
         {
@@ -2636,7 +2664,16 @@
         if (item == null) return true;
         if (item.is_billed == true) return true;
         if (item.isdeleted == true) return true;
-        if (item.pr_det_id != Guid.Empty && BilledPrDetIds.Contains(item.pr_det_id)) return true;
+        if (item.pr_det_id != Guid.Empty && (BilledPrDetIds.Contains(item.pr_det_id) || CancelledPrDetIds.Contains(item.pr_det_id))) return true;
+
+        if (custId > 0 && !string.IsNullOrWhiteSpace(item.drug_name))
+        {
+            var cleanDrugNorm = System.Text.RegularExpressions.Regex.Replace(item.drug_name.Trim().ToUpperInvariant(), @"[^A-Z0-9]", "");
+            if (!string.IsNullOrWhiteSpace(cleanDrugNorm) && CancelledItemKeys.Contains($"{custId}_{cleanDrugNorm}"))
+            {
+                return true;
+            }
+        }
 
         long itemCode = item.drug_code.HasValue ? (long)item.drug_code.Value : 0;
         if (IsItemBilledForPatient(custId, CurrentRequest?.master?.patientid ?? PatientIdSearchText, CurrentRequest?.master?.patientname ?? PatientNameSearchText, itemCode, item.drug_name, null, item.pr_det_id, visitDate ?? item.created_at))
@@ -5008,6 +5045,8 @@
                     var unbilledNurseMeds = nurseMeds.Where(nm =>
                         !nm.isdeleted &&
                         !string.Equals(nm.status, "BILLED", StringComparison.OrdinalIgnoreCase) &&
+                        !CancelledPrDetIds.Contains(nm.med_id) &&
+                        (string.IsNullOrWhiteSpace(nm.medicine_name) || !CancelledItemKeys.Contains($"{custId}_{System.Text.RegularExpressions.Regex.Replace(nm.medicine_name.Trim().ToUpperInvariant(), @"[^A-Z0-9]", "")}")) &&
                         !IsNurseMedBilled(nm, custId) &&
                         !PendingPrescriptions.Any(p =>
                             (p.PrDetId.HasValue && p.PrDetId.Value == nm.med_id) ||
@@ -5440,6 +5479,176 @@
         decimal total = dailyDose * (decimal)days;
         // Round off to integer (never decimal)
         return (decimal)Math.Max(1, (int)Math.Ceiling(total));
+    }
+
+    private static bool HasQueueId(PendingPrescriptionDisplayItem item)
+    {
+        return item != null && item.QueueId.HasValue && item.QueueId.Value != Guid.Empty;
+    }
+
+    private bool IsCancellingQueue(PendingPrescriptionDisplayItem item)
+    {
+        if (item == null) return false;
+        return CancellingItemIds.Contains(item.Id) ||
+               (item.QueueId.HasValue && CancellingQueueIds.Contains(item.QueueId.Value));
+    }
+
+    private async Task CancelUnbilledQueueItemAsync(PendingPrescriptionDisplayItem item)
+    {
+        if (item == null) return;
+
+        CancellingItemIds.Add(item.Id);
+        Guid? queueId = item.QueueId;
+        var custId = CurrentRequest?.master?.customercode > 0 ? CurrentRequest.master.customercode.Value : 0;
+        if (custId <= 0 && !string.IsNullOrWhiteSpace(PatientNameSearchText))
+        {
+            var matchCust = CustomerList.FirstOrDefault(c =>
+                string.Equals(c.customername, PatientNameSearchText, StringComparison.OrdinalIgnoreCase));
+            if (matchCust != null) custId = matchCust.customercode;
+        }
+
+        try
+        {
+            var client = CreateClient();
+            var queueIdsToCancel = new List<Guid>();
+            if (queueId.HasValue && queueId.Value != Guid.Empty)
+            {
+                queueIdsToCancel.Add(queueId.Value);
+            }
+
+            if (item.RawQueueRow != null && item.RawQueueRow.queue_id != Guid.Empty && !queueIdsToCancel.Contains(item.RawQueueRow.queue_id))
+            {
+                queueIdsToCancel.Add(item.RawQueueRow.queue_id);
+            }
+
+            // Also check all matching queue rows for this patient
+            if (custId > 0)
+            {
+                try
+                {
+                    var responseString = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}");
+                    var rows = ParsePharmacyQueueJson(responseString);
+                    var matches = rows?.Where(r =>
+                        (queueId.HasValue && r.queue_id == queueId.Value) ||
+                        (item.PrDetId.HasValue && r.pr_det_id.HasValue && r.pr_det_id.Value == item.PrDetId.Value) ||
+                        (item.MatchedItemCode.HasValue && item.MatchedItemCode.Value > 0 && r.matched_itemcode.HasValue && r.matched_itemcode.Value == item.MatchedItemCode.Value) ||
+                        (!string.IsNullOrWhiteSpace(item.DrugName) && !string.IsNullOrWhiteSpace(r.drug_name) &&
+                         string.Equals(item.DrugName.Trim(), r.drug_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                    ).ToList();
+
+                    if (matches != null && matches.Any())
+                    {
+                        foreach (var m in matches)
+                        {
+                            if (m.queue_id != Guid.Empty && !queueIdsToCancel.Contains(m.queue_id))
+                            {
+                                queueIdsToCancel.Add(m.queue_id);
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CancelUnbilledQueueItemAsync] Error resolving matching queue rows: {ex.Message}");
+                }
+            }
+
+            foreach (var qId in queueIdsToCancel)
+            {
+                CancellingQueueIds.Add(qId);
+            }
+
+            // 1. Post to unbill-cancel endpoint using UnbillCancelQueueRequest
+            if (queueIdsToCancel.Any())
+            {
+                try
+                {
+                    var cancelRequest = new UnbillCancelQueueRequest
+                    {
+                        queue_ids = queueIdsToCancel,
+                        cancel = true,
+                        reason = "Cancelled from Sales Master"
+                    };
+                    await client.PostAsJsonAsync("api/ItemMaster/pharmacy-queue/unbill-cancel", cancelRequest);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[CancelUnbilledQueueItemAsync] unbill-cancel exception: {ex.Message}");
+                }
+
+                // 2. Also update status to CANCELLED in pharmacy_prescription_queue
+                foreach (var qId in queueIdsToCancel)
+                {
+                    try
+                    {
+                        var updateReq = new UpdateQueueStatusRequest
+                        {
+                            queue_id = qId,
+                            status = "CANCELLED"
+                        };
+                        await client.PostAsJsonAsync("api/ItemMaster/pharmacy-queue/update-status", updateReq);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[CancelUnbilledQueueItemAsync] update-status exception: {ex.Message}");
+                    }
+                }
+            }
+
+            // 3. Track in session cancellation sets so it will NEVER be loaded again
+            foreach (var qId in queueIdsToCancel)
+            {
+                CancelledQueueIds.Add(qId);
+                BilledQueueIds.Add(qId);
+            }
+            if (queueId.HasValue && queueId.Value != Guid.Empty)
+            {
+                CancelledQueueIds.Add(queueId.Value);
+                BilledQueueIds.Add(queueId.Value);
+            }
+            if (item.PrDetId.HasValue && item.PrDetId.Value != Guid.Empty)
+            {
+                CancelledPrDetIds.Add(item.PrDetId.Value);
+                BilledPrDetIds.Add(item.PrDetId.Value);
+            }
+            if (custId > 0 && !string.IsNullOrWhiteSpace(item.DrugName))
+            {
+                var cleanNorm = System.Text.RegularExpressions.Regex.Replace(item.DrugName.Trim().ToUpperInvariant(), @"[^A-Z0-9]", "");
+                if (!string.IsNullOrWhiteSpace(cleanNorm))
+                {
+                    CancelledItemKeys.Add($"{custId}_{cleanNorm}");
+                }
+            }
+
+            // 4. Remove from PendingPrescriptions in all tabs
+            PendingPrescriptions.RemoveAll(p => p.Id == item.Id ||
+                (queueId.HasValue && p.QueueId.HasValue && p.QueueId.Value == queueId.Value) ||
+                (queueIdsToCancel.Any(qid => p.QueueId.HasValue && p.QueueId.Value == qid)) ||
+                (item.PrDetId.HasValue && p.PrDetId.HasValue && p.PrDetId.Value == item.PrDetId.Value) ||
+                (!string.IsNullOrWhiteSpace(item.DrugName) && string.Equals(p.DrugName?.Trim(), item.DrugName.Trim(), StringComparison.OrdinalIgnoreCase)));
+
+            foreach (var tab in BillingTabs)
+            {
+                tab.PendingPrescriptions?.RemoveAll(p => p.Id == item.Id ||
+                    (queueId.HasValue && p.QueueId.HasValue && p.QueueId.Value == queueId.Value) ||
+                    (queueIdsToCancel.Any(qid => p.QueueId.HasValue && p.QueueId.Value == qid)) ||
+                    (item.PrDetId.HasValue && p.PrDetId.HasValue && p.PrDetId.Value == item.PrDetId.Value) ||
+                    (!string.IsNullOrWhiteSpace(item.DrugName) && string.Equals(p.DrugName?.Trim(), item.DrugName.Trim(), StringComparison.OrdinalIgnoreCase)));
+            }
+
+            ToastService.ShowSuccess("Unbilled item deleted successfully.");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error cancelling unbilled item: {ex.Message}");
+            ToastService.ShowError("Unable to cancel the unbilled item. Please try again.");
+        }
+        finally
+        {
+            CancellingItemIds.Remove(item.Id);
+            if (queueId.HasValue) CancellingQueueIds.Remove(queueId.Value);
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
     private void AddPrescriptionItemToGrid(PendingPrescriptionDisplayItem item)

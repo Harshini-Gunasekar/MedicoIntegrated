@@ -27,6 +27,7 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject LabSettingService LabSettingService
 @inject OtService OtService
+@inject Booking.Services.OpStatusMasterService OpStatusMasterService
 @inject Booking.Services.RoleMasterService RoleService
 
 @implements IDisposable
@@ -148,12 +149,12 @@
                             <div class="stat-popup-item orange">
                                 <i class="bi bi-hourglass-split"></i>
                                 <span class="label">Pending</span>
-                                <span class="num">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "BOOKED")</span>
+                                <span class="num">@GetFilteredBookings().Count(b => GetStatusCode(b.booking_status) == "WAITING")</span>
                             </div>
                             <div class="stat-popup-item green">
                                 <i class="bi bi-check2-all"></i>
                                 <span class="label">Confirmed/Served</span>
-                                <span class="num">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "CONFIRMED" || b.booking_status?.ToUpper() == "COMPLETED" || b.booking_status?.ToUpper() == "VISITED")</span>
+                                <span class="num">@GetFilteredBookings().Count(b => GetStatusCode(b.booking_status) == "COMPLETED")</span>
                             </div>
                         }
                         else
@@ -219,12 +220,12 @@
                 <div class="filter-group filter-status-col">
                     <label class="filter-label">STATUS</label>
                     <select class="form-select filter-select" @bind="statusFilter" @bind:after="OnStatusChanged">
-                        <option value="WAITING">Waiting</option>
-                        <option value="IN_CONSULTATION">In Consultation</option>
-                        <option value="COMPLETED">Completed</option>
+                        <option value="WAITING">@GetStatusDisplayName("Waiting")</option>
+                        <option value="IN_CONSULTATION">@GetStatusDisplayName("In Consultation")</option>
+                        <option value="COMPLETED">@GetStatusDisplayName("Completed")</option>
                         <option value="BOOKED">Booked</option>
                         <option value="CONFIRMED">Confirmed</option>
-                        <option value="CANCELLED">Cancelled</option>
+                        <option value="CANCELLED">@GetStatusDisplayName("Cancelled")</option>
                         <option value="ALL">All Statuses</option>
                     </select>
                 </div>
@@ -483,8 +484,8 @@
                                         </td>
                                     }
                                     <td>
-                                        <span class="status-pill @(b.booking_status?.ToLower().Replace(" ", "_") ?? "")">
-                                            @b.booking_status
+                                        <span class="status-pill @GetStatusCode(b.booking_status).ToLowerInvariant()">
+                                            @GetStatusDisplayName(b.booking_status)
                                         </span>
                                     </td>
                                     <td>
@@ -1875,6 +1876,7 @@
 
     private List<DoctorMasterModel> doctors = new();
     private List<DoctorBookingListModel> todayBookings = new();
+    private List<OpStatusMasterModel> opStatuses = new();
     private int? selectedDoctorDcode = null; // Defaulting to all specialists
     private DateTime selectedDate = DateTime.UtcNow.ToIndianTime().Date; // Defaulting to current date
     private string searchQuery = string.Empty;
@@ -2214,6 +2216,58 @@
 
     private System.Threading.Timer? autoRefreshTimer;
 
+    private static string GetDefaultStatusName(string? statusCode)
+    {
+        if (string.IsNullOrWhiteSpace(statusCode)) return "Waiting";
+        return statusCode.Trim().ToUpperInvariant() switch
+        {
+            "WAITING" or "WAIT" or "QUEUE" or "BOOKED" => "Waiting",
+            "IN CONSULTATION" or "IN_CONSULTATION" or "CONSULTING" or "ON GOING" or "ONGOING" => "In Consultation",
+            "COMPLETED" or "VISITED" or "CONFIRMED" => "Completed",
+            "CANCELLED" or "CANCELED" or "NOT ATTENDED" => "Cancelled",
+            "RESCHEDULED" or "REBOOKED" => "Rescheduled",
+            _ => statusCode.Trim()
+        };
+    }
+
+    private static string GetStatusCode(string? statusCode)
+    {
+        if (string.IsNullOrWhiteSpace(statusCode)) return "WAITING";
+        return statusCode.Trim().ToUpperInvariant() switch
+        {
+            "WAITING" or "WAIT" or "QUEUE" or "BOOKED" => "WAITING",
+            "IN CONSULTATION" or "IN_CONSULTATION" or "CONSULTING" or "ON GOING" or "ONGOING" => "IN_CONSULTATION",
+            "COMPLETED" or "VISITED" or "CONFIRMED" => "COMPLETED",
+            "CANCELLED" or "CANCELED" or "NOT ATTENDED" => "CANCELLED",
+            "RESCHEDULED" or "REBOOKED" => "RESCHEDULED",
+            _ => statusCode.Trim().ToUpperInvariant()
+        };
+    }
+
+    private string GetStatusDisplayName(string? statusCode)
+    {
+        var rawCode = string.IsNullOrWhiteSpace(statusCode) ? "WAITING" : statusCode.Trim();
+        var code = GetStatusCode(rawCode);
+
+        // 1. Check OP Status Master for custom display name
+        if (opStatuses != null && opStatuses.Any())
+        {
+            var status = opStatuses.FirstOrDefault(s =>
+                GetStatusCode(s.status_key) == code ||
+                GetStatusCode(s.status_name) == code ||
+                GetStatusCode(s.default_status_name) == code ||
+                string.Equals(s.display_status_name, rawCode, StringComparison.OrdinalIgnoreCase));
+
+            if (status != null && !string.IsNullOrWhiteSpace(status.display_status_name))
+            {
+                return status.display_status_name.Trim();
+            }
+        }
+
+        // 2. When no display name is chosen, return the default display name
+        return GetDefaultStatusName(code);
+    }
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -2229,7 +2283,8 @@
         // Parallelize primary OP view data loading so patient list appears immediately
         await Task.WhenAll(
             LoadDoctorsAsync(),
-            LoadTodayBookingsAsync()
+            LoadTodayBookingsAsync(),
+            LoadOpStatusesAsync()
         );
 
         // Background non-blocking pre-fetches for auxiliary data
@@ -2289,7 +2344,10 @@
 
         if (activeTab == "OP")
         {
-            await LoadTodayBookingsAsync();
+            await Task.WhenAll(
+                LoadTodayBookingsAsync(),
+                LoadOpStatusesAsync()
+            );
         }
         else if (activeTab == "IP")
         {
@@ -2334,7 +2392,7 @@
             selectedDcode = match.dcode;
             selectedPatientName = FormatPatientName(booking.custid, booking.patient_name ?? "Walk-in Patient");
             selectedVisitDate = selectedDate;
-            selectedOpStatus = match.visit_status;
+            selectedOpStatus = !string.IsNullOrWhiteSpace(booking.booking_status) ? booking.booking_status : match.visit_status;
             initialCaseSheetTab = "notes";
 
             showCaseSheetModal = true;
@@ -2401,6 +2459,11 @@
         {
             ApplyFilters();
         }
+    }
+
+    private async Task LoadOpStatusesAsync()
+    {
+        opStatuses = await OpStatusMasterService.GetAllStatusesAsync(activeOnly: true);
     }
 
     private async Task LoadTodayBookingsAsync()
@@ -2472,7 +2535,31 @@
                 }
             }
 
-            // 6. Map registrations to DoctorBookingListModel
+            // 6. Pre-fetch case sheets to know if clinical records are saved / finalized
+            var caseSheetMap = new Dictionary<Guid, CaseSheetViewModel?>();
+            if (filteredRegs.Any())
+            {
+                var csTasks = filteredRegs.Select(async r =>
+                {
+                    try
+                    {
+                        var cs = await CaseSheetService.GetCaseSheetByVisitAsync(r.op_id, null);
+                        return (opId: r.op_id, cs: cs);
+                    }
+                    catch
+                    {
+                        return (opId: r.op_id, cs: (CaseSheetViewModel?)null);
+                    }
+                }).ToList();
+
+                var csResults = await Task.WhenAll(csTasks);
+                foreach (var (opId, cs) in csResults)
+                {
+                    caseSheetMap[opId] = cs;
+                }
+            }
+
+            // 7. Map registrations to DoctorBookingListModel
             var mappedBookings = new List<DoctorBookingListModel>(filteredRegs.Count);
             foreach (var r in filteredRegs)
             {
@@ -2495,6 +2582,43 @@
                     slotEndTime = slotInfo.slot_end_time;
                 }
 
+                // Determine effective status:
+                // 1. Cancelled or Rescheduled stays as is.
+                // 2. Initially keep all status as WAITING which has no saved records.
+                // 3. When any record is saved, update status to IN_CONSULTATION.
+                // 4. When case sheet is finalized, show as COMPLETED.
+                var rawVisitStatus = r.visit_status?.Trim().ToUpperInvariant() ?? "";
+                string effectiveStatus;
+                if (rawVisitStatus is "CANCELLED" or "CANCELED" or "NOT ATTENDED")
+                {
+                    effectiveStatus = "CANCELLED";
+                }
+                else if (rawVisitStatus is "RESCHEDULED" or "REBOOKED")
+                {
+                    effectiveStatus = "RESCHEDULED";
+                }
+                else if (caseSheetMap.TryGetValue(r.op_id, out var cs) && cs != null && !string.IsNullOrEmpty(cs.sheet_id))
+                {
+                    if (string.Equals(cs.sheet_status, "FINALIZED", StringComparison.OrdinalIgnoreCase) ||
+                        string.Equals(cs.sheet_status, "COMPLETED", StringComparison.OrdinalIgnoreCase) ||
+                        rawVisitStatus is "COMPLETED" or "VISITED" or "CONFIRMED")
+                    {
+                        effectiveStatus = "COMPLETED";
+                    }
+                    else
+                    {
+                        effectiveStatus = "IN_CONSULTATION";
+                    }
+                }
+                else if (rawVisitStatus is "COMPLETED" or "VISITED" or "CONFIRMED")
+                {
+                    effectiveStatus = "COMPLETED";
+                }
+                else
+                {
+                    effectiveStatus = "WAITING";
+                }
+
                 var model = new DoctorBookingListModel
                 {
                     booking_id = (r.booking_id.HasValue && r.booking_id.Value != Guid.Empty) ? r.booking_id.Value : r.op_id,
@@ -2506,7 +2630,7 @@
                     slot_start_time = slotStartTime,
                     slot_end_time = slotEndTime,
                     token_no = int.TryParse(r.token_no, out int parsedTokenNo) ? parsedTokenNo : 0,
-                    booking_status = r.visit_status,
+                    booking_status = effectiveStatus,
                     booking_type = bookingType,
                     reg_type = !string.IsNullOrWhiteSpace(r.reg_type) ? r.reg_type : (bookingType ?? "WALKIN"),
                     notes = r.notes,
@@ -2560,24 +2684,19 @@
         {
             if (statusFilter.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase))
             {
-                result = result.Where(b => 
-                    (b.booking_status?.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (b.booking_status?.Equals("VISITED", StringComparison.OrdinalIgnoreCase) ?? false)
-                ).ToList();
+                result = result.Where(b => GetStatusCode(b.booking_status) == "COMPLETED").ToList();
             }
             else if (statusFilter.Equals("WAITING", StringComparison.OrdinalIgnoreCase))
             {
-                result = result.Where(b => 
-                    (b.booking_status?.Equals("WAITING", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (b.booking_status?.Equals("BOOKED", StringComparison.OrdinalIgnoreCase) ?? false)
-                ).ToList();
+                result = result.Where(b => GetStatusCode(b.booking_status) == "WAITING").ToList();
             }
             else if (statusFilter.Equals("IN_CONSULTATION", StringComparison.OrdinalIgnoreCase))
             {
-                result = result.Where(b => 
-                    (b.booking_status?.Equals("IN_CONSULTATION", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (b.booking_status?.Equals("IN CONSULTATION", StringComparison.OrdinalIgnoreCase) ?? false)
-                ).ToList();
+                result = result.Where(b => GetStatusCode(b.booking_status) == "IN_CONSULTATION").ToList();
+            }
+            else if (statusFilter.Equals("CANCELLED", StringComparison.OrdinalIgnoreCase))
+            {
+                result = result.Where(b => GetStatusCode(b.booking_status) == "CANCELLED").ToList();
             }
             else
             {

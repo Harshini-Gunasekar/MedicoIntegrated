@@ -2059,6 +2059,7 @@
                 if (activeUserCode > 0) billModel.usercode = activeUserCode;
                 await CheckCounterShiftOpenAsync(showPrompt: true);
                 StateHasChanged();
+                _ = LoadCustomersCacheAsync();
             }
             catch (Exception ex)
             {
@@ -3779,16 +3780,27 @@
     }
 
     // --- Autocomplete Searches ---
+    private Task? _customersCacheLoadTask;
+
     private async Task LoadCustomersCacheAsync(bool forceReload = false)
     {
         if (isCustomersCacheLoaded && !forceReload) return;
+        if (_customersCacheLoadTask != null && !forceReload)
+        {
+            await _customersCacheLoadTask;
+            return;
+        }
+
+        _customersCacheLoadTask = LoadCustomersCacheCoreAsync();
+        await _customersCacheLoadTask;
+    }
+
+    private async Task LoadCustomersCacheCoreAsync()
+    {
         try
         {
             using var client = CreateClient(true);
-            Booking.Models.LabSettingModel? setting = null;
-            try { setting = await LabSettingService.GetLabSettingAsync(); } catch { }
-
-            string endpoint = (setting?.show_all_customers ?? true) ? "api/Customer/get" : "api/customer/getcus";
+            string endpoint = "api/customer/getcus";
             var response = await client.GetAsync(endpoint);
             if (response.IsSuccessStatusCode)
             {
@@ -3830,7 +3842,7 @@
             {
                 await ExecutePatientSearchAsync(term);
             });
-        }, null, 260, System.Threading.Timeout.Infinite);
+        }, null, 120, System.Threading.Timeout.Infinite);
     }
 
     private void OnPatientSearchInput(ChangeEventArgs e)
@@ -3852,65 +3864,40 @@
 
         try
         {
-            using var client = CreateClient(true); // LabCareUrl
-            var response = await client.GetAsync($"api/Customer/search?key={Uri.EscapeDataString(term)}", token);
+            await LoadCustomersCacheAsync();
 
             if (token.IsCancellationRequested || term != patientSearchQuery) return;
 
-            var rawJson = await response.Content.ReadAsStringAsync(token);
-
-            if (token.IsCancellationRequested || term != patientSearchQuery) return;
-
-            if (response.IsSuccessStatusCode)
+            if (isCustomersCacheLoaded)
             {
-                var settings = new Newtonsoft.Json.JsonSerializerSettings 
-                { 
-                    NullValueHandling = Newtonsoft.Json.NullValueHandling.Ignore 
-                };
-                
-                List<Booking.Models.CustomerWithOpModel> list = new();
-                try
-                {
-                    var jToken = Newtonsoft.Json.Linq.JToken.Parse(rawJson);
-                    if (jToken is Newtonsoft.Json.Linq.JObject obj && obj["value"] != null)
+                var lowerQuery = term.Trim();
+                searchedPatients = allCustomersCache
+                    .Where(p =>
+                        (p.name != null && p.name.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)) ||
+                        (p.namewithinitials != null && p.namewithinitials.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)) ||
+                        (p.mobile != null && p.mobile.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)) ||
+                        p.custid.ToString().Contains(lowerQuery, StringComparison.OrdinalIgnoreCase) ||
+                        (p.custcode != null && p.custcode.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)))
+                    .Take(10)
+                    .Select(p => new Booking.Models.CustomerWithOpModel
                     {
-                        list = obj["value"].ToObject<List<Booking.Models.CustomerWithOpModel>>(Newtonsoft.Json.JsonSerializer.Create(settings)) ?? new();
-                    }
-                    else
-                    {
-                        list = Newtonsoft.Json.JsonConvert.DeserializeObject<List<Booking.Models.CustomerWithOpModel>>(rawJson, settings) ?? new();
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"Error parsing search results JSON: {ex.Message}");
-                }
-                
-                var currentSetting = labSetting;
-                bool showAll = currentSetting?.show_all_customers ?? true;
-                if (!showAll)
-                {
-                    var effectiveTenant = !string.IsNullOrEmpty(TenantCode) ? TenantCode : (TenantState?.TenantCode ?? "");
-                    if (!isCustomersCacheLoaded)
-                    {
-                        await LoadCustomersCacheAsync();
-                    }
-                    list = list.Where(p => 
-                        (!string.IsNullOrEmpty(p.tenant_code) && string.Equals(p.tenant_code, effectiveTenant, StringComparison.OrdinalIgnoreCase)) ||
-                        (allCustomersCache.Any(c => c.custid == p.custid))
-                    ).ToList();
-                }
-
-                var lowerQuery = term.ToLower();
-                var filtered = list.Where(p => 
-                    (p.name != null && p.name.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)) ||
-                    (p.namewithinitials != null && p.namewithinitials.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)) ||
-                    (p.mobile != null && p.mobile.Contains(lowerQuery, StringComparison.OrdinalIgnoreCase)) ||
-                    p.custid.ToString().Contains(lowerQuery)
-                ).ToList();
-
-                searchedPatients = filtered.Any() ? filtered.Take(10).ToList() : list.Take(10).ToList();
-                showPatientDropdown = searchedPatients.Count > 0 && !string.IsNullOrWhiteSpace(patientSearchQuery);
+                        custid = p.custid,
+                        custcode = p.custcode,
+                        name = p.name,
+                        namewithinitials = p.namewithinitials,
+                        mobile = p.mobile,
+                        gender = p.gender,
+                        ageyears = p.ageyears,
+                        agemonths = p.agemonths,
+                        agedays = p.agedays,
+                        dateofbirth = p.dateofbirth,
+                        ftcode = p.ftcode,
+                        area = p.area,
+                        city = p.city,
+                        tenant_code = p.tenant_code
+                    })
+                    .ToList();
+                showPatientDropdown = searchedPatients.Count > 0;
                 activePatientIndex = -1;
             }
             else

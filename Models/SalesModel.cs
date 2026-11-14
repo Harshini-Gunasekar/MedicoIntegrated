@@ -193,3 +193,10 @@ public class sales_request
     public List<sales_detail> details { get; set; } = new();
     public List<Guid>? queue_ids { get; set; }   // pharmacy queue rows being billed in this sale
 }
+
+public class UnbillCancelQueueRequest
+{
+    public List<Guid> queue_ids { get; set; } = new();
+    public bool cancel { get; set; } = false;
+    public string? reason { get; set; }
+}
