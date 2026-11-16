@@ -543,6 +543,9 @@ namespace medico_backend.Model
             public Guid ip_id { get; set; }
             public decimal? custid { get; set; }
             public int usercode { get; set; }                       // CHANGED — now read from body
+            public DateTime? authorized_at { get; set; }
+            public DateTime? updated_at { get; set; }
+            public bool is_authorized { get; set; } = true;
         }
 
         // ─────────────────────────────────────────

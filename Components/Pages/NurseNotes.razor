@@ -449,7 +449,11 @@ else
                     <div class="header-actions">
                         @if (hasAuthorizeRight)
                         {
-                            <button type="button" class="btn-authorize-chart @(currentAuthorization?.is_authorized == true ? "authorized" : "")" @onclick="AuthorizeChartAsync" disabled="@isAuthorizing" title="@(currentAuthorization?.is_authorized == true ? (string.IsNullOrWhiteSpace(GetAuthorizedByName()) ? $"Authorized on {FormatAuthDateTimeFull(currentAuthorization.authorized_at)}" : $"Authorized by {GetAuthorizedByName()} on {FormatAuthDateTimeFull(currentAuthorization.authorized_at)}") : "Authorize bedside chart")">
+                            var effAuthTime = GetEffectiveAuthDateTime(currentAuthorization);
+                            var authUser = GetAuthorizedByName();
+                            var authTime = FormatAuthDateTime(effAuthTime);
+                            var authTimeFull = FormatAuthDateTimeFull(effAuthTime);
+                            <button type="button" class="btn-authorize-chart @(currentAuthorization?.is_authorized == true ? "authorized" : "")" @onclick="AuthorizeChartAsync" disabled="@isAuthorizing" title="@(currentAuthorization?.is_authorized == true ? (string.IsNullOrWhiteSpace(authUser) ? $"Authorized on {authTimeFull}" : $"Authorized by {authUser} on {authTimeFull}") : "Authorize bedside chart")">
                                 @if (isAuthorizing)
                                 {
                                     <span class="spinner-border spinner-border-sm me-1" role="status"></span>
@@ -457,8 +461,6 @@ else
                                 }
                                 else if (currentAuthorization?.is_authorized == true)
                                 {
-                                    var authUser = GetAuthorizedByName();
-                                    var authTime = FormatAuthDateTime(currentAuthorization.authorized_at);
                                     <i class="bi bi-shield-fill-check"></i>
                                     <span>
                                         @if (!string.IsNullOrWhiteSpace(authUser) && !string.IsNullOrWhiteSpace(authTime))
@@ -9961,44 +9963,49 @@ else
         isAuthorizing = true;
         try
         {
+            var now = DateTime.Now;
+            var currentTenant = GetCurrentTenantCode();
             var req = new AuthorizeNurseNotesRequest
             {
                 ip_id = selectedPatient.ip_id,
                 custid = selectedPatient.custid,
-                usercode = effectiveUserCode
+                usercode = effectiveUserCode,
+                authorized_at = now,
+                updated_at = now,
+                is_authorized = true
             };
-            var (ok, msg) = await NurseNotesService.AuthorizeNurseNotesAsync(req, DefaultTenant, effectiveUserCode);
+            var (ok, msg) = await NurseNotesService.AuthorizeNurseNotesAsync(req, currentTenant, effectiveUserCode);
             if (ok)
             {
                 ToastService.ShowSuccess("Nurse notes bedside chart authorized successfully.");
-                var authFromDb = await NurseNotesService.GetNurseNoteAuthorizationAsync(selectedPatient.ip_id, DefaultTenant, effectiveUserCode);
+                var authFromDb = await NurseNotesService.GetNurseNoteAuthorizationAsync(selectedPatient.ip_id, currentTenant, effectiveUserCode);
                 if (authFromDb != null)
                 {
                     currentAuthorization = authFromDb;
-                    if (currentAuthorization.authorized_at == null || currentAuthorization.authorized_at == DateTime.MinValue)
-                    {
-                        currentAuthorization.authorized_at = DateTime.Now;
-                    }
-                    if (string.IsNullOrWhiteSpace(currentAuthorization.authorized_by_name))
-                    {
-                        currentAuthorization.authorized_by_name = !string.IsNullOrWhiteSpace(currentUserName) ? currentUserName : $"Staff #{effectiveUserCode}";
-                    }
                 }
                 else
                 {
                     currentAuthorization = new NurseNoteAuthorizationModel
                     {
                         ip_id = selectedPatient.ip_id,
-                        custid = selectedPatient.custid,
-                        is_authorized = true,
-                        authorized_at = DateTime.Now,
-                        authorized_by = effectiveUserCode,
-                        authorized_by_name = !string.IsNullOrWhiteSpace(currentUserName) ? currentUserName : $"Staff #{effectiveUserCode}"
+                        custid = selectedPatient.custid
                     };
                 }
-                if (effectiveUserCode > 0 && !string.IsNullOrWhiteSpace(currentUserName))
+
+                // Explicitly update authorization timestamp and author to the new authorization time
+                currentAuthorization.is_authorized = true;
+                currentAuthorization.authorized_at = now;
+                currentAuthorization.updated_at = now;
+                currentAuthorization.authorized_by = effectiveUserCode;
+                currentAuthorization.updated_by = effectiveUserCode;
+                if (!string.IsNullOrWhiteSpace(currentUserName))
                 {
+                    currentAuthorization.authorized_by_name = currentUserName;
                     _cachedUserNames[effectiveUserCode] = currentUserName;
+                }
+                else if (string.IsNullOrWhiteSpace(currentAuthorization.authorized_by_name))
+                {
+                    currentAuthorization.authorized_by_name = $"Staff #{effectiveUserCode}";
                 }
             }
             else
@@ -10015,6 +10022,16 @@ else
             isAuthorizing = false;
             StateHasChanged();
         }
+    }
+
+    private DateTime? GetEffectiveAuthDateTime(NurseNoteAuthorizationModel? auth)
+    {
+        if (auth == null) return null;
+        if (auth.updated_at.HasValue && auth.authorized_at.HasValue)
+        {
+            return auth.updated_at.Value > auth.authorized_at.Value ? auth.updated_at.Value : auth.authorized_at.Value;
+        }
+        return auth.updated_at ?? auth.authorized_at;
     }
 
     private string FormatAuthDateTime(DateTime? dt)
@@ -10087,11 +10104,15 @@ else
         if (!string.IsNullOrWhiteSpace(currentAuthorization.username))
             return currentAuthorization.username.Trim();
 
-        // 2. Check logged-in user code match
+        // 2. Check logged-in user code match (prefer updated_by when re-authorized)
         int effCode = GetEffectiveUserCode();
-        if (currentAuthorization.authorized_by.HasValue)
+        int? effectiveAuthUserCode = (currentAuthorization.updated_by.HasValue && currentAuthorization.updated_by.Value > 0)
+            ? currentAuthorization.updated_by
+            : currentAuthorization.authorized_by;
+
+        if (effectiveAuthUserCode.HasValue)
         {
-            int code = currentAuthorization.authorized_by.Value;
+            int code = effectiveAuthUserCode.Value;
             if (code == effCode && !string.IsNullOrWhiteSpace(currentUserName))
             {
                 return currentUserName;
@@ -10129,7 +10150,9 @@ else
             if (!string.IsNullOrWhiteSpace(currentAuthorization.user_name)) return;
 
             int effCode = GetEffectiveUserCode();
-            int? authCode = currentAuthorization.authorized_by;
+            int? authCode = (currentAuthorization.updated_by.HasValue && currentAuthorization.updated_by.Value > 0)
+                ? currentAuthorization.updated_by
+                : currentAuthorization.authorized_by;
 
             if (authCode.HasValue && authCode.Value > 0)
             {
@@ -10147,7 +10170,8 @@ else
                     return;
                 }
 
-                var userMaster = await UserService.GetUserMasterAsync(code, AuthToken, DefaultTenant);
+                var currentTenant = GetCurrentTenantCode();
+                var userMaster = await UserService.GetUserMasterAsync(code, AuthToken, currentTenant);
                 if (userMaster != null && !string.IsNullOrWhiteSpace(userMaster.name))
                 {
                     _cachedUserNames[code] = userMaster.name;

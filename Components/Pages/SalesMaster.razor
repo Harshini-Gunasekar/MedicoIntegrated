@@ -1397,8 +1397,7 @@
                                     {
                                         var detail = row.detail;
                                         var index = row.index;
-                                        var rowId = $"row-{index}";
-                                        <tr @key="rowId">
+                                        <tr @key="detail">
                                             <td style="padding: 4px 8px; color: #64748b; text-align: center; font-weight: 600; width: 32px;">@(index + 1)</td>
                                             <td style="padding: 4px 8px; min-width: 175px; width: 175px; position: relative;">
                                                 <div style="display: flex; flex-direction: column; gap: 3px;">
@@ -1429,6 +1428,7 @@
                                                         var availableItems = GetAvailableItemsForRow(detail).ToList();
                                                         var filteredItems = availableItems
                                                             .Where(i => string.IsNullOrEmpty(searchText) || (i.itemname != null && i.itemname.Contains(searchText, StringComparison.OrdinalIgnoreCase)))
+                                                            .Take(40)
                                                             .ToList();
 
                                                         if (filteredItems.Any())
@@ -1475,7 +1475,7 @@
                                                                             var purRateDisp = dispPurRate > 0 ? dispPurRate.ToString("0.##") : "0.00";
                                                                             var taxPctDisp = item.gstpercentage > 0 ? item.gstpercentage.ToString("0.##") : "0";
 
-                                                                            <tr class="item-search-row @(isHighlighted ? "highlighted-item-row" : "")"
+                                                                            <tr @key="item.itemcode" class="item-search-row @(isHighlighted ? "highlighted-item-row" : "")"
                                                                                 @onmousedown="@(() => SelectItemFromDropdownAsync(detail, item, index))"
                                                                                 @onmouseenter="@(() => ActiveItemSearchIndex = itemIndex)">
                                                                                 <td style="text-align: left; font-weight: 600;" title="@item.itemname">
@@ -1662,11 +1662,15 @@
                                                        @onkeydown="@(e => HandleRowKeyDown(e, index, 3))" placeholder="1" />
                                             </td>
                                             <td style="padding: 4px 8px; text-align: center; width: 45px;">
-                                                <input id="qty-@index" type="number" step="any" class="purchase-item-input text-center" @bind:get="GetQty(detail)" @bind:set="(val) => SetQty(detail, val)" @bind:event="oninput" @onkeyup="() => CalculateRow(detail)"
+                                                <input id="qty-@index" type="number" step="any" min="0" class="purchase-item-input text-center"
+                                                       @bind="detail.quantity"
+                                                       @bind:after="() => OnQtyChange(detail)"
                                                        @onkeydown="@(e => HandleRowKeyDown(e, index, 4))" placeholder="0" />
                                             </td>
                                             <td style="padding: 4px 8px; text-align: center; width: 48px;">
-                                                <input id="disc-@index" type="number" step="any" class="purchase-item-input text-center" @bind:get="GetDisc(detail)" @bind:set="(val) => SetDisc(detail, val)" @bind:event="oninput" @onkeyup="() => CalculateRow(detail)"
+                                                <input id="disc-@index" type="number" step="any" min="0" max="100" class="purchase-item-input text-center"
+                                                       value="@(detail.discountpercentage > 0 ? (detail.discountpercentage % 1 == 0 ? ((int)detail.discountpercentage).ToString() : detail.discountpercentage.ToString("0.##")) : "")"
+                                                       @oninput="@(e => OnDiscInput(e, detail))"
                                                        @onkeydown="@(e => HandleRowKeyDown(e, index, 5))" placeholder="0" />
                                             </td>
                                             <td style="padding: 4px 8px; text-align: center; width: 65px;">
@@ -2299,6 +2303,7 @@
         var target = lastSavedSalesMaster ?? CurrentRequest.master;
         if (target != null)
         {
+            _openNextBillAfterPrint = true;
             await PreviewPharmacyBillReport(target);
         }
     }
@@ -3874,14 +3879,14 @@
         {
             return batchMrp;
         }
+        if (PurchaseItemMrpMap.TryGetValue(itemcode, out var itemMrp) && itemMrp > 0)
+        {
+            return itemMrp;
+        }
         var matched = ItemList.FirstOrDefault(i => i.itemcode == itemcode);
         if (matched != null && matched.mrp > 0)
         {
             return matched.mrp;
-        }
-        if (PurchaseItemMrpMap.TryGetValue(itemcode, out var itemMrp) && itemMrp > 0)
-        {
-            return itemMrp;
         }
         if (matched != null && matched.salesrate > 0)
         {
@@ -3890,25 +3895,72 @@
         return 0;
     }
 
+    private Dictionary<long, decimal>? _storeStockByItemCode;
+    private Dictionary<string, decimal>? _storeStockByItemName;
+    private long? _storeStockCacheWarehouseCode;
+
+    private void InvalidateStoreStockCache()
+    {
+        _storeStockByItemCode = null;
+        _storeStockByItemName = null;
+        _storeStockCacheWarehouseCode = null;
+    }
+
+    private void EnsureStoreStockCache()
+    {
+        if (_storeStockByItemCode != null && _storeStockCacheWarehouseCode == SelectedWarehouseCode)
+            return;
+
+        _storeStockCacheWarehouseCode = SelectedWarehouseCode;
+        if (SelectedWarehouseCode == null || SelectedWarehouseCode <= 0 || StockList == null || !StockList.Any())
+        {
+            _storeStockByItemCode = new();
+            _storeStockByItemName = new(StringComparer.OrdinalIgnoreCase);
+            return;
+        }
+
+        var codeDict = new Dictionary<long, decimal>();
+        var nameDict = new Dictionary<string, decimal>(StringComparer.OrdinalIgnoreCase);
+        var itemMap = new Dictionary<long, string?>();
+        if (ItemList != null)
+        {
+            foreach (var item in ItemList)
+            {
+                if (item.itemcode > 0 && !itemMap.ContainsKey(item.itemcode))
+                {
+                    itemMap[item.itemcode] = item.itemname;
+                }
+            }
+        }
+
+        foreach (var s in StockList)
+        {
+            if (s.warehousecode == SelectedWarehouseCode && s.closingstock > 0)
+            {
+                codeDict[s.itemcode] = codeDict.GetValueOrDefault(s.itemcode, 0) + s.closingstock;
+                if (itemMap.TryGetValue(s.itemcode, out var iName) && !string.IsNullOrWhiteSpace(iName))
+                {
+                    nameDict[iName] = nameDict.GetValueOrDefault(iName, 0) + s.closingstock;
+                }
+            }
+        }
+
+        _storeStockByItemCode = codeDict;
+        _storeStockByItemName = nameDict;
+    }
+
     private decimal GetItemAvailableStockInStore(long itemcode, string? itemname = null)
     {
         if (SelectedWarehouseCode == null || SelectedWarehouseCode <= 0) return 0;
-        var stocks = StockList.Where(s => s.warehousecode == SelectedWarehouseCode && s.closingstock > 0);
-        if (itemcode > 0)
+        EnsureStoreStockCache();
+
+        if (itemcode > 0 && _storeStockByItemCode != null && _storeStockByItemCode.TryGetValue(itemcode, out var qty) && qty > 0)
         {
-            var byCode = stocks.Where(s => s.itemcode == itemcode).ToList();
-            if (byCode.Any()) return byCode.Sum(s => s.closingstock);
+            return qty;
         }
-        if (!string.IsNullOrWhiteSpace(itemname))
+        if (!string.IsNullOrWhiteSpace(itemname) && _storeStockByItemName != null && _storeStockByItemName.TryGetValue(itemname, out var nameQty))
         {
-            var matchedItem = ItemList.FirstOrDefault(i => i.itemcode == itemcode);
-            var nameToMatch = matchedItem?.itemname ?? itemname;
-            var byName = stocks.Where(s => {
-                var si = ItemList.FirstOrDefault(it => it.itemcode == s.itemcode);
-                var sName = si?.itemname;
-                return string.Equals(sName, nameToMatch, StringComparison.OrdinalIgnoreCase);
-            }).ToList();
-            if (byName.Any()) return byName.Sum(s => s.closingstock);
+            return nameQty;
         }
         return 0;
     }
@@ -4459,6 +4511,8 @@
             if (_selectedWarehouseCode != value)
             {
                 _selectedWarehouseCode = value;
+                _cachedWarehouseCode = null;
+                InvalidateStoreStockCache();
                 CurrentRequest.master.warehousefield = WarehouseList.FirstOrDefault(w => w.warehousecode == value)?.warehousename;
                 if (CurrentRequest.details != null)
                 {
@@ -5941,24 +5995,36 @@
         return list.Any() ? string.Join(", ", list) : string.Empty;
     }
 
+    private List<inventory_item_master>? _cachedAvailableStoreItems;
+    private long? _cachedWarehouseCode;
+
     private IEnumerable<inventory_item_master> GetAvailableItemsForRow(sales_detail detail)
     {
         if (SelectedWarehouseCode == null || SelectedWarehouseCode <= 0)
         {
             return Enumerable.Empty<inventory_item_master>();
         }
+        if (_cachedWarehouseCode == SelectedWarehouseCode && _cachedAvailableStoreItems != null)
+        {
+            return _cachedAvailableStoreItems;
+        }
+
         var storeStocks = StockList
             .Where(s => s.warehousecode == SelectedWarehouseCode && s.closingstock > 0)
             .ToList();
 
         if (!storeStocks.Any())
         {
-            return Enumerable.Empty<inventory_item_master>();
+            _cachedAvailableStoreItems = new List<inventory_item_master>();
+            _cachedWarehouseCode = SelectedWarehouseCode;
+            return _cachedAvailableStoreItems;
         }
 
         var storeItemCodes = storeStocks.Where(s => s.itemcode > 0).Select(s => s.itemcode).ToHashSet();
 
-        return ItemList.Where(i => storeItemCodes.Contains(i.itemcode));
+        _cachedAvailableStoreItems = ItemList.Where(i => storeItemCodes.Contains(i.itemcode)).ToList();
+        _cachedWarehouseCode = SelectedWarehouseCode;
+        return _cachedAvailableStoreItems;
     }
 
     private int? ActiveBatchSearchRow = null;
@@ -6731,6 +6797,56 @@
         StateHasChanged();
     }
 
+    private string GetQtyDisplay(sales_detail detail)
+    {
+        if (detail.quantity <= 0) return "";
+        return detail.quantity % 1 == 0 ? ((int)detail.quantity).ToString() : detail.quantity.ToString("0.##");
+    }
+
+    private void OnQtyInput(ChangeEventArgs e, sales_detail detail)
+    {
+        var str = e.Value?.ToString();
+        if (decimal.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal val))
+        {
+            detail.quantity = Math.Max(0, val);
+            CalculateRow(detail);
+            if (detail.days.HasValue && detail.days.Value > 0 && detail.quantity > 0)
+            {
+                _originalPrescriptionMap[detail] = (detail.quantity, detail.days.Value);
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(str))
+        {
+            detail.quantity = 0;
+            CalculateRow(detail);
+        }
+    }
+
+    private void OnQtyChange(sales_detail detail)
+    {
+        bool isTab = IsTabletItem(detail.itemcode, ItemSearchTexts.GetValueOrDefault(detail, ""));
+        if (isTab && detail.quantity > 0)
+        {
+            detail.quantity = (decimal)Math.Max(1, (int)Math.Ceiling(detail.quantity));
+        }
+        CalculateRow(detail);
+    }
+
+    private void OnDiscInput(ChangeEventArgs e, sales_detail detail)
+    {
+        var str = e.Value?.ToString();
+        if (decimal.TryParse(str, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out decimal val))
+        {
+            detail.discountpercentage = Math.Clamp(val, 0, 100);
+            CalculateRow(detail);
+        }
+        else if (string.IsNullOrWhiteSpace(str))
+        {
+            detail.discountpercentage = 0;
+            CalculateRow(detail);
+        }
+    }
+
     private decimal? GetQty(sales_detail detail) => !IsEdit && detail.quantity == 0 ? null : detail.quantity;
     private void SetQty(sales_detail detail, decimal? value)
     {
@@ -7279,6 +7395,8 @@
     private async Task LoadStocks()
     {
         try {
+            _cachedWarehouseCode = null;
+            InvalidateStoreStockCache();
             var client = CreateClient();
             var response = await client.GetStringAsync("api/ItemMaster/getallstocks");
             if (!string.IsNullOrWhiteSpace(response)) {
@@ -8871,6 +8989,8 @@
                              string.Equals(persistedRequest.master.invoiceno, savedBillNo, StringComparison.OrdinalIgnoreCase)) &&
                             persistedRequest.details.Any())
                         {
+                            if (persistedRequest.master.salescode > 0) CurrentRequest.master.salescode = persistedRequest.master.salescode;
+                            if (!string.IsNullOrWhiteSpace(persistedRequest.master.billno)) CurrentRequest.master.billno = persistedRequest.master.billno;
                             return true;
                         }
                     }
@@ -9860,6 +9980,46 @@
 
                 CurrentPage = 1;
                 await LoadSales();
+
+                // Ensure the saved sales details are captured for printing
+                if (string.IsNullOrWhiteSpace(CurrentRequest.master.billno) && SalesList != null && SalesList.Any())
+                {
+                    var latest = SalesList.FirstOrDefault(s =>
+                        (CurrentRequest.master.salescode > 0 && s.salescode == CurrentRequest.master.salescode) ||
+                        (!string.IsNullOrWhiteSpace(CurrentRequest.master.patientname) && string.Equals(s.patientname?.Trim(), CurrentRequest.master.patientname?.Trim(), StringComparison.OrdinalIgnoreCase)) ||
+                        (CurrentRequest.master.customercode.HasValue && s.customercode == CurrentRequest.master.customercode.Value)
+                    );
+                    if (latest != null)
+                    {
+                        if (CurrentRequest.master.salescode <= 0) CurrentRequest.master.salescode = latest.salescode;
+                        if (string.IsNullOrWhiteSpace(CurrentRequest.master.billno)) CurrentRequest.master.billno = latest.billno;
+                    }
+                }
+
+                var savedMaster = new sales_master
+                {
+                    salescode = CurrentRequest.master.salescode,
+                    billno = CurrentRequest.master.billno,
+                    invoiceno = CurrentRequest.master.invoiceno,
+                    billdate = CurrentRequest.master.billdate,
+                    patientname = CurrentRequest.master.patientname,
+                    patientid = CurrentRequest.master.patientid,
+                    customercode = CurrentRequest.master.customercode,
+                    mobileno = CurrentRequest.master.mobileno,
+                    netamount = CurrentRequest.master.netamount,
+                    paymentmode = CurrentRequest.master.paymentmode,
+                    paymentstatus = CurrentRequest.master.paymentstatus,
+                    tenantcode = CurrentRequest.master.tenantcode,
+                    branchcode = CurrentRequest.master.branchcode
+                };
+                lastSavedSalesMaster = savedMaster;
+
+                // Automatically open the print of the bill
+                if (hasPrintBillRight && savedMaster != null && (!string.IsNullOrWhiteSpace(savedMaster.billno) || savedMaster.salescode > 0))
+                {
+                    _openNextBillAfterPrint = true;
+                    await PreviewPharmacyBillReport(savedMaster);
+                }
             }
             else
             {
@@ -11054,6 +11214,7 @@
 
     private sales_master? _activePreviewSales;
     private DotNetObjectReference<SalesMaster>? _dotNetRef;
+    private bool _openNextBillAfterPrint = false;
 
     [JSInvokable]
     public async Task OnPdfModalPrintClicked()
@@ -11062,6 +11223,24 @@
         {
             await HandleBillPrintDeliveredAsync(_activePreviewSales);
         }
+
+        if (_openNextBillAfterPrint)
+        {
+            _openNextBillAfterPrint = false;
+            try
+            {
+                await JS.InvokeVoidAsync("closePdfPreviewModal");
+            }
+            catch { }
+            await AddNewSales();
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    [JSInvokable]
+    public void OnPdfModalClosed()
+    {
+        _openNextBillAfterPrint = false;
     }
 
     private async Task HandleBillPrintDeliveredAsync(sales_master sales)
