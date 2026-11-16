@@ -1253,7 +1253,7 @@
                                                                                 @onchange="@(e => {
                                                                                     var bNo = e.Value?.ToString();
                                                                                     var chosen = item.availableBatches.FirstOrDefault(b => b.batchno == bNo);
-                                                                                    if (chosen != null) SelectBatch(item, chosen);
+                                                                                    if (chosen != null) SelectBatch(item, chosen, warnOnStock: true);
                                                                                 })">
                                                                             @foreach (var b in item.availableBatches)
                                                                             {
@@ -5174,7 +5174,7 @@
             {
                 if (pItem.drug_code.HasValue && pItem.drug_code.Value > 0)
                 {
-                    _ = LoadBatchesForPrescriptionItemAsync(pItem, (long)pItem.drug_code.Value, pItem.batchno);
+                    _ = LoadBatchesForPrescriptionItemAsync(pItem, (long)pItem.drug_code.Value, pItem.batchno, warnOnStock: false);
                 }
             }
 
@@ -5946,10 +5946,10 @@
         inlineDrugSearchResults.Clear();
         activeInlineDrugSno = 0;
 
-        _ = LoadBatchesForPrescriptionItemAsync(item, res.itemcode, batchNo);
+        _ = LoadBatchesForPrescriptionItemAsync(item, res.itemcode, batchNo, warnOnStock: true);
     }
 
-    private async Task LoadBatchesForPrescriptionItemAsync(CaseSheetPrescriptionItem item, long itemCode, string? selectedBatchNo = null)
+    private async Task LoadBatchesForPrescriptionItemAsync(CaseSheetPrescriptionItem item, long itemCode, string? selectedBatchNo = null, bool warnOnStock = false)
     {
         if (item == null || itemCode <= 0) return;
 
@@ -6007,7 +6007,7 @@
             }
             chosenBatch ??= batches.First();
 
-            SelectBatch(item, chosenBatch);
+            SelectBatch(item, chosenBatch, warnOnStock);
         }
         else
         {
@@ -6025,7 +6025,7 @@
         await InvokeAsync(StateHasChanged);
     }
 
-    private void SelectBatch(CaseSheetPrescriptionItem item, BatchOptionViewModel batch)
+    private void SelectBatch(CaseSheetPrescriptionItem item, BatchOptionViewModel batch, bool warnOnStock = false)
     {
         item.batchno = batch.batchno;
         item.batch_no = batch.batchno;
@@ -6041,7 +6041,10 @@
             item.rate = batch.mrpunit;
         }
 
-        CheckStockAndWarn(item, showToast: true);
+        if (warnOnStock)
+        {
+            CheckStockAndWarn(item, showToast: true);
+        }
     }
 
     private decimal GetPrescriptionItemBatchStock(CaseSheetPrescriptionItem item)
@@ -6068,7 +6071,7 @@
             salesList = pastVisitPharmacySales;
         }
 
-        return salesList.Any(s =>
+        bool inSales = salesList.Any(s =>
             s.details != null && s.details.Any(d =>
                 (item.drug_code.HasValue && item.drug_code.Value > 0 && d.itemcode == (long)item.drug_code.Value) ||
                 (!string.IsNullOrWhiteSpace(d.itemname) && !string.IsNullOrWhiteSpace(item.drug_name) &&
@@ -6077,6 +6080,28 @@
                   item.drug_name.Contains(d.itemname.Trim(), StringComparison.OrdinalIgnoreCase)))
             )
         );
+        if (inSales) return true;
+
+        if (patientPharmacyQueueRows != null && patientPharmacyQueueRows.Any())
+        {
+            var matchedRow = patientPharmacyQueueRows.FirstOrDefault(q =>
+                (item.drug_code.HasValue && item.drug_code.Value > 0 && q.matched_itemcode.HasValue && q.matched_itemcode.Value == (long)item.drug_code.Value) ||
+                (!string.IsNullOrWhiteSpace(q.drug_name) &&
+                 (string.Equals(q.drug_name.Trim(), item.drug_name.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                  q.drug_name.Contains(item.drug_name.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                  item.drug_name.Contains(q.drug_name.Trim(), StringComparison.OrdinalIgnoreCase)))
+            );
+
+            if (matchedRow != null && !string.IsNullOrWhiteSpace(matchedRow.status) &&
+                (string.Equals(matchedRow.status, "BILLED", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(matchedRow.status, "DISPENSED", StringComparison.OrdinalIgnoreCase) ||
+                 matchedRow.status.IndexOf("BILL", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private bool IsPrescriptionItemCancelled(CaseSheetPrescriptionItem? item)
@@ -6123,7 +6148,7 @@
         if (item == null || string.IsNullOrWhiteSpace(item.drug_name)) return false;
         var salesList = (pastVisitPharmacySales != null && pastVisitPharmacySales.Any()) ? pastVisitPharmacySales : (currentVisitPharmacySales ?? new());
 
-        return salesList.Any(s =>
+        bool inSales = salesList.Any(s =>
             s.details != null && s.details.Any(d =>
                 (item.drug_code.HasValue && item.drug_code.Value > 0 && d.itemcode == (long)item.drug_code.Value) ||
                 (!string.IsNullOrWhiteSpace(d.itemname) && !string.IsNullOrWhiteSpace(item.drug_name) &&
@@ -6132,6 +6157,29 @@
                   item.drug_name.Contains(d.itemname.Trim(), StringComparison.OrdinalIgnoreCase)))
             )
         );
+        if (inSales) return true;
+
+        if (patientPharmacyQueueRows != null && patientPharmacyQueueRows.Any())
+        {
+            var matchedRow = patientPharmacyQueueRows.FirstOrDefault(q =>
+                (item.pr_det_id != Guid.Empty && q.pr_det_id.HasValue && q.pr_det_id.Value == item.pr_det_id) ||
+                (item.drug_code.HasValue && item.drug_code.Value > 0 && q.matched_itemcode.HasValue && q.matched_itemcode.Value == (long)item.drug_code.Value) ||
+                (!string.IsNullOrWhiteSpace(q.drug_name) &&
+                 (string.Equals(q.drug_name.Trim(), item.drug_name.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                  q.drug_name.Contains(item.drug_name.Trim(), StringComparison.OrdinalIgnoreCase) ||
+                  item.drug_name.Contains(q.drug_name.Trim(), StringComparison.OrdinalIgnoreCase)))
+            );
+
+            if (matchedRow != null && !string.IsNullOrWhiteSpace(matchedRow.status) &&
+                (string.Equals(matchedRow.status, "BILLED", StringComparison.OrdinalIgnoreCase) ||
+                 string.Equals(matchedRow.status, "DISPENSED", StringComparison.OrdinalIgnoreCase) ||
+                 matchedRow.status.IndexOf("BILL", StringComparison.OrdinalIgnoreCase) >= 0))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private bool IsPrescriptionDetailCancelled(OpPrescriptionDetailModel? item)
@@ -6179,7 +6227,7 @@
 
     private void WarnStockExceeded(CaseSheetPrescriptionItem item, decimal bStock)
     {
-        if (item == null) return;
+        if (item == null || loadingData) return;
         string key = $"{item.sno}_{item.drug_code}_{item.batchno}_{item.qty}";
         if (_lastStockWarningKey == key && (DateTime.UtcNow - _lastStockWarningTime).TotalSeconds < 2)
         {
@@ -6194,7 +6242,7 @@
 
     private void CheckStockAndWarn(CaseSheetPrescriptionItem item, bool showToast = true)
     {
-        if (item == null) return;
+        if (item == null || loadingData) return;
         if (IsPrescriptionItemBilled(item) || IsPrescriptionItemCancelled(item)) return;
         bool hasDrug = !string.IsNullOrWhiteSpace(item.drug_name) || (item.drug_code.HasValue && item.drug_code.Value > 0);
         if (!hasDrug) return;
@@ -7059,7 +7107,7 @@
         {
             if (pItem.drug_code.HasValue && pItem.drug_code.Value > 0)
             {
-                _ = LoadBatchesForPrescriptionItemAsync(pItem, (long)pItem.drug_code.Value, pItem.batchno);
+                _ = LoadBatchesForPrescriptionItemAsync(pItem, (long)pItem.drug_code.Value, pItem.batchno, warnOnStock: false);
             }
         }
 
@@ -7253,7 +7301,7 @@
 
         if (newItem.drug_code.HasValue && newItem.drug_code.Value > 0)
         {
-            _ = LoadBatchesForPrescriptionItemAsync(newItem, (long)newItem.drug_code.Value, newItem.batchno);
+            _ = LoadBatchesForPrescriptionItemAsync(newItem, (long)newItem.drug_code.Value, newItem.batchno, warnOnStock: false);
         }
 
         if (!newItem.rate.HasValue || newItem.rate.Value <= 0)

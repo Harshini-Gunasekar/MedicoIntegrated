@@ -5800,12 +5800,15 @@
                     return;
                 }
 
-                // Also record the cash counter collection transaction
-                try
+                // Also record the cash counter collection transaction for HMS hospital invoices (if valid Guid)
+                if (Guid.TryParse(paymentRequest.requestguid, out _))
                 {
-                    await HmsBillingService.AddPaymentAsync(paymentRequest);
+                    try
+                    {
+                        await HmsBillingService.AddPaymentAsync(paymentRequest);
+                    }
+                    catch { }
                 }
-                catch { }
 
                 var paidSale = selectedPharmacySale;
                 ToastService.ShowSuccess("Pharmacy bill payment received successfully!");
@@ -6076,6 +6079,12 @@
                 detail.salescode = req.master.salescode;
                 if (detail.soldqty == 0 && detail.quantity > 0) detail.soldqty = detail.quantity;
                 detail.uomcode ??= 0;
+
+                // Ensure rate does not exceed MRP to pass backend validation during payment status update
+                if (detail.mrp > 0 && detail.rate > detail.mrp)
+                {
+                    detail.rate = detail.mrp;
+                }
             }
 
             var client = CreateDoctorApiClient();
@@ -6099,12 +6108,44 @@
             {
                 try
                 {
-                    var res = await client.PostAsJsonAsync(ep, req);
-                    var body = await res.Content.ReadAsStringAsync();
-                    Console.WriteLine($"[CashCounter] Save endpoint '{ep}' response: {res.StatusCode} - {body}");
-                    if (res.IsSuccessStatusCode && !body.Contains("\"success\":false") && !body.Contains("\"status\":\"Failed\"") && !body.Contains("\"error\":"))
+                    int maxRetries = 5;
+                    while (maxRetries-- > 0)
                     {
-                        return true;
+                        var res = await client.PostAsJsonAsync(ep, req);
+                        var body = await res.Content.ReadAsStringAsync();
+                        if (res.IsSuccessStatusCode && !body.Contains("\"success\":false") && !body.Contains("\"status\":\"Failed\"") && !body.Contains("\"error\":"))
+                        {
+                            return true;
+                        }
+
+                        // If backend failed due to Rate being higher than batch MRP:
+                        // e.g. "Rate 45.21 is higher than batch MRP 44.92 for Item : 10244, Batch : 1765"
+                        var mrpMatch = System.Text.RegularExpressions.Regex.Match(body, @"higher than batch MRP\s+([\d\.]+)\s+for Item\s*:\s*(\d+),\s*Batch\s*:\s*([^""}\r\n]+)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                        if (mrpMatch.Success)
+                        {
+                            var batchMrpStr = mrpMatch.Groups[1].Value;
+                            var itemCodeStr = mrpMatch.Groups[2].Value;
+                            var batchNoStr = mrpMatch.Groups[3].Value.Trim().Trim('"', '\'');
+                            if (decimal.TryParse(batchMrpStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var batchMrp) &&
+                                long.TryParse(itemCodeStr, out var itemCode))
+                            {
+                                var targetDetail = req.details?.FirstOrDefault(d => d.itemcode == itemCode || string.Equals(d.batchno?.Trim(), batchNoStr, StringComparison.OrdinalIgnoreCase));
+                                if (targetDetail != null)
+                                {
+                                    targetDetail.rate = batchMrp;
+                                    targetDetail.mrp = batchMrp;
+                                    if (targetDetail.quantity > 0)
+                                    {
+                                        targetDetail.amount = Math.Round(targetDetail.quantity * targetDetail.rate, 2);
+                                        targetDetail.totalamount = targetDetail.amount - targetDetail.discountamount + targetDetail.taxamount;
+                                    }
+                                    continue;
+                                }
+                            }
+                        }
+
+                        Console.WriteLine($"[CashCounter] Save endpoint '{ep}' response: {res.StatusCode} - {body}");
+                        break;
                     }
                 }
                 catch (Exception ex)
@@ -6447,6 +6488,18 @@
                 {
                     if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var v)) { d.rate = v; break; }
                     else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var sv)) { d.rate = sv; break; }
+                }
+            }
+        }
+
+        if (d.mrp == 0)
+        {
+            foreach (var key in new[] { "mrp", "mrpunit", "unitmrp", "batchmrp", "batch_mrp", "salesrate" })
+            {
+                if (TryGetPropertyIgnoreCase(el, key, out var p))
+                {
+                    if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var v)) { d.mrp = v; break; }
+                    else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var sv)) { d.mrp = sv; break; }
                 }
             }
         }
