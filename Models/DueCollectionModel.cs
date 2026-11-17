@@ -1,4 +1,4 @@
-﻿
+
 using System;
 using System.Collections.Generic;
 using Dapper.Contrib.Extensions;
@@ -544,6 +544,7 @@ namespace medico_backend.Model
         public int usercode { get; set; } = 10;
         public int computercode { get; set; } = 1;
         public string? remarks { get; set; }
+        public string? requestguid { get; set; }
     }
 
 

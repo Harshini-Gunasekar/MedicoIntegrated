@@ -1796,8 +1796,12 @@
         row.itemname = item.itemname;
         ItemSearchTexts[row] = item.itemname ?? "";
 
-        // Pick the most recent batch or first with available qty
-        var detailWithStock = item.details.OrderByDescending(x => x.billdate ?? DateTime.MinValue).FirstOrDefault(x => x.availableqty > 0) ?? item.details.FirstOrDefault();
+        // Pick the detail with the largest available/sold quantity first (avoid defaulting to small 1-qty lines)
+        var detailWithStock = item.details
+            .OrderByDescending(x => x.availableqty)
+            .ThenByDescending(x => x.soldqty)
+            .ThenByDescending(x => x.billdate ?? DateTime.MinValue)
+            .FirstOrDefault(x => x.availableqty > 0) ?? item.details.FirstOrDefault();
         
         if (detailWithStock != null)
         {
@@ -1810,7 +1814,7 @@
             
             // Calculate available stock for this specific batch
             var batchDetails = item.details.Where(x => string.Equals(x.batchno?.Trim(), row.batchno?.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
-            row.availablestock = batchDetails.Any() ? batchDetails.Sum(x => x.availableqty) : item.totalavailableqty;
+            row.availablestock = batchDetails.Any() ? batchDetails.Sum(x => x.availableqty > 0 ? x.availableqty : x.soldqty) : (item.totalavailableqty > 0 ? item.totalavailableqty : item.totalsoldqty);
             row.returnqty = row.availablestock > 0 ? 1 : 0;
             if (row.itemcode <= 0 && detailWithStock.itemcode > 0) row.itemcode = detailWithStock.itemcode;
         }
@@ -1819,7 +1823,7 @@
             row.batchno = item.batches.FirstOrDefault() ?? "";
             row.rate = item.latestrate;
             row.packsize = item.packsize;
-            row.availablestock = item.totalavailableqty;
+            row.availablestock = item.totalavailableqty > 0 ? item.totalavailableqty : item.totalsoldqty;
             row.returnqty = item.totalavailableqty > 0 ? 1 : 0;
             row.warehousecode = item.defaultwarehousecode > 0 ? item.defaultwarehousecode : (SelectedDefaultWarehouseCode > 0 ? SelectedDefaultWarehouseCode : WarehouseList.FirstOrDefault()?.warehousecode);
         }
@@ -1863,11 +1867,13 @@
 
         if (matchDetails.Any())
         {
-            var primaryMatch = matchDetails.OrderByDescending(x => x.billdate ?? DateTime.MinValue).ThenByDescending(x => x.availableqty > 0 ? 1 : 0).First();
+            // Pick detail with sufficient available sold qty first, or largest available/sold qty (avoid small 1-qty lines)
+            var primaryMatch = matchDetails.FirstOrDefault(s => s.availableqty >= row.returnqty && row.returnqty > 0)
+                ?? matchDetails.OrderByDescending(x => x.availableqty).ThenByDescending(x => x.soldqty).ThenByDescending(x => x.billdate ?? DateTime.MinValue).First();
             row.salesdetailcode = primaryMatch.salesdetailcode;
             row.salescode = primaryMatch.salescode;
             row.rate = primaryMatch.rate;
-            row.availablestock = matchDetails.Sum(x => x.availableqty);
+            row.availablestock = matchDetails.Sum(x => x.availableqty > 0 ? x.availableqty : x.soldqty);
             if (primaryMatch.warehousecode > 0) row.warehousecode = primaryMatch.warehousecode;
             if (primaryMatch.packsize > 0) row.packsize = primaryMatch.packsize;
             if (row.itemcode <= 0 && primaryMatch.itemcode > 0) row.itemcode = primaryMatch.itemcode;
@@ -1875,7 +1881,7 @@
         else
         {
             row.availablestock = PatientSoldItems.Where(s => 
-                (row.itemcode > 0 && s.itemcode == row.itemcode) || (!string.IsNullOrEmpty(row.itemname) && string.Equals(s.itemname?.Trim(), row.itemname.Trim(), StringComparison.OrdinalIgnoreCase))).Sum(s => s.availableqty);
+                (row.itemcode > 0 && s.itemcode == row.itemcode) || (!string.IsNullOrEmpty(row.itemname) && string.Equals(s.itemname?.Trim(), row.itemname.Trim(), StringComparison.OrdinalIgnoreCase))).Sum(s => s.availableqty > 0 ? s.availableqty : s.soldqty);
         }
     }
 
@@ -1896,6 +1902,26 @@
         else
         {
             row.returnqty = 0;
+        }
+
+        // Dynamically select the best salesdetailcode that accommodates row.returnqty
+        if (row.itemcode > 0 || !string.IsNullOrEmpty(row.itemname))
+        {
+            var matchDetails = PatientSoldItems.Where(s => 
+                ((row.itemcode > 0 && s.itemcode == row.itemcode) || (!string.IsNullOrEmpty(row.itemname) && string.Equals(s.itemname?.Trim(), row.itemname.Trim(), StringComparison.OrdinalIgnoreCase))) &&
+                (string.IsNullOrWhiteSpace(row.batchno) || string.Equals(s.batchno?.Trim(), row.batchno.Trim(), StringComparison.OrdinalIgnoreCase)) &&
+                (s.availableqty > 0 || s.soldqty > 0)).ToList();
+
+            if (matchDetails.Any())
+            {
+                var bestMatch = matchDetails.FirstOrDefault(s => s.availableqty >= row.returnqty && row.returnqty > 0)
+                    ?? matchDetails.OrderByDescending(x => x.availableqty).ThenByDescending(x => x.soldqty).First();
+                row.salesdetailcode = bestMatch.salesdetailcode;
+                row.salescode = bestMatch.salescode;
+                if (bestMatch.rate > 0) row.rate = bestMatch.rate;
+                if (bestMatch.warehousecode > 0) row.warehousecode = bestMatch.warehousecode;
+                if (bestMatch.packsize > 0) row.packsize = bestMatch.packsize;
+            }
         }
     }
 
@@ -1964,24 +1990,120 @@
         try
         {
             var client = CreateClient();
+
+            // Construct return items by allocating returnqty across matching sold items / sales details
+            var returnItems = new List<sales_return_item_request>();
+
+            foreach (var r in validRows)
+            {
+                var matchingDetails = PatientSoldItems.Where(s =>
+                    ((r.itemcode > 0 && s.itemcode == r.itemcode) || (!string.IsNullOrEmpty(r.itemname) && string.Equals(s.itemname?.Trim(), r.itemname.Trim(), StringComparison.OrdinalIgnoreCase))) &&
+                    (string.IsNullOrWhiteSpace(r.batchno) || string.Equals(s.batchno?.Trim(), r.batchno?.Trim(), StringComparison.OrdinalIgnoreCase)) &&
+                    (s.availableqty > 0 || s.soldqty > 0))
+                    .OrderByDescending(s => s.availableqty >= r.returnqty ? 1 : 0) // Prioritize a single sales detail that can satisfy the full return qty
+                    .ThenByDescending(s => s.availableqty)
+                    .ThenByDescending(s => s.soldqty)
+                    .ThenByDescending(s => s.billdate ?? DateTime.MinValue)
+                    .ToList();
+
+                decimal qtyRemainingToReturn = r.returnqty;
+
+                if (matchingDetails.Any())
+                {
+                    // Case 1: A single salesdetail has enough available sold quantity to fulfill this entire returnqty
+                    var singleFit = matchingDetails.FirstOrDefault(s => s.availableqty >= qtyRemainingToReturn);
+                    if (singleFit != null)
+                    {
+                        returnItems.Add(new sales_return_item_request
+                        {
+                            salesdetailcode = singleFit.salesdetailcode,
+                            salescode = singleFit.salescode,
+                            itemcode = r.itemcode > 0 ? r.itemcode : singleFit.itemcode,
+                            batchno = !string.IsNullOrWhiteSpace(r.batchno) ? r.batchno : singleFit.batchno,
+                            returnqty = qtyRemainingToReturn,
+                            packsize = r.packsize > 0 ? r.packsize : (singleFit.packsize > 0 ? singleFit.packsize : 1),
+                            warehousecode = r.warehousecode > 0 ? r.warehousecode : (singleFit.warehousecode > 0 ? singleFit.warehousecode : SelectedDefaultWarehouseCode),
+                            remarks = !string.IsNullOrWhiteSpace(r.remarks) ? r.remarks : (!string.IsNullOrWhiteSpace(HeaderRemarks) ? HeaderRemarks : ReturnReferenceNo)
+                        });
+                        qtyRemainingToReturn = 0;
+                    }
+                    else
+                    {
+                        // Case 2: Multi-detail allocation across available sales details
+                        foreach (var detail in matchingDetails)
+                        {
+                            if (qtyRemainingToReturn <= 0) break;
+
+                            decimal allocatable = detail.availableqty > 0 ? detail.availableqty : detail.soldqty;
+                            if (allocatable <= 0) continue;
+
+                            decimal qtyFromThisDetail = Math.Min(qtyRemainingToReturn, allocatable);
+
+                            returnItems.Add(new sales_return_item_request
+                            {
+                                salesdetailcode = detail.salesdetailcode,
+                                salescode = detail.salescode,
+                                itemcode = r.itemcode > 0 ? r.itemcode : detail.itemcode,
+                                batchno = !string.IsNullOrWhiteSpace(r.batchno) ? r.batchno : detail.batchno,
+                                returnqty = qtyFromThisDetail,
+                                packsize = r.packsize > 0 ? r.packsize : (detail.packsize > 0 ? detail.packsize : 1),
+                                warehousecode = r.warehousecode > 0 ? r.warehousecode : (detail.warehousecode > 0 ? detail.warehousecode : SelectedDefaultWarehouseCode),
+                                remarks = !string.IsNullOrWhiteSpace(r.remarks) ? r.remarks : (!string.IsNullOrWhiteSpace(HeaderRemarks) ? HeaderRemarks : ReturnReferenceNo)
+                            });
+
+                            qtyRemainingToReturn -= qtyFromThisDetail;
+                        }
+
+                        // If still remaining quantity (e.g. edge cases), attach remaining to primary detail
+                        if (qtyRemainingToReturn > 0)
+                        {
+                            var primary = matchingDetails.First();
+                            returnItems.Add(new sales_return_item_request
+                            {
+                                salesdetailcode = primary.salesdetailcode,
+                                salescode = primary.salescode,
+                                itemcode = r.itemcode > 0 ? r.itemcode : primary.itemcode,
+                                batchno = !string.IsNullOrWhiteSpace(r.batchno) ? r.batchno : primary.batchno,
+                                returnqty = qtyRemainingToReturn,
+                                packsize = r.packsize > 0 ? r.packsize : (primary.packsize > 0 ? primary.packsize : 1),
+                                warehousecode = r.warehousecode > 0 ? r.warehousecode : (primary.warehousecode > 0 ? primary.warehousecode : SelectedDefaultWarehouseCode),
+                                remarks = !string.IsNullOrWhiteSpace(r.remarks) ? r.remarks : (!string.IsNullOrWhiteSpace(HeaderRemarks) ? HeaderRemarks : ReturnReferenceNo)
+                            });
+                        }
+                    }
+                }
+                else
+                {
+                    // Fallback to row's own salesdetailcode
+                    returnItems.Add(new sales_return_item_request
+                    {
+                        salesdetailcode = r.salesdetailcode,
+                        salescode = r.salescode,
+                        itemcode = r.itemcode,
+                        batchno = r.batchno,
+                        returnqty = r.returnqty,
+                        packsize = r.packsize > 0 ? r.packsize : 1,
+                        warehousecode = r.warehousecode > 0 ? r.warehousecode : SelectedDefaultWarehouseCode,
+                        remarks = !string.IsNullOrWhiteSpace(r.remarks) ? r.remarks : (!string.IsNullOrWhiteSpace(HeaderRemarks) ? HeaderRemarks : ReturnReferenceNo)
+                    });
+                }
+            }
+
             var submissionRequest = new sales_return_request
             {
                 customercode = SelectedCustomerCode > 0 ? SelectedCustomerCode : validRows.FirstOrDefault(r => r.customercode > 0)?.customercode,
                 usercode = GetEffectiveUserCode(),
                 tenantcode = DefaultTenant,
                 remarks = !string.IsNullOrWhiteSpace(HeaderRemarks) ? HeaderRemarks : ReturnReferenceNo,
-                items = validRows.Select(r => new sales_return_item_request
-                {
-                    salesdetailcode = r.salesdetailcode,
-                    salescode = r.salescode,
-                    itemcode = r.itemcode,
-                    batchno = r.batchno,
-                    returnqty = r.returnqty,
-                    packsize = r.packsize > 0 ? r.packsize : 1,
-                    warehousecode = r.warehousecode > 0 ? r.warehousecode : SelectedDefaultWarehouseCode,
-                    remarks = !string.IsNullOrWhiteSpace(r.remarks) ? r.remarks : (!string.IsNullOrWhiteSpace(HeaderRemarks) ? HeaderRemarks : ReturnReferenceNo)
-                }).ToList()
+                items = returnItems
             };
+
+            // Print the payload in JSON format to terminal as requested
+            var payloadJson = JsonSerializer.Serialize(submissionRequest, new JsonSerializerOptions { WriteIndented = true });
+            Console.WriteLine("==================================================");
+            Console.WriteLine("[SalesReturn] INITIATING SALES RETURN SUBMISSION");
+            Console.WriteLine($"[SalesReturn Payload JSON]:\n{payloadJson}");
+            Console.WriteLine("==================================================");
 
             var returnResponse = await client.PostAsJsonAsync("api/ItemMaster/insertsalesreturn", submissionRequest);
             if (returnResponse.IsSuccessStatusCode)
@@ -1994,11 +2116,13 @@
             else
             {
                 var err = await returnResponse.Content.ReadAsStringAsync();
+                Console.WriteLine($"[SalesReturn] Failed response: {returnResponse.StatusCode} - {err}");
                 ToastService.ShowError($"Failed to save sales return: {err}");
             }
         }
         catch (Exception ex)
         {
+            Console.WriteLine($"[SalesReturn] Exception during submit: {ex.Message}");
             ToastService.ShowError($"Error: {ex.Message}");
         }
         finally

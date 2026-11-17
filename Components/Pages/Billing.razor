@@ -1655,12 +1655,125 @@
             {
                 patientAdvanceAvailable = 0;
             }
-            
-            AutoApplyAdvanceIfAvailable();
+
+            double advanceUsedOnThisBill = 0;
+            if (patientAdvanceSummary?.ledger != null && patientAdvanceSummary.ledger.Any())
+            {
+                var usedRows = patientAdvanceSummary.ledger
+                    .Where(r => string.Equals(r.transaction_type, "USED", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                if (!string.IsNullOrWhiteSpace(billModel.requestguid))
+                {
+                    advanceUsedOnThisBill = usedRows
+                        .Where(r => (!string.IsNullOrEmpty(r.requestguid) && string.Equals(r.requestguid, billModel.requestguid, StringComparison.OrdinalIgnoreCase)) ||
+                                    (!string.IsNullOrEmpty(billModel.bill_no) && !string.IsNullOrEmpty(r.bill_no) && string.Equals(r.bill_no, billModel.bill_no, StringComparison.OrdinalIgnoreCase)))
+                        .Sum(r => r.receiptamount);
+                }
+
+                if (advanceUsedOnThisBill <= 0 && (!billModel.pmc1_amount.HasValue || billModel.pmc1_amount.Value <= 0))
+                {
+                    if (!string.IsNullOrWhiteSpace(billModel.requestguid) && usedRows.Count == 1)
+                    {
+                        advanceUsedOnThisBill = usedRows[0].receiptamount;
+                    }
+                    else if (!string.IsNullOrWhiteSpace(billModel.requestguid) && usedRows.Count > 1 && netPayable > 0)
+                    {
+                        var exactMatch = usedRows.FirstOrDefault(r => Math.Abs(r.receiptamount - (double)netPayable) < 0.01);
+                        if (exactMatch != null) advanceUsedOnThisBill = exactMatch.receiptamount;
+                    }
+                }
+            }
+
+            if (advanceUsedOnThisBill > 0)
+            {
+                patientAdvanceAvailable += advanceUsedOnThisBill;
+
+                var advancePm = paymodesList.FirstOrDefault(p => 
+                    string.Equals(p.name, "ADVANCE", StringComparison.OrdinalIgnoreCase) || 
+                    string.Equals(p.shortname, "ADVANCE", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(p.shortname, "ADV", StringComparison.OrdinalIgnoreCase)
+                );
+                if (advancePm == null)
+                {
+                    advancePm = new PaymodeMasterModel { pmcode = 99, shortname = "ADVANCE", name = "Advance" };
+                    if (!paymodesList.Any(p => p.pmcode == 99)) paymodesList.Add(advancePm);
+                }
+
+                double advCode = (double)advancePm.pmcode;
+
+                double totalBillPaid = (double)billModel.paidamount;
+                if (totalBillPaid <= 0 && billModel.pmc1_amount.HasValue && billModel.pmc1_amount.Value > 0)
+                {
+                    totalBillPaid = billModel.pmc1_amount.Value;
+                }
+                if (totalBillPaid < advanceUsedOnThisBill)
+                {
+                    totalBillPaid = advanceUsedOnThisBill;
+                }
+
+                double nonAdvPaid = Math.Max(0, Math.Round(totalBillPaid - advanceUsedOnThisBill, 2));
+
+                if (nonAdvPaid <= 0.01)
+                {
+                    // Fully paid by Advance alone: clear any phantom second paymode
+                    billModel.pmc1 = advCode;
+                    billModel.pmc1_amount = advanceUsedOnThisBill;
+                    billModel.pmc2 = null;
+                    billModel.pmc2_amount = null;
+                    showPaymode2 = false;
+                    billModel.pmc3 = null;
+                    billModel.pmc3_amount = null;
+                    showPaymode3 = false;
+                    billModel.collection_type = "ADVANCE";
+                }
+                else
+                {
+                    // Split payment: Advance in PM1, remaining in PM2
+                    billModel.pmc1 = advCode;
+                    billModel.pmc1_amount = advanceUsedOnThisBill;
+
+                    var nonAdvPm = paymodesList.FirstOrDefault(p => 
+                        !string.Equals(p.name, "ADVANCE", StringComparison.OrdinalIgnoreCase) && 
+                        !string.Equals(p.shortname, "ADVANCE", StringComparison.OrdinalIgnoreCase) &&
+                        !string.Equals(p.shortname, "ADV", StringComparison.OrdinalIgnoreCase));
+                    double defaultNonAdvCode = nonAdvPm != null ? (double)nonAdvPm.pmcode : 1.0;
+
+                    showPaymode2 = true;
+                    if (!billModel.pmc2.HasValue || billModel.pmc2.Value == advCode)
+                    {
+                        billModel.pmc2 = defaultNonAdvCode;
+                    }
+                    billModel.pmc2_amount = nonAdvPaid;
+                    billModel.pmc3 = null;
+                    billModel.pmc3_amount = null;
+                    showPaymode3 = false;
+                    billModel.collection_type = "MULTI";
+                }
+
+                RecalculateTotals();
+            }
+            else if (string.IsNullOrWhiteSpace(billModel.requestguid))
+            {
+                AutoApplyAdvanceIfAvailable();
+            }
+
             if (!string.IsNullOrWhiteSpace(billModel.requestguid))
             {
                 var usage = await DueCollectionService.GetAdvanceUsageAsync(billModel.requestguid);
                 billAdvanceUsage = usage.data;
+                if (billAdvanceUsage == null && advanceUsedOnThisBill > 0)
+                {
+                    billAdvanceUsage = new HmsAdvanceUsageResponse
+                    {
+                        requestguid = billModel.requestguid,
+                        bill_no = billModel.bill_no,
+                        custid = billModel.custid,
+                        total_advance_used = advanceUsedOnThisBill,
+                        current_advance_balance = patientAdvanceAvailable,
+                        can_revert = true
+                    };
+                }
             }
             StateHasChanged();
         }
@@ -2903,6 +3016,7 @@
                     billModel = new HmsBillModel
                     {
                         requestguid = billResp.requestguid,
+                        bill_no = billResp.bill_no,
                         op_id = billResp.op_id, 
                         ip_id = billResp.ip_id,
                         custid = billResp.custid ?? (reg != null ? (long)reg.custid : 0),
@@ -2927,7 +3041,7 @@
                         pmc1_amount = billResp.pmc1_amount,
                         pmc2_amount = billResp.pmc2_amount,
                         pmc3_amount = billResp.pmc3_amount,
-                        collection_type = billResp.pay_mode ?? "CASH",
+                        collection_type = billResp.pay_mode ?? billResp.paymode ?? billResp.collection_type ?? "CASH",
                         items = billResp.items?.Select(i => new HmsBillItemModel
                         {
                             item_name = i.item_name,
@@ -2942,8 +3056,7 @@
                         }).ToList() ?? new List<HmsBillItemModel>()
                     };
 
-                    showPaymode2 = (billModel.pmc2 != null || (billModel.pmc2_amount ?? 0) > 0);
-                    showPaymode3 = (billModel.pmc3 != null || (billModel.pmc3_amount ?? 0) > 0);
+                    ResolveBillPaymodes(billResp);
 
                     selectedOpNo = billModel.op_id;
                     if (!string.IsNullOrEmpty(billModel.op_id) && Guid.TryParse(billModel.op_id, out var opIdGuid))
@@ -3025,6 +3138,7 @@
                     if (isOpIdMatch || isCustIdMatch)
                     {
                         billModel = existingBill;
+                        ResolveBillPaymodes(null);
                         if (string.IsNullOrWhiteSpace(billModel.patient_name) || billModel.patient_name.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
                         {
                             var custMatch = await FetchCustomerByIdAsync(billModel.custid);
@@ -4992,7 +5106,8 @@
                                 cntcode         = billModel.cntcode > 0 ? billModel.cntcode : 1,
                                 usercode        = resolvedUserCode > 0 ? resolvedUserCode : 10,
                                 computercode    = billModel.computercode > 0 ? billModel.computercode : 1,
-                                remarks         = $"Billing payment using advance for bill {savedRequestGuid}"
+                                remarks         = $"Billing payment using advance for bill {savedRequestGuid}",
+                                requestguid     = savedRequestGuid
                             };
 
                             var useRes = await DueCollectionService.UseAdvanceAsync(useReq);
@@ -5000,6 +5115,27 @@
                             {
                                 Console.WriteLine($"[Billing] Advance use endpoint posted successfully for patient {billModel.custid}: amount {advanceUsed}, receipt: {useRes.receipt_no}");
                             }
+                        }
+
+                        // Restore and persist actual advance paymode and paid amount to the saved bill record
+                        try
+                        {
+                            billModel.requestguid = savedRequestGuid;
+                            billModel.pmc1 = origPmc1Code;
+                            billModel.pmc1_amount = origPmc1;
+                            billModel.pmc2 = origPmc2Code;
+                            billModel.pmc2_amount = origPmc2;
+                            billModel.pmc3 = origPmc3Code;
+                            billModel.pmc3_amount = origPmc3;
+                            billModel.paidamount = origPaidAmount;
+                            billModel.collection_type = origCollectionType;
+                            billModel.iscashbill = origIsCashBill;
+                            billModel.iscreditbill = origIsCreditBill;
+                            _ = HmsBillingService.SaveBillAsync(billModel);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine($"[Billing] Error updating bill paymodes after advance: {ex.Message}");
                         }
                     }
                     catch (Exception ex)
@@ -5101,16 +5237,16 @@
         }
         else
         {
-            billModel.pmc1 = 1;
+            billModel.pmc1 = 1.0;
             billModel.pmc1_amount = null;
         }
 
         var cardPaymode = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
-        billModel.pmc2 = cardPaymode != null ? (double)cardPaymode.pmcode : 2;
+        billModel.pmc2 = cardPaymode != null ? (double)cardPaymode.pmcode : 2.0;
         billModel.pmc2_amount = null;
 
         var upiPaymode = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
-        billModel.pmc3 = upiPaymode != null ? (double)upiPaymode.pmcode : 3;
+        billModel.pmc3 = upiPaymode != null ? (double)upiPaymode.pmcode : 3.0;
         billModel.pmc3_amount = null;
 
         dobSelected = null;
@@ -5181,10 +5317,111 @@
         if (!showPaymode2)
         {
             showPaymode2 = true;
+            if (!billModel.pmc2.HasValue || billModel.pmc2.Value <= 0)
+            {
+                var cardPaymode = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
+                billModel.pmc2 = cardPaymode != null ? (double)cardPaymode.pmcode : 2.0;
+            }
         }
         else if (!showPaymode3)
         {
             showPaymode3 = true;
+            if (!billModel.pmc3.HasValue || billModel.pmc3.Value <= 0)
+            {
+                var upiPaymode = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
+                billModel.pmc3 = upiPaymode != null ? (double)upiPaymode.pmcode : 3.0;
+            }
+        }
+    }
+
+    private void ResolveBillPaymodes(HmsBillResponse? billResp = null)
+    {
+        var advancePm = paymodesList.FirstOrDefault(p => 
+            string.Equals(p.name, "ADVANCE", StringComparison.OrdinalIgnoreCase) || 
+            string.Equals(p.shortname, "ADVANCE", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(p.shortname, "ADV", StringComparison.OrdinalIgnoreCase)
+        );
+        if (advancePm == null)
+        {
+            advancePm = new PaymodeMasterModel { pmcode = 99, shortname = "ADVANCE", name = "Advance" };
+            paymodesList.Add(advancePm);
+        }
+
+        // 1. Resolve Paymode 1
+        double? resolvedPmc1 = billModel.pmc1;
+        if (!resolvedPmc1.HasValue || resolvedPmc1.Value <= 0)
+        {
+            if (billResp?.pmcode.HasValue == true && billResp.pmcode.Value > 0)
+                resolvedPmc1 = billResp.pmcode.Value;
+            else if (billResp?.pm_code.HasValue == true && billResp.pm_code.Value > 0)
+                resolvedPmc1 = billResp.pm_code.Value;
+        }
+
+        var modeStr = !string.IsNullOrWhiteSpace(billResp?.pay_mode) ? billResp.pay_mode 
+            : (!string.IsNullOrWhiteSpace(billResp?.paymode) ? billResp.paymode 
+            : (!string.IsNullOrWhiteSpace(billResp?.collection_type) ? billResp.collection_type 
+            : billModel.collection_type));
+
+        if ((!resolvedPmc1.HasValue || resolvedPmc1.Value <= 0 || !paymodesList.Any(p => (double)p.pmcode == resolvedPmc1.Value)) && !string.IsNullOrWhiteSpace(modeStr))
+        {
+            var match = paymodesList.FirstOrDefault(p => 
+                string.Equals(p.shortname, modeStr, StringComparison.OrdinalIgnoreCase) || 
+                string.Equals(p.name, modeStr, StringComparison.OrdinalIgnoreCase)
+            );
+            if (match != null)
+            {
+                resolvedPmc1 = (double)match.pmcode;
+            }
+        }
+
+        if (!resolvedPmc1.HasValue || resolvedPmc1.Value <= 0 || !paymodesList.Any(p => (double)p.pmcode == resolvedPmc1.Value))
+        {
+            var cashPm = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "CASH", StringComparison.OrdinalIgnoreCase)) ?? paymodesList.FirstOrDefault();
+            if (cashPm != null)
+            {
+                resolvedPmc1 = (double)cashPm.pmcode;
+            }
+            else
+            {
+                resolvedPmc1 = 1.0;
+            }
+        }
+        billModel.pmc1 = resolvedPmc1;
+
+        // 2. Resolve Paymode 2 & Paymode 3
+        bool hasValidPm2 = billModel.pmc2.HasValue && billModel.pmc2.Value > 0 && (billModel.pmc2_amount ?? 0) > 0 && paymodesList.Any(p => (double)p.pmcode == billModel.pmc2.Value);
+        bool hasValidPm3 = billModel.pmc3.HasValue && billModel.pmc3.Value > 0 && (billModel.pmc3_amount ?? 0) > 0 && paymodesList.Any(p => (double)p.pmcode == billModel.pmc3.Value);
+
+        showPaymode2 = hasValidPm2;
+        showPaymode3 = hasValidPm3;
+
+        var cardPm = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
+        var upiPm = paymodesList.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
+
+        if (!hasValidPm2)
+        {
+            billModel.pmc2 = cardPm != null ? (double)cardPm.pmcode : 2.0;
+            billModel.pmc2_amount = null;
+        }
+
+        if (!hasValidPm3)
+        {
+            billModel.pmc3 = upiPm != null ? (double)upiPm.pmcode : 3.0;
+            billModel.pmc3_amount = null;
+        }
+
+        // 3. Resolve Paymode 1 Amount if missing
+        if (!billModel.pmc1_amount.HasValue || billModel.pmc1_amount.Value <= 0)
+        {
+            double otherAmts = (hasValidPm2 ? (billModel.pmc2_amount ?? 0) : 0) + (hasValidPm3 ? (billModel.pmc3_amount ?? 0) : 0);
+            if (billResp?.paid_amount.HasValue == true && billResp.paid_amount.Value > 0)
+            {
+                billModel.pmc1_amount = Math.Max(0, billResp.paid_amount.Value - otherAmts);
+            }
+            else if (billModel.paidamount > 0)
+            {
+                billModel.pmc1_amount = Math.Max(0, (double)billModel.paidamount - otherAmts);
+            }
         }
     }
 

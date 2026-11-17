@@ -76,6 +76,10 @@ namespace Booking.Models
         public string? doctor_name { get; set; }
         public string? fee_type { get; set; }
         public string? pay_mode { get; set; }
+        public string? paymode { get; set; }
+        public string? collection_type { get; set; }
+        public double? pmcode { get; set; }
+        public double? pm_code { get; set; }
         public string? counter_name { get; set; }
         public int? enteredbhcode { get; set; }
         public int? cntcode { get; set; }
