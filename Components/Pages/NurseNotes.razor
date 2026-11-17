@@ -1945,7 +1945,8 @@ else
                                         @foreach (var med in medicineList.OrderBy(x => x.created_at))
                                         {
                                             var savedNum = rxSNo++;
-                                            var medStock = GetItemAvailableStock(null, med.medicine_name);
+                                            var medNameDisp = GetDisplayMedicineName(med);
+                                            var medStock = GetItemAvailableStock(null, medNameDisp);
                                             <tr class="table-saved-row lc-table-row saved-row" style="background-color: #fafbfc;">
                                                 <td style="text-align: center; vertical-align: middle; font-weight: 700; color: #475569;">
                                                     @savedNum
@@ -1963,7 +1964,7 @@ else
                                                     }
                                                 </td>
                                                 <td style="vertical-align: middle;">
-                                                    <div class="font-bold text-slate-800" style="font-size: 12px;">@med.medicine_name</div>
+                                                    <div class="font-bold text-slate-800" style="font-size: 12px;">@medNameDisp</div>
                                                 </td>
                                                 <td style="vertical-align: middle; text-align: center; color: #1e293b; font-size: 11px; font-weight: 600;">
                                                     @(!string.IsNullOrWhiteSpace(med.batch_no) ? med.batch_no : (!string.IsNullOrWhiteSpace(med.batchno) ? med.batchno : "-"))
@@ -9912,6 +9913,19 @@ else
                 medicineList = (summary.medicine != null && summary.medicine.Any())
                     ? summary.medicine
                     : (await NurseNotesService.GetMedicinesAsync(selectedPatient.ip_id, DefaultTenant, effectiveUserCode));
+                if (medicineList != null && medicineList.Any(m => string.IsNullOrWhiteSpace(m.medicine_name) || m.medicine_name.Trim() == "-"))
+                {
+                    if (!inventoryItemsList.Any())
+                    {
+                        try { await LoadInventoryItemsAsync(); } catch { }
+                    }
+                    foreach (var m in medicineList.Where(m => string.IsNullOrWhiteSpace(m.medicine_name) || m.medicine_name.Trim() == "-"))
+                    {
+                        var res = GetDisplayMedicineName(m);
+                        if (!string.IsNullOrWhiteSpace(res) && res != "-") m.medicine_name = res;
+                    }
+                    _ = RepairBlankMedicineNamesAsync(medicineList);
+                }
                 otherList = summary.other ?? new();
                 visitingDoctorList = summary.visiting_doctor ?? new();
                 scheduleList = summary.schedule ?? new();
@@ -9934,6 +9948,19 @@ else
                 inputOutputList = t3.Result ?? new();
                 serviceList = t4.Result ?? new();
                 medicineList = t5.Result ?? new();
+                if (medicineList != null && medicineList.Any(m => string.IsNullOrWhiteSpace(m.medicine_name) || m.medicine_name.Trim() == "-"))
+                {
+                    if (!inventoryItemsList.Any())
+                    {
+                        try { await LoadInventoryItemsAsync(); } catch { }
+                    }
+                    foreach (var m in medicineList.Where(m => string.IsNullOrWhiteSpace(m.medicine_name) || m.medicine_name.Trim() == "-"))
+                    {
+                        var res = GetDisplayMedicineName(m);
+                        if (!string.IsNullOrWhiteSpace(res) && res != "-") m.medicine_name = res;
+                    }
+                    _ = RepairBlankMedicineNamesAsync(medicineList);
+                }
                 otherList = t6.Result ?? new();
                 visitingDoctorList = t7.Result ?? new();
                 scheduleList = t8.Result ?? new();
@@ -10230,6 +10257,19 @@ else
                     {
                         medicineList = sum.medicine;
                     }
+                }
+                if (medicineList != null && medicineList.Any(m => string.IsNullOrWhiteSpace(m.medicine_name) || m.medicine_name.Trim() == "-"))
+                {
+                    if (!inventoryItemsList.Any())
+                    {
+                        try { await LoadInventoryItemsAsync(); } catch { }
+                    }
+                    foreach (var m in medicineList.Where(m => string.IsNullOrWhiteSpace(m.medicine_name) || m.medicine_name.Trim() == "-"))
+                    {
+                        var res = GetDisplayMedicineName(m);
+                        if (!string.IsNullOrWhiteSpace(res) && res != "-") m.medicine_name = res;
+                    }
+                    _ = RepairBlankMedicineNamesAsync(medicineList);
                 }
                 await InvokeAsync(StateHasChanged);
             }
@@ -11152,18 +11192,8 @@ else
 
     private async Task SaveExistingServiceAsync(NurseServiceModel s)
     {
-        if (selectedPatient == null) return;
-        if (isSavingService) return;
-        if (string.IsNullOrWhiteSpace(serviceName))
-        {
-            ToastService.ShowWarning("Please enter service name.");
-            return;
-        }
-
-        isSavingService = true;
         try
         {
-            int effectiveUserCode = GetEffectiveUserCode();
             var req = new UpdateServiceRequest
             {
                 service_id = s.service_id,
@@ -11174,12 +11204,12 @@ else
                 remarks = serviceRemarks?.Trim() ?? ""
             };
 
-            var (ok, msg) = await NurseNotesService.UpdateServiceAsync(req, DefaultTenant, effectiveUserCode);
+            var (ok, msg) = await NurseNotesService.UpdateServiceAsync(req, DefaultTenant, GetEffectiveUserCode());
             if (ok)
             {
                 ToastService.ShowSuccess("Service record updated.");
                 CancelEditService();
-                serviceList = await NurseNotesService.GetServicesAsync(selectedPatient.ip_id, DefaultTenant, effectiveUserCode);
+                serviceList = await NurseNotesService.GetServicesAsync(selectedPatient.ip_id, DefaultTenant, GetEffectiveUserCode());
             }
             else ToastService.ShowError(msg);
         }
@@ -12752,6 +12782,11 @@ else
             allCategories = (await catTask)?.ToList() ?? new();
             allParentCategories = (await pcatTask)?.ToList() ?? new();
             StateHasChanged();
+
+            if (medicineList != null && medicineList.Any(m => string.IsNullOrWhiteSpace(m.medicine_name)))
+            {
+                _ = RepairBlankMedicineNamesAsync(medicineList);
+            }
         }
         catch (Exception ex)
         {
@@ -12760,6 +12795,120 @@ else
             allStocks = new();
             allCategories = new();
             allParentCategories = new();
+        }
+    }
+
+    private string GetDisplayMedicineName(NurseMedicineModel? med)
+    {
+        if (med == null) return "-";
+        if (!string.IsNullOrWhiteSpace(med.medicine_name) && med.medicine_name.Trim() != "-") return med.medicine_name;
+        if (!string.IsNullOrWhiteSpace(med.generic_name) && med.generic_name.Trim() != "-") return med.generic_name;
+
+        // 1. Resolve from drug_code via inventoryItemsList
+        if (med.drug_code.HasValue && med.drug_code.Value > 0 && inventoryItemsList != null && inventoryItemsList.Any())
+        {
+            var match = inventoryItemsList.FirstOrDefault(i => i.itemcode == (long)med.drug_code.Value);
+            if (match != null && !string.IsNullOrWhiteSpace(match.itemname))
+            {
+                return match.itemname;
+            }
+        }
+
+        // 2. Resolve from stockcode via allStocks
+        if (med.stockcode.HasValue && med.stockcode.Value > 0 && allStocks != null && allStocks.Any() && inventoryItemsList != null && inventoryItemsList.Any())
+        {
+            var stock = allStocks.FirstOrDefault(s => s.stockcode == med.stockcode.Value);
+            if (stock != null)
+            {
+                var match = inventoryItemsList.FirstOrDefault(i => i.itemcode == stock.itemcode);
+                if (match != null && !string.IsNullOrWhiteSpace(match.itemname))
+                {
+                    return match.itemname;
+                }
+            }
+        }
+
+        // 3. Resolve from batch_no via allStocks
+        var batch = !string.IsNullOrWhiteSpace(med.batch_no) ? med.batch_no : med.batchno;
+        if (!string.IsNullOrWhiteSpace(batch) && batch != "-" && allStocks != null && allStocks.Any() && inventoryItemsList != null && inventoryItemsList.Any())
+        {
+            var stock = allStocks.FirstOrDefault(s => !string.IsNullOrWhiteSpace(s.batchno) && string.Equals(s.batchno.Trim(), batch.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (stock != null)
+            {
+                var match = inventoryItemsList.FirstOrDefault(i => i.itemcode == stock.itemcode);
+                if (match != null && !string.IsNullOrWhiteSpace(match.itemname))
+                {
+                    return match.itemname;
+                }
+            }
+        }
+
+        return "-";
+    }
+
+    private async Task RepairBlankMedicineNamesAsync(List<NurseMedicineModel>? list)
+    {
+        if (list == null || !list.Any()) return;
+        var blankMeds = list.Where(m => string.IsNullOrWhiteSpace(m.medicine_name) || m.medicine_name.Trim() == "-").ToList();
+        if (!blankMeds.Any()) return;
+
+        bool updatedAny = false;
+        foreach (var m in blankMeds)
+        {
+            var resolved = GetDisplayMedicineName(m);
+            if (!string.IsNullOrWhiteSpace(resolved) && resolved != "-")
+            {
+                m.medicine_name = resolved;
+                updatedAny = true;
+                try
+                {
+                    var req = new UpdateMedicineRequest
+                    {
+                        med_id = m.med_id,
+                        medicine_name = resolved,
+                        status = !string.IsNullOrWhiteSpace(m.status) ? m.status : "GIVEN",
+                        entry_date = m.entry_date,
+                        entry_time = m.entry_time,
+                        shift = m.shift,
+                        dose = m.dose,
+                        unit = m.unit,
+                        route = m.route,
+                        quantity = m.quantity > 0 ? m.quantity : 1,
+                        qty = m.quantity > 0 ? m.quantity : 1,
+                        sno = m.sno,
+                        pr_code = m.pr_code,
+                        drug_code = m.drug_code,
+                        generic_name = m.generic_name,
+                        drug_category = m.drug_category,
+                        morning = m.morning,
+                        afternoon = m.afternoon,
+                        evening = m.evening,
+                        night = m.night,
+                        morning_dose = m.morning_dose,
+                        afternoon_dose = m.afternoon_dose,
+                        evening_dose = m.evening_dose,
+                        night_dose = m.night_dose,
+                        dose_unit = m.dose_unit,
+                        before_food = m.before_food,
+                        after_food = m.after_food,
+                        days = m.days,
+                        rate = m.rate,
+                        mrp = m.mrp,
+                        batch_no = m.batch_no ?? m.batchno,
+                        batchno = m.batch_no ?? m.batchno,
+                        stockcode = m.stockcode,
+                        warehousecode = m.warehousecode,
+                        notes = m.notes
+                    };
+                    _ = NurseNotesService.UpdateMedicineAsync(req, DefaultTenant, GetEffectiveUserCode());
+                }
+                catch { }
+            }
+        }
+
+        if (updatedAny)
+        {
+            await InvokeAsync(StateHasChanged);
         }
     }
 

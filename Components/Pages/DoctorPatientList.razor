@@ -2300,7 +2300,7 @@
             {
                 await InvokeAsync(async () =>
                 {
-                    await RefreshActiveTabQueue();
+                    await RefreshActiveTabQueue(isSilent: true);
                 });
             }
             catch { }
@@ -2335,7 +2335,9 @@
         StateHasChanged();
     }
 
-    private async Task RefreshActiveTabQueue()
+    private Task RefreshActiveTabQueue() => RefreshActiveTabQueue(false);
+
+    private async Task RefreshActiveTabQueue(bool isSilent)
     {
         if (showUnbilledCharges)
         {
@@ -2345,13 +2347,13 @@
         if (activeTab == "OP")
         {
             await Task.WhenAll(
-                LoadTodayBookingsAsync(),
+                LoadTodayBookingsAsync(isSilent),
                 LoadOpStatusesAsync()
             );
         }
         else if (activeTab == "IP")
         {
-            await LoadIpDataAsync();
+            await LoadIpDataAsync(isSilent);
         }
         else if (activeTab == "OT")
         {
@@ -2466,9 +2468,15 @@
         opStatuses = await OpStatusMasterService.GetAllStatusesAsync(activeOnly: true);
     }
 
-    private async Task LoadTodayBookingsAsync()
+    private Task LoadTodayBookingsAsync() => LoadTodayBookingsAsync(false);
+
+    private async Task LoadTodayBookingsAsync(bool isSilent)
     {
-        loading = true;
+        if (!isSilent)
+        {
+            loading = true;
+            StateHasChanged();
+        }
         try
         {
             var dateOnly = DateOnly.FromDateTime(selectedDate);
@@ -2535,31 +2543,7 @@
                 }
             }
 
-            // 6. Pre-fetch case sheets to know if clinical records are saved / finalized
-            var caseSheetMap = new Dictionary<Guid, CaseSheetViewModel?>();
-            if (filteredRegs.Any())
-            {
-                var csTasks = filteredRegs.Select(async r =>
-                {
-                    try
-                    {
-                        var cs = await CaseSheetService.GetCaseSheetByVisitAsync(r.op_id, null);
-                        return (opId: r.op_id, cs: cs);
-                    }
-                    catch
-                    {
-                        return (opId: r.op_id, cs: (CaseSheetViewModel?)null);
-                    }
-                }).ToList();
-
-                var csResults = await Task.WhenAll(csTasks);
-                foreach (var (opId, cs) in csResults)
-                {
-                    caseSheetMap[opId] = cs;
-                }
-            }
-
-            // 7. Map registrations to DoctorBookingListModel
+            // 6. Map registrations to DoctorBookingListModel immediately
             var mappedBookings = new List<DoctorBookingListModel>(filteredRegs.Count);
             foreach (var r in filteredRegs)
             {
@@ -2584,9 +2568,9 @@
 
                 // Determine effective status:
                 // 1. Cancelled or Rescheduled stays as is.
-                // 2. Initially keep all status as WAITING which has no saved records.
-                // 3. When any record is saved, update status to IN_CONSULTATION.
-                // 4. When case sheet is finalized, show as COMPLETED.
+                // 2. Completed / Visited / Confirmed stays as completed.
+                // 3. In consultation stays as in consultation.
+                // 4. Default is waiting.
                 var rawVisitStatus = r.visit_status?.Trim().ToUpperInvariant() ?? "";
                 string effectiveStatus;
                 if (rawVisitStatus is "CANCELLED" or "CANCELED" or "NOT ATTENDED")
@@ -2597,22 +2581,13 @@
                 {
                     effectiveStatus = "RESCHEDULED";
                 }
-                else if (caseSheetMap.TryGetValue(r.op_id, out var cs) && cs != null && !string.IsNullOrEmpty(cs.sheet_id))
-                {
-                    if (string.Equals(cs.sheet_status, "FINALIZED", StringComparison.OrdinalIgnoreCase) ||
-                        string.Equals(cs.sheet_status, "COMPLETED", StringComparison.OrdinalIgnoreCase) ||
-                        rawVisitStatus is "COMPLETED" or "VISITED" or "CONFIRMED")
-                    {
-                        effectiveStatus = "COMPLETED";
-                    }
-                    else
-                    {
-                        effectiveStatus = "IN_CONSULTATION";
-                    }
-                }
                 else if (rawVisitStatus is "COMPLETED" or "VISITED" or "CONFIRMED")
                 {
                     effectiveStatus = "COMPLETED";
+                }
+                else if (rawVisitStatus is "IN_CONSULTATION" or "IN CONSULTATION" or "CONSULTING" or "ON GOING" or "ONGOING")
+                {
+                    effectiveStatus = "IN_CONSULTATION";
                 }
                 else
                 {
@@ -2651,6 +2626,9 @@
 
             // Sort by start time then token number
             todayBookings = mappedBookings.OrderBy(b => b.slot_start_time).ThenBy(b => b.token_no).ToList();
+
+            // Background non-blocking enrichment for case sheet statuses
+            _ = EnrichCaseSheetStatusesAsync(filteredRegs);
         }
         catch (Exception ex)
         {
@@ -2659,6 +2637,70 @@
         finally
         {
             loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task EnrichCaseSheetStatusesAsync(List<OPRegistrationModel.OpRegistrationModel> regs)
+    {
+        try
+        {
+            // Only check visits that might need status updates (not already completed/cancelled/rescheduled)
+            var candidateRegs = regs.Where(r =>
+            {
+                var s = r.visit_status?.Trim().ToUpperInvariant() ?? "";
+                return s is not ("COMPLETED" or "VISITED" or "CONFIRMED" or "CANCELLED" or "CANCELED" or "NOT ATTENDED" or "RESCHEDULED" or "REBOOKED");
+            }).ToList();
+
+            if (!candidateRegs.Any()) return;
+
+            var csTasks = candidateRegs.Select(async r =>
+            {
+                try
+                {
+                    var cs = await CaseSheetService.GetCaseSheetByVisitAsync(r.op_id, null);
+                    return (opId: r.op_id, cs: cs);
+                }
+                catch
+                {
+                    return (opId: r.op_id, cs: (CaseSheetViewModel?)null);
+                }
+            }).ToList();
+
+            var csResults = await Task.WhenAll(csTasks);
+            bool updated = false;
+
+            foreach (var (opId, cs) in csResults)
+            {
+                if (cs == null || string.IsNullOrEmpty(cs.sheet_id)) continue;
+
+                var booking = todayBookings.FirstOrDefault(b => b.op_id == opId || b.booking_id == opId);
+                if (booking == null) continue;
+
+                if (string.Equals(cs.sheet_status, "FINALIZED", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(cs.sheet_status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (booking.booking_status != "COMPLETED")
+                    {
+                        booking.booking_status = "COMPLETED";
+                        updated = true;
+                    }
+                }
+                else if (booking.booking_status == "WAITING")
+                {
+                    booking.booking_status = "IN_CONSULTATION";
+                    updated = true;
+                }
+            }
+
+            if (updated)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[EnrichCaseSheetStatusesAsync] Error: {ex.Message}");
         }
     }
 
@@ -3116,17 +3158,26 @@
         }
     }
 
-    private async Task LoadIpDataAsync()
+    private Task LoadIpDataAsync() => LoadIpDataAsync(false);
+
+    private async Task LoadIpDataAsync(bool isSilent)
     {
-        loading = true;
+        if (!isSilent)
+        {
+            loading = true;
+            StateHasChanged();
+        }
         try
         {
-            // Load IP dropdown lists
-            floorsList = await FloorService.GetFloorMastersAsync();
-            roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
-            wardsList = await WardService.GetWardMastersAsync();
-            bedsList = await BedService.GetBedMastersAsync();
-            blocksList = await BlockService.GetBlockMastersAsync();
+            // Load IP dropdown lists only if not already loaded
+            if (floorsList == null || !floorsList.Any())
+            {
+                floorsList = await FloorService.GetFloorMastersAsync();
+                roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
+                wardsList = await WardService.GetWardMastersAsync();
+                bedsList = await BedService.GetBedMastersAsync();
+                blocksList = await BlockService.GetBlockMastersAsync();
+            }
 
             // Load IP Admissions and HMS Bills in parallel
             var activeTask = IpService.GetIpRegistrationsAsync("ADMITTED");
@@ -3188,6 +3239,7 @@
         finally
         {
             loading = false;
+            StateHasChanged();
         }
     }
 

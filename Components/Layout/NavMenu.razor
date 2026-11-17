@@ -2891,6 +2891,18 @@
             await JS.InvokeVoidAsync("medicoTabs.clearTabs");
         }
         catch { }
+        try
+        {
+            await _sessionStorage.DeleteAsync("UserDetails");
+            await _sessionStorage.DeleteAsync("authToken");
+            await _sessionStorage.DeleteAsync("tenant_code");
+            await _sessionStorage.DeleteAsync("user_code");
+            await _sessionStorage.DeleteAsync("session_date");
+            await _sessionStorage.DeleteAsync("UserRights");
+            await _sessionStorage.DeleteAsync("UserRolePermissions");
+            await _sessionStorage.DeleteAsync("IsTenantAdmin");
+        }
+        catch { }
 
         // 4. In-memory clean up
         RoleService.ClearPermissions();
@@ -2905,11 +2917,60 @@
         NavigationManager.NavigateTo("/user-login", forceLoad: true);
     }
 
+    private string _navSessionDate = "";
+
     private async Task RefreshActiveShiftStatusAsync()
     {
         if (isDisposed || _isLoggingOut || !TenantState.IsAuthenticated) return;
         try
         {
+            var nowIndian = DateTime.UtcNow.ToIndianTime();
+            var todayIstStr = nowIndian.ToString("yyyy-MM-dd");
+
+            // Initialize _navSessionDate from storage or memory
+            if (string.IsNullOrEmpty(_navSessionDate))
+            {
+                try
+                {
+                    var sessionJson = await JS.InvokeAsync<string>("medicoSessionHelper.getSession");
+                    if (!string.IsNullOrWhiteSpace(sessionJson))
+                    {
+                        var jObj = Newtonsoft.Json.Linq.JObject.Parse(sessionJson);
+                        _navSessionDate = jObj["session_date"]?.ToString() ?? "";
+                    }
+                }
+                catch { }
+
+                if (string.IsNullOrEmpty(_navSessionDate))
+                {
+                    _navSessionDate = todayIstStr;
+                }
+            }
+
+            // 1. Midnight Shift Rollover Auto-Logout:
+            // Counter shifts close every night at 12:00 AM midnight (00:00 IST).
+            // When midnight arrives, automatically logout the user so they can login cleanly with a fresh token.
+            if (!string.IsNullOrEmpty(_navSessionDate) && _navSessionDate != todayIstStr)
+            {
+                Console.WriteLine($"[NavMenu] Midnight reached (session date: {_navSessionDate}, today: {todayIstStr}). Auto-logging out...");
+                _isLoggingOut = true;
+                Toast.ShowWarning("Shift ended at 12:00 AM midnight. Please log in again to begin a new shift.");
+                await Task.Delay(1500);
+                await HandleLogout();
+                return;
+            }
+
+            // 2. Token Expiration Auto-Logout:
+            if (!string.IsNullOrWhiteSpace(TenantState.AuthToken) && JwtAuthenticationStateProvider.IsTokenExpired(TenantState.AuthToken))
+            {
+                Console.WriteLine("[NavMenu] Auth token has expired. Auto-logging out...");
+                _isLoggingOut = true;
+                Toast.ShowWarning("Your session token has expired. Please log in again.");
+                await Task.Delay(1500);
+                await HandleLogout();
+                return;
+            }
+
             var openCountersTask = HmsBillingService.GetOpenCountersAsync();
             int? branchCode = TenantState.BranchCode.HasValue && TenantState.BranchCode.Value > 0 ? TenantState.BranchCode.Value : null;
             var labSettingTask = LabSettingService.GetLabSettingAsync(branchCode);

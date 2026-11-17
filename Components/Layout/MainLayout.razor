@@ -1740,6 +1740,7 @@
             string tenantCode = "";
             string authToken = "";
             string tenantName = "";
+            string sessionDateStr = "";
             bool isTenantAdminSession = false;
             bool isBranchConfirmed = false;
             int? localBhCode = null;
@@ -1755,6 +1756,7 @@
                     authToken = jObj["authToken"]?.ToString() ?? "";
                     tenantCode = jObj["tenant_code"]?.ToString() ?? "";
                     tenantName = jObj["tenant_name"]?.ToString() ?? "";
+                    sessionDateStr = jObj["session_date"]?.ToString() ?? "";
                     directUserName = jObj["user_name"]?.ToString() ?? "";
                     loginInput = jObj["login_input"]?.ToString() ?? "";
                     directUserRole = jObj["user_role"]?.ToString() ?? "";
@@ -1782,7 +1784,6 @@
                             BranchCode = localBhCode,
                             CounterCode = localCntCode
                         };
-                        TenantState.SetSession(tenantCode, authToken, user.TenantName, directUserCode, localBhCode, localCntCode, user, TenantState.UserRightsList?.ToList() ?? new List<SharedComponents.Rcl.Models.User_Rights>());
                     }
                 }
             }
@@ -1919,8 +1920,62 @@
                 catch { }
             }
 
+            // Validate token expiration and midnight shift boundary
+            if (string.IsNullOrWhiteSpace(sessionDateStr))
+            {
+                try
+                {
+                    var sdRes = await _sessionStorage.GetAsync<string>("session_date");
+                    if (sdRes.Success && !string.IsNullOrWhiteSpace(sdRes.Value)) sessionDateStr = sdRes.Value;
+                }
+                catch { }
+            }
+
+            var todayIst = DateTime.UtcNow.ToIndianTime().ToString("yyyy-MM-dd");
+            bool isSessionExpired = false;
+
+            if (!string.IsNullOrWhiteSpace(authToken))
+            {
+                if (JwtAuthenticationStateProvider.IsTokenExpired(authToken))
+                {
+                    isSessionExpired = true;
+                    Console.WriteLine("[MainLayout] Stored JWT auth token is expired.");
+                }
+            }
+
+            if (!isSessionExpired && !string.IsNullOrWhiteSpace(sessionDateStr))
+            {
+                if (sessionDateStr != todayIst)
+                {
+                    isSessionExpired = true;
+                    Console.WriteLine($"[MainLayout] Shift/session date ({sessionDateStr}) is prior to today ({todayIst}). Shift closed at midnight.");
+                }
+            }
+
+            if (isSessionExpired)
+            {
+                try { await JS.InvokeVoidAsync("medicoSessionHelper.clearSession"); } catch { }
+                try { await _sessionStorage.DeleteAsync("UserDetails"); } catch { }
+                try { await _sessionStorage.DeleteAsync("authToken"); } catch { }
+                try { await _sessionStorage.DeleteAsync("tenant_code"); } catch { }
+                try { await _sessionStorage.DeleteAsync("user_code"); } catch { }
+                try { await _sessionStorage.DeleteAsync("session_date"); } catch { }
+                try { await _sessionStorage.DeleteAsync("UserRights"); } catch { }
+                try { await _sessionStorage.DeleteAsync("UserRolePermissions"); } catch { }
+                try { await _sessionStorage.DeleteAsync("IsTenantAdmin"); } catch { }
+                TenantState.Clear();
+                user = null;
+                authToken = "";
+                directUserName = "";
+                directUserCode = 0;
+                tenantCode = "";
+                loginInput = "";
+                directUserRole = "";
+                directUserDescription = "";
+            }
+
             // Always resolve real user description from database if description is missing or numeric
-            if ((string.IsNullOrWhiteSpace(directUserDescription) || int.TryParse(directUserDescription.Trim(), out _)) && directUserCode > 0)
+            if (!isSessionExpired && (string.IsNullOrWhiteSpace(directUserDescription) || int.TryParse(directUserDescription.Trim(), out _)) && directUserCode > 0)
             {
                 try
                 {
@@ -2105,9 +2160,11 @@
                         bhcode = effectiveConfirmedBranch ?? user.BranchCode,
                         cntcode = user.CounterCode,
                         isAdmin = isAdminUser,
-                        session_branch_confirmed = isBranchConfirmed
+                        session_branch_confirmed = isBranchConfirmed,
+                        session_date = todayIst
                     };
                     await JS.InvokeVoidAsync("medicoSessionHelper.saveSession", JsonConvert.SerializeObject(crossTab));
+                    try { await _sessionStorage.SetAsync("session_date", todayIst); } catch { }
                 }
                 catch { }
 

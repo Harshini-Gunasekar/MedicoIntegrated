@@ -136,6 +136,47 @@ namespace Booking.Services
             return result.Success ? result.Value : null;
         }
 
+        public static bool IsTokenExpired(string? token)
+        {
+            if (string.IsNullOrWhiteSpace(token)) return true;
+            try
+            {
+                var segments = token.Split('.');
+                if (segments.Length < 2) return true;
+                var payload = segments[1];
+                switch (payload.Length % 4)
+                {
+                    case 2: payload += "=="; break;
+                    case 3: payload += "="; break;
+                }
+                var jsonBytes = Convert.FromBase64String(payload);
+                using var doc = JsonDocument.Parse(jsonBytes);
+                if (doc.RootElement.TryGetProperty("exp", out var expProp))
+                {
+                    long expSeconds = 0;
+                    if (expProp.ValueKind == JsonValueKind.Number)
+                    {
+                        expSeconds = expProp.GetInt64();
+                    }
+                    else if (expProp.ValueKind == JsonValueKind.String && long.TryParse(expProp.GetString(), out var sVal))
+                    {
+                        expSeconds = sVal;
+                    }
+
+                    if (expSeconds > 0)
+                    {
+                        var expiryDate = DateTimeOffset.FromUnixTimeSeconds(expSeconds);
+                        return DateTimeOffset.UtcNow >= expiryDate.AddSeconds(-30);
+                    }
+                }
+                return false;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private IEnumerable<Claim> ParseClaimsFromJwt(string jwt)
         {
             var claims = new List<Claim>();

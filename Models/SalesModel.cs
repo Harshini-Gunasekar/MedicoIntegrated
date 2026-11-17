@@ -154,6 +154,12 @@ public class sales_detail
 
     public Guid? pr_det_id { get; set; }
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid? prescription_item_id { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DateTime? prescription_date { get; set; }
+
     public string? dosage { get; set; }
 
     public string? instructions { get; set; }
