@@ -64,7 +64,7 @@ namespace Booking.Services
                 Console.WriteLine(jsonPayload);
                 Console.WriteLine("-------------------------");
 
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/save-bill", bill);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/save-bill", bill);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 
                 Console.WriteLine($"--- API RESPONSE: {rawResponse} ---");
@@ -83,14 +83,14 @@ namespace Booking.Services
             try
             {
                 // First try standard get-bill endpoint
-                var response = await _http.GetAsync($"api/HmsBilling/get-bill?op_id={opId}");
+                var response = await GetClient().GetAsync($"api/HmsBilling/get-bill?op_id={opId}");
                 if (response.IsSuccessStatusCode)
                 {
                     return await response.Content.ReadFromJsonAsync<HmsBillModel>();
                 }
                 
                 // Fallback to searching by op_id under a list endpoint if any, or return null
-                var fallbackResponse = await _http.GetAsync($"api/HmsBilling/by-op?op_id={opId}");
+                var fallbackResponse = await GetClient().GetAsync($"api/HmsBilling/by-op?op_id={opId}");
                 if (fallbackResponse.IsSuccessStatusCode)
                 {
                     return await fallbackResponse.Content.ReadFromJsonAsync<HmsBillModel>();
@@ -105,7 +105,7 @@ namespace Booking.Services
             }
         }
 
-        public async Task<HmsBillListResponse?> ListBillsAsync(HmsBillFilterRequest filter)
+        public async Task<HmsBillListResponse?> ListBillsAsync(HmsBillFilterRequest filter, string? tenantCode = null)
         {
             try
             {
@@ -128,7 +128,7 @@ namespace Booking.Services
 
                 Console.WriteLine($"[ListBillsAsync] Request: from={sanitizedFilter.fromdate:yyyy-MM-dd HH:mm:ss}, to={sanitizedFilter.todate:yyyy-MM-dd HH:mm:ss}, bh={sanitizedFilter.bhcode}, pending={sanitizedFilter.pendingonly}, search={sanitizedFilter.search}");
 
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/list-bills", sanitizedFilter);
+                var response = await GetClient(tenantCode).PostAsJsonAsync("api/HmsBilling/list-bills", sanitizedFilter);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 Console.WriteLine($"[ListBillsAsync] Response ({response.StatusCode}): {rawResponse}");
 
@@ -163,7 +163,7 @@ namespace Booking.Services
                 request.reference_no ??= "";
                 request.bank_name ??= "";
 
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/add-payment", request);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/add-payment", request);
                 if (!response.IsSuccessStatusCode)
                 {
                     var errText = await response.Content.ReadAsStringAsync();
@@ -178,11 +178,11 @@ namespace Booking.Services
             }
         }
 
-        public async Task<HmsBillResponse?> GetBillByGuidAsync(string guid)
+        public async Task<HmsBillResponse?> GetBillByGuidAsync(string guid, string? tenantCode = null)
         {
             try
             {
-                var response = await GetClient().GetAsync($"api/HmsBilling/get-bill/{guid}");
+                var response = await GetClient(tenantCode).GetAsync($"api/HmsBilling/get-bill/{guid}");
                 if (response.IsSuccessStatusCode)
                 {
                     return await response.Content.ReadFromJsonAsync<HmsBillResponse>();
@@ -200,7 +200,7 @@ namespace Booking.Services
             try
             {
                 model.reference_no ??= string.Empty;
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/update-bill", model);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/update-bill", model);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 
                 Console.WriteLine($"--- API RESPONSE (UPDATE): {rawResponse} ---");
@@ -219,7 +219,7 @@ namespace Booking.Services
             try
             {
                 var payload = new { requestguid, usercode, reason };
-                var response = await _http.PostAsJsonAsync("api/HmsBilling/cancel-bill", payload);
+                var response = await GetClient().PostAsJsonAsync("api/HmsBilling/cancel-bill", payload);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 
                 Console.WriteLine($"--- API RESPONSE (CANCEL): {rawResponse} ---");
@@ -871,7 +871,7 @@ namespace Booking.Services
                 }
 
                 var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
-                var rawJson = await _http.GetStringAsync($"api/UnbilledCharges/by-visit{queryString}");
+                var rawJson = await GetClient().GetStringAsync($"api/UnbilledCharges/by-visit{queryString}");
                 return ParseUnbilledChargeSummaryList(rawJson);
             }
             catch (Exception ex)
@@ -896,7 +896,7 @@ namespace Booking.Services
                 }
 
                 var queryString = queryParams.Count > 0 ? "?" + string.Join("&", queryParams) : "";
-                var rawJson = await _http.GetStringAsync($"api/UnbilledCharges/get-all{queryString}");
+                var rawJson = await GetClient().GetStringAsync($"api/UnbilledCharges/get-all{queryString}");
                 return ParseUnbilledChargeSummaryList(rawJson);
             }
             catch (Exception ex)
@@ -910,7 +910,7 @@ namespace Booking.Services
         {
             try
             {
-                var response = await _http.PostAsJsonAsync("api/UnbilledCharges/add-consultation", request);
+                var response = await GetClient().PostAsJsonAsync("api/UnbilledCharges/add-consultation", request);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 return rawResponse;
             }
@@ -925,7 +925,7 @@ namespace Booking.Services
         {
             try
             {
-                var rawJson = await _http.GetStringAsync($"api/UnbilledCharges/ip-room-rent-summary?ip_id={ipId}");
+                var rawJson = await GetClient().GetStringAsync($"api/UnbilledCharges/ip-room-rent-summary?ip_id={ipId}");
                 return ParseUnbilledChargeSummaryList(rawJson);
             }
             catch (Exception ex)
@@ -959,7 +959,7 @@ namespace Booking.Services
                 Console.WriteLine("=================================================");
 
                 var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
-                var response = await _http.PostAsync("api/UnbilledCharges/update", content);
+                var response = await GetClient().PostAsync("api/UnbilledCharges/update", content);
                 var responseBody = await response.Content.ReadAsStringAsync();
 
                 Console.WriteLine($"[UpdateUnbilledCharge] Response Status: {(int)response.StatusCode} ({response.StatusCode})");
@@ -976,7 +976,7 @@ namespace Booking.Services
                     response.StatusCode == System.Net.HttpStatusCode.NotFound)
                 {
                     var putContent = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
-                    var putResponse = await _http.PutAsync("api/UnbilledCharges/update", putContent);
+                    var putResponse = await GetClient().PutAsync("api/UnbilledCharges/update", putContent);
                     var putResponseBody = await putResponse.Content.ReadAsStringAsync();
                     Console.WriteLine($"[UpdateUnbilledCharge] PUT Response Status: {(int)putResponse.StatusCode} ({putResponse.StatusCode})");
                     Console.WriteLine($"[UpdateUnbilledCharge] PUT Response Body: {putResponseBody}");
@@ -1020,7 +1020,7 @@ namespace Booking.Services
                 Console.WriteLine("=================================================");
 
                 var content = new StringContent(jsonPayload, System.Text.Encoding.UTF8, "application/json");
-                var response = await _http.PostAsync("api/UnbilledCharges/discard", content);
+                var response = await GetClient().PostAsync("api/UnbilledCharges/discard", content);
                 var responseBody = await response.Content.ReadAsStringAsync();
 
                 Console.WriteLine($"[DiscardUnbilledCharges] Response Status: {(int)response.StatusCode} ({response.StatusCode})");
@@ -1469,6 +1469,14 @@ namespace Booking.Services
                         if (result.total_due <= 0 && result.categories != null && result.categories.Any())
                         {
                             result.total_due = result.categories.Sum(c => c.due_amount);
+                        }
+                        if (result.total_gross <= 0 && result.categories != null && result.categories.Any())
+                        {
+                            result.total_gross = result.categories.Sum(c => c.gross_amount > 0 ? c.gross_amount : c.gross);
+                        }
+                        if (result.total_discount <= 0 && result.categories != null && result.categories.Any())
+                        {
+                            result.total_discount = result.categories.Sum(c => c.discount_amount > 0 ? c.discount_amount : c.discount);
                         }
                         return result;
                     }

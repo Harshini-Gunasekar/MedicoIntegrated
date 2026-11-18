@@ -266,12 +266,14 @@ namespace Booking.Models
         public List<HmsPayModeCollectionRow> items { get; set; } = new();
     }
 
-    public class HmsCategoryPayModeItem
+    public class HmsOpPaymodeAmount
     {
         public string paymode { get; set; } = "";
         public decimal? pmcode { get; set; }
         public double amount { get; set; }
     }
+
+    public class HmsCategoryPayModeItem : HmsOpPaymodeAmount { }
 
     public class HmsOpCategoryAmountRow
     {
@@ -281,7 +283,16 @@ namespace Booking.Models
         public int item_count { get; set; }
         public double gross_amount { get; set; }
         public double discount_amount { get; set; }
-        public List<HmsCategoryPayModeItem> paymodes { get; set; } = new();
+        public double discount { get; set; }
+        public double gross { get; set; }
+        public double net { get; set; }
+        public double collected { get; set; }
+        public double due { get; set; }
+        public double net_amount { get; set; }
+        public double collected_amount { get; set; }
+        public double due_amount { get; set; }
+        public double advance_adjusted { get; set; }
+        public List<HmsOpPaymodeAmount> paymodes { get; set; } = new();
 
         public double CashAmount
         {
@@ -302,6 +313,31 @@ namespace Booking.Models
                 if (paymodes != null && paymodes.Count > 0)
                 {
                     return paymodes.Where(p => IsUpi(p.paymode, p.pmcode)).Sum(p => p.amount);
+                }
+                return 0;
+            }
+        }
+
+        public double CardAmount
+        {
+            get
+            {
+                if (paymodes != null && paymodes.Count > 0)
+                {
+                    return paymodes.Where(p => IsCard(p.paymode, p.pmcode)).Sum(p => p.amount);
+                }
+                return 0;
+            }
+        }
+
+        public double AdvanceAmount
+        {
+            get
+            {
+                if (advance_adjusted > 0) return advance_adjusted;
+                if (paymodes != null && paymodes.Count > 0)
+                {
+                    return paymodes.Where(p => IsAdvance(p.paymode, p.pmcode)).Sum(p => p.amount);
                 }
                 return 0;
             }
@@ -329,11 +365,22 @@ namespace Booking.Models
                 return pmcode == 3 || pmcode == 4;
             }
             var m = mode.Trim().ToUpperInvariant();
-            return m.Contains("GPAY") || m.Contains("UPI") || m.Contains("PAYTM") || m.Contains("PHONEPE") || m.Contains("ONLINE") || m.Contains("QR") || m.Contains("CARD") || pmcode == 3;
+            return m.Contains("GPAY") || m.Contains("UPI") || m.Contains("PAYTM") || m.Contains("PHONEPE") || m.Contains("ONLINE") || m.Contains("QR") || pmcode == 3;
         }
-        public double net_amount { get; set; }
-        public double collected_amount { get; set; }
-        public double due_amount { get; set; }
+
+        public static bool IsCard(string? mode, decimal? pmcode)
+        {
+            if (string.IsNullOrWhiteSpace(mode)) return pmcode == 2;
+            var m = mode.Trim().ToUpperInvariant();
+            return m.Contains("CARD") || pmcode == 2;
+        }
+
+        public static bool IsAdvance(string? mode, decimal? pmcode)
+        {
+            if (string.IsNullOrWhiteSpace(mode)) return pmcode == 99;
+            var m = mode.Trim().ToUpperInvariant();
+            return m.Contains("ADVANCE") || m.Contains("ADV") || pmcode == 99;
+        }
     }
 
     public class HmsOpServiceAmountRow
@@ -343,9 +390,18 @@ namespace Booking.Models
         public int visit_count { get; set; }
         public int item_count { get; set; }
         public string tokens { get; set; } = "";
+        public double gross_amount { get; set; }
+        public double discount_amount { get; set; }
+        public double discount { get; set; }
+        public double gross { get; set; }
+        public double net { get; set; }
+        public double collected { get; set; }
+        public double due { get; set; }
         public double net_amount { get; set; }
         public double collected_amount { get; set; }
         public double due_amount { get; set; }
+        public double advance_adjusted { get; set; }
+        public List<HmsOpPaymodeAmount> paymodes { get; set; } = new();
     }
 
     public class HmsOpVisitCategoryRow
@@ -360,9 +416,63 @@ namespace Booking.Models
         public Dictionary<string, double> net_by_category { get; set; } = new();
         public Dictionary<string, double> collected_by_category { get; set; } = new();
         public Dictionary<string, double> collected_by_paymode { get; set; } = new();
+        public double gross_amount { get; set; }
+        public double discount_amount { get; set; }
+        public double discount { get; set; }
+        public double gross { get; set; }
+        public double net { get; set; }
+        public double collected { get; set; }
+        public double due { get; set; }
         public double net_amount { get; set; }
         public double collected_amount { get; set; }
         public double due_amount { get; set; }
+        public double advance_adjusted { get; set; }
+    }
+
+    public class HmsOldDueClearedBillRow
+    {
+        public string receipt_guid { get; set; } = "";
+        public string? receipt_no { get; set; }
+        public DateTime? receipt_date { get; set; }
+        public string requestguid { get; set; } = "";
+        public string? bill_no { get; set; }
+        public DateTime? bill_date { get; set; }
+        public decimal? custid { get; set; }
+        public string? patient_name { get; set; }
+        public string? mobileno { get; set; }
+        public double bill_total { get; set; }
+        public double amount_cleared { get; set; }
+        public string paymode { get; set; } = "";
+        public decimal? pmcode { get; set; }
+        public string? reference_no { get; set; }
+        public string? doctor_name { get; set; }
+        public string? counter_name { get; set; }
+        public string? user_name { get; set; }
+    }
+
+    public class HmsOldDueClearedDateSummary
+    {
+        public DateTime bill_date { get; set; }
+        public string bill_date_str { get; set; } = "";
+        public int bill_count { get; set; }
+        public double total_cleared { get; set; }
+        public List<HmsOpPaymodeAmount> paymodes { get; set; } = new();
+    }
+
+    public class HmsCancelledBillSummaryRow
+    {
+        public string requestguid { get; set; } = "";
+        public string? bill_no { get; set; }
+        public DateTime? bill_date { get; set; }
+        public decimal? custid { get; set; }
+        public string? patient_name { get; set; }
+        public string? mobileno { get; set; }
+        public double total_amount { get; set; }
+        public double gross_amount { get; set; }
+        public double discount_amount { get; set; }
+        public string? doctor_name { get; set; }
+        public string? cancellation_reason { get; set; }
+        public string? cancelled_by { get; set; }
     }
 
     public class HmsOpCategoryCollectionResponse
@@ -373,9 +483,40 @@ namespace Booking.Models
         public int? cntcode { get; set; }
         public int? dcode { get; set; }
         public int total_visits { get; set; }
+        public double total_gross { get; set; }
+        public double total_discount { get; set; }
         public double total_net { get; set; }
         public double total_collected { get; set; }
         public double total_due { get; set; }
+        public double total_ip_cost { get; set; }
+        public double total_pharmacy_cost { get; set; }
+
+        // ── Advance summary ───────────────────────────────────────────
+        public double advance_collected { get; set; }
+        public double total_advance_collected { get; set; }
+        public double advance_used { get; set; }
+        public double total_advance_used { get; set; }
+        public double advance_refunded { get; set; }
+        public double total_advance_refunded { get; set; }
+        public double total_advance_adjusted { get; set; }
+        public List<HmsOpPaymodeAmount> advance_collected_by_paymode { get; set; } = new();
+
+        // ── Old due cleared today ─────────────────────────────────────
+        public double total_due_cleared { get; set; }
+        public double due_cleared_today { get; set; }
+        public List<HmsOpPaymodeAmount> due_cleared_by_paymode { get; set; } = new();
+        public List<HmsOldDueClearedDateSummary> due_cleared_by_bill_date { get; set; } = new();
+        public List<HmsOldDueClearedBillRow> due_cleared_bills { get; set; } = new();
+
+        // ── Cancelled bills ───────────────────────────────────────────
+        public int cancelled_bill_count { get; set; }
+        public double cancelled_bill_total_amount { get; set; }
+        public List<HmsCancelledBillSummaryRow> cancelled_bills { get; set; } = new();
+
+        // ── Net Counter Cash Closing ──────────────────────────────────
+        public double net_counter_collection { get; set; }
+
+        public List<HmsOpPaymodeAmount> paymode_totals { get; set; } = new();
         public List<HmsOpCategoryAmountRow> categories { get; set; } = new();
         public List<HmsOpServiceAmountRow> services { get; set; } = new();
         public List<HmsOpVisitCategoryRow> visits { get; set; } = new();
@@ -397,8 +538,19 @@ namespace Booking.Models
         public string? service_name { get; set; }
         public string category { get; set; } = "";
         public double gross { get; set; }
+        public double discount { get; set; }
         public double net { get; set; }
         public double paid { get; set; }
+        public double advance_adjusted { get; set; }
+        public double ratio { get; set; }
+    }
+
+    public class HmsOpBillPayRow
+    {
+        public string requestguid { get; set; } = "";
+        public string paymode { get; set; } = "";
+        public decimal? pmcode { get; set; }
+        public double amount { get; set; }
     }
 }
 
