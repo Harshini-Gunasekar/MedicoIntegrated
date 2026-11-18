@@ -2,7 +2,7 @@ pipeline {
     agent any
 
     environment {
-        PROJECT     = 'Medico_Frontend.csproj'
+        PROJECT     = 'Booking.csproj'
         IIS_PATH    = 'E:\\Hosting\\MedicoTest'
         PUBLISH_DIR = "${WORKSPACE}_publish"
     }
