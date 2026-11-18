@@ -1,0 +1,1082 @@
+@page "/duecollection"
+@using LabCare.Components.Layout
+@using LabCare.Models
+@using Newtonsoft.Json
+@using Newtonsoft.Json.Linq
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.Extensions.Options.IOptions<AppSettings> AppSettingsOptions
+@inject IJSRuntime JSRuntime
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject LabCare.Services.TenantSessionState TenantState
+
+
+    
+<div class="dch-page-container">
+    <div class="lab-header-card flex-between dch-header-margin" style="background: #fff; border-radius: 12px; padding: 16px 20px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.02);"><div class="gap-16 display-flex align-center"><div class="flex-center" style="width: 48px; height: 48px; border-radius: 12px; background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%); color: #4f46e5; box-shadow: inset 0 2px 4px rgba(255,255,255,0.5), 0 2px 5px rgba(0,0,0,0.05);"><span class="material-symbols-outlined" style="font-size: 24px;">payments</span></div><div style="display: flex; flex-direction: column;"><h1 style="font-size: 1.25rem; font-weight: 800; color: var(--lc-secondary); margin: 0;">Due Collection</h1><p style="font-size: 0.85rem; color: #64748b; margin: 2px 0 0;">Payment Management</p></div></div></div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger" style="margin-bottom: 20px; padding: 15px; border-radius: 8px; font-weight: 500;">
+            @((MarkupString)errorMessage)
+        </div>
+    }
+
+    <div class="filter-body-anim @(showFilters ? "open" : "closed")">
+        <div class="filter-body-inner">
+            <div class="dc-panel-inner">
+                
+                <!-- Type Selection Inside Filter Card -->
+                <div class="dc-panel-type-container">
+                    <span class="dc-type-label">TYPE</span>
+                    <label class="dc-type-radio-label">
+                        <input type="radio" name="type" checked="@(currentType == DueCollectionType.Bill)" @onchange="() => OnTypeChanged(DueCollectionType.Bill)" class="dc-type-radio-input" />
+                        Bill
+                    </label>
+                    <label class="dc-type-radio-label">
+                        <input type="radio" name="type" checked="@(currentType == DueCollectionType.Patient)" @onchange="() => OnTypeChanged(DueCollectionType.Patient)" class="dc-type-radio-input" />
+                        Patient
+                    </label>
+                    <label class="dc-type-radio-label">
+                        <input type="radio" name="type" checked="@(currentType == DueCollectionType.Referral)" @onchange="() => OnTypeChanged(DueCollectionType.Referral)" class="dc-type-radio-input" />
+                        Referral
+                    </label>
+                    <label class="dc-type-radio-label">
+                        <input type="radio" name="type" checked="@(currentType == DueCollectionType.Monthly)" @onchange="() => OnTypeChanged(DueCollectionType.Monthly)" class="dc-type-radio-input" />
+                        Monthly
+                    </label>
+                </div>
+
+                <div class="dc-panels-wrapper" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <!-- Left Panel Dynamic -->
+                    <div class="dc-panel">
+                        @if (currentType == DueCollectionType.Bill)
+                        {
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group">
+                                    <label>BRANCH</label>
+                                    <select class="dc-input" @bind="SearchBranch">
+                                        <option value="">Select the branch</option>
+                                        @foreach (var b in _branches)
+                                        {
+                                            <option value="@(b.bhcode?.ToString() ?? "")">@b.name</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group">
+                                    <label>SAMPLE ID</label>
+                                    <select class="dc-input" @bind="SearchSampleId">
+                                        <option value="">Select Sample ID</option>
+                                        <!-- @foreach(var s in _sampleIds)
+                                {
+                                    <option value="@s.sampleid">@s.sampleid</option>
+                                }
+ -->
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-2">
+                                <div class="dc-form-group">
+                                    <label>YEAR</label>
+                                    <input type="number" class="dc-input" @bind="SearchYear" placeholder="Year" />
+                                </div>
+                                <div class="dc-form-group">
+                                    <label>BILL NO</label>
+                                    <input type="text" class="dc-input" @bind="SearchBillNo" placeholder="Bill No" />
+                                </div>
+                            </div>
+                        }
+                        else if (currentType == DueCollectionType.Patient)
+                        {
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group">
+                                    <label>BRANCH</label>
+                                    <select class="dc-input" @bind="SearchBranch">
+                                        <option value="">Select the branch</option>
+                                        @foreach (var b in _branches)
+                                        {
+                                            <option value="@(b.bhcode?.ToString() ?? "")">@b.name</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group" style="position: relative;">
+                                    <label>PATIENT</label>
+                                    <input type="text" class="dc-input" @bind="SearchPatient" @bind:event="oninput" @onfocus="() => showPatientDropdown = true" @onblur="HidePatientDropdown" placeholder="Search ID, Name, Mobile..." autocomplete="off" />
+                                    @if (showPatientDropdown && !string.IsNullOrWhiteSpace(SearchPatient))
+                                    {
+                                        var matched = _customers.Where(c =>
+                                            (c.name != null && c.name.Contains(SearchPatient, StringComparison.OrdinalIgnoreCase)) ||
+                                            (c.mobile != null && c.mobile.Contains(SearchPatient)) ||
+                                            (c.custcode != null && c.custcode.Contains(SearchPatient, StringComparison.OrdinalIgnoreCase)) ||
+                                            (c.custid.ToString() == SearchPatient)
+                                        ).Take(10).ToList();
+
+                                        if (matched.Any())
+                                        {
+                                            <div class="master-search-dropdown show" style="width: 100%;">
+                                                @foreach (var c in matched)
+                                                {
+                                                    <button type="button" class="master-search-item" @onmousedown="() => SelectPatient(c)">
+                                                        <div style="font-weight: 600; font-size: 13px; color: #1e293b;">@c.name</div>
+                                                        <div style="font-size: 11px; color: #64748b;">ID: @c.custcode | Mob: @c.mobile</div>
+                                                    </button>
+                                                }
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-2">
+                                <div class="dc-form-group">
+                                    <label>FROM</label>
+                                    <input type="date" class="dc-input" @bind="SearchFrom" />
+                                </div>
+                                <div class="dc-form-group">
+                                    <label>TO</label>
+                                    <input type="date" class="dc-input" @bind="SearchTo" />
+                                </div>
+                            </div>
+                        }
+                        else if (currentType == DueCollectionType.Referral)
+                        {
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group">
+                                    <label>BRANCH</label>
+                                    <select class="dc-input" @bind="SearchBranch">
+                                        <option value="">Select the branch</option>
+                                        @foreach (var b in _branches)
+                                        {
+                                            <option value="@(b.bhcode?.ToString() ?? "")">@b.name</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group" style="position: relative;">
+                                    <label>DOCTOR</label>
+                                    <input type="text" class="dc-input" @bind="SearchDoctor" @bind:event="oninput" @onfocus="() => showDoctorDropdown = true" @onblur="HideDoctorDropdown" placeholder="Search ID, Name, Mobile..." autocomplete="off" />
+                                    @if (showDoctorDropdown && !string.IsNullOrWhiteSpace(SearchDoctor))
+                                    {
+                                        var matchedDoc = _doctors.Where(d =>
+                                            (d.name != null && d.name.Contains(SearchDoctor, StringComparison.OrdinalIgnoreCase)) ||
+                                            (d.mobile != null && d.mobile.Contains(SearchDoctor)) ||
+                                            (d.doctorcode != null && d.doctorcode.Contains(SearchDoctor, StringComparison.OrdinalIgnoreCase)) ||
+                                            (d.dcode.ToString() == SearchDoctor)
+                                        ).Take(10).ToList();
+
+                                        if (matchedDoc.Any())
+                                        {
+                                            <div class="master-search-dropdown show" style="width: 100%;">
+                                                @foreach (var d in matchedDoc)
+                                                {
+                                                    <button type="button" class="master-search-item" @onmousedown="() => SelectDoctor(d)">
+                                                        <div style="font-weight: 600; font-size: 13px; color: #1e293b;">@d.name</div>
+                                                        <div style="font-size: 11px; color: #64748b;">ID: @d.doctorcode | Mob: @d.mobile</div>
+                                                    </button>
+                                                }
+                                            </div>
+                                        }
+                                    }
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-2">
+                                <div class="dc-form-group">
+                                    <label>FROM</label>
+                                    <input type="date" class="dc-input" @bind="SearchFrom" />
+                                </div>
+                                <div class="dc-form-group">
+                                    <label>TO</label>
+                                    <input type="date" class="dc-input" @bind="SearchTo" />
+                                </div>
+                            </div>
+                        }
+                        else if (currentType == DueCollectionType.Monthly)
+                        {
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group">
+                                    <label>BRANCH</label>
+                                    <select class="dc-input" @bind="SearchBranch">
+                                        <option value="">Select the branch</option>
+                                        @foreach (var b in _branches)
+                                        {
+                                            <option value="@(b.bhcode?.ToString() ?? "")">@b.name</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-1">
+                                <div class="dc-form-group">
+                                    <label>MONTHLY</label>
+                                    <select class="dc-input" @bind="SearchMonthly">
+                                        <option value="">Select Company</option>
+                                        @foreach (var rc in _reimbursementCompanies)
+                                        {
+                                            <option value="@rc.name">@rc.name</option>
+                                        }
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="dc-panel-row cols-2">
+                                <div class="dc-form-group">
+                                    <label>FROM</label>
+                                    <input type="date" class="dc-input" @bind="SearchFrom" />
+                                </div>
+                                <div class="dc-form-group">
+                                    <label>TO</label>
+                                    <input type="date" class="dc-input" @bind="SearchTo" />
+                                </div>
+                            </div>
+                        }
+                    </div>
+
+                    <!-- Right Panel -->
+                    <div class="dc-panel">
+                        <div class="dc-panel-row cols-1">
+                            <div class="dc-form-group">
+                                <label>COUNTER</label>
+                                <select class="dc-input" @bind="Counter">
+                                    <option value="">Select Counter</option>
+                                    @foreach (var c in _counters)
+                                    {
+                                        <option value="@c.cntcode">@c.name</option>
+                                    }
+                                </select>
+                            </div>
+                        </div>
+                        <div class="dc-panel-row cols-1">
+                            <div class="dc-form-group">
+                                <label>RECEIPT NO</label>
+                                <input type="text" class="dc-input" @bind="ReceiptNo" placeholder="Receipt No" />
+                            </div>
+                        </div>
+                        <div class="dc-panel-row cols-2">
+                            <div class="dc-form-group">
+                                <label>RECEIPT DATE</label>
+                                <input type="date" class="dc-input" @bind="ReceiptDate" />
+                            </div>
+                            <div class="dc-form-group">
+                                <label>TIME</label>
+                                <input type="time" class="dc-input" @bind="ReceiptTime" />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="dch-actions" style="margin-top: 16px;">
+                    <button type="button" @onclick="FilterDues" class="dch-btn-print">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" /></svg>
+                        Search
+                    </button>
+                            </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Section -->
+    <div class="dc-bottom-section">
+        <div class="dc-actions-bar">
+            <!-- Left Corner Group: Pay Mode, Amount, Auto Select -->
+            <div class="dc-actions-left-group">
+                <div class="dc-form-group" style="width: 200px;">
+                    <label class="dch-label">PAY MODE</label>
+                    <div style="margin-top: 6px;">
+                        <select class="dc-actions-select" @bind="PayMode">
+                            <option value="">Select</option>
+                            @foreach (var p in _paymodes)
+                            {
+                                var pmName = p["name"]?.ToString() ?? p["payModeName"]?.ToString() ?? p["paymode"]?.ToString() ?? p["paymodename"]?.ToString() ?? p["description"]?.ToString() ?? "Unknown";
+                                <option value="@pmName">@pmName</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(PayMode) && PayMode.Contains("Cheque", StringComparison.OrdinalIgnoreCase))
+                {
+                    <div class="dc-form-group" style="width: 150px;">
+                        <label class="dch-label">BANK NAME</label>
+                        <div style="margin-top: 6px;">
+                            <input type="text" class="dc-actions-input" @bind="BankName" placeholder="Bank Name" />
+                        </div>
+                    </div>
+                    <div class="dc-form-group" style="width: 120px;">
+                        <label class="dch-label">CHEQUE NO</label>
+                        <div style="margin-top: 6px;">
+                            <input type="text" class="dc-actions-input" @bind="ChequeNo" placeholder="Cheque No" />
+                        </div>
+                    </div>
+                    <div class="dc-form-group" style="width: 130px;">
+                        <label class="dch-label">CHEQUE DATE</label>
+                        <div style="margin-top: 6px;">
+                            <input type="date" class="dc-actions-input" @bind="ChequeDate" />
+                        </div>
+                    </div>
+                }
+
+                @if (currentType != DueCollectionType.Bill)
+                {
+                    <div class="dc-form-group" style="width: 150px;">
+                        <label class="dch-label">AMOUNT</label>
+                        <div class="dc-amount-wrapper" style="margin-top: 6px;">
+                            
+                            <input type="number" class="dc-actions-input" @bind="Amount" placeholder="0.00" />
+                        </div>
+                    </div>
+                }
+
+                <button type="button" class="dc-btn-auto-select" @onclick="AutoSelectDues" disabled="@(!IsAutoSelectEnabled())">
+                    Auto select
+                </button>
+            </div>
+
+            <!-- Right Corner Group: Reference/Search, Filter, Save -->
+            <div class="dc-actions-right-group">
+                <div class="dc-form-group">
+                    <label class="dch-label">REFERENCE / SEARCH</label>
+                    <div class="dc-search-input-container" style="margin-top: 6px;">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" /></svg>
+                        <input type="text" placeholder="Search invoice or vendor..." @bind="TableSearch" @bind:event="oninput" />
+                    </div>
+                </div>
+
+                <button type="button" class="dc-filter-circle-btn" @onclick="ToggleFilters">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M1.5 1.5A.5.5 0 0 1 2 1h12a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-.128.334L10 8.692V13.5a.5.5 0 0 1-.342.474l-3 1A.5.5 0 0 1 6 14.5V8.692L1.628 3.834A.5.5 0 0 1 1.5 3.5v-2z" /></svg>
+                </button>
+
+                <button type="button" class="dc-btn-save" @onclick="SaveCollection" disabled="@_isSaving">
+                    @if (_isSaving)
+                    {
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M2 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4.207a1 1 0 0 0-.293-.707l-2.5-2.5A1 1 0 0 0 12.5 1H2zm0 1h10.086L14.5 4.414V13a1 1 0 0 1-1-1H2a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z" /><path d="M4 3h6v3H4V3zm0 6h8v5H4V9z" /></svg>
+                        <span>Save</span>
+                    }
+                </button>
+            </div>
+        </div>
+
+        <div class="dc-table-wrapper">
+            <table class="dc-table">
+                <thead class="dc-table-thead">
+                    <tr>
+                        <th class="dc-table-th-checkbox">
+                            <input type="checkbox" class="dc-table-checkbox" />
+                        </th>
+                        <th class="dch-table-th">SAMPLE ID</th>
+                        <th class="dch-table-th">DATE/TIME</th>
+                        <th class="dch-table-th">PATIENT ID</th>
+                        <th class="dch-table-th">CUSTOMER NAME</th>
+                        <th class="dch-table-th">REFERRED BY</th>
+                        <th class="dch-table-th" style="text-align: right;">BALANCE</th>
+                        <th class="dch-table-th" style="text-align: right;">CURR. BAL</th>
+                        <th class="dch-table-th" style="text-align: right;">COLLECTED</th>
+                        <th class="dch-table-th" style="text-align: right;">CONCESSION</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (PagedTrailers.Any())
+                    {
+                        @foreach (var t in PagedTrailers)
+                        {
+                            <tr class="dc-table-tr hover:bg-gray-50">
+                                <td class="dc-table-td"><input type="checkbox" @bind="t.isSelected" class="dc-table-checkbox" /></td>
+                                <td class="dc-table-td-bold" style="color: #4f46e5;">@t.Row.sampleid</td>
+                                <td class="dc-table-td" style="font-size: 11px; white-space: nowrap;">@(t.Row.requestdatetime?.ToString("dd-MMM-yyyy HH:mm") ?? "")</td>
+                                <td class="dc-table-td">@t.Row.custid</td>
+                                <td class="dc-table-td-bold" style="color: #1e293b;">@t.Row.patientname</td>
+                                <td class="dc-table-td">@t.Row.referredby</td>
+                                <td class="dc-table-td-bold" style="text-align: right; color: #1e293b;">@(t.Row.balance.ToString("N2"))</td>
+                                <td class="dc-table-td-bold" style="text-align: right; color: #dc2626;">@(t.Row.curr_balance.ToString("N2"))</td>
+                                <td class="dc-table-td" style="text-align: right;"><input type="number" step="0.01" @bind="t.amount" disabled="@(!t.isSelected)" class="dc-table-td-number" /></td>
+                                <td class="dc-table-td" style="text-align: right;"><input type="number" step="0.01" @bind="t.concession" disabled="@(!t.isSelected)" class="dc-table-td-number" /></td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="10" class="dc-empty-row">No records found. Click Search to view due details.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination Section -->
+        <div class="dc-pagination-footer">
+            <div class="pagination-info">
+                Showing <span class="pagination-info-highlight">@(TotalRecords == 0 ? 0 : ((CurrentPage - 1) * PageSize) + 1)</span> to <span class="pagination-info-highlight">@(Math.Min(CurrentPage * PageSize, TotalRecords))</span> records
+            </div>
+            <div class="pagination-btns">
+                <button type="button" class="page-btn" @onclick="PreviousPage" disabled="@(CurrentPage <= 1)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z" />
+                    </svg>
+                </button>
+                
+                @if (CurrentPage > 1)
+                {
+                    <button type="button" class="page-btn" @onclick="PreviousPage">
+                        @(CurrentPage - 1)
+                    </button>
+                }
+                
+                <button type="button" class="page-btn active">
+                    @CurrentPage
+                </button>
+                
+                @if (HasNextPage)
+                {
+                    <button type="button" class="page-btn" @onclick="NextPage">
+                        @(CurrentPage + 1)
+                    </button>
+                }
+
+                <button type="button" class="page-btn" @onclick="NextPage" disabled="@(!HasNextPage)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+
+        <div class="dc-footers dc-footers-container">
+            <div class="dc-footer-card dc-footer-card-inner">
+                <div class="dc-footer-icon red" style="width: 48px; height: 48px; border-radius: 12px; background: #fee2e2; color: #ef4444; display: flex; align-items: center; justify-content: center;">
+                    <span class="material-symbols-outlined icon-lg">account_balance</span>
+                </div>
+                <div class="dc-footer-info" style="display: flex; flex-direction: column; gap: 4px;">
+                    <label class="dch-label">TOTAL BALANCE</label>
+                    <div class="value">@(GrandTotalBalance.ToString("N2"))</div>
+                </div>
+            </div>
+            
+            <div class="dc-footer-card dc-footer-card-inner">
+                <div class="dc-footer-icon blue" style="width: 48px; height: 48px; border-radius: 12px; background: #e0e7ff; color: #4f46e5; display: flex; align-items: center; justify-content: center;">
+                    <span class="material-symbols-outlined icon-lg">description</span>
+                </div>
+                <div class="dc-footer-info" style="display: flex; flex-direction: column; gap: 4px;">
+                    <label class="dch-label">BILL COUNT</label>
+                    <div class="value">@GrandBillCount</div>
+                </div>
+            </div>
+            
+            <div class="dc-footer-card dc-footer-card-inner">
+                <div class="dc-footer-icon green" style="width: 48px; height: 48px; border-radius: 12px; background: #dcfce3; color: #22c55e; display: flex; align-items: center; justify-content: center;">
+                    <span class="material-symbols-outlined icon-lg">payments</span>
+                </div>
+                <div class="dc-footer-info" style="display: flex; flex-direction: column; gap: 4px;">
+                    <label class="dch-label">COLLECTED AMT</label>
+                    <div class="value">@(Trailers.Sum(t => t.amount ?? 0).ToString("N2"))</div>
+                </div>
+            </div>
+            
+            <div class="dc-footer-card dc-footer-card-inner">
+                <div class="dc-footer-icon gray" style="width: 48px; height: 48px; border-radius: 12px; background: #f1f5f9; color: #64748b; display: flex; align-items: center; justify-content: center;">
+                    <span class="material-symbols-outlined icon-lg">sell</span>
+                </div>
+                <div class="dc-footer-info" style="display: flex; flex-direction: column; gap: 4px;">
+                    <label class="dch-label">CONCESSION (REF)</label>
+                    <div class="value">@(Trailers.Sum(t => t.concession ?? 0).ToString("N2"))</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+
+@code {
+    public class DueCollectionUIItem
+    {
+        public bool isSelected { get; set; } = false;
+        public double? amount { get; set; }
+        public double? concession { get; set; }
+        public DueCollectionRowDto Row { get; set; } = new();
+    }
+
+    public enum DueCollectionType
+    {
+        Bill, Patient, Referral, Monthly
+    }
+
+    private DueCollectionType currentType = DueCollectionType.Patient;
+    private bool showPatientDropdown = false;
+    private bool showDoctorDropdown = false;
+    private bool showFilters = false;
+    private string debugPayload = "";
+
+    private void ToggleFilters()
+    {
+        showFilters = !showFilters;
+    }
+
+    private void NewCollection()
+    {
+        currentType = DueCollectionType.Patient;
+        Amount = null;
+        Trailers.Clear();
+        StateHasChanged();
+    }
+
+    // Left panel fields
+    public string SearchBranch { get; set; } = "";
+    public string SearchSampleId { get; set; } = "";
+    public string SearchYear { get; set; } = "";
+    public string SearchBillNo { get; set; } = "";
+    public string SearchPatient { get; set; } = "";
+    private void HidePatientDropdown()
+    {
+        showPatientDropdown = false;
+    }
+    private void SelectPatient(CustomerModel patient)
+    {
+        SearchPatient = patient.name ?? "";
+        showPatientDropdown = false;
+        StateHasChanged();
+    }
+    private void HideDoctorDropdown()
+    {
+        showDoctorDropdown = false;
+    }
+    
+    private bool IsAutoSelectEnabled()
+    {
+        if (currentType == DueCollectionType.Bill) return false;
+        if (!Trailers.Any()) return false;
+        
+        if (currentType == DueCollectionType.Patient)
+            return !string.IsNullOrWhiteSpace(SearchPatient);
+            
+        if (currentType == DueCollectionType.Referral)
+            return !string.IsNullOrWhiteSpace(SearchDoctor);
+            
+        if (currentType == DueCollectionType.Monthly)
+            return !string.IsNullOrWhiteSpace(SearchMonthly);
+            
+        return false;
+    }
+    
+    private void AutoSelectDues()
+    {
+        if (Amount == null || Amount <= 0 || !Trailers.Any())
+            return;
+
+        double remaining = Amount.Value;
+
+        foreach (var t in Trailers)
+        {
+            if (remaining > 0)
+            {
+                if (remaining >= t.Row.curr_balance)
+                {
+                    t.amount = t.Row.curr_balance;
+                    remaining -= t.Row.curr_balance;
+                }
+                else
+                {
+                    t.amount = remaining;
+                    remaining = 0;
+                }
+
+                t.isSelected = t.amount > 0;
+            }
+            else
+            {
+                t.amount = null;
+                t.isSelected = false;
+            }
+        }
+        
+        StateHasChanged();
+    }
+    private void SelectDoctor(DoctorModel doctor)
+    {
+        SearchDoctor = doctor.name ?? "";
+        showDoctorDropdown = false;
+        StateHasChanged();
+    }
+    public DateTime? SearchFrom { get; set; } = null;
+    public DateTime? SearchTo { get; set; } = null;
+    public string SearchDoctor { get; set; } = "";
+    public string SearchMonthly { get; set; } = "";
+
+    // Right panel fields
+    public string Counter { get; set; } = "";
+    public string ReceiptNo { get; set; } = "";
+    public DateTime? ReceiptDate { get; set; } = null;
+    public DateTime? ReceiptTime { get; set; } = null;
+
+    // Bottom section
+    public string PayMode { get; set; } = "";
+    public string BankName { get; set; } = "";
+    public string ChequeNo { get; set; } = "";
+    public DateTime? ChequeDate { get; set; } = DateTime.Now;
+    public double? Amount { get; set; } = null;
+    public string TableSearch { get; set; } = "";
+
+    // Pagination
+    public int CurrentPage { get; set; } = 1;
+    public int PageSize { get; set; } = 10;
+    public int TotalRecords { get; set; } = 0;
+    public int TotalPages { get; set; } = 0;
+    public bool HasNextPage => TotalPages > 1 ? CurrentPage < TotalPages : Trailers.Count >= PageSize;
+    
+    // Grand totals across all pages
+    public double GrandTotalBalance { get; set; } = 0;
+    public int GrandBillCount { get; set; } = 0;
+
+    // Data
+    private AppSettings _appSettings = new();
+    private string BaseUrl => _appSettings.BaseUrl;
+    private string TenantCode = "";
+    private string AuthToken = "";
+    private string? errorMessage;
+
+    private List<DueCollectionUIItem> Trailers = new();
+
+    private IEnumerable<DueCollectionUIItem> PagedTrailers =>
+        Trailers.Count > PageSize
+            ? Trailers.Skip((CurrentPage - 1) * PageSize).Take(PageSize)
+            : Trailers;
+
+    private List<BranchModel> _branches = new();
+    private List<CounterModel> _counters = new();
+    private List<JObject> _paymodes = new();
+    private List<CustomerModel> _customers = new();
+    private List<DoctorModel> _doctors = new();
+    private List<ReimbursementCompanyModel> _reimbursementCompanies = new();
+
+    protected override void OnInitialized()
+    {
+        _appSettings = AppSettingsOptions.Value;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                if (string.IsNullOrEmpty(AuthToken))
+                {
+                    errorMessage = "Access denied: Missing valid session. Please log in again.";
+                    StateHasChanged();
+                }
+                else
+                {
+                    await LoadMasterData();
+                    await LoadAllDue();
+                    StateHasChanged();
+                }
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Session error: {ex.Message}";
+                StateHasChanged();
+            }
+        }
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("LabCareApi");
+        if (!string.IsNullOrEmpty(TenantCode))
+        {
+            client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+        }
+        if (!string.IsNullOrEmpty(AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+        }
+        return client;
+    }
+
+    private async Task<List<T>> FetchMasterData<T>(HttpClient client, string url)
+    {
+        try
+        {
+            var res = await client.GetAsync(url);
+            if (res.IsSuccessStatusCode)
+            {
+                var content = await res.Content.ReadAsStringAsync();
+                try
+                {
+                    return JsonConvert.DeserializeObject<List<T>>(content) ?? new List<T>();
+                }
+                catch
+                {
+                    var obj = JsonConvert.DeserializeObject<dynamic>(content);
+                    if (obj?["data"] != null)
+                    {
+                        return ((JArray)obj!["data"]).ToObject<List<T>>() ?? new List<T>();
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error fetching {url}: {ex.Message}") */;
+        }
+        return new List<T>();
+    }
+
+    private async Task LoadMasterData()
+    {
+        try
+        {
+            using var client = CreateClient();
+
+            _branches = (await FetchMasterData<BranchModel>(client, $"{BaseUrl}Branch/get")).Where(b => b.deleted != true).ToList();
+            _counters = (await FetchMasterData<CounterModel>(client, $"{BaseUrl}Counter/get")).Where(c => c.deleted != true).ToList();
+            
+            // Fetch PayModes dynamically to handle arbitrary JSON property names (e.g. paymode vs payModeName vs name)
+            try
+            {
+                var pmRes = await client.GetAsync($"{BaseUrl}paymode/get");
+                if (!pmRes.IsSuccessStatusCode) pmRes = await client.GetAsync($"{BaseUrl}paymode/getall"); // Fallback
+                
+                if (pmRes.IsSuccessStatusCode)
+                {
+                    var pmContent = await pmRes.Content.ReadAsStringAsync();
+                    var pmToken = JToken.Parse(pmContent);
+                    if (pmToken is JArray pmArr) _paymodes = pmArr.OfType<JObject>().ToList();
+                    else if (pmToken is JObject pmObj && pmObj["data"] is JArray pmData) _paymodes = pmData.OfType<JObject>().ToList();
+                    
+                    // Filter out deleted if flag exists
+                    _paymodes = _paymodes.Where(p => p["deleted"] == null || p["deleted"]?.ToObject<bool>() != true).ToList();
+                }
+            }
+            catch (Exception ex) { /* Console.WriteLine("Paymode fetch error: " + ex.Message) */; }
+            
+            _customers = (await FetchMasterData<CustomerModel>(client, $"{BaseUrl}Customer/get")).Where(c => c.deleted != true).ToList();
+            _doctors = (await FetchMasterData<DoctorModel>(client, $"{BaseUrl}Doctor/get")).Where(d => d.deleted != true).ToList();
+            _reimbursementCompanies = (await FetchMasterData<ReimbursementCompanyModel>(client, $"{BaseUrl}ReimbursementCompany/getall")).Where(c => c.deleted != true).ToList();
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error loading masters overall: {ex.Message}") */;
+        }
+    }
+
+
+    private bool _isSaving = false;
+
+    private async Task FilterDues()
+    {
+
+        CurrentPage = 1;
+        await ExecuteFilter();
+    }
+
+    private async Task ExecuteFilter()
+    {
+        try
+        {
+            using var client = CreateClient();
+            string? reqType = currentType.ToString().ToLower();
+            if (currentType == DueCollectionType.Patient && string.IsNullOrWhiteSpace(SearchPatient)) reqType = null;
+            if (currentType == DueCollectionType.Referral && string.IsNullOrWhiteSpace(SearchDoctor)) reqType = null;
+            if (currentType == DueCollectionType.Bill && string.IsNullOrWhiteSpace(SearchSampleId) && string.IsNullOrWhiteSpace(SearchBillNo)) reqType = null;
+            if (currentType == DueCollectionType.Monthly && string.IsNullOrWhiteSpace(SearchMonthly)) reqType = null;
+
+            var req = new DueCollectionFilterDto
+            {
+                type = reqType,
+                sampleid = string.IsNullOrWhiteSpace(SearchSampleId) ? null : SearchSampleId,
+                billno = string.IsNullOrWhiteSpace(SearchBillNo) ? null : SearchBillNo,
+                patient = string.IsNullOrWhiteSpace(SearchPatient) ? null : SearchPatient,
+                referral_name = string.IsNullOrWhiteSpace(SearchDoctor) ? null : SearchDoctor,
+                fromdate = SearchFrom,
+                todate = SearchTo == null ? null : SearchTo.Value.Date.AddHours(23).AddMinutes(59).AddSeconds(59),
+                page = 1,
+                pagesize = 10000
+            };
+            
+            int bhCodeParsedValue = 0;
+            int yearParsedValue = 0;
+            
+            if (int.TryParse(SearchBranch, out bhCodeParsedValue))
+            {
+                req.bhcode = bhCodeParsedValue;
+            }
+            if (int.TryParse(SearchYear, out yearParsedValue)) req.year = yearParsedValue;
+            
+            if (long.TryParse(Counter, out long counterCodeParsed))
+            {
+                req.cntcode = counterCodeParsed;
+            }
+
+            var settings = new JsonSerializerSettings 
+            { 
+                NullValueHandling = NullValueHandling.Ignore 
+            };
+            var payloadJson = JsonConvert.SerializeObject(req, settings);
+            debugPayload = payloadJson;
+            /* Console.WriteLine("DEBUG API REQUEST PAYLOAD: " + payloadJson) */;
+
+            var httpContent = new StringContent(payloadJson, System.Text.Encoding.UTF8, "application/json");
+            var response = await client.PostAsync($"{BaseUrl}DueCollection/filter", httpContent);
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                /* Console.WriteLine("DEBUG API RESPONSE: " + content) */;
+                debugPayload += "\n\nAPI RESPONSE: " + (content.Length > 500 ? content.Substring(0, 500) + "..." : content);
+                
+                try
+                {
+                    var result = JsonConvert.DeserializeObject<DueCollectionResultDto>(content);
+                    Trailers.Clear();
+                    if (result != null && result?.data != null)
+                    {
+                        Trailers = result.data.OrderBy(d => d.requestdatetime).Select(d => new DueCollectionUIItem { Row = d }).ToList();
+                        TotalRecords = Trailers.Count;
+                        TotalPages = TotalRecords > 0 ? (int)Math.Ceiling((double)TotalRecords / PageSize) : 1;
+                        
+                        GrandBillCount = TotalRecords;
+                        GrandTotalBalance = Trailers.Sum(t => t.Row.curr_balance);
+                    }
+                    else
+                    {
+                        TotalRecords = 0;
+                        TotalPages = 1;
+                        GrandBillCount = 0;
+                        GrandTotalBalance = 0;
+                    }
+                    StateHasChanged();
+                }
+                catch (Exception ex)
+                {
+                    /* Console.WriteLine("Deserialization error: " + ex.Message) */;
+                    StateHasChanged();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error filtering dues: {ex.Message}") */;
+        }
+        StateHasChanged();
+    }
+
+    private async Task LoadAllDue()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var url = $"{BaseUrl}DueCollection/all-due?page=1&pageSize=10000";
+            /* Console.WriteLine("Loading from URL: " + url) */;
+
+            var response = await client.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                /* Console.WriteLine("DEBUG API RESPONSE: " + content) */;
+                
+                try
+                {
+                    var result = JsonConvert.DeserializeObject<DueCollectionResultDto>(content);
+                    Trailers.Clear();
+                    if (result != null && result?.data != null)
+                    {
+                        Trailers = result.data.OrderBy(d => d.requestdatetime).Select(d => new DueCollectionUIItem { Row = d }).ToList();
+                        TotalRecords = Trailers.Count;
+                        TotalPages = TotalRecords > 0 ? (int)Math.Ceiling((double)TotalRecords / PageSize) : 1;
+
+                        GrandBillCount = TotalRecords;
+                        GrandTotalBalance = Trailers.Sum(t => t.Row.curr_balance);
+                    }
+                    else
+                    {
+                        TotalRecords = 0;
+                        TotalPages = 1;
+                        GrandBillCount = 0;
+                        GrandTotalBalance = 0;
+                    }
+                    StateHasChanged();
+                }
+                catch (Exception ex)
+                {
+                    /* Console.WriteLine("Deserialization error: " + ex.Message) */;
+                    errorMessage = $"Error parsing response: {ex.Message}";
+                    StateHasChanged();
+                }
+            }
+            else
+            {
+                errorMessage = $"Error loading data (Status: {response.StatusCode})";
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error loading all due: {ex.Message}") */;
+            errorMessage = $"Error: {ex.Message}";
+            StateHasChanged();
+        }
+    }
+
+    private void NextPage()
+    {
+        if (HasNextPage)
+        {
+            CurrentPage++;
+            StateHasChanged();
+        }
+    }
+
+    private void PreviousPage()
+    {
+        if (CurrentPage > 1)
+        {
+            CurrentPage--;
+            StateHasChanged();
+        }
+    }
+
+    private void OnPageChanged()
+    {
+        if (CurrentPage < 1) CurrentPage = 1;
+        if (CurrentPage > TotalPages) CurrentPage = TotalPages;
+        StateHasChanged();
+    }
+
+    private void OnPageSizeChanged()
+    {
+        if (PageSize < 1) PageSize = 1;
+        if (PageSize > 100) PageSize = 100;
+        CurrentPage = 1;
+        TotalPages = TotalRecords > 0 ? (int)Math.Ceiling((double)TotalRecords / PageSize) : 1;
+        StateHasChanged();
+    }
+
+    private void OnTypeChanged(DueCollectionType type)
+    {
+        currentType = type;
+        if (type == DueCollectionType.Bill)
+        {
+            Amount = null; // Clear amount as it is only for patient/referral/monthly
+        }
+    }
+
+
+
+    private async Task SaveCollection()
+    {
+        if (_isSaving) return;
+        
+        if (string.IsNullOrEmpty(TenantCode))
+        {
+            errorMessage = "Error: Tenant code is missing.";
+            return;
+        }
+
+        if (string.IsNullOrEmpty(PayMode))
+        {
+            errorMessage = "Please select a Pay Mode before saving.";
+            return;
+        }
+
+        _isSaving = true;
+        try
+        {
+            errorMessage = null;
+
+            // Preparation of payload and saving logic intentionally removed
+            // as user states no DueCollectionRequest/Header is needed.
+            /*
+            var requestPayload = new DueCollectionRequest
+            {
+            ...
+            */
+            using var client = CreateClient();
+            
+            int? selectedPmCode = null;
+            var selectedPmObj = _paymodes.FirstOrDefault(p => (p["name"]?.ToString() ?? p["payModeName"]?.ToString() ?? p["paymode"]?.ToString() ?? p["paymodename"]?.ToString() ?? p["description"]?.ToString()) == PayMode);
+            if (selectedPmObj != null)
+            {
+                if (int.TryParse(selectedPmObj["pmcode"]?.ToString() ?? selectedPmObj["id"]?.ToString() ?? "", out int code))
+                    selectedPmCode = code;
+            }
+            
+            var req = new SaveDueCollectionDto
+            {
+                collection_type = PayMode,
+                pmcode = selectedPmCode,
+                bankname = PayMode.Contains("Cheque", StringComparison.OrdinalIgnoreCase) ? BankName : null,
+                chequeno = PayMode.Contains("Cheque", StringComparison.OrdinalIgnoreCase) ? ChequeNo : null,
+                chequedate = PayMode.Contains("Cheque", StringComparison.OrdinalIgnoreCase) ? ChequeDate : null,
+                items = Trailers.Where(t => t.isSelected && (t.amount > 0 || t.concession > 0))
+                    .GroupBy(t => t.Row.requestguid).Select(g => g.First())
+                    .Select(t => new SaveDueCollectionItemDto
+                    {
+                        requestguid = t.Row.requestguid,
+                        collected_amount = t.amount ?? 0,
+                        concession_amount = t.concession ?? 0
+                    }).ToList()
+            };
+
+            var response = await client.PostAsJsonAsync($"{BaseUrl}DueCollection/save", req);
+
+            if (response.IsSuccessStatusCode)
+            {
+                errorMessage = "Due collection saved successfully!";
+                Amount = null;
+                BankName = null;
+                ChequeNo = null;
+                ChequeDate = null;
+                await ExecuteFilter();
+            }
+            else
+            {
+                var errorBody = await response.Content.ReadAsStringAsync();
+                errorMessage = $"Save failed ({response.StatusCode}): {errorBody}";
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error saving: {ex.Message}";
+        }
+        finally
+        {
+            _isSaving = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandlePageSizeChange(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString() ?? "10", out int newPageSize))
+        {
+            PageSize = newPageSize;
+            if (PageSize < 1) PageSize = 1;
+            if (PageSize > 100) PageSize = 100;
+            CurrentPage = 1;
+            OnPageSizeChanged();
+        }
+    }
+
+    private async Task HandlePageChange(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString() ?? "1", out int newPage))
+        {
+            CurrentPage = newPage;
+            if (CurrentPage < 1) CurrentPage = 1;
+            if (CurrentPage > TotalPages) CurrentPage = TotalPages;
+            OnPageChanged();
+        }
+    }
+}

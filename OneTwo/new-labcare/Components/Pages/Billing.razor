@@ -1,0 +1,2996 @@
+@page "/billing"
+@rendermode InteractiveServer
+@using LabCare.Models
+@using LIMS_Backend.Model
+@using LabCare.Services
+@using Newtonsoft.Json
+@inject NavigationManager NavManager
+@inject BillingService BillingService
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.Extensions.Options.IOptions<AppSettings> AppSettingsOptions
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject LabCare.Services.TenantSessionState TenantState
+@inject IJSRuntime JSRuntime
+@inject LabCare.Services.NotificationService Toast
+@implements IDisposable
+
+<div class="billing-page-wrapper">
+    <!-- Top Header Bar -->
+    <div class="bl-header-bar">
+        <div class="bl-header-item">
+            <span class="bl-label">BRANCH</span>
+            <div class="bl-select-wrapper header-select">
+                <select class="bl-select fw-700 @((Model.bhcode ?? 0) == 0 ? "select-placeholder" : "")" @bind="Model.bhcode" @bind:after="OnBranchSelected" disabled="@(TenantState.BranchCode > 0)">
+                    <option value="0">SELECT BRANCH</option>
+                    @foreach (var br in branchesList)
+                    {
+                        <option value="@((long)br.bh_code)">@br.name?.ToUpper()</option>
+                    }
+                </select>
+            </div>
+        </div>
+        <div class="bl-header-divider"></div>
+
+        <div class="bl-header-item">
+            <span class="bl-label">COUNTER</span>
+            <div class="bl-select-wrapper header-select">
+                <select class="bl-select fw-700 @((Model.cntcode ?? 0) == 0 ? "select-placeholder" : "")" @bind="Model.cntcode" @bind:after="OnCounterSelected" disabled="@(TenantState.CounterCode > 0)">
+                    <option value="0">SELECT COUNTER</option>
+                    @foreach (var cnt in filteredCounters)
+                    {
+                        <option value="@cnt.cntcode">@cnt.name?.ToUpper()</option>
+                    }
+                </select>
+            </div>
+        </div>
+
+        <div class="bl-header-divider"></div>
+
+        <div class="bl-header-item text-blue">
+            <span class="bl-label">BILLING SERIAL NO.</span>
+            <div class="bl-value fw-700">@(string.IsNullOrEmpty(Model.CaseNo) ? (string.IsNullOrEmpty(billNosData) ? GetBillNoPreview() : billNosData) : Model.CaseNo)</div>
+        </div>
+        <div class="bl-header-divider"></div>
+        <div class="bl-header-item">
+            <span class="bl-label">BILLING TIME</span>
+            <div class="bl-value fw-600">
+                <input type="datetime-local" class="bl-datetime-inline" @bind="Model.BillDate" />
+            </div>
+        </div>
+        <div class="bl-header-divider"></div>
+        <div class="bl-header-item">
+            <span class="bl-label">SAMPLE COLLECTION TIME</span>
+            <div class="bl-value fw-600">
+                <input type="datetime-local" class="bl-datetime-inline" @bind="Model.CollectedDate" />
+            </div>
+        </div>
+        <div class="bl-header-spacer"></div>
+    </div>
+
+    <!-- Main Content Layout -->
+    <div class="bl-main-grid">
+        <!-- LEFT COLUMN: Patient Identification -->
+        <div class="bl-col bl-col-left">
+            <div class="bl-card patient-card">
+                <div class="bl-card-title with-icon">
+                    <span class="material-symbols-outlined text-blue">account_circle</span>
+                    Patient Identification
+                </div>
+                <div class="bl-segmented-control">
+                    <button type="button" class="bl-segment-btn @(patientType == "Human" ? "active" : "")" @onclick='() => SetPatientType("Human")' title="Set patient type to Human">
+                        <span class="material-symbols-outlined">person</span>
+                        <span>Human</span>
+                    </button>
+                    <button type="button" class="bl-segment-btn @(patientType == "Animal" ? "active" : "")" @onclick='() => SetPatientType("Animal")' title="Set patient type to Animal">
+                        <span class="material-symbols-outlined">pets</span>
+                        <span>Animal</span>
+                    </button>
+                </div>
+
+                <div class="bl-form-group mt-16 position-relative">
+                    <label class="bl-input-label">SEARCH MOBILE / UID</label>
+                    <div class="bl-input-with-icon">
+                        <span class="material-symbols-outlined search-icon">search</span>
+                        <input type="text" class="bl-input" value="@Model.SearchMobile" @oninput="OnMobileInput" @onkeydown="OnMobileKeyDown" placeholder="+91 98765 43210" @onfocus="() => HandleFocus(false)" @onblur="HideMobileDropdown" />
+                    </div>
+
+                    @if (isSearching && showMobileDropdown)
+                    {
+                        <div class="bl-search-dropdown"><div class="p-12 text-center text-sm">Searching...</div></div>
+                    }
+                    else if (showMobileDropdown && customerResults.Any())
+                    {
+                        <div class="bl-search-dropdown">
+                            @for (int i = 0; i < customerResults.Count; i++)
+                            {
+                                var customer = customerResults[i];
+                                int localIndex = i;
+                                <div class="bl-search-item @(localIndex == activeMobileIndex ? "active-item" : "")"
+                                     style="background-color: @(localIndex == activeMobileIndex ? "#f1f5f9" : "transparent"); cursor: pointer;"
+                                     @onmousedown="() => AutofillCustomer(customer)"
+                                     @onmouseover="() => activeMobileIndex = localIndex">
+                                    <div class="bl-item-info">
+                                        <div class="bl-item-name">@customer.name</div>
+                                        <div class="bl-item-meta">@customer.mobile | @customer.custcode</div>
+                                    </div>
+                                    <div class="bl-item-date">@customer.gender</div>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else if (showMobileDropdown && !isSearching && !string.IsNullOrEmpty(Model.SearchMobile))
+                    {
+                        <div class="bl-search-dropdown">
+                            <div class="p-12 text-center text-sm text-gray-400">No customers found.</div>
+                        </div>
+                    }
+                </div>
+
+                <div class="bl-form-group mt-16">
+                    <label class="bl-input-label">PREFIX</label>
+                    <div class="bl-select-wrapper">
+                        <select class="bl-select @(string.IsNullOrEmpty(Model.Prefix) ? "select-placeholder" : "")" value="@Model.Prefix" @onchange="OnPrefixChanged">
+                            <option value="">Select</option>
+                            @foreach (var pref in prefixesList)
+                            {
+                                <option value="@pref.DisplayName">@pref.DisplayName</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+
+                <div class="bl-form-group mt-16 position-relative">
+                    <label class="bl-input-label">@(patientType == "Animal" ? "PET NAME" : "PATIENT NAME") <span class="lc-text-red">*</span></label>
+                    <input type="text" class="bl-input" value="@Model.PatientName" @oninput="OnNameInput" @onkeydown="OnNameKeyDown" placeholder="Ankit Sharma" @onfocus="() => HandleFocus(true)" @onblur="HideNameDropdown" />
+                    @if (isSearching && showNameDropdown)
+                    {
+                        <div class="bl-search-dropdown"><div class="p-12 text-center text-sm">Searching...</div></div>
+                    }
+                    else if (showNameDropdown && customerResults.Any())
+                    {
+                        <div class="bl-search-dropdown">
+                            @for (int i = 0; i < customerResults.Count; i++)
+                            {
+                                var customer = customerResults[i];
+                                int localIndex = i;
+                                <div class="bl-search-item @(localIndex == activeNameIndex ? "active-item" : "")"
+                                     style="background-color: @(localIndex == activeNameIndex ? "#f1f5f9" : "transparent"); cursor: pointer;"
+                                     @onmousedown="() => AutofillCustomer(customer)"
+                                     @onmouseover="() => activeNameIndex = localIndex">
+                                    <div class="bl-item-info">
+                                        <div class="bl-item-name">@customer.name</div>
+                                        <div class="bl-item-meta">@customer.mobile | @customer.custcode</div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else if (showNameDropdown && !isSearching && !string.IsNullOrEmpty(Model.PatientName))
+                    {
+                        <div class="bl-search-dropdown">
+                            <div class="p-12 text-center text-sm text-gray-400">No customers found.</div>
+                        </div>
+                    }
+                </div>
+
+                <div class="bl-form-group mt-16">
+                    <label class="bl-input-label">CARE OF DETAILS (C/O)</label>
+                    <div style="display: grid; grid-template-columns: 85px 60px 1fr; gap: 8px;">
+                        <div class="bl-select-wrapper">
+                            <select class="bl-select @(string.IsNullOrEmpty(Model.careoftitile) ? "select-placeholder" : "")" @bind="Model.careoftitile" style="height: 32px; padding: 4px 24px 4px 8px; font-size: 11px;">
+                                <option value="">C/O TYPE</option>
+                                <option value="C/O">C/O</option>
+                                <option value="S/O">S/O</option>
+                                <option value="D/O">D/O</option>
+                                <option value="W/O">W/O</option>
+                            </select>
+                        </div>
+                        <input type="text" class="bl-input" @bind="Model.careof" placeholder="CARE OF NAME" style="height: 32px; padding: 4px 8px; font-size: 11px;" />
+                    </div>
+                </div>
+
+                <div class="bl-form-group mt-16">
+                    <label class="bl-input-label">DATE OF BIRTH</label>
+                    <input type="date" class="bl-input" value="@Model.Dob?.ToString("yyyy-MM-dd")" @onchange="OnDobChange" />
+                </div>
+
+                <div class="bl-form-group mt-16">
+                    <label class="bl-input-label">GENDER</label>
+                    <div class="bl-select-wrapper">
+                        <select class="bl-select @(string.IsNullOrEmpty(Model.Gender) ? "select-placeholder" : "")" @bind="Model.Gender">
+                            <option value="">Select</option>
+                            <option value="Male">Male</option>
+                            <option value="Female">Female</option>
+                            <option value="Other">Other</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="bl-form-group mt-16">
+                    <label class="bl-input-label">AGE</label>
+                    <div class="bl-age-group">
+                        <div class="bl-age-box">
+                            <input type="text" class="bl-age-input" @bind="Model.AgeY" @bind:after="UpdateDOBFromAge" placeholder="0" />
+                            <span class="bl-age-lbl">YY</span>
+                        </div>
+                        <div class="bl-age-box">
+                            <input type="text" class="bl-age-input" @bind="Model.AgeM" @bind:after="UpdateDOBFromAge" placeholder="0" />
+                            <span class="bl-age-lbl">MM</span>
+                        </div>
+                        <div class="bl-age-box">
+                            <input type="text" class="bl-age-input" @bind="Model.AgeD" @bind:after="UpdateDOBFromAge" placeholder="0" />
+                            <span class="bl-age-lbl">DD</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bl-form-group mt-16">
+                    <label class="bl-input-label">EMAIL</label>
+                    <input type="email" class="bl-input" @bind="Model.Email" placeholder="patient@example.com" />
+                </div>
+
+                <div class="bl-form-group mt-16">
+                    <label class="bl-input-label">ADDRESS</label>
+                    <input type="text" class="bl-input" @bind="Model.Address" placeholder="17/19, street" />
+                </div>
+
+                <div class="bl-form-group mt-16 position-relative">
+                    <label class="bl-input-label">AREA</label>
+                    <input type="text" class="bl-input"
+                           value="@areaSearchQuery"
+                           @oninput="OnAreaInput"
+                           @onkeydown="OnAreaKeyDown"
+                           @onblur="HideAreaDropdown"
+                           placeholder="Search area..." />
+                    @if (showAreaDropdown)
+                    {
+                        <div class="bl-search-dropdown lc-top-100 lc-left-0 lc-right-0">
+                            @for (int i = 0; i < filteredAreaResults.Count; i++)
+                            {
+                                var area = filteredAreaResults[i];
+                                int localIndex = i;
+                                <div class="bl-search-item @(localIndex == activeAreaIndex ? "active-item" : "")"
+                                     style="background-color: @(localIndex == activeAreaIndex ? "#f1f5f9" : "transparent"); cursor: pointer;"
+                                     @onmousedown="() => SelectArea(area)"
+                                     @onmouseover="() => activeAreaIndex = localIndex">
+                                    <div class="bl-item-info">
+                                        <div class="bl-item-name">@area.areaname</div>
+                                        <div class="bl-item-meta">@area.shortname | @area.areacode</div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="bl-more-info mt-16 lc-cursor-pointer" @onclick="() => showMoreInfo = !showMoreInfo" style="user-select: none;">
+                    More info <span class="material-symbols-outlined">@(showMoreInfo ? "expand_less" : "expand_more")</span>
+                </div>
+
+                @if (showMoreInfo)
+                {
+                    <div class="more-info-panel mt-12 p-12 rounded-8" style="background: #f8fafc; border: 1px dashed #cbd5e1; display: flex; flex-direction: column; gap: 12px;">
+                        <!-- ID Type 1 -->
+                        <div class="bl-form-group">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="bl-id-type-header" style="background: #4f46e5; padding: 4px 8px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-radius: 4px; width: 85px; height: 28px; box-sizing: border-box;">
+                                    <select class="bl-id-type-select" @bind="Model.doc1_dmid" style="appearance: none; background: transparent; border: none; font-size: 10px; font-weight: 700; color: #ffffff; outline: none; width: 100%; cursor: pointer;">
+                                        <option value="" style="color: #000;">ID TYPE 1</option>
+                                        @foreach (var doc in documentsList)
+                                        {
+                                            <option value="@doc.dmid" style="color: #000;">@doc.dmname</option>
+                                        }
+                                    </select>
+                                    <span class="material-symbols-outlined text-white" style="font-size: 14px;">expand_more</span>
+                                </div>
+
+                                <div class="bl-scan-status-container" style="background: transparent; border: none; padding: 0;">
+                                    @if (!string.IsNullOrEmpty(Model.doc1_path))
+                                    {
+                                        <span class="material-symbols-outlined bl-scan-tick">check_circle</span>
+                                        <span class="material-symbols-outlined bl-scan-cancel" @onclick='() => Model.doc1_path = null' title="Remove Scan">close</span>
+                                    }
+                                </div>
+                            </div>
+
+                            <div class="bl-yt-search-group" style="display: flex !important; align-items: center !important; background: #ffffff !important; border: 1.5px solid #e2e8f0 !important; border-radius: 6px !important; overflow: hidden !important; height: 32px !important; width: 100% !important;">
+                                <input type="text" style="flex: 1 !important; border: none !important; background: transparent !important; padding: 0 10px !important; font-size: 11px !important; font-weight: 600 !important; outline: none !important; height: 100% !important; color: #1e293b !important; width: 50% !important;" @bind="Model.doc1_dmvalue" placeholder="ID Number" />
+                                @if (string.IsNullOrEmpty(Model.doc1_path))
+                                {
+                                    <button type="button" style="background: #f1f5f9 !important; border: none !important; border-left: 1.5px solid #e2e8f0 !important; width: 32px !important; height: 100% !important; cursor: pointer !important; display: flex !important; align-items: center !important; justify-content: center !important; flex-shrink: 0 !important; padding: 0 !important;" @onclick='() => ScanDocument("doc1")' title="Scan ID Proof">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M7 3H5a2 2 0 0 0-2 2v2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M3 17v2a2 2 0 0 0 2 2h2M7 12h10"/>
+                                        </svg>
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button type="button" style="background: #f1f5f9 !important; border: none !important; border-left: 1.5px solid #e2e8f0 !important; width: 32px !important; height: 100% !important; cursor: pointer !important; display: flex !important; align-items: center !important; justify-content: center !important; flex-shrink: 0 !important; padding: 0 !important;" title="ID Scanned">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="20 6 9 17 4 12"></polyline>
+                                        </svg>
+                                    </button>
+                                }
+                            </div>
+
+                            @if (!string.IsNullOrEmpty(Model.doc1_path))
+                            {
+                                <div class="bl-scan-path-badge" title="@Model.doc1_path" style="font-size: 10px; margin-top: 4px;">
+                                    <span class="material-symbols-outlined" style="font-size: 12px;">description</span>
+                                    <span>@(Model.doc1_path.Length > 20 ? "..." + Model.doc1_path.Substring(Model.doc1_path.Length - 20) : Model.doc1_path)</span>
+                                </div>
+                            }
+                        </div>
+
+                        <!-- ID Type 2 -->
+                        <div class="bl-form-group">
+                            <div class="flex items-center justify-between mb-2">
+                                <div class="bl-id-type-header" style="background: #4f46e5; padding: 4px 8px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; border-radius: 4px; width: 85px; height: 28px; box-sizing: border-box;">
+                                    <select class="bl-id-type-select" @bind="Model.doc2_dmid" style="appearance: none; background: transparent; border: none; font-size: 10px; font-weight: 700; color: #ffffff; outline: none; width: 100%; cursor: pointer;">
+                                        <option value="" style="color: #000;">ID TYPE 2</option>
+                                        @foreach (var doc in documentsList)
+                                        {
+                                            <option value="@doc.dmid" style="color: #000;">@doc.dmname</option>
+                                        }
+                                    </select>
+                                    <span class="material-symbols-outlined text-white" style="font-size: 14px;">expand_more</span>
+                                </div>
+
+                                <div class="bl-scan-status-container" style="background: transparent; border: none; padding: 0;">
+                                    @if (!string.IsNullOrEmpty(Model.doc2_path))
+                                    {
+                                        <span class="material-symbols-outlined bl-scan-tick">check_circle</span>
+                                        <span class="material-symbols-outlined bl-scan-cancel" @onclick='() => Model.doc2_path = null' title="Remove Scan">close</span>
+                                    }
+                                </div>
+                            </div>
+
+                            <div class="bl-yt-search-group" style="display: flex !important; align-items: center !important; background: #ffffff !important; border: 1.5px solid #e2e8f0 !important; border-radius: 6px !important; overflow: hidden !important; height: 32px !important; width: 100% !important;">
+                                <input type="text" style="flex: 1 !important; border: none !important; background: transparent !important; padding: 0 10px !important; font-size: 11px !important; font-weight: 600 !important; outline: none !important; height: 100% !important; color: #1e293b !important; width: 50% !important;" @bind="Model.doc2_dmvalue" placeholder="ID Number" />
+                                @if (string.IsNullOrEmpty(Model.doc2_path))
+                                {
+                                    <button type="button" style="background: #f1f5f9 !important; border: none !important; border-left: 1.5px solid #e2e8f0 !important; width: 32px !important; height: 100% !important; cursor: pointer !important; display: flex !important; align-items: center !important; justify-content: center !important; flex-shrink: 0 !important; padding: 0 !important;" @onclick='() => ScanDocument("doc2")' title="Scan ID Proof">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                            <path d="M7 3H5a2 2 0 0 0-2 2v2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M3 17v2a2 2 0 0 0 2 2h2M7 12h10"/>
+                                        </svg>
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button type="button" style="background: #f1f5f9 !important; border: none !important; border-left: 1.5px solid #e2e8f0 !important; width: 32px !important; height: 100% !important; cursor: pointer !important; display: flex !important; align-items: center !important; justify-content: center !important; flex-shrink: 0 !important; padding: 0 !important;" title="ID Scanned">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#10b981" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                                            <polyline points="20 6 9 17 4 12"></polyline>
+                                        </svg>
+                                    </button>
+                                }
+                            </div>
+
+                            @if (!string.IsNullOrEmpty(Model.doc2_path))
+                            {
+                                <div class="bl-scan-path-badge" title="@Model.doc2_path" style="font-size: 10px; margin-top: 4px;">
+                                    <span class="material-symbols-outlined" style="font-size: 12px;">description</span>
+                                    <span>@(Model.doc2_path.Length > 20 ? "..." + Model.doc2_path.Substring(Model.doc2_path.Length - 20) : Model.doc2_path)</span>
+                                </div>
+                            }
+                        </div>
+
+                        <!-- Preferred Language, Occupation & VIP Checkbox -->
+                        <div class="bl-form-group">
+                            <label class="bl-input-label">PREFERRED LANGUAGE</label>
+                            <div class="bl-select-wrapper">
+                                <select class="bl-select @(string.IsNullOrEmpty(Model.PreferredLanguage) ? "select-placeholder" : "")" @bind="Model.PreferredLanguage" style="height: 32px; padding: 4px 24px 4px 8px; font-size: 11px;">
+                                    <option value="">Select Language</option>
+                                    <option value="English">English</option>
+                                    <option value="Hindi">Hindi</option>
+                                    <option value="Tamil">Tamil</option>
+                                    <option value="Telugu">Telugu</option>
+                                    <option value="Kannada">Kannada</option>
+                                    <option value="Malayalam">Malayalam</option>
+                                    <option value="Bengali">Bengali</option>
+                                    <option value="Gujarati">Gujarati</option>
+                                    <option value="Marathi">Marathi</option>
+                                    <option value="Punjabi">Punjabi</option>
+                                    <option value="Odia">Odia</option>
+                                    <option value="Urdu">Urdu</option>
+                                    <option value="Assamese">Assamese</option>
+                                    <option value="Spanish">Spanish</option>
+                                    <option value="French">French</option>
+                                    <option value="German">German</option>
+                                    <option value="Other">Other</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <div class="bl-form-group">
+                            <label class="bl-input-label">OCCUPATION</label>
+                            <input type="text" class="bl-input" @bind="Model.Occupation" placeholder="e.g. Engineer, Teacher, Doctor" style="height: 32px; padding: 4px 8px; font-size: 11px;" />
+                        </div>
+
+                        <div class="bl-form-group mt-4">
+                            <label style="display: flex; align-items: center; gap: 8px; font-size: 11px; font-weight: 700; color: #64748b; cursor: pointer; user-select: none;">
+                                <input type="checkbox" @bind="Model.IsVIP" style="width: 16px; height: 16px; accent-color: #4f46e5; cursor: pointer; border-radius: 4px;" />
+                                VIP PATIENT
+                            </label>
+                        </div>
+                    </div>
+                }
+            </div>
+        </div>
+
+        <!-- MIDDLE COLUMN: Referral & Tests -->
+        <div class="bl-col bl-col-mid">
+            <!-- Referral Details -->
+            <div class="bl-card referral-card mb-20">
+                <div class="bl-card-title with-icon mb-16">
+                    <span class="material-symbols-outlined text-blue">group</span>
+                    Referral Details
+                </div>
+
+                <div class="bl-form-group position-relative">
+                    <label class="bl-input-label">PRIMARY REFERRAL (DOCTOR)</label>
+                    <input type="text" class="bl-input"
+                           value="@primaryDoctorSearchQuery"
+                           @oninput="OnPrimaryDoctorInput"
+                           @onkeydown="OnPrimaryDoctorKeyDown"
+                           @onblur="HidePrimaryDoctorDropdown"
+                           placeholder="Enter referral..." />
+                    @if (showPrimaryDoctorDropdown)
+                    {
+                        <div class="bl-search-dropdown lc-dropdown-pos-top-100">
+                            @for (int i = 0; i < filteredPrimaryDoctorResults.Count; i++)
+                            {
+                                var doc = filteredPrimaryDoctorResults[i];
+                                int localIndex = i;
+                                <div class="bl-search-item @(localIndex == activePrimaryDoctorIndex ? "active-item" : "")"
+                                     style="background-color: @(localIndex == activePrimaryDoctorIndex ? "#f1f5f9" : "transparent"); cursor: pointer;"
+                                     @onmousedown="() => SelectPrimaryDoctor(doc)"
+                                     @onmouseover="() => activePrimaryDoctorIndex = localIndex">
+                                    <div class="bl-item-info">
+                                        <div class="bl-item-name">@doc.name</div>
+                                        <div class="bl-item-meta">@doc.shortname | @doc.dcode</div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+                <div class="bl-form-group position-relative mt-16">
+                    <label class="bl-input-label">SECONDARY REFERRAL</label>
+                    <input type="text" class="bl-input"
+                           value="@secondaryDoctorSearchQuery"
+                           @oninput="OnSecondaryDoctorInput"
+                           @onkeydown="OnSecondaryDoctorKeyDown"
+                           @onblur="HideSecondaryDoctorDropdown"
+                           placeholder="Enter secondary referral..." />
+                    @if (showSecondaryDoctorDropdown)
+                    {
+                        <div class="bl-search-dropdown lc-dropdown-pos-top-100">
+                            @for (int i = 0; i < filteredSecondaryDoctorResults.Count; i++)
+                            {
+                                var doc = filteredSecondaryDoctorResults[i];
+                                int localIndex = i;
+                                <div class="bl-search-item @(localIndex == activeSecondaryDoctorIndex ? "active-item" : "")"
+                                     style="background-color: @(localIndex == activeSecondaryDoctorIndex ? "#f1f5f9" : "transparent"); cursor: pointer;"
+                                     @onmousedown="() => SelectSecondaryDoctor(doc)"
+                                     @onmouseover="() => activeSecondaryDoctorIndex = localIndex">
+                                    <div class="bl-item-info">
+                                        <div class="bl-item-name">@doc.name</div>
+                                        <div class="bl-item-meta">@doc.shortname | @doc.dcode</div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="bl-grid-3 mt-16">
+                    <div class="bl-form-group">
+                        <label class="bl-input-label">ROOM NUMBER</label>
+                        <input type="text" class="bl-input text-center" @bind="Model.RoomNumber" placeholder="101" style="height: 32px; padding: 4px 8px;" />
+                    </div>
+                    <div class="bl-form-group">
+                        <label class="bl-input-label">HOSPITAL ID</label>
+                        <div class="bl-hospital-combo" style="height: 32px;">
+                            <div class="bl-hospital-sel">UHID <span class="material-symbols-outlined">expand_more</span></div>
+                            <input type="text" class="bl-hospital-input text-center" @bind="Model.HospitalId" placeholder="101" style="height: 32px;" />
+                        </div>
+                    </div>
+                    <div class="bl-form-group">
+                        <label class="bl-input-label">HOSPITAL PATIENT ID</label>
+                        <div class="bl-hospital-combo" style="height: 32px;">
+                            <div class="bl-hospital-sel">UHID <span class="material-symbols-outlined">expand_more</span></div>
+                            <input type="text" class="bl-hospital-input text-center" @bind="Model.HospitalPatientId" placeholder="101" style="height: 32px;" />
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Test Selection & Services -->
+            <div class="bl-card tests-card">
+                <div class="bl-tests-header">
+                    <div class="bl-card-title with-icon m-0">
+                        <span class="material-symbols-outlined text-blue">inventory_2</span>
+                        TEST SELECTION &amp; SERVICES
+                    </div>
+                    <div class="bl-tests-stats">
+                        <div class="stat-item">
+                            <span class="stat-lbl">COUNT</span>
+                            <span class="stat-val">@Model.SelectedTests.Count.ToString("D2")</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="bl-search-test-row mt-16 position-relative">
+                    <div class="bl-input-with-icon full-width">
+                        <span class="material-symbols-outlined search-icon">search</span>
+                        <input @ref="testSearchInput" type="text" class="bl-input bl-test-search"
+                               value="@testSearchQuery"
+                               @oninput="OnTestSearchInput"
+                               @onblur="HideTestDropdown"
+                               @onkeydown="OnTestSearchKeyDown"
+                               placeholder="Search by Test Name..." />
+                    </div>
+
+                    @if (showTestDropdown)
+                    {
+                        <div class="bl-search-dropdown lc-top-100 lc-left-0 lc-right-0">
+                            @for (int i = 0; i < filteredTestResults.Count; i++)
+                            {
+                                var test = filteredTestResults[i];
+                                int localIndex = i;
+                                <div class="bl-search-item @(localIndex == activeTestIndex ? "active-item" : "")"
+                                     style="background-color: @(localIndex == activeTestIndex ? "#f1f5f9" : "transparent"); cursor: pointer;"
+                                     @onmousedown="() => SelectTest(test)"
+                                     @onmouseover="() => activeTestIndex = localIndex">
+                                    <div class="bl-item-info">
+                                        <div class="bl-item-name">@test.name</div>
+                                        <div class="bl-item-meta">@test.shortname | ₹@test.amount</div>
+                                    </div>
+                                </div>
+                            }
+                        </div>
+                    }
+                </div>
+
+                <div class="bl-sample-grid-header mt-16">
+                    <div class="sg-title">SAMPLE GRID</div>
+                    <div class="sg-action text-blue">Collect All</div>
+                </div>
+
+                <div class="bl-table-container">
+                    <table class="bl-table">
+                        <thead>
+                            <tr>
+                                <th>S.NO</th>
+                                <th>TEST DETAILS</th>
+                                <th>BASE AMOUNT</th>
+                                <th>DISCOUNT (%)</th>
+                                <th>TOTAL AMT</th>
+                                <th class="lc-text-center">ACTION</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (Model.SelectedTests.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="6" class="text-center text-gray py-4">No tests selected.</td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @foreach (var test in Model.SelectedTests)
+                                {
+                                    <tr>
+                                        <td class="text-gray fw-600">@test.SNo.ToString("D2")</td>
+                                        <td><div class="test-name">@test.TestDetails</div></td>
+                                         <td>
+                                             @if (canEditPrice)
+                                             {
+                                                 <div style="display: flex; align-items: center; gap: 4px;">
+                                                     <span>₹</span>
+                                                     <input type="number" class="bl-input" style="width: 100px; height: 28px; padding: 2px 6px; font-weight: 600;"
+                                                            value="@test.BaseAmount" 
+                                                            @oninput="(e) => OnBaseAmountChanged(e, test)" />
+                                                 </div>
+                                             }
+                                             else
+                                             {
+                                                 <span class="fw-600">₹@test.BaseAmount.ToString("F1")</span>
+                                             }
+                                         </td>
+                                         <td>
+                                             <div style="display: flex; align-items: center; gap: 4px;">
+                                                 <input type="number" class="bl-input text-blue" style="width: 75px; height: 28px; padding: 2px 6px; font-weight: 600;"
+                                                        value="@test.CommissionPercent" 
+                                                        @oninput="(e) => OnTestDiscountChanged(e, test)" />
+                                                 <span class="text-blue fw-600">%</span>
+                                             </div>
+                                         </td>
+                                         <td class="fw-700">₹@test.TotalAmount.ToString("F1")</td>
+                                        <td class="lc-text-center">
+                                            <span class="material-symbols-outlined text-red hover-delete lc-cursor-pointer" @onclick="() => RemoveTest(test)">delete</span>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+
+                <div class="bl-remarks-row mt-16">
+                    <div class="bl-report-date">
+                        <span class="lbl">REPORT:</span>
+                        <input type="text" class="bl-input small-input text-center" value="@Model.CollectedDate.ToString("dd/MM/yyyy")" />
+                        <span class="material-symbols-outlined icon">calendar_month</span>
+                    </div>
+                    <input type="text" class="bl-input flex-1" placeholder="Internal remarks..." />
+                </div>
+            </div>
+        </div>
+
+        <!-- RIGHT COLUMN: Financial -->
+        <div class="bl-col bl-col-right">
+            <!-- Collection By -->
+            <div class="bl-card collection-card mb-20">
+                <div class="c-header-row mb-16">
+                    <div class="bl-card-title with-icon m-0 text-gray lc-font-11 lc-font-700 lc-text-uppercase lc-letter-spacing-05">
+                        <span class="material-symbols-outlined lc-font-14">home_work</span>
+                        COLLECTION BY
+                    </div>
+                    <div class="bl-toggle">
+                        <input type="checkbox" id="home_col" @bind="Model.HomeCollection" @bind:after="RecalculateTotals" />
+                        <label for="home_col"></label>
+                    </div>
+                </div>
+
+                <div class="bl-select-wrapper mb-16">
+                    <select class="bl-select">
+                        <option>Staff: Manoj</option>
+                    </select>
+                </div>
+
+                <label class="bl-input-label text-gray">AREA</label>
+                <div class="bl-area-row position-relative">
+                    <div class="flex-2 position-relative">
+                        <input type="text" class="bl-input w-full"
+                               value="@homeAreaSearchQuery"
+                               @oninput="OnHomeAreaInput"
+                               @onkeydown="OnHomeAreaKeyDown"
+                               @onblur="HideHomeAreaDropdown"
+                               placeholder="Search Area..." />
+                        @if (showHomeAreaDropdown)
+                        {
+                            <div class="bl-search-dropdown lc-top-100 lc-left-0 lc-right-0">
+                                @for (int i = 0; i < filteredHomeAreaResults.Count; i++)
+                                {
+                                    var area = filteredHomeAreaResults[i];
+                                    int localIndex = i;
+                                    <div class="bl-search-item @(localIndex == activeHomeAreaIndex ? "active-item" : "")"
+                                         style="background-color: @(localIndex == activeHomeAreaIndex ? "#f1f5f9" : "transparent"); cursor: pointer;"
+                                         @onmousedown="() => SelectHomeArea(area)"
+                                         @onmouseover="() => activeHomeAreaIndex = localIndex">
+                                        <div class="bl-item-info">
+                                            <div class="bl-item-name">@area.areaname</div>
+                                            <div class="bl-item-meta">@area.shortname | @area.areacode</div>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </div>
+                    <input type="number" class="bl-input flex-1 text-center fw-600 no-spin"
+                           @bind="Model.homecollectioncharge"
+                           @bind:after="RecalculateTotals"
+                           disabled="@(string.IsNullOrWhiteSpace(homeAreaSearchQuery))"
+                           placeholder="" />
+                </div>
+            </div>
+
+            <!-- Financial Summary -->
+            <div class="bl-card finance-card mb-20">
+                <div class="fin-title">FINANCIAL SUMMARY</div>
+
+                <div class="fin-row mt-16 fw-600">
+                    <div>Bill Amount (@Model.SelectedTests.Count Tests)</div>
+                    <div>₹ @Model.BillAmount.ToString("N2")</div>
+                </div>
+
+                <div class="fin-concession mt-16">
+                    <div class="conc-header">
+                        <label>GENERAL CONCESSION</label>
+                        <div class="conc-labels"><span>%</span><span>VAL</span></div>
+                    </div>
+                    <div class="conc-inputs">
+                        <input type="text" class="bl-input text-green fw-700 text-center" value="@(Model.GeneralConcessionPercent == 0 ? "" : Model.GeneralConcessionPercent)" @onchange="UpdateGeneralPercent" placeholder="0.00" />
+                        <input type="text" class="bl-input text-green fw-700 text-center" value="@(Model.GeneralConcessionValue == 0 ? "" : Model.GeneralConcessionValue)" @onchange="UpdateGeneralValue" placeholder="0.00" />
+                    </div>
+                </div>
+
+                <div class="fin-concession mt-12">
+                    <div class="conc-header">
+                        <label>REFFERAL CONCESSION</label>
+                        <div class="conc-labels"><span>%</span><span>VAL</span></div>
+                    </div>
+                    <div class="conc-inputs">
+                        <input type="text" class="bl-input text-green fw-700 text-center" value="@(Model.ReferralConcessionPercent == 0 ? "" : Model.ReferralConcessionPercent)" @onchange="UpdateReferralPercent" placeholder="0.00" />
+                        <input type="text" class="bl-input text-green fw-700 text-center" value="@(Model.ReferralConcessionValue == 0 ? "" : Model.ReferralConcessionValue)" @onchange="UpdateReferralValue" placeholder="0.00" />
+                    </div>
+                </div>
+
+                <div class="fin-net mt-16">
+                    <div>NET PAYABLE</div>
+                    <div class="net-val">₹ @Model.NetPayable.ToString("N2")</div>
+                </div>
+
+                @if (!string.IsNullOrEmpty(statusMessage))
+                {
+                    <div class="@(isSuccess ? "lc-toast-success" : "lc-toast-error")">
+                        @statusMessage
+                    </div>
+                }
+            </div>
+
+            <!-- Payment Interface -->
+            <div class="bl-card payment-card text-white">
+                <div class="pay-title-row">
+                    <span>PAYMENT INTERFACE</span>
+
+                    <div class="pay-bg-pattern"></div>
+                </div>
+
+                <div class="pay-split-header mt-16 flex items-center justify-between mb-8 px-4">
+                    <span class="text-[10px] opacity-60 uppercase tracking-widest fw-800 text-white">PAYMENT CHANNELS (@paymentSplits.Count/3)</span>
+                </div>
+
+                @foreach (var split in paymentSplits)
+                {
+                    <div class="pay-mode-row mt-12">
+                        <div class="pay-mode-lbl-wrap lc-width-100">
+                            <span class="text-white fw-700 font-11">@split.PaymodeName</span>
+                        </div>
+                        <div class="pay-input-wrap">
+                            <input type="number" class="pay-input no-spin"
+                                   value="@split.Amount"
+                                   @oninput="(e) => HandlePaymentInput(split, e)"
+                                   placeholder="0.00" />
+                            @if (split.Amount > 0)
+                            {
+                                <span class="material-symbols-outlined text-green pay-check">check_circle</span>
+                            }
+                        </div>
+                    </div>
+                }
+
+                <div class="pay-due-row mt-16">
+                    <div class="due-lbls">
+                        <div class="due-title">BALANCE DUE</div>
+                        <div class="due-sub">@(GetBalanceDue() <= 0 ? "Fully Settled" : "Pending")</div>
+                    </div>
+                    <div class="due-val">₹ @GetBalanceDue().ToString("N2")</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bottom Action Bar -->
+    <div class="bl-bottom-bar">
+        <div class="bbar-printer ml-auto">
+            <label>BARCODE PRINTER</label>
+            <div class="bl-select-wrapper">
+                <select class="bl-select small lc-bg-none lc-border-slate">
+                    <option>ZEBRA-ZT411-PHLEB-L4</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="bbar-links ml-24" style="display: flex; align-items: center; gap: 16px;">
+            <a href="#" class="text-blue fw-600 no-underline" style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+                <span class="material-symbols-outlined" style="font-size: 14px;">barcode_scanner</span>
+                PRINT BARCODES
+            </a>
+            <a href="#" class="text-blue fw-600 no-underline" style="font-size: 11px; display: flex; align-items: center; gap: 4px;">
+                <span class="material-symbols-outlined" style="font-size: 14px;">biotech</span>
+                PRINT SERUM
+            </a>
+        </div>
+
+        <div class="bbar-actions ml-32">
+            <button class="bl-btn bl-btn-save" @onclick="SaveBilling" disabled="@IsLoading">
+                <span class="material-symbols-outlined" style="font-size: 14px;">save</span>
+                @(IsLoading ? "SAVING..." : "SAVE")
+            </button>
+
+            <button class="bl-btn bl-btn-clear" @onclick="ClearForm">
+                <span class="material-symbols-outlined" style="font-size: 14px;">close</span>
+                CLEAR
+            </button>
+
+            <button class="bl-btn" style="background-color: #8b5cf6; border-color: #8b5cf6; color: white;" @onclick="PreviewBill" disabled="@(lastSavedGuid == null && editingBillGuid == null)">
+                <span class="material-symbols-outlined" style="font-size: 14px;">visibility</span>
+                PREVIEW
+            </button>
+
+            <button class="bl-btn bl-btn-print" @onclick="PrintBill" disabled="@(lastSavedGuid == null && editingBillGuid == null)">
+                <span class="material-symbols-outlined" style="font-size: 14px;">print</span>
+                PRINT
+            </button>
+        </div>
+    </div>
+</div>
+
+
+
+
+
+@code {
+
+
+    [SupplyParameterFromQuery]
+    public string? edit { get; set; }
+
+    private BillingModel Model = new BillingModel();
+    private List<CustomerModel> customerResults = new();
+    private int activeMobileIndex = 0;
+    private int activeNameIndex = 0;
+    private int activePrimaryDoctorIndex = 0;
+    private int activeSecondaryDoctorIndex = 0;
+    private int activeAreaIndex = 0;
+    private int activeHomeAreaIndex = 0;
+    private List<DoctorModel> doctorList = new();
+    private List<test_master> testMasterList = new();
+    private List<test_master> filteredTestResults = new();
+    private List<PaymentHistoryDto> paymentHistory = new();
+    private List<PaymentSplit> paymentSplits = new()
+    {
+        new PaymentSplit { PaymodeName = PaymentMode.Cash, Amount = 0 },
+        new PaymentSplit { PaymodeName = PaymentMode.Card, Amount = 0 },
+        new PaymentSplit { PaymodeName = PaymentMode.GPay,  Amount = 0 }
+    };
+    private List<PayModeModel> paymodes = new();
+    private List<PrefixModel> prefixesList = new();
+    private List<BranchModel> branchesList = new();
+    private List<CounterModel> countersList = new();
+    private List<FeetypeModel> feeTypesList = new();
+    private List<CounterModel> filteredCounters = new();
+    private List<document_master> documentsList = new();
+    private string testSearchQuery = "";
+
+    private bool showTestDropdown = false;
+    private bool showNameDropdown = false;
+    private bool showMobileDropdown = false;
+    private bool isSearching = false;
+    private bool IsLoading = false;
+
+    private List<AreaModel> areaList = new();
+    private List<AreaModel> filteredAreaResults = new();
+    private string areaSearchQuery = "";
+    private bool showAreaDropdown = false;
+    private List<DoctorModel> filteredPrimaryDoctorResults = new();
+    private string primaryDoctorSearchQuery = "";
+    private bool showPrimaryDoctorDropdown = false;
+    private List<DoctorModel> filteredSecondaryDoctorResults = new();
+    private string secondaryDoctorSearchQuery = "";
+    private bool showSecondaryDoctorDropdown = false;
+    private Guid? editingBillGuid;
+    private Guid? lastSavedGuid;
+    private bool showMoreInfo = false;
+    private string patientType = "Human";
+
+    private void SetPatientType(string type)
+    {
+        patientType = type;
+    }
+
+
+    // Home Collection Area
+    private string homeAreaSearchQuery = "";
+    private bool showHomeAreaDropdown = false;
+    private List<AreaModel> filteredHomeAreaResults = new();
+
+    private string AuthToken = "";
+
+    // ── Replaces the old single concessionError field.
+    //    statusMessage is shown in green on success, red on error.
+    private string statusMessage = "";
+    private bool isSuccess = false;
+
+    private Guid? activeCnttid;
+
+    private string? billNosData;
+
+    private System.Threading.CancellationTokenSource? _searchCts;
+    private System.Threading.CancellationTokenSource? _pollCts;
+    private string BaseUrl => AppSettingsOptions.Value.BaseUrl;
+    private string TenantCode = "";
+    private bool canEditPrice = false;
+    private int activeTestIndex = 0;
+    private ElementReference testSearchInput;
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Core financial helper
+    // ─────────────────────────────────────────────────────────────────────────
+    private (double testGross, double totalDiscount, double homeCharge,
+             double testNetAfterDiscount, double serverTotalAmount) GetFinancials()
+    {
+        double testGross            = Math.Round(Model.BillAmount, 2);
+        double totalDiscount        = Math.Round(Model.GeneralConcessionValue + Model.ReferralConcessionValue, 2);
+        double homeCharge           = Math.Round(Model.HomeCollection ? (Model.homecollectioncharge ?? 0.0) : 0.0, 2);
+        double testNetAfterDiscount = Math.Round(Math.Max(0, testGross - totalDiscount), 2);
+        double serverTotalAmount    = Math.Round(testNetAfterDiscount + homeCharge, 2);
+        return (testGross, totalDiscount, homeCharge, testNetAfterDiscount, serverTotalAmount);
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        Model.BillDate      = DateTime.Now;
+        Model.CollectedDate = DateTime.Now;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            await LoadData();
+            await EnsureBillNoSeries(); 
+            
+            if (!string.IsNullOrEmpty(edit) && Guid.TryParse(edit, out var billGuid))
+            {
+                await LoadBillForEdit(billGuid);
+            }
+
+            StateHasChanged();
+        }
+    }
+
+    private List<BillNoModel> availableBillSeries = new();
+
+    private string GetBillNoPreview()
+    {
+        if (Model.bhcode == null || Model.cntcode == null || Model.bhcode == 0 || Model.cntcode == 0) 
+            return "SELECT BRANCH & COUNTER";
+
+        var config = availableBillSeries.FirstOrDefault(c => c.deleted != true &&
+            (c.allbranch == true || c.bhcode == Model.bhcode) &&
+            (c.allcounter == true || c.cntcode == Model.cntcode));
+
+        if (config == null) config = availableBillSeries.FirstOrDefault(c => c.deleted != true);
+
+        int orderNo = config?.orderno ?? 1;
+        string fy = $"{DateTime.Now:yy}-{(DateTime.Now.Year + 1) % 100}";
+        
+        // Format: jhb{bhcode}-{cntcode}/{orderno:D3}/{fy}
+        return $"jhb{Model.bhcode}-{Model.cntcode}/{orderNo:D3}/{fy}";
+    }
+
+    private async Task LoadData()
+    {
+        try
+        {
+            var userResult = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
+            string tName = "";
+            int uCode = 0;
+
+            if (userResult.Success && userResult.Value != null)
+            {
+                var user = userResult.Value;
+                TenantCode = user.TenantCode ?? "";
+                AuthToken = user.AuthToken ?? "";
+                tName = user.TenantName ?? "";
+                uCode = user.UserCode ?? 0;
+            }
+            else
+            {
+                var tc = await _sessionStorage.GetAsync<string>("tenant_code");
+                var tk = await _sessionStorage.GetAsync<string>("authToken");
+                TenantCode = tc.Success ? tc.Value ?? "" : "";
+                AuthToken = tk.Success ? tk.Value ?? "" : "";
+            }
+
+            // Check for edit price rights — Admin (usercode=1) or Administrator role or Billing ToEdit right
+            canEditPrice = false;
+            if (uCode == 1 || (userResult.Success && userResult.Value != null && userResult.Value.Role == "Administrator"))
+            {
+                canEditPrice = true;
+            }
+            else
+            {
+                var rightsResult = await _sessionStorage.GetAsync<List<UserFormRightsModel.User_Rights>>("UserRights");
+                if (rightsResult.Success && rightsResult.Value != null)
+                {
+                    var billingRight = rightsResult.Value.FirstOrDefault(r =>
+                        string.Equals(r.ModuleName, "Billing", StringComparison.OrdinalIgnoreCase) &&
+                        string.Equals(r.Department, "Reception", StringComparison.OrdinalIgnoreCase));
+                    if (billingRight != null && billingRight.ToEdit)
+                    {
+                        canEditPrice = true;
+                    }
+                }
+            }
+
+            // Sync with TenantState first to have authoritative values
+            var bhResult = await _sessionStorage.GetAsync<string>("bhcode");
+            var cntResult = await _sessionStorage.GetAsync<string>("cntcode");
+            
+            int? s_bh = (bhResult.Success && int.TryParse(bhResult.Value, out var b)) ? b : null;
+            int? s_cnt = (cntResult.Success && int.TryParse(cntResult.Value, out var c)) ? c : null;
+
+            if (uCode > 0)
+            {
+                try
+                {
+                    using var client = CreateClient();
+                    var userResponse = await client.GetAsync($"{BaseUrl}User/getall");
+                    if (userResponse.IsSuccessStatusCode)
+                    {
+                        var users = await userResponse.Content.ReadFromJsonAsync<List<user_master>>();
+                        var currentUser = users?.FirstOrDefault(u => u.user_code == uCode);
+                        if (currentUser != null)
+                        {
+                            if (currentUser.bh_code > 0) s_bh = currentUser.bh_code;
+                            if (currentUser.cnt_code > 0) s_cnt = (int?)currentUser.cnt_code;
+                        }
+                    }
+                }
+                catch { }
+            }
+            
+            TenantState.SetSession(TenantCode, AuthToken, tName, uCode, s_bh, s_cnt);
+
+            // Set Model properties from TenantState
+            if (TenantState.BranchCode > 0) Model.bhcode = TenantState.BranchCode;
+            if (TenantState.CounterCode > 0) Model.cntcode = TenantState.CounterCode;
+
+            var tidResult = await _sessionStorage.GetAsync<string>("cnttid");
+            if (tidResult.Success && Guid.TryParse(tidResult.Value, out var tid)) activeCnttid = tid;
+
+            var counterResult = await _sessionStorage.GetAsync<string>("counter");
+            if (counterResult.Success) Model.Counter = counterResult.Value ?? "N/A";
+
+            var branchResult = await _sessionStorage.GetAsync<string>("branch");
+            if (branchResult.Success) Model.Branch = branchResult.Value ?? "N/A";
+
+            var caseNoResult = await _sessionStorage.GetAsync<string>("case_no");
+            Model.CaseNo = caseNoResult.Success
+                ? caseNoResult.Value ?? ""
+                : "";
+
+            await LoadDoctors();
+            await LoadTests();
+            await LoadPayModes();
+            await LoadBranches();
+            await LoadCounters();
+            await LoadAreas();
+            await LoadPrefixes();
+            await LoadDocuments();
+            await LoadFeeTypes();
+
+            if (Model.bhcode > 0 && Model.cntcode > 0)
+            {
+                await FetchBillNos();
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"LoadData error: {ex.Message}") */;
+        }
+    }
+
+    private async Task ScanDocument(string docId)
+    {
+        // Validation: Ensure necessary details are present before calling the app
+        if (string.IsNullOrEmpty(Model.PatientName))
+        {
+            statusMessage = "⚠ Please enter Patient Name before scanning.";
+            isSuccess = false;
+            Toast.Warning(statusMessage, "Scan");
+            StateHasChanged();
+            return;
+        }
+
+        var docTypeId = docId == "doc1" ? Model.doc1_dmid : Model.doc2_dmid;
+        if (docTypeId == null || docTypeId == 0)
+        {
+            statusMessage = "⚠ Please select ID Type before scanning.";
+            isSuccess = false;
+            Toast.Warning(statusMessage, "Scan");
+            StateHasChanged();
+            return;
+        }
+
+        var scanId = Guid.NewGuid().ToString();
+        var callbackUrl = $"{NavManager.BaseUri}api/scan/callback/{scanId}";
+        
+        // Upload endpoint — base URL driven by appsettings.json via BaseUrl
+        var api = $"{BaseUrl}Files/upload";
+        
+        // Path details requested: labcare bucket, labcare folder, select tenant_folder, customers folder, bill_id
+        var bucket = "labcare";
+        var tenant = string.IsNullOrEmpty(TenantCode) ? "default" : TenantCode;
+        var billId = string.IsNullOrEmpty(Model.CaseNo) ? "new_bill" : Model.CaseNo;
+        var clientFolder = $"labcare/{tenant}/customers/{billId}";
+        
+        // Use patient name as filename if available
+        var namePart = !string.IsNullOrEmpty(Model.PatientName) ? Model.PatientName.Replace(" ", "_") : docId;
+        var fileName = $"{namePart}_{docId}.jpg";
+
+        // Files API requires a numeric entityId. If new, we use 1 as a placeholder (API rejects <= 0)
+        string entityIdStr = "1";
+        if (Model.custid > 0) 
+        {
+            entityIdStr = Model.custid.ToString();
+        }
+        else if (!string.IsNullOrEmpty(Model.PatientId) && long.TryParse(Model.PatientId, out _))
+        {
+            entityIdStr = Model.PatientId;
+        }
+        
+        var protocolUrl = $"iscan://upload?api={Uri.EscapeDataString(api)}" +
+                          $"&bucketname={Uri.EscapeDataString(bucket)}" +
+                          $"&clientfolder={Uri.EscapeDataString(clientFolder)}" +
+                          $"&filename={Uri.EscapeDataString(fileName)}" +
+                          $"&token={Uri.EscapeDataString(AuthToken)}" +
+                          $"&tenantcode={Uri.EscapeDataString(TenantCode)}" +
+                          $"&entityid={Uri.EscapeDataString(entityIdStr)}" +
+                          $"&entitytype=customers" +
+                          $"&prefix={docId}" +
+                          $"&callback={Uri.EscapeDataString(callbackUrl)}";
+        
+        await JSRuntime.InvokeVoidAsync("openProtocol", protocolUrl);
+        
+        // Start polling for the result
+        _ = PollForScanResult(scanId, docId);
+    }
+
+    private async Task PollForScanResult(string scanId, string docId)
+    {
+        _pollCts?.Cancel();
+        _pollCts = new System.Threading.CancellationTokenSource();
+        var token = _pollCts.Token;
+
+        int attempts = 0;
+        while (!token.IsCancellationRequested && attempts < 60) // Poll for 2 minutes
+        {
+            try
+            {
+                await Task.Delay(2000, token);
+                attempts++;
+
+                using var client = ClientFactory.CreateClient();
+                var response = await client.GetAsync($"{NavManager.BaseUri}api/scan/status/{scanId}", token);
+                
+                if (response.IsSuccessStatusCode)
+                {
+                    var result = await response.Content.ReadFromJsonAsync<ScanStatusResponse>(cancellationToken: token);
+                    if (result != null && result.success)
+                    {
+                        if (docId == "doc1") Model.doc1_path = result.path;
+                        else if (docId == "doc2") Model.doc2_path = result.path;
+                        
+                        await InvokeAsync(StateHasChanged);
+                        break;
+                    }
+                }
+            }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex) { /* Console.WriteLine($"Polling error: {ex.Message}") */; }
+        }
+    }
+
+    public void Dispose()
+    {
+        _searchCts?.Cancel();
+        _pollCts?.Cancel();
+    }
+
+    private class ScanStatusResponse
+    {
+        public bool success { get; set; }
+        public string? path { get; set; }
+    }
+
+    private async Task LoadTests()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}Test/get");
+            if (response.IsSuccessStatusCode)
+                testMasterList = await response.Content.ReadFromJsonAsync<List<test_master>>() ?? new();
+        }
+        catch (Exception ex) { /* Console.WriteLine($"Error loading tests: {ex.Message}") */; }
+    }
+
+    private async Task LoadFeeTypes()
+    {
+        try
+        {
+            feeTypesList = await BillingService.GetFeeTypesAsync();
+        }
+        catch (Exception ex) { /* Console.WriteLine($"Error loading fee types: {ex.Message}") */; }
+    }
+
+    private void UpdateTestCommissions()
+    {
+    }
+
+    private async Task LoadDoctors()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}Doctor/get");
+            if (response.IsSuccessStatusCode)
+                doctorList = await response.Content.ReadFromJsonAsync<List<DoctorModel>>() ?? new();
+        }
+        catch (Exception ex) { /* Console.WriteLine($"Error loading doctors: {ex.Message}") */; }
+    }
+
+    private async Task LoadPayModes()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}Paymode/getall");
+            if (response.IsSuccessStatusCode)
+                paymodes = await response.Content.ReadFromJsonAsync<List<PayModeModel>>() ?? new();
+        }
+        catch (Exception ex) { /* Console.WriteLine($"Error loading paymodes: {ex.Message}") */; }
+    }
+
+    private async Task LoadBranches()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}Branch/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var allBranches = await response.Content.ReadFromJsonAsync<List<BranchModel>>() ?? new();
+                
+                // If user is restricted to a branch, only show that one
+                if (TenantState.BranchCode > 0)
+                {
+                    branchesList = allBranches.Where(x => x.bhcode == TenantState.BranchCode).ToList();
+                    Model.bhcode = TenantState.BranchCode;
+                }
+                else
+                {
+                    branchesList = allBranches;
+                    if (Model.bhcode == 0 && branchesList.Any())
+                    {
+                        Model.bhcode = branchesList.First().bhcode;
+                    }
+                }
+            }
+        }
+        catch { }
+    }
+
+    private async Task LoadCounters()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}Counter/get");
+            if (response.IsSuccessStatusCode)
+            {
+                var allCounters = await response.Content.ReadFromJsonAsync<List<CounterModel>>() ?? new();
+                
+                if (TenantState.CounterCode > 0)
+                {
+                    countersList = allCounters.Where(x => x.cntcode == TenantState.CounterCode).ToList();
+                    Model.cntcode = TenantState.CounterCode;
+                }
+                else
+                {
+                    countersList = allCounters;
+                }
+                OnBranchSelected();
+            }
+        }
+        catch { }
+    }
+
+    private async Task LoadAreas()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}Area/get");
+            if (response.IsSuccessStatusCode)
+                areaList = await response.Content.ReadFromJsonAsync<List<AreaModel>>() ?? new();
+        }
+        catch (Exception ex) { /* Console.WriteLine($"Error loading areas: {ex.Message}") */; }
+    }
+
+    private async Task LoadDocuments()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}document/get");
+            if (response.IsSuccessStatusCode)
+                documentsList = await response.Content.ReadFromJsonAsync<List<document_master>>() ?? new();
+        }
+        catch (Exception ex) { /* Console.WriteLine($"Error loading documents: {ex.Message}") */; }
+    }
+
+    private async Task LoadPrefixes()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}prefixes/getall");
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                try
+                {
+                    var list = new List<PrefixModel>();
+                    var token = Newtonsoft.Json.Linq.JToken.Parse(content);
+
+                    if (token is Newtonsoft.Json.Linq.JArray array)
+                    {
+                        foreach (var item in array)
+                        {
+                            if (item.Type == Newtonsoft.Json.Linq.JTokenType.Object)
+                            {
+                                var model = item.ToObject<PrefixModel>() ?? new();
+                                // Better fallback: prioritize likely names and exclude tenant/code fields
+                                if (string.IsNullOrEmpty(model.DisplayName))
+                                {
+                                    var likelyNames = new[] { "name", "prefix", "title", "text", "value" };
+                                    var obj = (Newtonsoft.Json.Linq.JObject)item;
+                                    foreach (var ln in likelyNames)
+                                    {
+                                        var p = obj.Property(ln, StringComparison.OrdinalIgnoreCase);
+                                        if (p != null && p.Value.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                                        {
+                                            model.name = p.Value.ToString();
+                                            break;
+                                        }
+                                    }
+
+                                    if (string.IsNullOrEmpty(model.DisplayName))
+                                    {
+                                        foreach (var prop in obj.Properties())
+                                        {
+                                            if (prop.Value.Type == Newtonsoft.Json.Linq.JTokenType.String &&
+                                                !prop.Name.Contains("tenant", StringComparison.OrdinalIgnoreCase) &&
+                                                !prop.Name.Contains("code", StringComparison.OrdinalIgnoreCase))
+                                            {
+                                                model.name = prop.Value.ToString();
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                list.Add(model);
+                            }
+                            else if (item.Type == Newtonsoft.Json.Linq.JTokenType.String)
+                            {
+                                list.Add(new PrefixModel { name = item.ToString() });
+                            }
+                        }
+                    }
+                    prefixesList = list;
+                }
+                catch (Exception ex)
+                {
+                    /* Console.WriteLine($"Error parsing prefixes content: {ex.Message}") */;
+                }
+            }
+        }
+        catch (Exception ex) { /* Console.WriteLine($"Error loading prefixes: {ex.Message}") */; }
+    }
+
+    private void OnBranchSelected()
+    {
+        filteredCounters = Model.bhcode > 0
+            ? countersList.Where(c => c.bhcode == Model.bhcode).ToList()
+            : countersList;
+
+        if (!filteredCounters.Any(c => c.cntcode == Model.cntcode))
+        {
+            if (filteredCounters.Any())
+            {
+                Model.cntcode = filteredCounters.First().cntcode;
+                _ = OnCounterSelected();
+            }
+            else
+            {
+                Model.cntcode = 0;
+            }
+        }
+        else
+        {
+            _ = OnCounterSelected();
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task OnCounterSelected() 
+    { 
+        await FetchBillNos();
+    }
+
+    private async Task OnNameInput(ChangeEventArgs e)
+    {
+        var val = e.Value?.ToString() ?? "";
+        Model.PatientName = val;
+
+        // ── If user clears the name after having selected a customer,
+        //    reset custid so we don't carry a stale reference.
+        if (string.IsNullOrWhiteSpace(val))
+            Model.custid = null;
+
+        showNameDropdown   = true;
+        showMobileDropdown = false;
+        StateHasChanged();
+        await TriggerServerSearch(val, true);
+    }
+
+    private async Task OnMobileInput(ChangeEventArgs e)
+    {
+        var val = e.Value?.ToString() ?? "";
+        Model.SearchMobile = val;
+        showMobileDropdown = true;
+        showNameDropdown   = false;
+        StateHasChanged();
+        await TriggerServerSearch(val, false);
+    }
+
+    private async Task TriggerServerSearch(string query, bool isNameSearch)
+    {
+        if (query.Length < 3)
+        {
+            customerResults.Clear();
+            isSearching = false;
+            return;
+        }
+
+        try
+        {
+            _searchCts?.Cancel();
+            _searchCts = new System.Threading.CancellationTokenSource();
+            var token = _searchCts.Token;
+
+            await Task.Delay(350, token);
+            if (token.IsCancellationRequested) return;
+
+            isSearching = true;
+            StateHasChanged();
+
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}Customer/search?key={Uri.EscapeDataString(query)}");
+            if (token.IsCancellationRequested) return;
+
+            if (response.IsSuccessStatusCode)
+            {
+                customerResults = await response.Content.ReadFromJsonAsync<List<CustomerModel>>() ?? new();
+                activeMobileIndex = 0;
+                activeNameIndex = 0;
+            }
+        }
+        catch (TaskCanceledException) { }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { /* Console.WriteLine($"Search error: {ex.Message}") */; }
+        finally
+        {
+            isSearching = false;
+            StateHasChanged();
+        }
+    }
+
+    private void UpdateGeneralPercent(ChangeEventArgs e)
+    {
+        var input = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(input) || !double.TryParse(input, out var val))
+        {
+            Model.GeneralConcessionPercent = 0;
+            Model.GeneralConcessionValue = 0;
+        }
+        else
+        {
+            Model.GeneralConcessionPercent = val;
+            if (val == 0) Model.GeneralConcessionValue = 0;
+        }
+        RecalculateTotals();
+    }
+
+    private void UpdateGeneralValue(ChangeEventArgs e)
+    {
+        var input = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(input) || !double.TryParse(input, out var val))
+        {
+            Model.GeneralConcessionValue = 0;
+            Model.GeneralConcessionPercent = 0;
+        }
+        else
+        {
+            Model.GeneralConcessionValue = val;
+            Model.GeneralConcessionPercent = 0; // Master is Value
+        }
+        RecalculateTotals();
+    }
+
+    private void UpdateReferralPercent(ChangeEventArgs e)
+    {
+        var input = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(input) || !double.TryParse(input, out var val))
+        {
+            Model.ReferralConcessionPercent = 0;
+            Model.ReferralConcessionValue = 0;
+        }
+        else
+        {
+            Model.ReferralConcessionPercent = val;
+            if (val == 0) Model.ReferralConcessionValue = 0;
+        }
+        RecalculateTotals();
+    }
+
+    private void UpdateReferralValue(ChangeEventArgs e)
+    {
+        var input = e.Value?.ToString();
+        if (string.IsNullOrWhiteSpace(input) || !double.TryParse(input, out var val))
+        {
+            Model.ReferralConcessionValue = 0;
+            Model.ReferralConcessionPercent = 0;
+        }
+        else
+        {
+            Model.ReferralConcessionValue = val;
+            Model.ReferralConcessionPercent = 0; // Master is Value
+        }
+        RecalculateTotals();
+    }
+
+    private double GetTotalPaid() => Math.Round(paymentSplits.Sum(s => s.Amount), 2);
+
+    private double GetBalanceDue() => Math.Round(Math.Max(0, Model.NetPayable - GetTotalPaid()), 2);
+
+    private void HandlePaymentInput(PaymentSplit currentSplit, ChangeEventArgs e)
+    {
+        string val = e.Value?.ToString() ?? "0";
+        if (double.TryParse(val, out var enteredAmount))
+        {
+            double others = Math.Round(paymentSplits.Where(s => s != currentSplit).Sum(s => s.Amount), 2);
+            double limit  = Math.Round(Model.NetPayable - others, 2);
+            currentSplit.Amount = enteredAmount > limit ? limit : Math.Max(0, enteredAmount);
+        }
+        else
+        {
+            currentSplit.Amount = 0;
+        }
+        StateHasChanged();
+    }
+
+    private void AutofillCustomer(CustomerModel customer)
+    {
+        Model.custid       = customer.custid;
+        Model.PatientName  = customer.name ?? "";
+        Model.SearchMobile = customer.mobile ?? "";
+        Model.Prefix       = customer.nametitile ?? "";
+        
+        var g = customer.gender?.Trim().ToLower() ?? "";
+        if (g == "m" || g == "male")
+        {
+            Model.Gender = "Male";
+        }
+        else if (g == "f" || g == "female")
+        {
+            Model.Gender = "Female";
+        }
+        else if (g == "other" || g == "o")
+        {
+            Model.Gender = "Other";
+        }
+        else
+        {
+            var lowerPrefix = (customer.nametitile ?? "").ToLower().Trim();
+            if (lowerPrefix == "mr." || lowerPrefix == "mr" || lowerPrefix == "master" || lowerPrefix == "master." || lowerPrefix == "mast" || lowerPrefix == "mast.")
+            {
+                Model.Gender = "Male";
+            }
+            else if (lowerPrefix == "mrs." || lowerPrefix == "mrs" || lowerPrefix == "ms." || lowerPrefix == "ms" || lowerPrefix == "miss" || lowerPrefix == "miss.")
+            {
+                Model.Gender = "Female";
+            }
+            else
+            {
+                Model.Gender = "";
+            }
+        }
+
+        Model.AgeY         = customer.ageyears;
+        Model.AgeM         = customer.agemonths;
+        Model.AgeD         = customer.agedays;
+        Model.Email        = customer.email ?? "";
+        Model.Address      = customer.street ?? "";
+        Model.careoftitile = customer.careoftitile ?? "";
+        Model.careofinitial = customer.careofinitial ?? "";
+        Model.careof       = customer.careof ?? "";
+        Model.Occupation   = customer.occupation ?? "";
+        Model.IsVIP        = customer.isregular ?? false;
+
+        if (customer.dateofbirth.HasValue)
+            Model.Dob = customer.dateofbirth.Value;
+
+        showNameDropdown   = false;
+        showMobileDropdown = false;
+        customerResults.Clear();
+        StateHasChanged();
+    }
+
+    private async Task HandleFocus(bool isName)
+    {
+        if (isName)
+        {
+            showNameDropdown   = true;
+            showMobileDropdown = false;
+            await TriggerServerSearch(Model.PatientName ?? "", true);
+        }
+        else
+        {
+            showMobileDropdown = true;
+            showNameDropdown   = false;
+            await TriggerServerSearch(Model.SearchMobile ?? "", false);
+        }
+    }
+
+    private async Task HideNameDropdown()
+    {
+        await Task.Delay(250);
+        showNameDropdown = false;
+        StateHasChanged();
+    }
+
+    private async Task HideMobileDropdown()
+    {
+        await Task.Delay(250);
+        showMobileDropdown = false;
+        StateHasChanged();
+    }
+
+    private void OnTestSearchInput(ChangeEventArgs e)
+    {
+        testSearchQuery = e.Value?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(testSearchQuery))
+        {
+            filteredTestResults.Clear();
+            showTestDropdown = false;
+            activeTestIndex = 0;
+        }
+        else
+        {
+            filteredTestResults = testMasterList
+                .Where(t => t.name.Contains(testSearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                            t.shortname.Contains(testSearchQuery, StringComparison.OrdinalIgnoreCase))
+                .Take(10)
+                .ToList();
+            showTestDropdown = filteredTestResults.Any();
+            activeTestIndex = 0;
+        }
+        StateHasChanged();
+    }
+
+    private async Task HideTestDropdown()
+    {
+        await Task.Delay(250);
+        showTestDropdown = false;
+        StateHasChanged();
+    }
+
+    private void OnPrimaryDoctorInput(ChangeEventArgs e)
+    {
+        primaryDoctorSearchQuery = e.Value?.ToString() ?? "";
+        activePrimaryDoctorIndex = 0;
+        if (string.IsNullOrWhiteSpace(primaryDoctorSearchQuery))
+        {
+            filteredPrimaryDoctorResults.Clear();
+            showPrimaryDoctorDropdown = false;
+            Model.dcode = null;
+        }
+        else
+        {
+            filteredPrimaryDoctorResults = doctorList
+                .Where(d => d.name != null && d.name.Contains(primaryDoctorSearchQuery, StringComparison.OrdinalIgnoreCase))
+                .Take(10)
+                .ToList();
+            showPrimaryDoctorDropdown = filteredPrimaryDoctorResults.Any();
+        }
+    }
+
+    private void SelectPrimaryDoctor(DoctorModel doc)
+    {
+        Model.dcode = doc.dcode;
+        primaryDoctorSearchQuery = doc.name;
+        showPrimaryDoctorDropdown = false;
+        StateHasChanged();
+    }
+
+    private async Task HidePrimaryDoctorDropdown()
+    {
+        await Task.Delay(250);
+        showPrimaryDoctorDropdown = false;
+        StateHasChanged();
+    }
+
+    private void OnSecondaryDoctorInput(ChangeEventArgs e)
+    {
+        secondaryDoctorSearchQuery = e.Value?.ToString() ?? "";
+        activeSecondaryDoctorIndex = 0;
+        if (string.IsNullOrWhiteSpace(secondaryDoctorSearchQuery))
+        {
+            filteredSecondaryDoctorResults.Clear();
+            showSecondaryDoctorDropdown = false;
+        }
+        else
+        {
+            filteredSecondaryDoctorResults = doctorList
+                .Where(d => d.name != null && d.name.Contains(secondaryDoctorSearchQuery, StringComparison.OrdinalIgnoreCase))
+                .Take(10)
+                .ToList();
+            showSecondaryDoctorDropdown = filteredSecondaryDoctorResults.Any();
+        }
+        Model.SecondaryReferral = secondaryDoctorSearchQuery;
+    }
+
+    private void SelectSecondaryDoctor(DoctorModel doc)
+    {
+        Model.seconddcode          = doc.dcode;
+        Model.SecondaryReferral    = doc.name;
+        secondaryDoctorSearchQuery = doc.name;
+        showSecondaryDoctorDropdown = false;
+        StateHasChanged();
+    }
+
+    private async Task HideSecondaryDoctorDropdown()
+    {
+        await Task.Delay(250);
+        showSecondaryDoctorDropdown = false;
+        StateHasChanged();
+    }
+
+    private void OnAreaInput(ChangeEventArgs e)
+    {
+        areaSearchQuery = e.Value?.ToString() ?? "";
+        activeAreaIndex = 0;
+        if (string.IsNullOrWhiteSpace(areaSearchQuery))
+        {
+            filteredAreaResults.Clear();
+            showAreaDropdown = false;
+        }
+        else
+        {
+            filteredAreaResults = areaList
+                .Where(a => a.areaname != null && a.areaname.Contains(areaSearchQuery, StringComparison.OrdinalIgnoreCase))
+                .Take(10)
+                .ToList();
+            showAreaDropdown = filteredAreaResults.Any();
+        }
+        Model.AreaName = areaSearchQuery;
+        Model.areacode = null;
+    }
+
+    private void SelectArea(AreaModel area)
+    {
+        Model.areacode  = area.areacode;
+        Model.AreaName  = area.areaname;
+        areaSearchQuery = area.areaname;
+        showAreaDropdown = false;
+        StateHasChanged();
+    }
+
+    private async Task HideAreaDropdown()
+    {
+        await Task.Delay(250);
+        showAreaDropdown = false;
+        StateHasChanged();
+    }
+
+    private void OnHomeAreaInput(ChangeEventArgs e)
+    {
+        homeAreaSearchQuery = e.Value?.ToString() ?? "";
+        activeHomeAreaIndex = 0;
+        if (string.IsNullOrWhiteSpace(homeAreaSearchQuery))
+        {
+            filteredHomeAreaResults.Clear();
+            showHomeAreaDropdown = false;
+            Model.homecollectionareacode = 0;
+            Model.homecollectioncharge = 0;
+            RecalculateTotals();
+        }
+        else
+        {
+            filteredHomeAreaResults = areaList
+                .Where(a => a.areaname != null && a.areaname.Contains(homeAreaSearchQuery, StringComparison.OrdinalIgnoreCase))
+                .Take(10)
+                .ToList();
+            showHomeAreaDropdown = filteredHomeAreaResults.Any();
+
+            var exactMatch = areaList.FirstOrDefault(a => a.areaname != null && a.areaname.Equals(homeAreaSearchQuery, StringComparison.OrdinalIgnoreCase));
+            if (exactMatch != null)
+            {
+                Model.homecollectionareacode = (int)exactMatch.areacode;
+                Model.homecollectioncharge   = exactMatch.homecollectioncharge ?? 0;
+                RecalculateTotals();
+            }
+        }
+        StateHasChanged();
+    }
+
+    private void SelectHomeArea(AreaModel area)
+    {
+        Model.homecollectionareacode = (int)area.areacode;
+        homeAreaSearchQuery          = area.areaname;
+        Model.homecollectioncharge   = area.homecollectioncharge ?? 0;
+        showHomeAreaDropdown         = false;
+        RecalculateTotals();
+        StateHasChanged();
+    }
+
+    private async Task HideHomeAreaDropdown()
+    {
+        await Task.Delay(250);
+        showHomeAreaDropdown = false;
+        StateHasChanged();
+    }
+
+    private async Task SelectTest(test_master test)
+    {
+        if (!Model.SelectedTests.Any(t => t.TestDetails == test.name))
+        {
+            double commPercent = 0;
+            if (Model.dcode.HasValue)
+            {
+                var doc = doctorList.FirstOrDefault(d => d.dcode == Model.dcode.Value);
+                if (doc != null && doc.ftcode.HasValue)
+                {
+                    var ft = feeTypesList.FirstOrDefault(f => f.ftcode == doc.ftcode.Value);
+                    if (ft != null && ft.commissionpercentage.HasValue)
+                    {
+                        commPercent = ft.commissionpercentage.Value;
+                    }
+                }
+            }
+
+            Model.SelectedTests.Add(new BillingTestItem
+            {
+                SNo         = Model.SelectedTests.Count + 1,
+                tcode       = (long)test.tcode,
+                TestDetails = test.name,
+                BaseAmount  = test.amount,
+                CommissionPercent = 0,
+                TotalAmount = test.amount
+            });
+            RecalculateTotals();
+        }
+        testSearchQuery  = "";
+        showTestDropdown = false;
+        StateHasChanged();
+
+        await Task.Delay(50);
+        try
+        {
+            await testSearchInput.FocusAsync();
+        }
+        catch {}
+    }
+
+    private async Task OnTestSearchKeyDown(KeyboardEventArgs e)
+    {
+        if (!showTestDropdown || filteredTestResults == null || !filteredTestResults.Any())
+        {
+            return;
+        }
+
+        if (e.Key == "ArrowDown")
+        {
+            activeTestIndex++;
+            if (activeTestIndex >= filteredTestResults.Count)
+            {
+                activeTestIndex = 0;
+            }
+            StateHasChanged();
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activeTestIndex--;
+            if (activeTestIndex < 0)
+            {
+                activeTestIndex = filteredTestResults.Count - 1;
+            }
+            StateHasChanged();
+        }
+        else if (e.Key == "Enter")
+        {
+            if (activeTestIndex >= 0 && activeTestIndex < filteredTestResults.Count)
+            {
+                var selectedTest = filteredTestResults[activeTestIndex];
+                await SelectTest(selectedTest);
+            }
+        }
+    }
+
+    private void OnMobileKeyDown(KeyboardEventArgs e)
+    {
+        if (!showMobileDropdown || !customerResults.Any()) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            activeMobileIndex = (activeMobileIndex + 1) % customerResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activeMobileIndex = (activeMobileIndex - 1 + customerResults.Count) % customerResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "Enter")
+        {
+            if (activeMobileIndex >= 0 && activeMobileIndex < customerResults.Count)
+            {
+                AutofillCustomer(customerResults[activeMobileIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showMobileDropdown = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnNameKeyDown(KeyboardEventArgs e)
+    {
+        if (!showNameDropdown || !customerResults.Any()) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            activeNameIndex = (activeNameIndex + 1) % customerResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activeNameIndex = (activeNameIndex - 1 + customerResults.Count) % customerResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "Enter")
+        {
+            if (activeNameIndex >= 0 && activeNameIndex < customerResults.Count)
+            {
+                AutofillCustomer(customerResults[activeNameIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showNameDropdown = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnPrimaryDoctorKeyDown(KeyboardEventArgs e)
+    {
+        if (!showPrimaryDoctorDropdown || !filteredPrimaryDoctorResults.Any()) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            activePrimaryDoctorIndex = (activePrimaryDoctorIndex + 1) % filteredPrimaryDoctorResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activePrimaryDoctorIndex = (activePrimaryDoctorIndex - 1 + filteredPrimaryDoctorResults.Count) % filteredPrimaryDoctorResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "Enter")
+        {
+            if (activePrimaryDoctorIndex >= 0 && activePrimaryDoctorIndex < filteredPrimaryDoctorResults.Count)
+            {
+                SelectPrimaryDoctor(filteredPrimaryDoctorResults[activePrimaryDoctorIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showPrimaryDoctorDropdown = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnSecondaryDoctorKeyDown(KeyboardEventArgs e)
+    {
+        if (!showSecondaryDoctorDropdown || !filteredSecondaryDoctorResults.Any()) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            activeSecondaryDoctorIndex = (activeSecondaryDoctorIndex + 1) % filteredSecondaryDoctorResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activeSecondaryDoctorIndex = (activeSecondaryDoctorIndex - 1 + filteredSecondaryDoctorResults.Count) % filteredSecondaryDoctorResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "Enter")
+        {
+            if (activeSecondaryDoctorIndex >= 0 && activeSecondaryDoctorIndex < filteredSecondaryDoctorResults.Count)
+            {
+                SelectSecondaryDoctor(filteredSecondaryDoctorResults[activeSecondaryDoctorIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showSecondaryDoctorDropdown = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnAreaKeyDown(KeyboardEventArgs e)
+    {
+        if (!showAreaDropdown || !filteredAreaResults.Any()) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            activeAreaIndex = (activeAreaIndex + 1) % filteredAreaResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activeAreaIndex = (activeAreaIndex - 1 + filteredAreaResults.Count) % filteredAreaResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "Enter")
+        {
+            if (activeAreaIndex >= 0 && activeAreaIndex < filteredAreaResults.Count)
+            {
+                SelectArea(filteredAreaResults[activeAreaIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showAreaDropdown = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnHomeAreaKeyDown(KeyboardEventArgs e)
+    {
+        if (!showHomeAreaDropdown || !filteredHomeAreaResults.Any()) return;
+
+        if (e.Key == "ArrowDown")
+        {
+            activeHomeAreaIndex = (activeHomeAreaIndex + 1) % filteredHomeAreaResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "ArrowUp")
+        {
+            activeHomeAreaIndex = (activeHomeAreaIndex - 1 + filteredHomeAreaResults.Count) % filteredHomeAreaResults.Count;
+            StateHasChanged();
+        }
+        else if (e.Key == "Enter")
+        {
+            if (activeHomeAreaIndex >= 0 && activeHomeAreaIndex < filteredHomeAreaResults.Count)
+            {
+                SelectHomeArea(filteredHomeAreaResults[activeHomeAreaIndex]);
+            }
+        }
+        else if (e.Key == "Escape")
+        {
+            showHomeAreaDropdown = false;
+            StateHasChanged();
+        }
+    }
+
+    private void OnBaseAmountChanged(ChangeEventArgs e, BillingTestItem test)
+    {
+        var valStr = e.Value?.ToString();
+        if (double.TryParse(valStr, out var newAmount))
+        {
+            test.BaseAmount = newAmount;
+            test.TotalAmount = Math.Round(newAmount - (newAmount * test.CommissionPercent / 100), 2);
+            RecalculateTotals();
+        }
+    }
+
+    private void OnTestDiscountChanged(ChangeEventArgs e, BillingTestItem test)
+    {
+        var valStr = e.Value?.ToString();
+        if (double.TryParse(valStr, out var newDiscountPercent))
+        {
+            test.CommissionPercent = Math.Clamp(newDiscountPercent, 0, 100);
+            test.TotalAmount = Math.Round(test.BaseAmount - (test.BaseAmount * test.CommissionPercent / 100), 2);
+            
+            // Calculate total discount from all individual test discounts
+            double totalDiscount = Model.SelectedTests.Sum(t => Math.Round(t.BaseAmount * t.CommissionPercent / 100, 2));
+            
+            // Assign this to General Concession and clear Referral Concession
+            Model.GeneralConcessionValue = totalDiscount;
+            double grossTotal = Model.SelectedTests.Sum(t => t.BaseAmount);
+            if (grossTotal > 0)
+            {
+                Model.GeneralConcessionPercent = Math.Round((totalDiscount / grossTotal) * 100, 2);
+            }
+            else
+            {
+                Model.GeneralConcessionPercent = 0;
+            }
+            Model.ReferralConcessionValue = 0;
+            Model.ReferralConcessionPercent = 0;
+            
+            RecalculateTotalsInternal(distributeGlobalToLocal: false);
+        }
+    }
+
+    private void RemoveTest(BillingTestItem test)
+    {
+        Model.SelectedTests.Remove(test);
+        for (int i = 0; i < Model.SelectedTests.Count; i++)
+            Model.SelectedTests[i].SNo = i + 1;
+        RecalculateTotals();
+    }
+
+    private void RecalculateTotals()
+    {
+        RecalculateTotalsInternal(distributeGlobalToLocal: true);
+    }
+
+    private void RecalculateTotalsInternal(bool distributeGlobalToLocal)
+    {
+        statusMessage = "";
+        int testCount = Model.SelectedTests.Count;
+        double grossTotal = Math.Round(Model.SelectedTests.Sum(t => t.BaseAmount), 2);
+        Model.BillAmount = grossTotal;
+
+        if (distributeGlobalToLocal)
+        {
+            // First, compute concession values based on current input percentages/values
+            if (grossTotal > 0)
+            {
+                if (Model.GeneralConcessionPercent > 0)
+                    Model.GeneralConcessionValue = Math.Round(grossTotal * (Model.GeneralConcessionPercent / 100), 2);
+                else if (Model.GeneralConcessionValue > 0)
+                    Model.GeneralConcessionPercent = Math.Round((Model.GeneralConcessionValue / grossTotal) * 100, 2);
+
+                if (Model.ReferralConcessionPercent > 0)
+                    Model.ReferralConcessionValue = Math.Round(grossTotal * (Model.ReferralConcessionPercent / 100), 2);
+                else if (Model.ReferralConcessionValue > 0)
+                    Model.ReferralConcessionPercent = Math.Round((Model.ReferralConcessionValue / grossTotal) * 100, 2);
+            }
+
+            double combinedConcession = Math.Round(Model.GeneralConcessionValue + Model.ReferralConcessionValue, 2);
+
+            // Distribute combinedConcession proportionally by percentage among all selected tests
+            if (testCount > 0)
+            {
+                double combinedConcessionPercent = grossTotal > 0 ? (combinedConcession / grossTotal) * 100 : 0;
+                double distributedDiscountSum = 0;
+
+                for (int i = 0; i < testCount; i++)
+                {
+                    var test = Model.SelectedTests[i];
+                    double testDiscountAmount;
+
+                    if (i == testCount - 1)
+                    {
+                        testDiscountAmount = Math.Round(combinedConcession - distributedDiscountSum, 2);
+                    }
+                    else
+                    {
+                        testDiscountAmount = Math.Round(test.BaseAmount * combinedConcessionPercent / 100, 2);
+                        distributedDiscountSum += testDiscountAmount;
+                    }
+
+                    if (test.BaseAmount > 0)
+                    {
+                        test.CommissionPercent = Math.Round((testDiscountAmount / test.BaseAmount) * 100, 2);
+                    }
+                    else
+                    {
+                        test.CommissionPercent = 0;
+                    }
+
+                    test.TotalAmount = Math.Round(Math.Max(0, test.BaseAmount - testDiscountAmount), 2);
+                }
+            }
+        }
+        else
+        {
+            // If we are not distributing global to local, it means local test discounts were edited directly.
+            // We just update the TotalAmount for each test based on its CommissionPercent.
+            foreach (var test in Model.SelectedTests)
+            {
+                test.TotalAmount = Math.Round(Math.Max(0, test.BaseAmount - (test.BaseAmount * test.CommissionPercent / 100)), 2);
+            }
+        }
+
+        double finalCombinedConcession = Math.Round(Model.GeneralConcessionValue + Model.ReferralConcessionValue, 2);
+
+        if (grossTotal > 0 && finalCombinedConcession > grossTotal * 0.5)
+        {
+            isSuccess     = false;
+            statusMessage = "Total concessions exceed 50% limit!";
+            Toast.Warning(statusMessage, "Concession");
+        }
+
+        double homeCharge = Model.HomeCollection ? Math.Round(Model.homecollectioncharge ?? 0.0, 2) : 0.0;
+
+        double netPayable    = Math.Round(Math.Max(0, (grossTotal - finalCombinedConcession) + homeCharge), 2);
+        Model.NetPayable     = netPayable;
+        Model.DiscountAmount = finalCombinedConcession;
+
+        double currentTotalPaid = Math.Round(paymentSplits.Sum(s => s.Amount), 2);
+        if (currentTotalPaid > Model.NetPayable + 0.001)
+        {
+            for (int i = paymentSplits.Count - 1; i >= 0; i--)
+            {
+                double others = Math.Round(paymentSplits.Where((s, idx) => idx != i).Sum(s => s.Amount), 2);
+                paymentSplits[i].Amount = Math.Max(0, Math.Round(Model.NetPayable - others, 2));
+                if (Math.Round(paymentSplits.Sum(s => s.Amount), 2) <= Model.NetPayable + 0.001) break;
+            }
+        }
+
+        StateHasChanged();
+    }
+
+    private void OnPrefixChanged(ChangeEventArgs e)
+    {
+        var val = e.Value?.ToString();
+        Model.Prefix = val ?? "";
+        if (!string.IsNullOrEmpty(val))
+        {
+            var lower = val.ToLower().Trim();
+            if (lower == "mr." || lower == "mr" || lower == "master" || lower == "master." || lower == "mast" || lower == "mast.")
+            {
+                Model.Gender = "Male";
+            }
+            else if (lower == "mrs." || lower == "mrs" || lower == "ms." || lower == "ms" || lower == "miss" || lower == "miss.")
+            {
+                Model.Gender = "Female";
+            }
+        }
+    }
+
+    private void OnDobChange(ChangeEventArgs e)
+    {
+        if (DateTime.TryParse(e.Value?.ToString(), out var dob))
+        {
+            Model.Dob = dob;
+            CalculateAge(dob);
+        }
+    }
+
+    private void CalculateAge(DateTime dob)
+    {
+        DateTime today = DateTime.Now;
+        int years  = today.Year  - dob.Year;
+        int months = today.Month - dob.Month;
+        int days   = today.Day   - dob.Day;
+
+        if (days < 0) { months--; days += DateTime.DaysInMonth(today.Year, today.Month == 1 ? 12 : today.Month - 1); }
+        if (months < 0) { years--; months += 12; }
+
+        Model.AgeY = years;
+        Model.AgeM = months;
+        Model.AgeD = days;
+        StateHasChanged();
+    }
+
+    private void UpdateDOBFromAge()
+    {
+        if ((Model.AgeY ?? 0) == 0 && (Model.AgeM ?? 0) == 0 && (Model.AgeD ?? 0) == 0) return;
+        try
+        {
+            var dob = DateTime.Today
+                .AddYears(-(Model.AgeY ?? 0))
+                .AddMonths(-(Model.AgeM ?? 0))
+                .AddDays(-(Model.AgeD ?? 0));
+            if (dob <= DateTime.Today && dob > DateTime.MinValue)
+                Model.Dob = dob;
+        }
+        catch { }
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("LabCareApi");
+        if (!string.IsNullOrEmpty(TenantCode) && !client.DefaultRequestHeaders.Contains("tenant_code"))
+            client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+        if (!string.IsNullOrEmpty(AuthToken))
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+        return client;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // SaveBilling
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task SaveBilling()
+    {
+        // ...
+        RecalculateTotals();
+
+        var (testGross, totalDiscount, homeCharge, testNetAfterDiscount, serverTotalAmount)
+            = GetFinancials();
+
+        Model.NetPayable = serverTotalAmount;
+
+        double paidAmount = GetTotalPaid();
+        double cashPaid   = Math.Round(paymentSplits.FirstOrDefault(s => s.PaymodeName == PaymentMode.Cash)?.Amount ?? 0, 2);
+        double cardPaid   = Math.Round(paymentSplits.FirstOrDefault(s => s.PaymodeName == PaymentMode.Card)?.Amount ?? 0, 2);
+        double gPayPaid   = Math.Round(paymentSplits.FirstOrDefault(s => s.PaymodeName == PaymentMode.GPay)?.Amount  ?? 0, 2);
+
+        // ── Validations ────────────────────────────────────────────────────
+        // FIX: patient name alone is sufficient (walk-in patients have no custid)
+        if (string.IsNullOrWhiteSpace(Model.PatientName))
+        {
+            isSuccess     = false;
+            statusMessage = "Error: Patient Name is required.";
+            Toast.Error(statusMessage, "Validation");
+            return;
+        }
+        if ((Model.dcode ?? 0) == 0)
+        {
+            isSuccess     = false;
+            statusMessage = "Error: Select a Primary Referral Doctor.";
+            Toast.Error(statusMessage, "Validation");
+            return;
+        }
+        if (Model.SelectedTests.Count == 0)
+        {
+            isSuccess     = false;
+            statusMessage = "Error: No tests selected.";
+            Toast.Error(statusMessage, "Validation");
+            return;
+        }
+        if (Model.bhcode == null || Model.bhcode == 0 || Model.cntcode == null || Model.cntcode == 0)
+        {
+            isSuccess     = false;
+            statusMessage = "Error: Branch and Counter selection is mandatory.";
+            Toast.Error(statusMessage, "Validation");
+            return;
+        }
+        if (paidAmount > serverTotalAmount + 0.01)
+        {
+            isSuccess     = false;
+            statusMessage = $"Error: Paid (₹{paidAmount:N2}) cannot exceed Net Payable (₹{serverTotalAmount:N2}).";
+            Toast.Error(statusMessage, "Payment");
+            return;
+        }
+
+        // ── Primary paymode ───────────────────────────────────────────────
+        int primaryPmCode = 1;
+        if (cardPaid > 0)
+            primaryPmCode = paymodes.FirstOrDefault(p => p.name.Contains("Card", StringComparison.OrdinalIgnoreCase))?.pmcode ?? 2;
+        else if (gPayPaid > 0)
+            primaryPmCode = paymodes.FirstOrDefault(p => p.name.Contains("GPay",  StringComparison.OrdinalIgnoreCase) ||
+                                                          p.name.Contains("UPI",   StringComparison.OrdinalIgnoreCase))?.pmcode ?? 3;
+
+        bool isCashBill = paidAmount >= serverTotalAmount - 0.01;
+
+        IsLoading = true;
+        StateHasChanged();
+
+        try
+        {
+            double distributedHomeCharge = Model.HomeCollection ? homeCharge : 0;
+            int    testCount             = Model.SelectedTests.Count;
+            double finalRequestAmount    = testGross + distributedHomeCharge;
+
+            var finalItems = Model.SelectedTests.Select((t, index) =>
+            {
+                double ratio        = testGross > 0 ? t.BaseAmount / testGross : 1.0 / testCount;
+                double itemDiscount = Math.Round(ratio * totalDiscount, 2);
+                double itemHomeShare = (index == testCount - 1)
+                    ? Math.Round(distributedHomeCharge - (Math.Round(distributedHomeCharge / testCount, 2) * (testCount - 1)), 2)
+                    : Math.Round(distributedHomeCharge / testCount, 2);
+
+                return (object)new
+                {
+                    tcode         = t.tcode,
+                    testamount    = Math.Round(t.BaseAmount + itemHomeShare, 2),
+                    testrate      = Math.Round(t.BaseAmount + itemHomeShare, 2),
+                    standardprice = Math.Round(t.BaseAmount, 2),
+                    discount      = itemDiscount,
+                    collection    = Math.Round(t.BaseAmount - itemDiscount + itemHomeShare, 2),
+                    qty           = 1,
+                    ispack        = false
+                };
+            }).ToList();
+
+            // ── FIX 1: send custid as null when not selected (0 causes server confusion)
+            // ── FIX 2: always send name so the server's Validate() is satisfied
+            var request = new LabCare.Models.createlabbillrequest();
+            request.labrequestmaster = new LabCare.Models.lab_request_master
+            {
+                requestguid = editingBillGuid,
+                custid = (Model.custid.HasValue && Model.custid.Value != 0) ? Model.custid : null,
+                name = Model.PatientName,
+                gender = Model.Gender,
+                dateofbirth = Model.Dob?.ToString("yyyy-MM-dd"),
+                ageyears = Model.AgeY?.ToString(),
+                agemonths = Model.AgeM?.ToString(),
+                agedays = Model.AgeD?.ToString(),
+                mobileno = Model.SearchMobile,
+                address = Model.Address,
+                areacode = Model.areacode,
+                cntcode = Model.cntcode ?? 1,
+                tmcode = 1, ftcode = 1, ctcode = 1, icode = 1, ricode = 1, dlcode = 1,
+                pmcode = primaryPmCode,
+                dcode = Model.dcode,
+                seconddcode = (int?)Model.seconddcode,
+                seconddoctorname = Model.SecondaryReferral,
+                requestamount = finalRequestAmount,
+                totalamount = serverTotalAmount,
+                discountamount = totalDiscount,
+                discountper = Model.GeneralConcessionPercent,
+                paidamount = paidAmount,
+                iscashbill = isCashBill,
+                iscreditbill = !isCashBill,
+                billtype = isCashBill ? "Cash" : "Due Bill",
+                enteredbhcode = (int)(Model.bhcode ?? 1),
+                pmc1 = cashPaid,
+                pmc2 = cardPaid,
+                pmc3 = gPayPaid,
+                card_refno = "",
+                bank_app = "",
+                ishomecollection = Model.HomeCollection,
+                homecollectioncharge = homeCharge,
+                doc1_dmid = Model.doc1_dmid,
+                doc1_dmvalue = Model.doc1_dmvalue,
+                doc2_dmid = Model.doc2_dmid,
+                doc2_dmvalue = Model.doc2_dmvalue,
+                doc1_path = Model.doc1_path,
+                doc2_path = Model.doc2_path,
+                careoftitile = Model.careoftitile,
+                careofinitial = Model.careofinitial,
+                careof = Model.careof
+            };
+
+            request.labrequestdetails = Model.SelectedTests.Select((t, index) =>
+            {
+                double itemDiscount = Math.Round(t.BaseAmount - t.TotalAmount, 2);
+                double itemHomeShare = (index == testCount - 1)
+                    ? Math.Round(distributedHomeCharge - (Math.Round(distributedHomeCharge / testCount, 2) * (testCount - 1)), 2)
+                    : Math.Round(distributedHomeCharge / testCount, 2);
+
+                return new LabCare.Models.lab_request_details
+                {
+                    requestdetailsid = Guid.NewGuid(),
+                    tcode = t.tcode,
+                    testamount = Math.Round(t.BaseAmount + itemHomeShare, 2),
+                    testrate = Math.Round(t.BaseAmount + itemHomeShare, 2),
+                    standardprice = Math.Round(t.BaseAmount, 2),
+                    discount = itemDiscount,
+                    collection = Math.Round(t.BaseAmount - itemDiscount + itemHomeShare, 2),
+                    qty = 1,
+                    ispack = false,
+                    testsno = index + 1
+                };
+            }).ToList();
+
+            // Set the request as the final payload
+            var payload = request;
+
+            // ── Construct flat payload for server compatibility ────────────────
+            var finalPayload = new Dictionary<string, object?>();
+
+            // Map master fields to root
+            foreach (var prop in typeof(LabCare.Models.lab_request_master).GetProperties())
+            {
+                if (prop.GetCustomAttributes(typeof(Dapper.Contrib.Extensions.ComputedAttribute), true).Length > 0) continue;
+                var val = prop.GetValue(request.labrequestmaster);
+                if (val != null) finalPayload[prop.Name] = val;
+            }
+
+            finalPayload["preferredlanguage"] = Model.PreferredLanguage;
+            finalPayload["occupation"] = Model.Occupation;
+            finalPayload["isvip"] = Model.IsVIP;
+            finalPayload["refconper"] = Model.ReferralConcessionPercent;
+            finalPayload["refconamount"] = Model.ReferralConcessionValue;
+
+            // Map details to 'testitems' property which the server expects
+            finalPayload["testitems"] = request.labrequestdetails;
+
+            // Handle updates by ensuring requestguid is present
+            if (editingBillGuid.HasValue)
+            {
+                finalPayload["requestguid"] = editingBillGuid.Value.ToString();
+            }
+
+            using var client = CreateClient();
+            var endpoint = "create";
+            
+            var json = Newtonsoft.Json.JsonConvert.SerializeObject(finalPayload);
+            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+            var response = await client.PostAsync($"{BaseUrl}Billing/{endpoint}", content);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var result = await response.Content.ReadFromJsonAsync<BillResponseDto>();
+                if (result != null)
+                {
+                    isSuccess     = true;
+                    statusMessage = $"✓ Bill saved! Sample ID: {result.requestsnoprint}";
+                    Toast.Success(statusMessage, "Billing");
+                    Model.CaseNo  = result.requestsnoprint ?? Model.CaseNo;
+                    if (result.requestdatetime != null)
+                    {
+                        Model.CollectedDate = result.requestdatetime.Value.DateTime;
+                    }
+                    if (result.cnttid.HasValue)
+                    {
+                        activeCnttid = result.cnttid;
+                        await _sessionStorage.SetAsync("cnttid", result.cnttid.Value.ToString());
+                    }
+
+                    // Store the guid so the PRINT button can use it
+                    if (result.requestguid.HasValue)
+                        lastSavedGuid = result.requestguid;
+
+                    // Auto-print the bill after save
+                    await PrintBill();
+
+                    ClearForm();
+
+                    // Navigate to Result Search so the saved bill is immediately visible
+                    NavigationManager.NavigateTo("/result-search", forceLoad: false);
+                }
+            }
+            else
+            {
+                var errorBody   = await response.Content.ReadAsStringAsync();
+                var debugPayload = JsonConvert.SerializeObject(payload, Formatting.Indented);
+                isSuccess     = false;
+                statusMessage = $"Server error: {errorBody}";
+                Toast.Error(statusMessage, "Billing");
+                Console.Error.WriteLine($"Billing failed: {errorBody}\nPayload: {debugPayload}");
+            }
+        }
+        catch (Exception ex)
+        {
+            isSuccess     = false;
+            statusMessage = $"Save error: {ex.Message}";
+            Toast.Error(statusMessage, "Billing");
+        }
+        finally
+        {
+            IsLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // PrintBill — calls report/getbill?requestguid=, decodes base64 PDF
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task PrintBill()
+    {
+        // Use the guid from a freshly saved bill first, then fall back to the bill being edited
+        var guidToUse = lastSavedGuid ?? editingBillGuid;
+        if (guidToUse == null)
+        {
+            Toast.Warning("No bill to print. Please save the bill first.", "Print");
+            return;
+        }
+
+        try
+        {
+            using var client = CreateClient();
+            var resp = await client.GetAsync($"{BaseUrl}report/getbill?requestguid={guidToUse.Value}");
+            if (!resp.IsSuccessStatusCode)
+            {
+                var err = await resp.Content.ReadAsStringAsync();
+                Toast.Error($"Print failed: {err}", "Print");
+                return;
+            }
+
+            // The API returns either a plain base64 string or a JSON object with a base64 field
+            var raw = await resp.Content.ReadAsStringAsync();
+            // Strip surrounding quotes if the server returned a quoted JSON string
+            var base64 = raw.Trim().Trim('"');
+
+            // Open the PDF via JS interop (triggers printing protocol)
+            await JSRuntime.InvokeVoidAsync("openBase64Pdf", base64);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Print error: {ex.Message}", "Print");
+        }
+    }
+
+    private async Task PreviewBill()
+    {
+        var guidToUse = lastSavedGuid ?? editingBillGuid;
+        if (guidToUse == null)
+        {
+            Toast.Warning("No bill to preview. Please save the bill first.", "Preview");
+            return;
+        }
+
+        try
+        {
+            using var client = CreateClient();
+            var resp = await client.GetAsync($"{BaseUrl}report/getbill?requestguid={guidToUse.Value}");
+            if (!resp.IsSuccessStatusCode)
+            {
+                var err = await resp.Content.ReadAsStringAsync();
+                Toast.Error($"Preview failed: {err}", "Preview");
+                return;
+            }
+
+            var raw = await resp.Content.ReadAsStringAsync();
+            var base64 = raw.Trim().Trim('"');
+
+            // Open PDF preview via JS interop
+            await JSRuntime.InvokeVoidAsync("openPdfPreview", base64);
+        }
+        catch (Exception ex)
+        {
+            Toast.Error($"Preview error: {ex.Message}", "Preview");
+        }
+    }
+
+    private async Task FetchBillNos()
+    {
+        try
+        {
+            using var client = CreateClient();
+            // Using the specific endpoint requested by the user
+            var url = $"Billing/billnos?bhcode={Model.bhcode}&cntcode={Model.cntcode}";
+            var response = await client.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                try
+                {
+                    var token = Newtonsoft.Json.Linq.JToken.Parse(content);
+                    if (token is Newtonsoft.Json.Linq.JArray arr && arr.Any())
+                    {
+                        billNosData = arr[0]["orderno"]?.ToString();
+                    }
+                    else if (token is Newtonsoft.Json.Linq.JObject obj)
+                    {
+                        billNosData = obj["orderno"]?.ToString();
+                    }
+                    else
+                    {
+                        billNosData = content.Replace("\"", "");
+                    }
+                }
+                catch
+                {
+                    billNosData = content.Replace("\"", ""); 
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error fetching billnos: {ex.Message}") */;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ClearForm — reset without losing the success message
+    // ─────────────────────────────────────────────────────────────────────────
+    private void ClearForm()
+    {
+        // Preserve any success/error message shown after save
+        var preservedMessage = statusMessage;
+        var preservedSuccess = isSuccess;
+        var preservedCaseNo  = Model.CaseNo;
+        var preservedCollectedDate = Model.CollectedDate;
+        var preservedBhcode  = Model.bhcode;
+        var preservedCntcode = Model.cntcode;
+        var preservedBranch  = Model.Branch;
+        var preservedCounter = Model.Counter;
+
+        Model = new BillingModel 
+        { 
+            BillDate = DateTime.Now, 
+            CollectedDate = preservedCollectedDate, 
+            CaseNo = preservedCaseNo ?? "",
+            bhcode = preservedBhcode,
+            cntcode = preservedCntcode,
+            Branch = preservedBranch,
+            Counter = preservedCounter
+        };
+        paymentSplits = new()
+        {
+            new PaymentSplit { PaymodeName = PaymentMode.Cash, Amount = 0 },
+            new PaymentSplit { PaymodeName = PaymentMode.Card, Amount = 0 },
+            new PaymentSplit { PaymodeName = PaymentMode.GPay, Amount  = 0 }
+        };
+        primaryDoctorSearchQuery   = "";
+        secondaryDoctorSearchQuery = "";
+        areaSearchQuery            = "";
+        homeAreaSearchQuery        = "";
+        testSearchQuery            = "";
+        filteredPrimaryDoctorResults.Clear();
+        filteredTestResults.Clear();
+        customerResults.Clear();
+
+        statusMessage = preservedMessage;
+        isSuccess     = preservedSuccess;
+        editingBillGuid = null;
+        patientType = "Human";
+        showMoreInfo = false;
+
+        StateHasChanged();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // EnsureBillNoSeries — Proactively initialize bill numbering to prevent server rejections
+    // ─────────────────────────────────────────────────────────────────────────
+    private async Task EnsureBillNoSeries()
+    {
+        try
+        {
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}BillNo/getall");
+            if (response.IsSuccessStatusCode)
+            {
+                var configs = await response.Content.ReadFromJsonAsync<List<BillNoModel>>();
+                if (configs != null)
+                {
+                    availableBillSeries = configs;
+                    StateHasChanged();
+                }
+
+                if (configs == null || !configs.Any(c => c.deleted != true))
+                {
+                    var defaultSeries = new 
+                    {
+                        name = "Master Billing Series",
+                        shortname = "BIL",
+                        isdefault = true,
+                        allbranch = true,
+                        allcounter = true,
+                        isbillno = true,
+                        issampleno = true,
+                        isalldepartment = true,
+                        restartfinancialyear = true,
+                        entereddate = DateTime.Now,
+                        tenant_code = TenantCode,
+                        usercode = 1,
+                        computercode = 1
+                    };
+                    await client.PostAsJsonAsync($"{BaseUrl}BillNo/insert", defaultSeries);
+                }
+            }
+        }
+        catch { }
+    }
+
+    private async Task LoadBillForEdit(Guid guid)
+    {
+        IsLoading = true;
+        try
+        {
+            var bill = await BillingService.GetByGuidAsync(guid);
+            if (bill != null)
+            {
+                editingBillGuid = guid;
+
+                double commPercent = 0;
+                if (bill.dcode.HasValue)
+                {
+                    var doc = doctorList.FirstOrDefault(d => d.dcode == bill.dcode.Value);
+                    if (doc != null && doc.ftcode.HasValue)
+                    {
+                        var ft = feeTypesList.FirstOrDefault(f => f.ftcode == doc.ftcode.Value);
+                        if (ft != null && ft.commissionpercentage.HasValue)
+                        {
+                            commPercent = ft.commissionpercentage.Value;
+                        }
+                    }
+                }
+
+                // Preserve existing bhcode if the loaded bill doesn't have a valid enteredbhcode
+                long? targetBhcode = (bill.enteredbhcode.HasValue && bill.enteredbhcode.Value > 0)
+                    ? (long)bill.enteredbhcode.Value
+                    : Model.bhcode;
+
+                Model = new BillingModel
+                {
+                    custid = bill.custid,
+                    PatientName = bill.patientname ?? "",
+                    Gender = bill.gender ?? "",
+                    SearchMobile = bill.mobileno ?? "",
+                    AgeY = int.TryParse(bill.ageyears, out var y) ? y : null,
+                    AgeM = int.TryParse(bill.agemonths, out var m) ? m : null,
+                    AgeD = int.TryParse(bill.agedays, out var d) ? d : null,
+                    Address = bill.address ?? "",
+                    Email = bill.email ?? "",
+                    areacode = bill.areacode,
+                    AreaName = bill.areaname ?? "",
+                    careoftitile = bill.careoftitile ?? "",
+                    careofinitial = bill.careofinitial ?? "",
+                    careof = bill.careof ?? "",
+                    PreferredLanguage = bill.preferredlanguage ?? "",
+                    Occupation = bill.occupation ?? "",
+                    IsVIP = bill.isvip ?? false,
+                    BillAmount = bill.requestamount ?? 0,
+                    GeneralConcessionPercent = bill.discountper ?? 0,
+                    GeneralConcessionValue = Math.Max(0, Math.Round((bill.discountamount ?? 0) - (bill.refconamount ?? 0), 2)),
+                    ReferralConcessionPercent = bill.refconper ?? 0,
+                    ReferralConcessionValue = bill.refconamount ?? 0,
+                    DiscountAmount = bill.discountamount ?? 0,
+                    NetPayable = bill.totalamount ?? 0,
+                    bhcode = targetBhcode,
+                    cntcode = bill.cntcode.HasValue && bill.cntcode.Value > 0 ? bill.cntcode.Value : Model.cntcode,
+                    CaseNo = bill.requestsnoprint ?? Model.CaseNo,
+                    BillDate = bill.requestdatetime?.DateTime ?? DateTime.Now,
+                    dcode = bill.dcode,
+                    seconddcode = bill.seconddcode,
+                    specialdiscount = bill.specialdiscount ?? 0,
+                    ourdispercentage = bill.ourdispercentage ?? 0,
+                    ourdiscount = bill.ourdiscount ?? 0,
+                    ishomecollection = bill.ishomecollection ?? false,
+                    HomeCollection = bill.ishomecollection ?? false,
+                    homecollectioncharge = bill.homecollectioncharge,
+                    homecollectionareacode = bill.homecollectionareacode,
+                    Counter = bill.countername ?? Model.Counter,
+                    SelectedTests = bill.testitems.Select((t, i) => {
+                        double stdPrice = t.standardprice ?? 0;
+                        double discAmt = t.discount ?? 0;
+                        double discPercent = stdPrice > 0 ? Math.Round((discAmt / stdPrice) * 100, 2) : 0;
+                        return new BillingTestItem
+                        {
+                            SNo = i + 1,
+                            tcode = t.tcode,
+                            TestDetails = t.testname ?? "Test",
+                            BaseAmount = stdPrice,
+                            CommissionPercent = discPercent,
+                            TotalAmount = stdPrice - discAmt
+                        };
+                    }).ToList()
+                };
+
+                // Load primary and secondary doctor names directly from the API response with fallback lookups
+                primaryDoctorSearchQuery = bill.doctorname ?? "";
+                if (bill.dcode.HasValue)
+                {
+                    var doc = doctorList.FirstOrDefault(d => d.dcode == bill.dcode.Value);
+                    if (doc != null)
+                    {
+                        primaryDoctorSearchQuery = doc.name;
+                    }
+                }
+
+                secondaryDoctorSearchQuery = bill.seconddoctorname ?? "";
+                Model.SecondaryReferral = bill.seconddoctorname ?? "";
+                if (bill.seconddcode.HasValue)
+                {
+                    var doc = doctorList.FirstOrDefault(d => d.dcode == bill.seconddcode.Value);
+                    if (doc != null)
+                    {
+                        secondaryDoctorSearchQuery = doc.name;
+                        Model.SecondaryReferral = doc.name;
+                    }
+                }
+
+                // Load area name directly from the API response with fallback lookup
+                areaSearchQuery = bill.areaname ?? "";
+                if (bill.areacode.HasValue)
+                {
+                    var area = areaList.FirstOrDefault(a => a.areacode == bill.areacode.Value);
+                    if (area != null)
+                    {
+                        areaSearchQuery = area.areaname;
+                        Model.AreaName = area.areaname;
+                    }
+                }
+
+                paymentSplits = new()
+                {
+                    new PaymentSplit { PaymodeName = PaymentMode.Cash, Amount = bill.pmc1 ?? 0 },
+                    new PaymentSplit { PaymodeName = PaymentMode.Card, Amount = bill.pmc2 ?? 0 },
+                    new PaymentSplit { PaymodeName = PaymentMode.GPay, Amount = bill.pmc3 ?? 0 }
+                };
+
+                if (bill.cnttid.HasValue)
+                {
+                    activeCnttid = bill.cnttid;
+                    await _sessionStorage.SetAsync("cnttid", bill.cnttid.Value.ToString());
+                }
+
+                // Proactively reload counters and bill numbering for the branch
+                if (Model.bhcode.HasValue)
+                {
+                    await LoadCounters();
+                    await FetchBillNos();
+                }
+
+                RecalculateTotals();
+
+                statusMessage = $"Loaded Bill: {bill.requestsnoprint}";
+                isSuccess = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Error loading bill details: {ex.Message}";
+            isSuccess = false;
+        }
+        finally
+        {
+            IsLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandleCloseCounter()
+    {
+        try
+        {
+            // Priority 1: Current active ID from memory/session
+            // Priority 2: Fallback from storage
+            // Priority 3: Hardcoded last resort (per user example)
+            
+            Guid? targetId = activeCnttid;
+            
+            if (targetId == null)
+            {
+                var cnttidResult = await _sessionStorage.GetAsync<string>("cnttid");
+                if (cnttidResult.Success && Guid.TryParse(cnttidResult.Value, out var sid))
+                    targetId = sid;
+                else
+                    targetId = Guid.Parse("199a6ac1-d94b-46c8-8d79-46ef27144d3c");
+            }
+
+            var dto = new CloseCounterDto { cnttid = targetId, usercode = 1 };
+            
+            IsLoading = true;
+            StateHasChanged();
+
+            if (await BillingService.CloseCounterAsync(dto))
+            {
+                statusMessage = $"✓ Counter {targetId} closed successfully.";
+                isSuccess = true;
+                Toast.Success(statusMessage, "Counter");
+                activeCnttid = null;
+                await _sessionStorage.DeleteAsync("cnttid");
+            }
+            else
+            {
+                statusMessage = "Error: Failed to close counter. Shift may already be closed.";
+                isSuccess = false;
+                Toast.Error(statusMessage, "Counter");
+            }
+        }
+        catch (Exception ex)
+        {
+            statusMessage = $"Error closing counter: {ex.Message}";
+            isSuccess = false;
+            Toast.Error(statusMessage, "Counter");
+        }
+        finally
+        {
+            IsLoading = false;
+            StateHasChanged();
+        }
+    }
+
+
+
+    private void AddPaymentSplit(PayModeModel pm)
+    {
+        if (paymentSplits.Count < 3)
+        {
+            paymentSplits.Add(new PaymentSplit
+            {
+                PaymodeCode = pm.pmcode,
+                PaymodeName = pm.name,
+                Amount      = GetBalanceDue() > 0 ? GetBalanceDue() : 0
+            });
+            StateHasChanged();
+        }
+    }
+
+    private void RemovePaymentSplit(PaymentSplit split)
+    {
+        paymentSplits.Remove(split);
+        StateHasChanged();
+    }
+}

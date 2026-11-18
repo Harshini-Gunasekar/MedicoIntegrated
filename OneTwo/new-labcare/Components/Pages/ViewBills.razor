@@ -1,0 +1,697 @@
+@page "/view-bills"
+@using LabCare.Models
+@using LabCare.Services
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
+@inject BillingService BillingService
+@inject ProtectedSessionStorage _sessionStorage
+@inject TenantSessionState TenantState
+@inject NavigationManager NavigationManager
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.Extensions.Options.IOptions<AppSettings> AppSettingsOptions
+@inject IJSRuntime JS
+@rendermode InteractiveServer
+
+<div class="dch-page-container">
+    <div class="lab-header-card flex-between dch-header-margin" style="background: #fff; border-radius: 12px; padding: 16px 20px; border: 1px solid #e2e8f0; box-shadow: 0 1px 3px rgba(0,0,0,0.02);">
+        <div class="gap-16 display-flex align-center">
+            <div class="flex-center" style="width: 48px; height: 48px; border-radius: 12px; background: linear-gradient(135deg, #e0e7ff 0%, #c7d2fe 100%); color: #4f46e5; box-shadow: inset 0 2px 4px rgba(255,255,255,0.5), 0 2px 5px rgba(0,0,0,0.05);">
+                <span class="material-symbols-outlined" style="font-size: 24px;">receipt_long</span>
+            </div>
+            <div style="display: flex; flex-direction: column;">
+                <h1 style="font-size: 1.25rem; font-weight: 800; color: var(--lc-secondary); margin: 0;">View Bills</h1>
+                <p style="font-size: 0.85rem; color: #64748b; margin: 2px 0 0;">Comprehensive billing management</p>
+            </div>
+        </div>
+        <div class="flex gap-12">
+            <button class="dch-btn-search" style="margin: 0; padding: 0 20px; height: 38px;" @onclick="LoadBills">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16" style="margin-right: 6px;"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" /></svg>
+                Search
+            </button>
+            <button class="dch-btn-filter-toggle" @onclick="LoadBills">
+                <span class="material-symbols-outlined" style="font-size: 16px;">refresh</span>
+                Refresh
+            </button>
+        </div>
+    </div>
+
+    
+
+    <div class="filter-body-inner mt-16">
+        <div class="dch-filter-card">
+            <div class="dch-row">
+                <div class="dch-grid-2-cols">
+                    <div class="dch-form-group">
+                        <label class="dch-label">FROM DATE</label>
+                        <input type="date" class="dch-input" @bind="filter.fromdate" />
+                    </div>
+                    <div class="dch-form-group">
+                        <label class="dch-label">TO DATE</label>
+                        <input type="date" class="dch-input" @bind="filter.todate" />
+                    </div>
+                </div>
+                <div class="dch-form-group">
+                    <label class="dch-label">BRANCH</label>
+                    <select class="dch-input" @bind="filter.bhcode" disabled="@(TenantState.BranchCode > 0)">
+                        <option value="">All Branches</option>
+                        @foreach (var bh in branches)
+                        {
+                            <option value="@bh.bhcode">@bh.name</option>
+                        }
+                    </select>
+                </div>
+                <div class="dch-form-group">
+                    <label class="dch-label">REPORT TYPE</label>
+                    <select class="dch-input" @bind="reportType" @bind:after="OnReportTypeChanged">
+                        <option value="all">All Reports</option>
+                        <option value="pending">Pending Bills</option>
+                        <option value="settled">Settled Bills</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="dch-row-2">
+                <div class="dch-form-group">
+                    <label class="dch-label">PATIENT SEARCH</label>
+                    <input type="text" class="dch-input" placeholder="Name, ID or Mobile" @bind="patientSearchTerm" @bind:event="oninput" />
+                </div>
+                <div class="dch-form-group">
+                    <label class="dch-label">DOCTOR SEARCH</label>
+                    <input type="text" class="dch-input" placeholder="Name or Specialty" @bind="doctorSearchTerm" @bind:event="oninput" />
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table Section -->
+    <div class="dch-table-wrapper">
+        @if (isLoading)
+        {
+            <div class="loader-overlay">
+                <div class="loader"></div>
+            </div>
+        }
+        <div class="dch-table-inner">
+            <table class="dch-table">
+                <thead class="dch-table-thead">
+                    <tr>
+                        <th class="dch-table-th">S.No</th>
+                        <th class="dch-table-th">Sample Id</th>
+                        <th class="dch-table-th">Date Time</th>
+                        <th class="dch-table-th">Patient Name</th>
+                        <th class="dch-table-th">Mobil</th>
+                        <th class="dch-table-th">Ref.By</th>
+                        <th class="dch-table-th">Dis Amt</th>
+                        <th class="dch-table-th">Nett</th>
+                        <th class="dch-table-th">Paid</th>
+                        <th class="dch-table-th">Balance</th>
+                        <th class="dch-table-th">User Name</th>
+                        <th class="dch-table-th-center">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (filteredBills.Any())
+                    {
+                        int idx = (currentPage - 1) * pageSize + 1;
+                        foreach (var bill in filteredBills)
+                        {
+                            <tr class="dch-table-tr @(bill.issettled == true ? "settled-row" : "pending-row")">
+                                <td class="dch-table-td">@(idx++)</td>
+                                <td class="dch-table-td-blue">@(string.IsNullOrEmpty(bill.requestsnoprint) ? bill.requestsno?.ToString() : bill.requestsnoprint)</td>
+                                <td class="dch-table-td">@bill.requestdatetime?.ToString("dd-MMM-yyyy HH:mm")</td>
+                                <td class="dch-table-td-dark">@bill.patientname</td>
+                                <td class="dch-table-td">@bill.mobileno</td>
+                                <td class="dch-table-td">@bill.doctorname</td>
+                                <td class="dch-table-td lc-color-orange-600">₹@((bill.discountamount + (bill.refconamount ?? 0))?.ToString("N2"))</td>
+                                <td class="dch-table-td-bold">₹@bill.totalamount?.ToString("N2")</td>
+                                <td class="dch-table-td-dark" style="color: #059669 !important;">₹@bill.paidamount?.ToString("N2")</td>
+                                <td class="dch-table-td-bold" style="color: #dc2626 !important;">₹@bill.balanceamount?.ToString("N2")</td>
+                                <td class="dch-table-td">
+                                    <div class="display-flex flex-direction-column">
+                                        <span class="dch-table-td-dark">@(GetUserEmail(bill.enteredby, bill.username) ?? "System")</span>
+                                        @if (!string.IsNullOrEmpty(bill.enteredby_name))
+                                        {
+                                            <span style="font-size: 10px; color: #64748b;">@bill.enteredby_name</span>
+                                        }
+                                    </div>
+                                </td>
+                                <td class="dch-table-td-center">
+                                    <div class="gap-8 display-flex justify-center">
+                                        <button class="dch-btn-tr-icon" title="Preview Bill" @onclick="() => PreviewBill(bill.requestguid)" disabled="@(printingGuid == bill.requestguid)"><span class="material-symbols-outlined">visibility</span></button>
+                                        <button class="dch-btn-tr-icon" title="Print Bill" @onclick="() => PrintBill(bill.requestguid)" disabled="@(printingGuid == bill.requestguid)">
+                                            @if (printingGuid == bill.requestguid)
+                                            {
+                                                <span class="material-symbols-outlined" style="animation: spin 1s linear infinite;">progress_activity</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="material-symbols-outlined">print</span>
+                                            }
+                                        </button>
+                                        <button class="dch-btn-tr-icon" title="Edit" @onclick="() => EditBill(bill.requestguid)"><span class="material-symbols-outlined">edit</span></button>
+                                        <button class="dch-btn-tr-icon-danger" title="Cancel" @onclick="() => CancelBill(bill.requestguid)"><span class="material-symbols-outlined">cancel</span></button>
+                                    </div>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="12" class="dch-table-empty">No records found for the selected period.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="pagination-footer">
+            <div class="pagination-info">
+                Showing <span class="pagination-info-highlight">@(((currentPage - 1) * pageSize) + (filteredBills.Any() ? 1 : 0))</span> to <span class="pagination-info-highlight">@(((currentPage - 1) * pageSize) + filteredBills.Count)</span> of <span class="pagination-info-highlight">@allBills.Count</span> records
+            </div>
+            <div class="pagination-btns">
+                <button type="button" class="page-btn" @onclick="PreviousPage" disabled="@(currentPage <= 1)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z" />
+                    </svg>
+                </button>
+                <button type="button" class="page-btn active">@currentPage</button>
+                <button type="button" class="page-btn" @onclick="NextPage" disabled="@(filteredBills.Count < pageSize)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer Summary Section -->
+    <div class="display-flex gap-16 mt-24">
+        <div class="dch-summary-card flex-1">
+            <div class="dch-summary-icon" style="background: rgba(99, 102, 241, 0.1); color: #4f46e5;">
+                <span class="material-symbols-outlined icon-lg">payments</span>
+            </div>
+            <div class="dch-summary-content">
+                <label class="dch-summary-label">TOTAL NET</label>
+                <div class="dch-summary-value">₹@filteredBills.Sum(b => b.totalamount ?? 0).ToString("N2")</div>
+            </div>
+        </div>
+        <div class="dch-summary-card flex-1">
+            <div class="dch-summary-icon" style="background: rgba(16, 185, 129, 0.1); color: #10b981;">
+                <span class="material-symbols-outlined icon-lg">check_circle</span>
+            </div>
+            <div class="dch-summary-content">
+                <label class="dch-summary-label">TOTAL PAID</label>
+                <div class="dch-summary-value">₹@filteredBills.Sum(b => b.paidamount ?? 0).ToString("N2")</div>
+            </div>
+        </div>
+        <div class="dch-summary-card flex-1">
+            <div class="dch-summary-icon" style="background: rgba(239, 68, 68, 0.1); color: #ef4444;">
+                <span class="material-symbols-outlined icon-lg">pending_actions</span>
+            </div>
+            <div class="dch-summary-content">
+                <label class="dch-summary-label">TOTAL BALANCE</label>
+                <div class="dch-summary-value">₹@filteredBills.Sum(b => b.balanceamount ?? 0).ToString("N2")</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Reports & Statements FAB -->
+    <div class="fab-container @(isFabMenuOpen ? "open" : "")" style="position: fixed; bottom: 32px; right: 32px; z-index: 1000; display: flex; flex-direction: column; align-items: flex-end;">
+
+        <!-- Expanded Menu -->
+        @if (isFabMenuOpen)
+        {
+            <div class="fab-menu" style="background: #fff; border-radius: 16px; padding: 20px; border: 1px solid #e2e8f0; box-shadow: 0 20px 25px -5px rgba(0,0,0,0.1), 0 8px 10px -6px rgba(0,0,0,0.1); margin-bottom: 20px; width: max-content; max-width: 90vw; max-height: 70vh; overflow-y: auto;">
+                <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; border-bottom: 1px solid #f1f5f9; padding-bottom: 12px;">
+                    <div style="display: flex; align-items: center; gap: 12px;">
+                        <span class="material-symbols-outlined" style="color: #4f46e5; font-size: 24px;">analytics</span>
+                        <h2 style="font-size: 1.1rem; font-weight: 800; color: var(--lc-secondary); margin: 0;">Date-wise Reports & Statements</h2>
+                    </div>
+                    <button type="button" @onclick="ToggleFabMenu" style="background: transparent; border: none; cursor: pointer; color: #64748b; display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 50%; transition: background 0.2s;" onmouseover="this.style.background='#f1f5f9'" onmouseout="this.style.background='transparent'">
+                        <span class="material-symbols-outlined">close</span>
+                    </button>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px;">
+                    <!-- Summaries Group -->
+                    <div style="background: #f8fafc; border-radius: 10px; padding: 16px; border: 1px solid #e2e8f0;">
+                        <h3 style="font-size: 0.85rem; font-weight: 700; color: #475569; text-transform: uppercase; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1.5px solid #cbd5e1; padding-bottom: 6px;">
+                            <span class="material-symbols-outlined" style="font-size: 18px; color: #4f46e5;">summarize</span> Summaries (Date-wise)
+                        </h3>
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintSummaryReport("gettestsummary"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #6366f1;">lab_research</span> Test Summary
+                            </button>
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintSummaryReport("getgroupsummary"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #6366f1;">group</span> Group Summary
+                            </button>
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintSummaryReport("getreferralsummary"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #6366f1;">medical_services</span> Referral Summary
+                            </button>
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintSummaryReport("getsummarysummary"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #6366f1;">description</span> General Summary
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Statements Group -->
+                    <div style="background: #f8fafc; border-radius: 10px; padding: 16px; border: 1px solid #e2e8f0;">
+                        <h3 style="font-size: 0.85rem; font-weight: 700; color: #475569; text-transform: uppercase; margin-bottom: 12px; display: flex; align-items: center; gap: 6px; border-bottom: 1.5px solid #cbd5e1; padding-bottom: 6px;">
+                            <span class="material-symbols-outlined" style="font-size: 18px; color: #10b981;">receipt</span> Statements
+                        </h3>
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintStatementReport("getteststatement"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #10b981;">lab_panel</span> Test Statement
+                            </button>
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintStatementReport("getstatement"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #10b981;">list_alt</span> General Statement
+                            </button>
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintStatementReport("getgroupstatement"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #10b981;">view_headline</span> Group Statement
+                            </button>
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintStatementReport("getduestatement"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #10b981;">price_check</span> Due Statement
+                            </button>
+                            <button class="dch-btn-filter-toggle" style="justify-content: flex-start; width: 100%; font-size: 0.85rem; height: 38px; padding: 0 16px; border: 1.5px solid #e2e8f0; margin: 0; background: #fff;" @onclick='() => { isFabMenuOpen = false; PrintStatementReport("getreferralstatement"); }' disabled="@isPrintingReport">
+                                <span class="material-symbols-outlined" style="font-size: 18px; margin-right: 8px; color: #10b981;">local_hospital</span> Referral Statement
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        }
+
+        <!-- Main FAB Button -->
+        <button type="button" @onclick="ToggleFabMenu" style="width: 64px; height: 64px; border-radius: 50%; background: #4f46e5; color: white; border: none; box-shadow: 0 6px 16px rgba(79, 70, 229, 0.4); display: flex; align-items: center; justify-content: center; cursor: pointer; transition: transform 0.2s, background 0.2s, box-shadow 0.2s;" onmouseover="this.style.transform='scale(1.05)'; this.style.background='#4338ca'; this.style.boxShadow='0 8px 20px rgba(79, 70, 229, 0.5)';" onmouseout="this.style.transform='scale(1)'; this.style.background='#4f46e5'; this.style.boxShadow='0 6px 16px rgba(79, 70, 229, 0.4)';">
+            <span class="material-symbols-outlined" style="font-size: 32px; transition: transform 0.3s; @(isFabMenuOpen ? "transform: rotate(45deg);" : "")">
+                @(isFabMenuOpen ? "close" : "analytics")
+            </span>
+        </button>
+    </div>
+    </div>
+
+
+@code {
+    private bool isFabMenuOpen = false;
+
+    private void ToggleFabMenu()
+    {
+        isFabMenuOpen = !isFabMenuOpen;
+    }
+
+    private List<BillResponseDto> allBills = new();
+    private List<BranchModel> branches = new();
+    private BillFilterDto filter = new() { fromdate = DateTime.Now.AddDays(-30), todate = DateTime.Now };
+    
+    private string patientSearchTerm = "";
+    private string doctorSearchTerm = "";
+    private string reportType = "all";
+    private bool isLoading = false;
+    private string errorMessage = "";
+
+    private List<user_master> users = new();
+    private string TenantCode = "";
+    private string AuthToken = "";
+    private AppSettings _appSettings = new();
+    private string BaseUrl => _appSettings.BaseUrl;
+
+    // Print state
+    private Guid? printingGuid = null;
+    private List<test_master> allTests = new();
+    private TenantResponseDto? tenantInfo = null;
+
+    // Pagination
+    private int currentPage = 1;
+    private int pageSize = 10;
+
+    // Frontend Filtered List
+    private List<BillResponseDto> filteredBills => allBills.Where(b => 
+        (string.IsNullOrEmpty(patientSearchTerm) || 
+            (b.patientname?.Contains(patientSearchTerm, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (b.patientid?.Contains(patientSearchTerm, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (b.mobileno?.Contains(patientSearchTerm, StringComparison.OrdinalIgnoreCase) ?? false)) &&
+        (string.IsNullOrEmpty(doctorSearchTerm) || 
+            (b.doctorname?.Contains(doctorSearchTerm, StringComparison.OrdinalIgnoreCase) ?? false)) &&
+        (!filter.fromdate.HasValue || (b.requestdatetime?.Date >= filter.fromdate.Value.Date)) &&
+        (!filter.todate.HasValue || (b.requestdatetime?.Date <= filter.todate.Value.Date))
+    ).ToList();
+
+    protected override void OnInitialized()
+    {
+        _appSettings = AppSettingsOptions.Value;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var userResult = await _sessionStorage.GetAsync<UserDetailsModel>("UserDetails");
+            if (userResult.Success && userResult.Value != null)
+            {
+                var user = userResult.Value;
+                TenantCode = user.TenantCode ?? "";
+                AuthToken = user.AuthToken ?? "";
+                // Set full session including optional branch and counter using the provided SetSession method
+                TenantState.SetSession(TenantCode, AuthToken, user.TenantName ?? "", user.UserCode ?? 0, user.BranchCode, user.CounterCode);
+
+                // Sync filter with TenantState
+                if (TenantState.BranchCode > 0) filter.bhcode = TenantState.BranchCode;
+                
+                branches = await BillingService.GetBranchesAsync();
+                await LoadUsers();
+                await LoadBills();
+
+                // Pre-load test master & tenant info for print
+                allTests = await BillingService.GetTestsAsync();
+                tenantInfo = await BillingService.GetTenantInfoAsync();
+
+                StateHasChanged();
+            }
+            else
+            {
+                NavigationManager.NavigateTo("/");
+            }
+        }
+    }
+
+    private async Task LoadUsers()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareApi");
+            if (!string.IsNullOrEmpty(TenantCode)) client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            if (!string.IsNullOrEmpty(AuthToken)) client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            
+            var response = await client.GetAsync($"{BaseUrl}User/getall");
+            if (response.IsSuccessStatusCode)
+            {
+                users = await response.Content.ReadFromJsonAsync<List<user_master>>() ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error loading users: {ex.Message}") */;
+        }
+    }
+
+    private string GetUserEmail(string? enteredBy, string? username)
+    {
+        string? email = null;
+
+        // 1. Try to find user by code (enteredBy is usually the code)
+        if (!string.IsNullOrEmpty(enteredBy) && int.TryParse(enteredBy, out int code))
+        {
+            var user = users.FirstOrDefault(u => u.user_code == code);
+            if (user != null && !string.IsNullOrEmpty(user.email)) email = user.email;
+        }
+        
+        // 2. Try to find by name/shortname
+        if (string.IsNullOrEmpty(email) && !string.IsNullOrEmpty(username))
+        {
+            var userByTitle = users.FirstOrDefault(u => u.short_name == username || u.name == username);
+            if (userByTitle != null && !string.IsNullOrEmpty(userByTitle.email)) email = userByTitle.email;
+        }
+
+        // 3. Fallback to Tenant Email (Owner)
+        if (string.IsNullOrEmpty(email) && !string.IsNullOrEmpty(TenantCode))
+        {
+            // Usually the tenant owner has the TenantCode as their shortname or role 1
+            var owner = users.FirstOrDefault(u => u.short_name == TenantCode || u.role == 1);
+            if (owner != null && !string.IsNullOrEmpty(owner.email)) email = owner.email;
+        }
+
+        return email ?? username ?? "System";
+    }
+
+    private async Task OnReportTypeChanged()
+    {
+        filter.pendingonly = reportType switch
+        {
+            "pending" => true,
+            "settled" => false,
+            _ => null
+        };
+        await LoadBills();
+    }
+
+    private async Task LoadBills()
+    {
+        isLoading = true;
+        StateHasChanged();
+        try
+        {
+            allBills = await BillingService.GetAllAsync(filter);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Error loading bills: {ex.Message}";
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private void EditBill(Guid? guid)
+    {
+        if (guid.HasValue)
+        {
+            NavigationManager.NavigateTo($"/billing?edit={guid.Value}");
+        }
+    }
+
+    private async Task CancelBill(Guid? guid)
+    {
+        if (guid.HasValue && await BillingService.CancelAsync(guid.Value))
+        {
+            await LoadBills();
+        }
+    }
+
+    private async Task CloseCounter()
+    {
+        // Get the active shift GUID if available, else null (endpoint handles both)
+        var dto = new CloseCounterDto { usercode = 1 };
+        if (await BillingService.CloseCounterAsync(dto))
+        {
+            await LoadBills();
+        }
+    }
+
+    private async Task PreviousPage()
+    {
+        if (currentPage > 1)
+        {
+            currentPage--;
+            filter.page = currentPage;
+            await LoadBills();
+        }
+    }
+
+    private async Task NextPage()
+    {
+        if (allBills.Count == pageSize)
+        {
+            currentPage++;
+            filter.page = currentPage;
+            await LoadBills();
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    //  PRINT & PREVIEW BILL
+    // ════════════════════════════════════════════════════════════════
+
+    private async Task PrintBill(Guid? guid)
+    {
+        if (!guid.HasValue) return;
+        try
+        {
+            printingGuid = guid;
+            StateHasChanged();
+
+            var billJson = await BuildBillJson(guid.Value);
+            if (billJson == null)
+            {
+                errorMessage = "Failed to fetch bill data for printing.";
+                return;
+            }
+
+            await JS.InvokeVoidAsync("generateBillPdf", billJson);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Print failed: {ex.Message}";
+            /* Console.WriteLine($"PrintBill error: {ex}") */;
+        }
+        finally
+        {
+            printingGuid = null;
+            StateHasChanged();
+        }
+    }
+
+    private async Task PreviewBill(Guid? guid)
+    {
+        if (!guid.HasValue) return;
+        try
+        {
+            printingGuid = guid;
+            StateHasChanged();
+
+            var billJson = await BuildBillJson(guid.Value);
+            if (billJson == null)
+            {
+                errorMessage = "Failed to fetch bill data for preview.";
+                return;
+            }
+
+            await JS.InvokeVoidAsync("previewBillPdf", billJson);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Preview failed: {ex.Message}";
+            /* Console.WriteLine($"PreviewBill error: {ex}") */;
+        }
+        finally
+        {
+            printingGuid = null;
+            StateHasChanged();
+        }
+    }
+
+    /// <summary>
+    /// Fetches bill data from billing/bill API, resolves test names, and builds a JSON string
+    /// compatible with the bill-print.js buildBillHtml function.
+    /// </summary>
+    private async Task<string?> BuildBillJson(Guid requestguid)
+    {
+        var printData = await BillingService.GetBillForPrintAsync(requestguid);
+        if (printData?.cus_details == null) return null;
+
+        var master = printData.cus_details;
+        var details = printData.custest_details ?? new();
+
+        // Get doctor name from the existing bill list
+        var existingBill = allBills.FirstOrDefault(b => b.requestguid == requestguid);
+        string doctorName = existingBill?.doctorname ?? "Self";
+        string requestNoPrint = !string.IsNullOrEmpty(master.requestsnoprint) ? master.requestsnoprint 
+            : (!string.IsNullOrEmpty(existingBill?.requestsnoprint) ? existingBill.requestsnoprint 
+            : (master.requestsno.HasValue ? master.requestsno.Value.ToString() : ""));
+
+        // Build test items with resolved names from test_master
+        var testItems = new List<object>();
+        foreach (var detail in details)
+        {
+            string testName = "Test";
+            if (detail.tcode.HasValue)
+            {
+                var test = allTests.FirstOrDefault(t => t.tcode == detail.tcode.Value);
+                if (test != null) testName = test.name;
+            }
+
+            testItems.Add(new
+            {
+                testname = testName,
+                testamount = detail.testamount ?? detail.standardprice ?? detail.testrate ?? 0,
+                discount = detail.discount ?? 0,
+                collection = detail.collection ?? ((detail.testamount ?? 0) - (detail.discount ?? 0)),
+                standardprice = detail.standardprice ?? 0,
+                qty = detail.qty ?? 1
+            });
+        }
+
+        // Build lab info from tenant
+        string labName = tenantInfo?.tenant_name ?? tenantInfo?.legal_name ?? "iScan Diagnostics";
+        string labAddress = string.Join(", ", new[] { tenantInfo?.address_line1, tenantInfo?.address_line2, tenantInfo?.city, tenantInfo?.pincode }.Where(s => !string.IsNullOrEmpty(s)));
+        string labContact = string.Join(" | ", new[] {
+            !string.IsNullOrEmpty(tenantInfo?.contact_number) ? "Phone: " + tenantInfo.contact_number : null,
+            !string.IsNullOrEmpty(tenantInfo?.contact_email) ? "Email: " + tenantInfo.contact_email : null
+        }.Where(s => !string.IsNullOrEmpty(s)));
+
+        var billPayload = new
+        {
+            labName,
+            labAddress,
+            labContact,
+            requestsnoprint = requestNoPrint,
+            requestbarcode = master.requestbarcode,
+            requestdatetime = master.requestdatetime?.ToString("o"),
+            billtype = master.billtype,
+            name = master.name,
+            patientname = master.name,
+            custid = master.custid,
+            gender = master.gender,
+            ageyears = master.ageyears,
+            agemonths = master.agemonths,
+            agedays = master.agedays,
+            address = master.address,
+            mobileno = master.mobileno,
+            doctorname = doctorName,
+            requestamount = master.requestamount ?? 0,
+            discountamount = master.discountamount ?? 0,
+            totalamount = master.totalamount ?? 0,
+            paidamount = master.paidamount ?? 0,
+            pmc1 = master.pmc1,
+            pmc2 = master.pmc2,
+            pmc3 = master.pmc3,
+            testItems
+        };
+
+        return System.Text.Json.JsonSerializer.Serialize(billPayload);
+    }
+
+    private bool isPrintingReport = false;
+
+    private async Task PrintSummaryReport(string endpoint)
+    {
+        string fromStr = filter.fromdate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string toStr = filter.todate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string url = $"report/{endpoint}?fromdate={fromStr}&periodtype=date-wise&todate={toStr}";
+        await PrintReportBase64(url);
+    }
+
+    private async Task PrintStatementReport(string endpoint)
+    {
+        string fromStr = filter.fromdate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string toStr = filter.todate?.ToString("yyyy-MM-dd") ?? DateTime.Now.ToString("yyyy-MM-dd");
+        string url = $"report/{endpoint}?fromdate={fromStr}&todate={toStr}";
+        await PrintReportBase64(url);
+    }
+
+    private async Task PrintReportBase64(string endpointWithParams)
+    {
+        try
+        {
+            isPrintingReport = true;
+            StateHasChanged();
+
+            using var client = ClientFactory.CreateClient("LabCareApi");
+            if (!string.IsNullOrEmpty(TenantCode)) client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+            if (!string.IsNullOrEmpty(AuthToken)) client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+
+            var resp = await client.GetAsync($"{BaseUrl}{endpointWithParams}");
+            if (!resp.IsSuccessStatusCode)
+            {
+                var err = await resp.Content.ReadAsStringAsync();
+                errorMessage = $"Print failed: {err}";
+                return;
+            }
+
+            var raw = await resp.Content.ReadAsStringAsync();
+            var base64 = raw.Trim().Trim('"');
+            await JS.InvokeVoidAsync("openBase64Pdf", base64);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Print error: {ex.Message}";
+        }
+        finally
+        {
+            isPrintingReport = false;
+            StateHasChanged();
+        }
+    }
+}

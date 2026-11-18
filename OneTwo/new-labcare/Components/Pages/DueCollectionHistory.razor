@@ -1,0 +1,597 @@
+@page "/duecollection/history"
+@using LabCare.Components.Layout
+@using LabCare.Models
+@using Newtonsoft.Json
+@using Newtonsoft.Json.Linq
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@inject IHttpClientFactory ClientFactory
+@inject Microsoft.Extensions.Options.IOptions<AppSettings> AppSettingsOptions
+@inject IJSRuntime JSRuntime
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage _sessionStorage
+@inject LabCare.Services.TenantSessionState TenantState
+
+<div class="dch-page-container">
+    <div class="lab-header-card flex-between dch-header-margin">
+        <div class="gap-16 display-flex align-center">
+            <div class="p-2 bg-slate-900 rounded-lg shadow-sm flex-center icon-box-container">
+                <span class="text-white material-symbols-outlined icon-lg">history</span>
+            </div>
+            <div>
+                <h2 class="m-0 lab-title-text">Due Collection History</h2>
+                <div class="gap-8 flex-start mt-2px">
+                    <span class="status-pulse-dot"></span>
+                    <span class="status-text">View and manage past collections</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrEmpty(errorMessage))
+    {
+        <div class="alert alert-danger alert-custom-style">
+            @((MarkupString)errorMessage)
+        </div>
+    }
+
+
+
+    <div class="dch-filter-toggle-container">
+        <button @onclick="ToggleFilters" class="dch-btn-filter-toggle">
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16"><path d="M1.5 1.5A.5.5 0 0 1 2 1h12a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-.128.334L10 8.692V13.5a.5.5 0 0 1-.342.474l-3 1A.5.5 0 0 1 6 14.5V8.692L1.628 3.834A.5.5 0 0 1 1.5 3.5v-2z" /></svg>
+            Filter
+        </button>
+    </div>
+
+    <div class="filter-body-anim @(showFilters ? "open" : "closed")">
+        <div class="filter-body-inner">
+            <div class="dch-filter-card">
+                <div class="dch-row">
+                    <div class="dch-grid-2-cols">
+                        <div class="dch-form-group">
+                            <label class="dch-label">FROM</label>
+                            <input type="date" class="dch-input" @bind="SearchFrom" />
+                        </div>
+                        <div class="dch-form-group">
+                            <label class="dch-label">TO</label>
+                            <input type="date" class="dch-input" @bind="SearchTo" />
+                        </div>
+                    </div>
+                    <div class="dch-form-group">
+                        <label class="dch-label">BRANCH</label>
+                        <select class="dch-input" @bind="SearchBranch">
+                            <option value="">Select the Branch</option>
+                            @foreach (var c in _branches)
+                            {
+                                <option value="@c.bhcode">@c.name</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="justify-end flex">
+                        <!-- Right align space or additional info -->
+                    </div>
+                </div>
+
+                <div class="dch-row-2">
+                    <div class="dch-form-group position-relative">
+                        <label class="dch-label">CUSTOMER</label>
+                        <input type="text" class="dch-input" @bind="SearchCustomer" @bind:event="oninput" @onfocus="() => showPatientDropdown = true" @onblur="HidePatientDropdown" placeholder="Search ID, Name, Mobile..." autocomplete="off" />
+                        @if (showPatientDropdown && !string.IsNullOrWhiteSpace(SearchCustomer))
+                        {
+                            var matched = _customers.Where(c =>
+                                (c.name != null && c.name.Contains(SearchCustomer, StringComparison.OrdinalIgnoreCase)) ||
+                                (c.mobile != null && c.mobile.Contains(SearchCustomer)) ||
+                                (c.custcode != null && c.custcode.Contains(SearchCustomer, StringComparison.OrdinalIgnoreCase)) ||
+                                (c.custid.ToString() == SearchCustomer)
+                            ).Take(10).ToList();
+
+                            if (matched.Any())
+                            {
+                                <div class="master-search-dropdown show w-full">
+                                    @foreach (var c in matched)
+                                    {
+                                        <button type="button" class="master-search-item" @onmousedown="() => SelectPatient(c)">
+                                            <div class="master-search-item-title">@c.name</div>
+                                            <div class="master-search-item-subtitle">ID: @c.custcode | Mob: @c.mobile</div>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+                    <div class="dch-form-group">
+                        <label class="dch-label">MONTHLY</label>
+                        <select class="dch-input" @bind="SearchMonthly">
+                            <option value="">Select the Monthly</option>
+                            @foreach (var rc in _reimbursementCompanies)
+                            {
+                                <option value="@rc.ricode">@rc.name</option>
+                            }
+                        </select>
+                    </div>
+                </div>
+
+                <div class="dch-row-2">
+                    <div class="dch-form-group position-relative">
+                        <label class="dch-label">DOCTOR</label>
+                        <input type="text" class="dch-input" @bind="SearchDoctor" @bind:event="oninput" @onfocus="() => showDoctorDropdown = true" @onblur="HideDoctorDropdown" placeholder="Search ID, Name, Mobile..." autocomplete="off" />
+                        @if (showDoctorDropdown && !string.IsNullOrWhiteSpace(SearchDoctor))
+                        {
+                            var matchedDoc = _doctors.Where(d =>
+                                (d.name != null && d.name.Contains(SearchDoctor, StringComparison.OrdinalIgnoreCase)) ||
+                                (d.mobile != null && d.mobile.Contains(SearchDoctor)) ||
+                                (d.doctorcode != null && d.doctorcode.Contains(SearchDoctor, StringComparison.OrdinalIgnoreCase)) ||
+                                (d.dcode.ToString() == SearchDoctor)
+                            ).Take(10).ToList();
+
+                            if (matchedDoc.Any())
+                            {
+                                <div class="master-search-dropdown show w-full">
+                                    @foreach (var d in matchedDoc)
+                                    {
+                                        <button type="button" class="master-search-item" @onmousedown="() => SelectDoctor(d)">
+                                            <div class="master-search-item-title">@d.name</div>
+                                            <div class="master-search-item-subtitle">ID: @d.doctorcode | Mob: @d.mobile</div>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                        }
+                    </div>
+                    <div class="dch-form-group">
+                        <label class="dch-label">SELECT REPORT</label>
+                        <select class="dch-input" @bind="SearchReportType">
+                            <option value="">Select the Report</option>
+                            <option value="Detailed">Detailed</option>
+                            <option value="Summary">Summary</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="dch-actions">
+                    <button class="dch-btn-search" @onclick="FilterHistory">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.1zM12 6.5a5.5 5.5 0 1 1-11 0 5.5 5.5 0 0 1 11 0z" /></svg>
+                        Search
+                    </button>
+                    <button class="dch-btn-print">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M2.5 8a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z" /><path d="M5 1a2 2 0 0 0-2 2v2H2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V3a2 2 0 0 0-2-2H5zM4 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2H4V3zm1 5a2 2 0 0 0-2 2v1H2a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v-1a2 2 0 0 0-2-2H5zm7 2v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1z" /></svg>
+                        Print
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Table Section -->
+    <div class="dch-table-wrapper">
+        <div class="dch-table-inner">
+            <table class="dch-table">
+                <thead class="dch-table-thead">
+                    <tr>
+                        <th class="dch-table-th">RECEIPTDATE</th>
+                        <th class="dch-table-th">RECEIPT NO</th>
+                        <th class="dch-table-th">CUSTCODE</th>
+                        <th class="dch-table-th">CUSTOMER</th>
+                        <th class="dch-table-th">DOCTOR</th>
+                        <th class="dch-table-th">MONTHLY</th>
+                        <th class="dch-table-th">BILL NO</th>
+                        <th class="dch-table-th">BILL DATE</th>
+                        <th class="dch-table-th">RECEIVED</th>
+                        <th class="dch-table-th">PAYMODE</th>
+                        <th class="dch-table-th">CHEQUE NO</th>
+                        <th class="dch-table-th">CHEQUE DATE</th>
+                        <th class="dch-table-th-center">PRINT</th>
+                        <th class="dch-table-th-center">DELETE</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @if (HistoryRows.Any())
+                    {
+                        @foreach (var row in HistoryRows)
+                        {
+                            <tr class="dch-table-tr hover:bg-gray-50">
+                                <td class="dch-table-td-bold">@(row.receiptdate?.ToString("dd-MMM-yyyy") ?? "")</td>
+                                <td class="dch-table-td-blue">@row.receipt_no</td>
+                                <td class="dch-table-td">@row.custcode</td>
+                                <td class="dch-table-td-dark">
+                                    @row.customer
+                                </td>
+                                <td class="dch-table-td">@row.doctor</td>
+                                <td class="dch-table-td">@row.monthly</td>
+                                <td class="dch-table-td">@row.billno</td>
+                                <td class="dch-table-td-bold">@(row.billdate?.ToString("dd-MMM-yyyy") ?? "")</td>
+                                <td class="dch-table-td-dark">@row.received</td>
+                                <td class="dch-table-td">@row.paymode</td>
+                                <td class="dch-table-td">@row.cheque_no</td>
+                                <td class="dch-table-td-bold">@(row.cheque_date?.ToString("dd-MMM-yyyy") ?? "")</td>
+                                <td class="dch-table-td-center">
+                                    <button class="dch-btn-tr-icon">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M2.5 8a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z" /><path d="M5 1a2 2 0 0 0-2 2v2H2a2 2 0 0 0-2 2v3a2 2 0 0 0 2 2h1v1a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2v-1h1a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-1V3a2 2 0 0 0-2-2H5zM4 3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2H4V3zm1 5a2 2 0 0 0-2 2v1H2a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1h-1v-1a2 2 0 0 0-2-2H5zm7 2v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-3a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1z" /></svg>
+                                    </button>
+                                </td>
+                                <td class="dch-table-td-center">
+                                    <button @onclick="() => DeleteReceipt(row.receiptguid)" class="dch-btn-tr-icon-danger">
+                                        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5ZM11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H2.506a.58.58 0 0 0-.01 0H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66h.538a.5.5 0 0 0 0-1h-.995a.59.59 0 0 0-.01 0H11Zm1.815 1.5L11.97 14.331a.998.998 0 0 1-.994.919H4.885a.998.998 0 0 1-.994-.92L3.045 4h9.77Z" /><path d="M5.5 6.5A.5.5 0 0 1 6 7v6a.5.5 0 0 1-1 0V7a.5.5 0 0 1 .5-.5Zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V7a.5.5 0 0 1 .5-.5Zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0v-6Z" /></svg>
+                                    </button>
+                                </td>
+                            </tr>
+                        }
+                    }
+                    else
+                    {
+                        <tr>
+                            <td colspan="14" class="dch-table-empty">No records found. Adjust filters and click Search.</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+
+        <!-- Pagination -->
+        <div class="pagination-footer">
+            <div class="pagination-info">
+                Showing <span class="pagination-info-highlight">@(((CurrentPage - 1) * PageSize) + (HistoryRows.Any() ? 1 : 0))</span> to <span class="pagination-info-highlight">@(((CurrentPage - 1) * PageSize) + HistoryRows.Count)</span> records
+            </div>
+            <div class="pagination-btns">
+                <button type="button" class="page-btn" @onclick="PreviousPage" disabled="@(CurrentPage <= 1)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z" />
+                    </svg>
+                </button>
+                
+                @if (CurrentPage > 1)
+                {
+                    <button type="button" class="page-btn" @onclick="PreviousPage">
+                        @(CurrentPage - 1)
+                    </button>
+                }
+                
+                <button type="button" class="page-btn active">
+                    @CurrentPage
+                </button>
+                
+                @if (HasNextPage)
+                {
+                    <button type="button" class="page-btn" @onclick="NextPage">
+                        @(CurrentPage + 1)
+                    </button>
+                }
+
+                <button type="button" class="page-btn" @onclick="NextPage" disabled="@(!HasNextPage)">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" viewBox="0 0 16 16">
+                        <path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z" />
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Footer Summary Section -->
+    <div class="dch-footer-summary">
+        <div class="dch-summary-card">
+            <div class="dch-summary-icon">
+                <span class="material-symbols-outlined icon-lg">payments</span>
+            </div>
+            <div class="dch-summary-content">
+                <label class="dch-summary-label">COLLECTED AMT</label>
+                <div class="dch-summary-value">@CollectedAmt.ToString("N2")</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private bool showFilters = false;
+    private string errorMessage = "";
+    private AppSettings _appSettings = new();
+    private string BaseUrl => _appSettings.BaseUrl;
+    private string TenantCode = "";
+    private string AuthToken = "";
+
+    // Filters
+    public DateTime? SearchFrom { get; set; } = null;
+    public DateTime? SearchTo { get; set; } = null;
+    public int? SearchBranch { get; set; } = null;
+    public string SearchCustomer { get; set; } = "";
+    public int? SearchMonthly { get; set; } = null;
+    public string SearchDoctor { get; set; } = "";
+    public string SearchReportType { get; set; } = "";
+
+    // Data lists
+    private List<BranchModel> _branches = new();
+    private List<ReimbursementCompanyModel> _reimbursementCompanies = new();
+    private List<CustomerModel> _customers = new();
+    private List<DoctorModel> _doctors = new();
+    private List<DueCollectionHistoryRowDto> HistoryRows = new();
+
+    private bool showPatientDropdown = false;
+    private bool showDoctorDropdown = false;
+
+    // Pagination & Totals
+    public int CurrentPage { get; set; } = 1;
+    public int PageSize { get; set; } = 10;
+    public int TotalRecords { get; set; } = 0;
+    public int TotalPages { get; set; } = 0;
+    public bool HasNextPage => TotalPages > 0 ? CurrentPage < TotalPages : HistoryRows.Count == PageSize;
+    
+    public double TotalBalance { get; set; } = 0;
+    public double CollectedAmt { get; set; } = 0;
+
+    protected override void OnInitialized()
+    {
+        _appSettings = AppSettingsOptions.Value;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                TenantCode = tenantCodeResult.Success ? tenantCodeResult.Value ?? "" : "";
+
+                var tokenResult = await _sessionStorage.GetAsync<string>("authToken");
+                AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : "";
+
+                if (string.IsNullOrEmpty(AuthToken))
+                {
+                    errorMessage = "Access denied: Missing valid session. Please log in again.";
+                    StateHasChanged();
+                }
+                else
+                {
+                    await LoadMasterData();
+                    await FilterHistory();
+                }
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Session error: {ex.Message}";
+                StateHasChanged();
+            }
+        }
+    }
+
+    private void ToggleFilters()
+    {
+        showFilters = !showFilters;
+    }
+
+    private HttpClient CreateClient()
+    {
+        var client = ClientFactory.CreateClient("LabCareApi");
+        if (!string.IsNullOrEmpty(TenantCode))
+        {
+            client.DefaultRequestHeaders.Add("tenant_code", TenantCode);
+        }
+        if (!string.IsNullOrEmpty(AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+        }
+        return client;
+    }
+
+    private async Task<List<T>> FetchMasterData<T>(HttpClient client, string url)
+    {
+        try
+        {
+            var res = await client.GetAsync(url);
+            if (res.IsSuccessStatusCode)
+            {
+                var content = await res.Content.ReadAsStringAsync();
+                try
+                {
+                    return JsonConvert.DeserializeObject<List<T>>(content) ?? new List<T>();
+                }
+                catch
+                {
+                    var obj = JsonConvert.DeserializeObject<dynamic>(content);
+                    if (obj?["data"] != null)
+                    {
+                        return ((JArray)obj!["data"]).ToObject<List<T>>() ?? new List<T>();
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error fetching {url}: {ex.Message}") */;
+        }
+        return new List<T>();
+    }
+
+    private async Task LoadMasterData()
+    {
+        try
+        {
+            using var client = CreateClient();
+            _branches = (await FetchMasterData<BranchModel>(client, $"{BaseUrl}Branch/get")).Where(b => b.deleted != true).ToList();
+            _customers = (await FetchMasterData<CustomerModel>(client, $"{BaseUrl}Customer/get")).Where(c => c.deleted != true).ToList();
+            _doctors = (await FetchMasterData<DoctorModel>(client, $"{BaseUrl}Doctor/get")).Where(d => d.deleted != true).ToList();
+            _reimbursementCompanies = (await FetchMasterData<ReimbursementCompanyModel>(client, $"{BaseUrl}ReimbursementCompany/getall")).Where(c => c.deleted != true).ToList();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            /* Console.WriteLine($"Error loading masters overall: {ex.Message}") */;
+        }
+    }
+
+    private async Task FilterHistory()
+    {
+        try
+        {
+            errorMessage = "";
+            using var client = CreateClient();
+            var req = new CollectionViewFilterDto
+            {
+                fromdate = SearchFrom,
+                todate = SearchTo == null ? null : SearchTo.Value.Date.AddHours(23).AddMinutes(59).AddSeconds(59),
+                bhcode = SearchBranch,
+                patient_name = string.IsNullOrWhiteSpace(SearchCustomer) ? null : SearchCustomer,
+                customer = string.IsNullOrWhiteSpace(SearchCustomer) ? null : SearchCustomer,
+                doctor = string.IsNullOrWhiteSpace(SearchDoctor) ? null : SearchDoctor,
+                ricode = SearchMonthly,
+                Page = CurrentPage,
+                PageSize = PageSize
+            };
+            
+            var response = await client.PostAsJsonAsync($"{BaseUrl}DueCollection/history", req);
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                try
+                {
+                    var result = JsonConvert.DeserializeObject<DueCollectionHistoryResponseDto>(content);
+                    
+                    if (result != null)
+                    {
+                        HistoryRows = result.data ?? new List<DueCollectionHistoryRowDto>();
+                        TotalRecords = result.totalcount;
+                        TotalPages = result.totalpage;
+                        
+                        TotalBalance = result.total_balance;
+                        
+                        // Try to get grand total from API, fallback to fetching all records if needed
+                        if (result.collected_amt > 0)
+                        {
+                            CollectedAmt = result.collected_amt;
+                        }
+                        else
+                        {
+                            // Fetch all records (pagesize = total) to get the complete sum
+                            var allReq = new CollectionViewFilterDto
+                            {
+                                fromdate = SearchFrom,
+                                todate = SearchTo == null ? null : SearchTo.Value.Date.AddHours(23).AddMinutes(59).AddSeconds(59),
+                                bhcode = SearchBranch,
+                                patient_name = string.IsNullOrWhiteSpace(SearchCustomer) ? null : SearchCustomer,
+                                customer = string.IsNullOrWhiteSpace(SearchCustomer) ? null : SearchCustomer,
+                                doctor = string.IsNullOrWhiteSpace(SearchDoctor) ? null : SearchDoctor,
+                                ricode = SearchMonthly,
+                                Page = 1,
+                                PageSize = TotalRecords > 0 ? TotalRecords : 1000  // Fetch all or large batch
+                            };
+                            
+                            var allResponse = await client.PostAsJsonAsync($"{BaseUrl}DueCollection/history", allReq);
+                            if (allResponse.IsSuccessStatusCode)
+                            {
+                                var allContent = await allResponse.Content.ReadAsStringAsync();
+                                var allResult = JsonConvert.DeserializeObject<DueCollectionHistoryResponseDto>(allContent);
+                                CollectedAmt = allResult?.data?.Sum(r => r.received) ?? 0;
+                            }
+                            else
+                            {
+                                CollectedAmt = HistoryRows.Sum(r => r.received);
+                            }
+                        }
+                        
+                        if (TotalPages <= 0 && TotalRecords > 0)
+                        {
+                            TotalPages = (int)Math.Ceiling((double)TotalRecords / PageSize);
+                        }
+                    }
+                    else
+                    {
+                        HistoryRows.Clear();
+                        CollectedAmt = 0;
+                    }
+                    StateHasChanged();
+                }
+                catch (Exception ex)
+                {
+                    errorMessage = "Error parsing response data.";
+                    /* Console.WriteLine("Parse Error: " + ex.Message) */;
+                }
+            }
+            else
+            {
+                errorMessage = "Failed to load history data.";
+                /* Console.WriteLine($"API Error: {response.StatusCode}") */;
+            }
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = "Server error while fetching history.";
+            /* Console.WriteLine("Filter Error: " + ex.Message) */;
+        }
+    }
+
+    private async Task DeleteReceipt(Guid recGuid)
+    {
+        try
+        {
+            bool confirm = await JSRuntime.InvokeAsync<bool>("confirm", "Are you sure you want to revert this receipt?");
+            if (!confirm) return;
+
+            using var client = CreateClient();
+            var response = await client.GetAsync($"{BaseUrl}DueCollection/revert/{recGuid}");
+            if (response.IsSuccessStatusCode)
+            {
+                await FilterHistory();
+            }
+            else
+            {
+                errorMessage = "Failed to revert the receipt.";
+                StateHasChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = "Error reverting receipt: " + ex.Message;
+            StateHasChanged();
+        }
+    }
+
+    private async Task HandlePageSizeChange(ChangeEventArgs e)
+    {
+        if (int.TryParse(e.Value?.ToString(), out int val))
+        {
+            PageSize = val > 0 ? val : 10;
+            CurrentPage = 1;
+            await FilterHistory();
+        }
+    }
+
+    private async Task PreviousPage()
+    {
+        if (CurrentPage > 1)
+        {
+            CurrentPage--;
+            await FilterHistory();
+        }
+    }
+
+    private async Task NextPage()
+    {
+        if (HasNextPage)
+        {
+            CurrentPage++;
+            await FilterHistory();
+        }
+    }
+
+    private void SelectPatient(CustomerModel c)
+    {
+        SearchCustomer = c.name ?? "";
+        showPatientDropdown = false;
+    }
+
+    private void HidePatientDropdown()
+    {
+        showPatientDropdown = false;
+    }
+
+    private void SelectDoctor(DoctorModel d)
+    {
+        SearchDoctor = d.name ?? "";
+        showDoctorDropdown = false;
+    }
+
+    private void HideDoctorDropdown()
+    {
+        showDoctorDropdown = false;
+    }
+}

@@ -1,0 +1,978 @@
+@page "/Maps"
+@using Microsoft.AspNetCore.Authorization
+@* @attribute [Authorize] *@
+
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+
+@using TrackAdmin.Models
+@using TrackAdmin.Data
+@using Syncfusion.Blazor.Grids
+@using Newtonsoft.Json
+@inject IJSRuntime JS
+@inject HttpClient Http
+@inject MasterData msd
+@inject RiderTracking rids
+@using Microsoft.Extensions.Options
+@inject IOptions<APIConfiguration> ApiConfig
+@inject UserSessionService session
+@inject TenantState _tenantState
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
+@inject ProtectedSessionStorage protectedSessionStore
+@inject PageMetadataService Metadata
+@implements IDisposable
+
+@if (!pageReady)
+{
+    <div class="premium-loader-container">
+        <div class="tactical-loader-orb">
+            <i class="bi bi-broadcast pulse"></i>
+            <div class="loader-glow"></div>
+        </div>
+        <div class="loader-text-wrap">
+            <h4>RIDO SMART RIDER</h4>
+            <span>Initializing Mission Control...</span>
+        </div>
+    </div>
+}
+
+<div class="mission-control-wrapper @(pageReady ? "animate-fade-in" : "invisible")">
+    
+    @if (session.Rights.HasAccess("live_fleets"))
+    {
+        <!-- Shutter Toggles -->
+        <button class="shutter-toggle left-toggle @(isLeftDrawerOpen ? "shifted" : "")" @onclick="() => isLeftDrawerOpen = !isLeftDrawerOpen" title="Toggle Fleet Drawer">
+            <i class="bi @(isLeftDrawerOpen ? "bi-chevron-left" : "bi-chevron-right")"></i>
+        </button>
+        <button class="shutter-toggle right-toggle @(isRightPanelOpen ? "shifted" : "")" @onclick="() => isRightPanelOpen = !isRightPanelOpen" title="Toggle Ops Panel">
+            <i class="bi @(isRightPanelOpen ? "bi-chevron-right" : "bi-chevron-left")"></i>
+        </button>
+
+        <!-- Sidebar: Live Fleet Monitoring -->
+        <aside class="fleet-sidebar premium-glass @(isLeftDrawerOpen ? "open" : "closed")">
+            <div class="sidebar-header-tactical">
+                <div class="brand-orb-glow">
+                    <i class="bi bi-broadcast pulse-radar"></i>
+                </div>
+                <div class="header-content">
+                    <h3>Live Fleet</h3>
+                    <div class="live-indicator">
+                        <span class="pulse-dot"></span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tactical-search-wrap">
+                <div class="search-input-group">
+                    <i class="bi bi-search"></i>
+                    <input type="text" placeholder="Track Rider / Vehicle..." @bind="riderSearchQuery" @bind:event="oninput" />
+                </div>
+            </div>
+
+            <div class="fleet-scroll-area">
+                @foreach (var rider in FilteredLocations)
+                {
+                    <div class="premium-rider-card @(selectedRiderId == rider.RiderId ? "active" : "") @rider.Status.ToLower().Replace(" ", "-")" @onclick="() => FocusRider(rider)">
+                        <div class="rider-visual">
+                            <div class="avatar-ring">
+                                <img src="@(string.IsNullOrEmpty(rider.ProfilePicture) ? "/images/default-avatar.png" : rider.ProfilePicture)" 
+                                     class="avatar-img" 
+                                     onerror="this.src='/images/default-avatar.png'" />
+                            </div>
+                            <div class="status-marker @rider.Status.ToLower().Replace(" ", "-")"></div>
+                        </div>
+                        
+                        <div class="rider-details">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <span class="name">@rider.RiderName</span>
+                                @if (rider.UnreadCount > 0)
+                                {
+                                    <span class="msg-badge">@rider.UnreadCount</span>
+                                }
+                            </div>
+                            <div class="meta">
+                                <span class="tag"><i class="bi bi-scooter"></i> @rider.vehicleType</span>
+                                <span class="state">@rider.Status</span>
+                            </div>
+                            @if (!string.IsNullOrEmpty(rider.StatusReason))
+                            {
+                                <div class="status-reason-sub" title="@rider.StatusReason">
+                                    @((rider.StatusReason.Length > 25) ? rider.StatusReason.Substring(0, 25) + "..." : rider.StatusReason)
+                                </div>
+                            }
+                        </div>
+
+                        <div class="rider-actions-quick" style="display: flex; gap: 6px;">
+                            @if (session.Rights.IsAdmin || session.Rights.chat_level > 0)
+                            {
+                                <button class="action-btn-circle" title="Secure Chat" @onclick:stopPropagation="true" @onclick="() => OpenChat(rider)">
+                                    <i class="bi bi-chat-right-dots-fill"></i>
+                                </button>
+                            }
+                            <button class="action-btn-circle" title="Route Playback" @onclick:stopPropagation="true" @onclick="() => StartRoutePlayback(rider)" style="background: rgba(14, 165, 233, 0.12); color: #0284c7; border: 1px solid rgba(14, 165, 233, 0.25);">
+                                <i class="bi bi-play-btn-fill"></i>
+                            </button>
+                        </div>
+                    </div>
+                }
+            </div>
+        </aside>
+    }
+
+    <!-- Main Command Center (Map) -->
+    <main class="control-center immersive-map">
+        @if (session.Rights.HasAccess("maps"))
+        {
+            <div class="map-workspace-premium">
+                <div id="mappel" class="mappls-map-styled"></div>
+
+                <div class="map-top-bar premium-glass" style="position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 50; padding: 6px 16px; border-radius: 30px; display: flex; gap: 12px; align-items: center; border: 1px solid rgba(255,255,255,0.4); box-shadow: 0 10px 30px rgba(0,0,0,0.1);">
+                    <div class="sync-info time-glow" style="font-weight: 800; font-size: 11px; color: #0ea5e9; display: flex; align-items: center; gap: 4px;">
+                        <i class="bi bi-clock"></i> @currentTime
+                    </div>
+                    <div class="sync-divider" style="width: 1px; height: 12px; background: rgba(0,0,0,0.15);"></div>
+                    <div class="sync-info text-success" style="font-weight: 800; font-size: 9.5px; text-transform: uppercase; display: flex; align-items: center; gap: 4px;">
+                        <i class="bi bi-broadcast pulse"></i> Live Telemetry
+                    </div>
+                    <div class="sync-divider" style="width: 1px; height: 12px; background: rgba(0,0,0,0.15);"></div>
+                    
+                    <!-- Premium Layer Toggles -->
+                    <div class="map-layer-controls" style="display: flex; gap: 6px;">
+                        <button class="layer-btn" @onclick="ToggleProximityCircles" style="
+                            background: @(showProximityCircles ? "rgba(16, 185, 129, 0.15)" : "rgba(0,0,0,0.03)");
+                            color: @(showProximityCircles ? "#10b981" : "#475569");
+                            border: 1px solid @(showProximityCircles ? "rgba(16, 185, 129, 0.3)" : "rgba(0,0,0,0.08)");
+                            padding: 3px 8px;
+                            border-radius: 10px;
+                            font-size: 9.5px;
+                            font-weight: 800;
+                            cursor: pointer;
+                            display: flex;
+                            align-items: center;
+                            gap: 4px;
+                            transition: all 0.2s ease;
+                        ">
+                            <i class="bi bi-geo-fill"></i> Zones
+                        </button>
+                        <button class="layer-btn" @onclick="ToggleClientHeatmap" style="
+                            background: @(showClientHeatmap ? "rgba(239, 68, 68, 0.15)" : "rgba(0,0,0,0.03)");
+                            color: @(showClientHeatmap ? "#ef4444" : "#475569");
+                            border: 1px solid @(showClientHeatmap ? "rgba(239, 68, 68, 0.3)" : "rgba(0,0,0,0.08)");
+                            padding: 3px 8px;
+                            border-radius: 10px;
+                            font-size: 9.5px;
+                            font-weight: 800;
+                            cursor: pointer;
+                            display: flex;
+                            align-items: center;
+                            gap: 4px;
+                            transition: all 0.2s ease;
+                        ">
+                            <i class="bi bi-fire"></i> Heatmap
+                        </button>
+                    </div>
+                </div>
+
+
+                
+                <div class="map-widgets-overlay">
+                    <div class="map-legend-premium">
+                        <div class="leg-item"><span class="orb available"></span> Ready</div>
+                        <div class="leg-item"><span class="orb busy"></span> Busy</div>
+                        <div class="leg-item"><span class="orb offline"></span> Away</div>
+                    </div>
+                </div>
+            </div>
+        }
+        else
+        {
+            <div class="map-restricted-placeholder glass-morphic">
+                <div class="restricted-content">
+                    <div class="restricted-orb">
+                        <i class="bi bi-geo-alt-fill"></i>
+                        <div class="lock-overlay"><i class="bi bi-lock-fill"></i></div>
+                    </div>
+                    <h3>Fleet Visibility Restricted</h3>
+                    <p>Live tracking access is disabled for your account level.</p>
+                </div>
+            </div>
+        }
+    </main>
+
+    @if (session.Rights.HasAccess("live_fleets"))
+    {
+        <!-- Right Sidebar: Ops & Logistics -->
+        <aside class="ops-sidebar premium-glass @(isRightPanelOpen ? "open" : "closed")">
+            @if (escalatedApps.Any())
+            {
+                <div class="ops-section-modern escalation-zone">
+                    <div class="section-header-tactical alert">
+                        <div class="header-icon"><i class="bi bi-exclamation-triangle-fill"></i></div>
+                        <div class="header-text">
+                            <h3>Critical Alerts</h3>
+                            <small>@escalatedApps.Count ACTIVE ESCALATIONS</small>
+                        </div>
+                    </div>
+                    
+                    <div class="escalation-scroller">
+                        @foreach (var esc in escalatedApps)
+                        {
+                            <div class="tactical-esc-card level-@esc.EscalationLevel" @onclick="() => HighlightAppOnMap(esc)">
+                                <div class="card-content">
+                                    <div class="d-flex justify-content-between align-items-center mb-1">
+                                        <span class="job-id">#@esc.AppSno</span>
+                                        <span class="level-badge">L@(esc.EscalationLevel)</span>
+                                    </div>
+                                    <div class="title">@(esc.EscalationLevel == 2 ? "Manager Escalation" : "Admin Escalation")</div>
+                                    <div class="rider-link">
+                                        <i class="bi bi-person-fill"></i>
+                                        <span>@GetRiderName(esc.RiderID ?? 0)</span>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            }
+
+            <div class="ops-section-scrollable">
+                <div class="task-scroller-wrap">
+                    <div class="section-header-tactical mt-4">
+                        <div class="header-icon"><i class="bi bi-clipboard-check-fill"></i></div>
+                        <div class="header-text">
+                            <h3>Pending Ops</h3>
+                            <small>@(nextride.Count + pendingAppointments.Count) Tasks in Queue</small>
+                        </div>
+                    </div>
+
+                    <div class="task-scroller">
+                        @if (!nextride.Any() && !pendingAppointments.Any())
+                        {
+                            <div class="ops-empty-state">
+                                <div class="empty-icon"><i class="bi bi-check-all"></i></div>
+                                <h5>All Clear</h5>
+                                <p>No pending logistics tasks</p>
+                            </div>
+                        }
+                        
+                        @foreach (var task in nextride.OrderBy(x => x.StartTime))
+                        {
+                            <div class="task-card trip">
+                                <div class="task-time"><i class="bi bi-truck"></i> @task.StartTime.ToString("hh:mm tt")</div>
+                                <div class="task-body">
+                                    <span class="task-title">Trip #@task.TripNo</span>
+                                    <div class="task-footer">
+                                        <span>@task.DistanceKM KM</span>
+                                        <span>@GetRiderName(task.RiderID)</span>
+                                    </div>
+                                </div>
+                                <div class="task-status-indicator bg-info"></div>
+                            </div>
+                        }
+
+                        @foreach (var app in pendingAppointments.OrderBy(x => x.AppointmentOn))
+                        {
+                            <div class="task-card appointment">
+                                <div class="task-time"><i class="bi bi-calendar-event"></i> @(app.AppointmentOn?.ToString("hh:mm tt") ?? "TBD")</div>
+                                <div class="task-body">
+                                    <span class="task-title">@GetReferralName(app.ReferralID ?? 0)</span>
+                                    <div class="task-footer">
+                                        <span>@app.Status</span>
+                                        <span>@GetRiderName(app.RiderID ?? 0)</span>
+                                    </div>
+                                </div>
+                                <div class="task-status-indicator bg-primary"></div>
+                            </div>
+                        }
+                    </div>
+
+                    <div class="section-header-tactical mt-4">
+                        <div class="header-icon"><i class="bi bi-box-seam-fill"></i></div>
+                        <div class="header-text">
+                            <h3>Recent Transfers</h3>
+                            <small>Live Hub Updates</small>
+                        </div>
+                    </div>
+
+                    <div class="transfer-compact-list">
+                        @foreach (var st in recentTransfers.Take(8))
+                        {
+                            <div class="transfer-item-compact">
+                                <div class="t-indicator"></div>
+                                <div class="t-info">
+                                    <div class="t-top">
+                                        <span class="t-id">@st.BusNumber</span>
+                                        <span class="t-time">@st.CreatedAt?.ToString("HH:mm")</span>
+                                    </div>
+                                    <span class="t-status">@st.Status</span>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                </div>
+            </div>
+        </aside>
+    }
+
+    <style>
+    .pulse-radar {
+        color: white;
+        font-size: 24px;
+        animation: radar-pulse 2s infinite;
+    }
+
+    @@keyframes radar-pulse {
+        0% {
+            transform: scale(0.9);
+            opacity: 0.8;
+            text-shadow: 0 0 0 rgba(255, 255, 255, 0.7);
+        }
+        50% {
+            transform: scale(1.1);
+            opacity: 1;
+            text-shadow: 0 0 15px rgba(255, 255, 255, 0.9);
+        }
+        100% {
+            transform: scale(0.9);
+            opacity: 0.8;
+            text-shadow: 0 0 0 rgba(255, 255, 255, 0.7);
+        }
+    }
+
+    .map-restricted-placeholder {
+        height: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: #f8fafc;
+        border-radius: 24px;
+        margin: 20px;
+    }
+
+    .restricted-content {
+        text-align: center;
+        max-width: 400px;
+    }
+
+    .restricted-orb {
+        width: 120px;
+        height: 120px;
+        background: #f1f5f9;
+        border-radius: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 50px;
+        color: #cbd5e1;
+        margin: 0 auto 30px;
+        position: relative;
+    }
+
+    .lock-overlay {
+        position: absolute;
+        bottom: -5px;
+        right: -5px;
+        width: 40px;
+        height: 40px;
+        background: #ef4444;
+        color: white;
+        border-radius: 12px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        border: 4px solid white;
+    }
+
+    .restricted-content h3 {
+        color: #1e293b;
+        font-weight: 900;
+        margin-bottom: 12px;
+    }
+
+    .restricted-content p {
+        color: #64748b;
+        line-height: 1.6;
+    }
+
+    /* Shutter Toggles */
+    .shutter-toggle {
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 110;
+        background: rgba(15, 23, 42, 0.85);
+        color: #0ea5e9;
+        border: 1px solid rgba(14, 165, 233, 0.3);
+        backdrop-filter: blur(10px);
+        width: 36px;
+        height: 72px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        outline: none;
+    }
+    
+    .shutter-toggle:hover { background: #0ea5e9; color: white; }
+    .shutter-toggle i { font-size: 18px; font-weight: bold; }
+    
+    .left-toggle { left: 0; border-radius: 0 16px 16px 0; border-left: none; }
+    .right-toggle { right: 0; border-radius: 16px 0 0 16px; border-right: none; }
+    
+    .left-toggle.shifted { left: 320px; }
+    .right-toggle.shifted { right: 340px; }
+</style>
+
+    @if (selectedRiderForChat != null)
+    {
+        <TrackAdmin.Components.Pages.Chat.ChatWindow Rider="selectedRiderForChat" OnClose="CloseChat" />
+    }
+</div>
+
+@code {
+    private bool pageReady = false;
+    private bool isLeftDrawerOpen = true;
+    private bool isRightPanelOpen = true;
+    private bool showProximityCircles = false;
+    private bool showClientHeatmap = false;
+
+    private Timer? _timer;
+    private Timer? _clockTimer;
+    private CancellationTokenSource _cts = new();
+    private DotNetObjectReference<Maps>? _objRef;
+
+    private string currentTime = DateTime.Now.ToString("hh:mm:ss tt");
+    private string currentDate = DateTime.Now.ToString("dddd, dd MMMM");
+    private string riderSearchQuery = "";
+    private string? selectedRiderId;
+    private int completedTodayCount = 0;
+    private List<SampleTransferResponse> recentTransfers = new();
+
+    private IEnumerable<RiderLocation> FilteredLocations => 
+        string.IsNullOrWhiteSpace(riderSearchQuery) 
+            ? Locations 
+            : Locations.Where(x => x.RiderName.Contains(riderSearchQuery, StringComparison.OrdinalIgnoreCase));
+
+    private async Task StartLoop()
+    {
+        var timer = new PeriodicTimer(TimeSpan.FromSeconds(2));
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(_cts.Token))
+            {
+                await RefreshLoop();
+            }
+        }
+        catch (OperationCanceledException) { }
+    }
+
+    private List<RiderLocation> Locations = new();
+    private Dictionary<string, string> _imageBase64Cache = new();
+    private int availableCount = 0;
+    private int busyCount = 0;
+    private int onHoldCount = 0;
+    private int permissionCount = 0;
+    private int offlineCount = 0;
+    private int pendingAppsCount = 0;
+    private Dictionary<int, int> unreadCounts = new();
+    private RiderLocation? selectedRiderForChat;
+
+    private List<Appointments> pendingAppointments = new();
+    private List<Appointments> escalatedApps = new();
+
+    IList<Rider_Current_Location> locations = new List<Rider_Current_Location>();
+    IList<Rider_Master> allrider = new List<Rider_Master>();
+    IList<Referral_Master> refm = new List<Referral_Master>();
+    IList<TripView> nextride = new List<TripView>();
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var userSessionResult = await protectedSessionStore.GetAsync<UserSession>("UserSession");
+            if (userSessionResult.Success && userSessionResult.Value != null)
+            {
+                var userSession = userSessionResult.Value;
+                session.IsLoggedIn = true;
+                session.TenantID = userSession.TenantID;
+                if (int.TryParse(userSession.UserID, out var parsedUserId))
+                {
+                    session.UserID = parsedUserId;
+                }
+                session.UserName = userSession.UserName;
+                session.Rights = userSession.Rights;
+                session.IsAdmin = userSession.IsAdmin;
+
+                _tenantState.TenantID = session.TenantID;
+            }
+
+            await LoadAllRidersAsync();
+            await LoadallreferralAsync();
+            await LoadUnreadCountsAsync();
+            await LoadTripViewAsync();
+            await LoadRecentTransfersAsync();
+            
+            _objRef = DotNetObjectReference.Create(this);
+            await JS.InvokeVoidAsync("initMappel", _tenantState.TenantID, _objRef);
+            
+            _clockTimer = new Timer(_ => {
+                currentTime = DateTime.Now.ToString("hh:mm:ss tt");
+                InvokeAsync(StateHasChanged);
+            }, null, 0, 1000);
+
+            _tenantState.OnStateChange += HandleStateChange;
+            HandleStateChange();
+
+            _ = StartLoop();
+            UpdateHeader();
+            pageReady = true;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task RefreshLoop()
+    {
+        try
+        {
+            await LoadAllRidersAsync();
+            await LoadUnreadCountsAsync();
+            await LoadTripViewAsync();
+            await LoadPendingAppointmentsAsync();
+            await LoadRecentTransfersAsync();
+
+            var request = new HttpRequestMessage(HttpMethod.Get, "LiveTracker/RiderCurrent");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            var response = await Http.SendAsync(request);
+            if (!response.IsSuccessStatusCode) return;
+
+            var tt = await response.Content.ReadAsStringAsync();
+            locations = JsonConvert.DeserializeObject<IList<Rider_Current_Location>>(tt) ?? new List<Rider_Current_Location>();
+
+            if (locations.Count >= 0)
+            {
+                Locations.Clear();
+
+                foreach (var it in locations)
+                {
+                    int unread = unreadCounts.ContainsKey(it.RiderID) ? unreadCounts[it.RiderID] : 0;
+                    var rm = allrider.FirstOrDefault(x => x.RiderID == it.RiderID);
+                    if (rm == null) continue;
+                    
+                    string tname = rm?.ShortName ?? "Unknown";
+                    string fname = rm?.Name ?? tname;
+                    string sreason = rm?.StatusReason ?? "";
+                    string sStatus = rm?.CurrentStatus ?? it.Status ?? "Offline";
+
+                    Locations.Add(new RiderLocation
+                    {
+                        RiderId = it.RiderID.ToString(),
+                        RiderName = tname,
+                        FullName = fname,
+                        vehicleType = it.Vehicle ?? "BIKE",
+                        Status = sStatus,
+                        CurrentStatus = rm?.CurrentStatus,
+                        StatusReason = sreason,
+                        Gender = it.Gender,
+                        Latitude = it.Latitude,
+                        Longitude = it.Longitude,
+                        UnreadCount = unread,
+                        ProfilePicture = _imageBase64Cache.GetValueOrDefault(it.RiderID.ToString(), "/images/default-avatar.png")
+                    });
+                }
+
+                var missingRiderIds = allrider.Where(r => !locations.Any(l => l.RiderID == r.RiderID)).Select(r => r.RiderID).ToList();
+                foreach (var rid in missingRiderIds)
+                {
+                    var rm = allrider.First(x => x.RiderID == rid);
+                    int unread = unreadCounts.ContainsKey(rid) ? unreadCounts[rid] : 0;
+                    
+                    Locations.Add(new RiderLocation
+                    {
+                        RiderId = rid.ToString(),
+                        RiderName = rm.ShortName,
+                        FullName = rm.Name,
+                        vehicleType = rm.VehicleType ?? "BIKE",
+                        Status = rm.CurrentStatus ?? "Offline",
+                        CurrentStatus = rm.CurrentStatus,
+                        StatusReason = rm.StatusReason,
+                        Gender = rm.Gender,
+                        Latitude = 0,
+                        Longitude = 0,
+                        UnreadCount = unread,
+                        ProfilePicture = _imageBase64Cache.GetValueOrDefault(rid.ToString(), "/images/default-avatar.png")
+                    });
+                }
+
+                Locations = Locations.OrderByDescending(x => x.UnreadCount > 0)
+                                     .ThenByDescending(x => x.Status.ToLower() == "active" || x.Status.ToLower() == "available")
+                                     .ToList();
+
+                availableCount = Locations.Count(x => x.Status?.Trim().ToLower() == "active" || x.Status?.Trim().ToLower() == "available");
+                onHoldCount = Locations.Count(x => x.Status?.Trim().ToLower() == "on hold");
+                permissionCount = Locations.Count(x => x.Status?.Trim().ToLower() == "permission");
+                offlineCount = Locations.Count(x => x.Status?.Trim().ToLower() == "offline");
+                busyCount = Locations.Count(x => x.Status?.Trim().ToLower() == "busy" || x.Status?.Trim().ToLower() == "engaged");
+                
+                _ = Task.Run(async () => {
+                    foreach(var loc in Locations.Take(15)) {
+                        if (!_imageBase64Cache.ContainsKey(loc.RiderId)) {
+                            var b64 = await GetRiderProfileImage(loc.RiderId);
+                            if (b64 != "/images/default-avatar.png") {
+                                _imageBase64Cache[loc.RiderId] = b64;
+                                loc.ProfilePicture = b64;
+                                await InvokeAsync(StateHasChanged);
+                                UpdateHeader();
+                            }
+                        }
+                    }
+                });
+
+                UpdateHeader();
+                await JS.InvokeVoidAsync("updateMarkers", Locations);
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch(Exception ex) { Console.WriteLine("Refresh Error: " + ex.Message); }
+    }
+
+    private async Task LoadRecentTransfersAsync()
+    {
+        try {
+            var sd = DateTime.Today.ToString("yyyy-MM-dd");
+            var ed = DateTime.Today.AddDays(1).ToString("yyyy-MM-dd");
+            var transfers = await msd.GetSampleTransfers(_tenantState.TenantID, sd, ed, 0);
+            recentTransfers = transfers.OrderByDescending(x => x.CreatedAt).ToList();
+            completedTodayCount = transfers.Count(x => x.Status.ToLower() == "completed" || x.Status.ToLower() == "received");
+        } catch { }
+    }
+
+    private string GetReferralName(int id) => refm.FirstOrDefault(x => x.ReferralID == id)?.Name ?? "Unknown Lab";
+    private string GetRiderName(int id) => allrider.FirstOrDefault(x => x.RiderID == id)?.ShortName ?? "Unassigned";
+
+    private async Task LoadUnreadCountsAsync()
+    {
+        try
+        {
+            var recipientId = session.UserID; 
+            if (recipientId == 0) return;
+
+            var request = new HttpRequestMessage(HttpMethod.Get, $"Chat/unread-counts?recipientId={recipientId}");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            var response = await Http.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                var tt = await response.Content.ReadAsStringAsync();
+                var results = JsonConvert.DeserializeObject<List<dynamic>>(tt);
+                unreadCounts.Clear();
+                foreach (var item in results) unreadCounts[(int)item.senderId] = (int)item.unreadCount;
+            }
+        }
+        catch (Exception ex) { Console.WriteLine("Unread Error: " + ex.Message); }
+    }
+
+    private async Task LoadAllRidersAsync()
+    {
+        if (string.IsNullOrEmpty(_tenantState.TenantID))
+        {
+            var resStore = await protectedSessionStore.GetAsync<string>("TenantID");
+            if (resStore.Success) _tenantState.TenantID = resStore.Value;
+        }
+
+        var request = new HttpRequestMessage(HttpMethod.Get, "User/GetFleetRiders");
+        request.Headers.Add("TenantId", _tenantState.TenantID ?? "");
+        var res = await Http.SendAsync(request);
+        if (res.IsSuccessStatusCode)
+        {
+            var tt = await res.Content.ReadAsStringAsync();
+            allrider = JsonConvert.DeserializeObject<IList<Rider_Master>>(tt) ?? new List<Rider_Master>();
+        }
+    }
+
+    private async Task LoadallreferralAsync()
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, "referral/allreferral");
+        request.Headers.Add("TenantId", _tenantState.TenantID);
+        var res = await Http.SendAsync(request);
+        if (res.IsSuccessStatusCode)
+        {
+            var tt = await res.Content.ReadAsStringAsync();
+            refm = JsonConvert.DeserializeObject<IList<Referral_Master>>(tt) ?? new List<Referral_Master>();
+        }
+    }
+
+    private async Task LoadTripViewAsync()
+    {
+        try {
+            DateTime dt = DateTime.Now;
+            string sd = dt.ToString("yyyy-MM-dd") + " 00:00:00";
+            string ed = dt.ToString("yyyy-MM-dd") + " 23:59:59";
+
+            var request = new HttpRequestMessage(HttpMethod.Get, $"LiveTracker/GetNextTrip?sd={Uri.EscapeUriString(sd)}&ed={Uri.EscapeUriString(ed)}");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            var res = await Http.SendAsync(request);
+            if (res.IsSuccessStatusCode)
+            {
+                var rr = await res.Content.ReadAsStringAsync();
+                var nex = JsonConvert.DeserializeObject<IList<TripView>>(rr);
+                if (nex != null)
+                {
+                    nextride = nex.Where(x => x.EndTime == null).ToList();
+                }
+            }
+        } catch { }
+    }
+
+    private async Task LoadPendingAppointmentsAsync()
+    {
+        try {
+            DateTime dt = DateTime.Now;
+            string sd = dt.ToString("yyyy-MM-dd") + " 00:00:00";
+            string ed = dt.ToString("yyyy-MM-dd") + " 23:59:59";
+            
+            var request = new HttpRequestMessage(HttpMethod.Get, $"SampleCollection/appdate?sd={Uri.EscapeUriString(sd)}&ed={Uri.EscapeUriString(ed)}&isupcoming={false}");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            var res = await Http.SendAsync(request);
+            if (res.IsSuccessStatusCode)
+            {
+                var rr = await res.Content.ReadAsStringAsync();
+                var apps = JsonConvert.DeserializeObject<IList<Appointments>>(rr);
+                if (apps != null)
+                {
+                    pendingAppointments = apps.Where(x => (x.Status == "Pending" || x.Status == "New" || x.Status == "Accepted") && x.Deleted != true).ToList();
+                    escalatedApps = apps.Where(x => x.EscalationLevel > 0 && 
+                                                    (string.Equals(x.Status, "Pending", StringComparison.OrdinalIgnoreCase) || string.Equals(x.Status, "New", StringComparison.OrdinalIgnoreCase)) && 
+                                                    x.Deleted != true).ToList();
+                    pendingAppsCount = nextride.Count + pendingAppointments.Count;
+                }
+            }
+        } catch { }
+    }
+
+    private async Task HighlightAppOnMap(Appointments app)
+    {
+        if (app.RiderID.HasValue)
+        {
+            var loc = Locations.FirstOrDefault(x => x.RiderId == app.RiderID.Value.ToString());
+            if (loc != null) await FocusRider(loc);
+        }
+    }
+
+    [JSInvokable]
+    public async Task<string> GetRiderProfileImage(string riderId)
+    {
+        try
+        {
+            var request = new HttpRequestMessage(HttpMethod.Get, $"User/GetImage?imageType=profile-pics&riderId={riderId}");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            var response = await Http.SendAsync(request);
+            if (response.IsSuccessStatusCode)
+            {
+                var bytes = await response.Content.ReadAsByteArrayAsync();
+                return $"data:{response.Content.Headers.ContentType};base64,{Convert.ToBase64String(bytes)}";
+            }
+        }
+        catch { }
+        return "/images/default-avatar.png";
+    }
+
+    [JSInvokable]
+    public void OpenRiderChat(string riderId)
+    {
+        var rider = Locations.FirstOrDefault(x => x.RiderId == riderId);
+        if (rider != null) { OpenChat(rider); StateHasChanged(); }
+    }
+
+    [JSInvokable]
+    public async Task ToggleRiderStatus(string riderId, string currentStatus)
+    {
+        try
+        {
+            var rider = locations.FirstOrDefault(x => x.RiderID.ToString() == riderId);
+            if (rider == null) return;
+
+            string newStatus = (currentStatus.ToLower() == "available" || currentStatus.ToLower() == "active") ? "Offline" : "Available";
+
+            LoadLocation ls = new LoadLocation {
+                rcl = new Rider_Current_Location { RiderID = rider.RiderID, Vehicle = rider.Vehicle ?? "Bike", Latitude = rider.Latitude, Longitude = rider.Longitude, Status = newStatus, EnteredDate = DateTime.Now },
+                rs = new RiderStatus { ID = Guid.NewGuid(), Session = "Admin Override", latitude = rider.Latitude.ToString(), longitude = rider.Longitude.ToString(), StartTime = DateTime.Now, EndTime = DateTime.Now, RiderID = rider.RiderID }
+            };
+
+            var request = new HttpRequestMessage(HttpMethod.Post, "LiveTracker/updatestatus");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            request.Content = JsonContent.Create(ls);
+            var res = await Http.SendAsync(request);
+            if (res.IsSuccessStatusCode) {
+                var loc = Locations.FirstOrDefault(x => x.RiderId == riderId);
+                if (loc != null) loc.Status = newStatus;
+                await RefreshLoop();
+            }
+        }
+        catch { }
+    }
+
+    private async Task ToggleProximityCircles()
+    {
+        showProximityCircles = !showProximityCircles;
+        await JS.InvokeVoidAsync("toggleProximityZones", showProximityCircles);
+    }
+
+    private async Task ToggleClientHeatmap()
+    {
+        showClientHeatmap = !showClientHeatmap;
+        if (showClientHeatmap)
+        {
+            var heatmapPoints = refm.Select(r => {
+                int weight = pendingAppointments.Count(a => a.ReferralID == r.ReferralID);
+                return new {
+                    lat = r.Latitude,
+                    lng = r.Longitude,
+                    weight = weight > 0 ? weight : 1
+                };
+            }).Where(p => p.lat != 0 && p.lng != 0).ToList();
+
+            await JS.InvokeVoidAsync("toggleClientHeatmap", true, heatmapPoints);
+        }
+        else
+        {
+            await JS.InvokeVoidAsync("toggleClientHeatmap", false, new object[] {});
+        }
+    }
+
+    private async Task StartRoutePlayback(RiderLocation rider)
+    {
+        try
+        {
+            int riderId = int.Parse(rider.RiderId);
+            string sd = DateTime.Today.ToString("yyyy-MM-dd 00:00:00");
+            string ed = DateTime.Today.ToString("yyyy-MM-dd 23:59:59");
+
+            var request = new HttpRequestMessage(HttpMethod.Get, $"LiveTracker/RiderRoute?id={riderId}&sd={Uri.EscapeDataString(sd)}&ed={Uri.EscapeDataString(ed)}");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            var response = await Http.SendAsync(request);
+
+            if (response.IsSuccessStatusCode)
+            {
+                var content = await response.Content.ReadAsStringAsync();
+                var rawRoute = JsonConvert.DeserializeObject<IList<RiderStatus>>(content) ?? new List<RiderStatus>();
+
+                var routePoints = rawRoute
+                    .Select(r => {
+                        double lat = 0;
+                        double lng = 0;
+                        double.TryParse(r.latitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out lat);
+                        double.TryParse(r.longitude, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out lng);
+                        return new { lat, lng, time = r.StartTime };
+                    })
+                    .Where(p => p.lat != 0 && p.lng != 0)
+                    .OrderBy(p => p.time)
+                    .ToList();
+
+                if (routePoints.Count == 0)
+                {
+                    await JS.InvokeVoidAsync("alert", $"No GPS route data available for {rider.RiderName} today.");
+                    return;
+                }
+
+                await JS.InvokeVoidAsync("startRoutePlayback", rider.RiderId, rider.RiderName, routePoints);
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("alert", "Failed to retrieve route playback data.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Playback error: " + ex.Message);
+        }
+    }
+
+    [JSInvokable]
+    public async Task RequestRoutePlayback(string riderId, string riderName)
+    {
+        var rider = Locations.FirstOrDefault(x => x.RiderId == riderId);
+        if (rider != null)
+        {
+            await StartRoutePlayback(rider);
+        }
+    }
+
+    private async Task FocusRider(RiderLocation rider)
+    {
+        selectedRiderId = rider.RiderId;
+        await JS.InvokeVoidAsync("focusRider", rider.RiderId);
+        if (rider.UnreadCount > 0) await MarkAsRead(rider);
+    }
+
+    private void OpenChat(RiderLocation rider)
+    {
+        selectedRiderForChat = rider;
+        _ = MarkAsRead(rider);
+    }
+
+    private void CloseChat() => selectedRiderForChat = null;
+
+    private async Task MarkAsRead(RiderLocation rider)
+    {
+        if (rider.UnreadCount <= 0) return;
+        try {
+            var payload = new { senderId = int.Parse(rider.RiderId), recipientId = session.UserID };
+            var request = new HttpRequestMessage(HttpMethod.Post, "Chat/mark-read");
+            request.Headers.Add("TenantId", _tenantState.TenantID);
+            request.Content = JsonContent.Create(payload);
+            await Http.SendAsync(request);
+            
+            rider.UnreadCount = 0;
+            unreadCounts[int.Parse(rider.RiderId)] = 0;
+            await InvokeAsync(StateHasChanged);
+        } catch { }
+    }
+
+    private void UpdateHeader()
+    {
+        Metadata.UpdatePage(
+            "Live Telemetry & Maps", 
+            "Live fleet tracking & operations hub", 
+            "bi-broadcast-pin",
+            new List<PageStat> {
+                new PageStat { Label = "Pending Today", Value = pendingAppsCount.ToString() },
+                new PageStat { Label = "Completed", Value = completedTodayCount.ToString(), Color = "text-success" }
+            }
+        );
+    }
+
+    private void HandleStateChange()
+    {
+        if (_tenantState.ChatOpenRiderId != null)
+        {
+            var riderIdStr = _tenantState.ChatOpenRiderId;
+            var riderName = _tenantState.ChatOpenRiderName ?? "Rider";
+            
+            var rider = Locations.FirstOrDefault(l => l.RiderId == riderIdStr);
+            if (rider == null)
+            {
+                rider = new RiderLocation
+                {
+                    RiderId = riderIdStr,
+                    RiderName = riderName,
+                    FullName = riderName
+                };
+            }
+            
+            selectedRiderForChat = rider;
+            _tenantState.ClearOpenChatRequest();
+            InvokeAsync(StateHasChanged);
+        }
+    }
+
+    public void Dispose()
+    {
+        _tenantState.OnStateChange -= HandleStateChange;
+        _cts.Cancel();
+        _timer?.Dispose();
+        _clockTimer?.Dispose();
+        _objRef?.Dispose();
+    }
+}

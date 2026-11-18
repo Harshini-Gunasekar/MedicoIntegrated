@@ -1,0 +1,2562 @@
+@using Microsoft.AspNetCore.SignalR.Client
+@using TrackAdmin.Models
+@using TrackAdmin.Data
+@using Microsoft.Extensions.Options
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
+@using Newtonsoft.Json
+@inject HttpClient Http
+@inject UserSessionService session
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+@inject TenantState _tenantState
+@inject ProtectedSessionStorage protectedSessionStore
+@inject NavigationManager Navigation
+@inject AuthenticationStateProvider authStateProvider
+
+<div class="chat-sidebar-drawer animate-slide-left">
+        <div class="chat-sidebar-backdrop" @onclick="Close"></div>
+        <div class="chat-sidebar-content">
+            <!-- Split Layout -->
+            <div class="chat-split-container">
+                
+                <!-- Left Pane: Conversation List -->
+                <div class="chat-left-pane">
+                    <div class="chat-search-header">
+                        <div class="search-input-wrap">
+                            <i class="bi bi-search"></i>
+                            <input type="text" placeholder="Search conversation" @bind="chatSearchQuery" @bind:event="oninput" />
+                            <i class="bi bi-filter filter-icon" title="Filter list"></i>
+                        </div>
+                    </div>
+                    
+                    <div class="chat-members-list">
+                        @if (filteredMembers == null || !filteredMembers.Any())
+                        {
+                            <div class="empty-members">
+                                <i class="bi bi-person-x-fill mb-2 fs-2 text-muted"></i>
+                                <span>No contacts found</span>
+                            </div>
+                        }
+                        else
+                        {
+                            @foreach (var member in filteredMembers)
+                            {
+                                var isActive = Rider != null && member.Id.ToString() == Rider.RiderId;
+                                var unreadCount = getUnreadCount(member.Id);
+                                <div class="chat-member-item @(isActive ? "active" : "")" @onclick="() => SwitchActiveRider(member)">
+                                    <div class="member-avatar-wrap" @onclick:stopPropagation="true" @onclick="() => ShowMemberDetails(member)" title="Click to view details">
+                                        <img src="@GetRiderProfileImage(member.Id)" class="member-avatar" onerror="this.src='/images/default-avatar.png'" />
+                                        <span class="member-status-dot @((member.Status?.Trim().ToLower() == "active" || member.Status?.Trim().ToLower() == "available" || member.Status?.Trim().ToLower() == "intransit" || member.Status?.Trim().ToLower() == "online") ? "online" : "")"></span>
+                                    </div>
+                                    <div class="member-info">
+                                        <div class="member-name-row">
+                                            <span class="member-name">@member.Name</span>
+                                            <span class="member-time">@(member.LastMessageTime.HasValue ? member.LastMessageTime.Value.ToLocalTime().ToString("hh:mm tt") : "")</span>
+                                        </div>
+                                        <div class="member-message-row">
+                                            <span class="member-snippet text-muted">@member.LastMessage</span>
+                                            @if (unreadCount > 0)
+                                            {
+                                                <span class="member-unread-badge">@unreadCount</span>
+                                            }
+                                        </div>
+                                    </div>
+                                </div>
+                            }
+                        }
+                    </div>
+                </div>
+                
+                <!-- Right Pane: Active Conversation -->
+                <div class="chat-right-pane">
+                    @if (Rider != null)
+                    {
+                        <div class="chat-pane-header">
+                            <div class="pane-header-title d-flex flex-column align-items-start">
+                                <span class="pane-app-title" style="line-height: 1.2;">@Rider.RiderName</span>
+                                <span class="pane-subtitle" style="font-size: 11px; font-weight: 600; margin-top: 2px; display: flex; align-items: center; gap: 4px; color: @(hubConnection?.State == HubConnectionState.Connected ? "#10b981" : "#d97706");">
+                                    <span class="status-dot" style="width: 6px; height: 6px; border-radius: 50%; display: inline-block; background-color: @(hubConnection?.State == HubConnectionState.Connected ? "#10b981" : "#d97706");"></span>
+                                    @(GetConnectionStatusText())
+                                </span>
+                            </div>
+                            <button class="pane-close-btn" @onclick="Close" title="Close Chat Drawer"><i class="bi bi-x-lg"></i></button>
+                        </div>
+                        
+                        <div class="chat-body" id="chat-body-@Rider.RiderId">
+                            @if (isLoading)
+                            {
+                                <div class="chat-loading-overlay">
+                                    <div class="chat-history-skeleton">
+                                        @for (int sk = 0; sk < 6; sk++)
+                                        {
+                                            var isOdd = sk % 2 == 0;
+                                            <div class="skeleton-row @(isOdd ? "sk-me" : "sk-them")">
+                                                <div class="skeleton-bubble @(isOdd ? "sk-me" : "sk-them")" style="width: @(isOdd ? "55" : "65")%"></div>
+                                            </div>
+                                        }
+                                    </div>
+                                    <div class="chat-loading-label"><i class="bi bi-hourglass-split me-1"></i>Loading messages, please wait...</div>
+                                </div>
+                            }
+                            else if (messages.Count == 0)
+                            {
+                                <div class="empty-chat">
+                                    <i class="bi bi-chat-dots"></i>
+                                    <p>No messages yet. Say hi!</p>
+                                </div>
+                            }
+                            else
+                            {
+                                @foreach (var msg in messages)
+                                {
+                                    var isMe = msg.SenderId == session.UserID;
+                                    <div class="msg-row @(isMe ? "me" : "them")">
+                                        @if (!isMe)
+                                        {
+                                            <img src="@GetRiderProfileImage(msg.SenderId)" class="chat-bubble-avatar" onerror="this.src='/images/default-avatar.png'" />
+                                        }
+                                        <div class="msg-bubble-wrap">
+                                            <div class="msg-bubble">
+                                                @if (msg.MessageType == "Voice")
+                                                {
+                                                    if (msg.Id < 0 && msg.Content == "Uploading...")
+                                                    {
+                                                        <div class="voice-msg-uploading-state d-flex align-items-center gap-2 py-1 px-2" style="color: #2563eb;">
+                                                            <div class="spinner-border text-primary" role="status" style="width: 16px; height: 16px; border-width: 1.5px;"></div>
+                                                            <span style="font-size: 13px; font-weight: 600;">Sending audio note...</span>
+                                                        </div>
+                                                    }
+                                                    else
+                                                    {
+                                                        var playerElementId = $"voice-player-{msg.Id}";
+                                                        var fileUrl = (msg.FilePath ?? "").StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                                                            ? msg.FilePath
+                                                            : $"{ApiConfig.Value.BaseApiUrl}Chat/file?path={Uri.EscapeDataString(msg.FilePath ?? "")}&TenantId={_tenantState.TenantID}";
+                                                        <div class="voice-msg-player" id="@playerElementId">
+                                                            <button class="audio-play-btn" @onclick="() => PlayVoiceMessage(fileUrl, playerElementId)" @onclick:stopPropagation="true">
+                                                                <i class="bi bi-play-fill"></i>
+                                                            </button>
+                                                            <div class="audio-progress-bar-wrap">
+                                                                <div class="audio-progress-line" style="width:0%"></div>
+                                                                <div class="audio-progress-thumb" style="left:0%"></div>
+                                                            </div>
+                                                            <span class="audio-duration">--:--</span>
+                                                        </div>
+                                                    }
+                                                }
+                                                else if (msg.MessageType == "Photo")
+                                                {
+                                                    if (msg.Id < 0 && msg.Content == "Uploading...")
+                                                    {
+                                                        <div class="photo-msg-uploading-state d-flex flex-column align-items-center justify-content-center" style="width: 240px; height: 160px; background: rgba(0, 0, 0, 0.03); border-radius: 12px; border: 1.5px dashed rgba(37, 99, 235, 0.25);">
+                                                            <div class="spinner-border text-primary mb-2" role="status" style="width: 24px; height: 24px; border-width: 2px;"></div>
+                                                            <span style="font-size: 13px; font-weight: 600; color: #2563eb;">Uploading photo...</span>
+                                                        </div>
+                                                    }
+                                                    else
+                                                    {
+                                                        var fileUrl = !string.IsNullOrEmpty(msg.FilePath)
+                                                            ? (msg.FilePath.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                                                                ? msg.FilePath
+                                                                : $"{ApiConfig.Value.BaseApiUrl}Chat/file?path={Uri.EscapeDataString(msg.FilePath)}&TenantId={_tenantState.TenantID}")
+                                                            : "";
+                                                        var imgId = $"chat-photo-{msg.Id}";
+                                                        if (!string.IsNullOrEmpty(fileUrl))
+                                                        {
+                                                            <div class="photo-msg-wrap" @onclick="() => OpenGallery(fileUrl)" @onclick:stopPropagation="true" style="cursor: pointer; position: relative;">
+                                                                <img id="@imgId"
+                                                                     src="@fileUrl"
+                                                                     class="photo-msg-img"
+                                                                     style="max-width: 240px; border-radius: 12px; border: 1px solid rgba(0,0,0,0.1); display: block;"
+                                                                     onerror="(function(img){
+                                                                          img.onerror=null;
+                                                                          setTimeout(function(){
+                                                                              var errDiv=document.getElementById('err-'+img.id);
+                                                                              var freshSrc=img.src.split('&_t=')[0]+'&_t='+Date.now();
+                                                                              img.onerror=function(){
+                                                                                  img.style.display='none';
+                                                                                  if(errDiv) errDiv.style.display='flex';
+                                                                              };
+                                                                              img.src=freshSrc;
+                                                                          },1500);
+                                                                      })(this)" />
+                                                                <div id="err-@imgId" class="photo-error-state" style="display:none;"
+                                                                     @onclick:stopPropagation="true">
+                                                                    <i class="bi bi-camera-video-off photo-error-icon"></i>
+                                                                    <span class="photo-error-text">Image failed to load</span>
+                                                                    <button class="photo-retry-btn"
+                                                                            onclick="(function(btn){var img=document.getElementById('@imgId');if(img){img.style.display='';document.getElementById('err-@imgId').style.display='none';img.src=img.src.split('&_t=')[0]+'&_t='+Date.now();}})(this)">
+                                                                        <i class="bi bi-arrow-clockwise"></i> Retry
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        }
+                                                        else
+                                                        {
+                                                            <div class="photo-error-state static">
+                                                                <i class="bi bi-image photo-error-icon"></i>
+                                                                <span class="photo-error-text">Image unavailable</span>
+                                                            </div>
+                                                        }
+                                                    }
+                                                }
+                                                 else if (msg.MessageType == "File")
+                                                 {
+                                                     var fileUrl = !string.IsNullOrEmpty(msg.FilePath)
+                                                         ? (msg.FilePath.StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                                                             ? msg.FilePath
+                                                             : $"{ApiConfig.Value.BaseApiUrl}Chat/file?path={Uri.EscapeDataString(msg.FilePath)}&TenantId={_tenantState.TenantID}")
+                                                         : "";
+                                                     <div class="file-msg-wrap d-flex align-items-center gap-2 rounded-3" style="background: rgba(15, 23, 42, 0.03); border: 1.5px solid rgba(15, 23, 42, 0.08); width: 240px; padding: 10px; pointer-events: auto;">
+                                                         <i class="bi bi-file-earmark-text-fill text-primary" style="font-size: 26px;"></i>
+                                                         <div class="file-msg-info d-flex flex-column" style="min-width: 0; flex: 1;">
+                                                             <span class="file-msg-name text-dark fw-bold text-truncate" style="font-size: 13px;" title="@msg.Content">@msg.Content</span>
+                                                             @if (!string.IsNullOrEmpty(fileUrl))
+                                                             {
+                                                                 <a href="@fileUrl" target="_blank" download="@msg.Content" class="file-msg-download text-primary fw-bold text-decoration-none mt-1 d-flex align-items-center gap-1" style="font-size: 11px; width: fit-content;" @onclick:stopPropagation="true">
+                                                                     <i class="bi bi-download"></i> Download
+                                                                 </a>
+                                                             }
+                                                         </div>
+                                                     </div>
+                                                 }
+                                                else if (IsShiftChangeRequest(msg.Content, out var shiftReq) && shiftReq != null)
+                                                {
+                                                    <div class="shift-change-card" @onclick="GoToRoster">
+                                                         <div class="card-header-row">
+                                                             <i class="bi bi-arrow-left-right card-header-icon"></i>
+                                                             <span class="card-header-title">SHIFT CHANGE REQUEST</span>
+                                                         </div>
+                                                         <div class="card-body-row">
+                                                             <span class="card-label">Rider:</span>
+                                                             <span class="card-value fw-bold text-dark">@shiftReq.RiderName (ID: @shiftReq.RiderId)</span>
+                                                         </div>
+                                                         <div class="card-section-title">SHIFTS TO CHANGE:</div>
+                                                         <div style="max-height: 200px; overflow-y: auto; padding-right: 2px;">
+                                                             @foreach (var item in shiftReq.Items)
+                                                             {
+                                                                 <div class="card-shift-box mb-2" style="border-left: 3px solid #6366f1; padding-left: 10px; background: rgba(99, 102, 241, 0.03); border-radius: 4px; padding-top: 6px; padding-bottom: 6px; margin-bottom: 8px;">
+                                                                     <div class="d-flex align-items-center gap-1 flex-wrap mb-1">
+                                                                         <i class="bi bi-clock-history text-primary" style="font-size: 13px;"></i>
+                                                                         <span class="fw-bold text-dark text-xs" style="font-size: 11px;">@item.CurrentShiftName</span>
+                                                                         <i class="bi bi-arrow-right text-muted" style="font-size: 11px; margin: 0 2px;"></i>
+                                                                         <span class="badge bg-success-light text-success fw-bold rounded px-1.5 py-0.5 text-xxs" style="font-size: 10px; font-weight: 700;">Change to: @item.RequestedShiftName</span>
+                                                                     </div>
+                                                                     <div class="text-muted text-xxs" style="font-size: 10.5px; font-weight: 500; margin-left: 16px;">@item.ShiftDetailsText</div>
+                                                                 </div>
+                                                             }
+                                                         </div>
+                                                         <div class="card-body-row pt-1 flex-column align-items-start">
+                                                             <span class="card-label mb-1">Reason:</span>
+                                                             <span class="card-reason-notes italic text-muted">@shiftReq.Reason</span>
+                                                         </div>
+                                                         
+                                                         @if (!string.IsNullOrEmpty(shiftReq.StatusText))
+                                                         {
+                                                             <div class="card-status-indicator text-success border-top pt-2 mt-2 text-xs d-flex align-items-center gap-1">
+                                                                 <i class="bi bi-check-circle-fill"></i> @(shiftReq.StatusText.Replace("Changed to:", "Change to:", StringComparison.OrdinalIgnoreCase))
+                                                             </div>
+                                                         }
+                                                         else
+                                                         {
+                                                             <div class="card-status-indicator text-success border-top pt-2 mt-2 text-xs d-flex align-items-center gap-1">
+                                                                 <i class="bi bi-check-circle-fill"></i> Change Requested
+                                                             </div>
+                                                         }
+                                                     </div>
+                                                }
+                                                else
+                                                {
+                                                    <p class="msg-content">@msg.Content</p>
+                                                }
+                                            </div>
+                                            <div class="msg-time-container">
+                                                <span class="msg-time">@msg.CreatedAt.ToLocalTime().ToString("hh:mm tt")</span>
+                                                @if (isMe)
+                                                {
+                                                    @if (msg.IsRead)
+                                                    {
+                                                        <i class="bi bi-check-all ms-1" style="font-size: 15px; color: #2563eb !important;" title="Read"></i>
+                                                    }
+                                                    else if (msg.IsDelivered)
+                                                    {
+                                                        <i class="bi bi-check-all ms-1" style="font-size: 15px; color: #94a3b8 !important;" title="Delivered"></i>
+                                                    }
+                                                    else
+                                                    {
+                                                        <i class="bi bi-check ms-1" style="font-size: 15px; color: #94a3b8 !important;" title="Sent"></i>
+                                                    }
+                                                }
+                                            </div>
+                                        </div>
+                                    </div>
+                                }
+                                @if (isRiderRecordingVoice)
+                                {
+                                    <div class="msg-row them animate-fade-in">
+                                        <img src="@GetRiderProfileImage(int.Parse(Rider.RiderId))" class="chat-bubble-avatar" onerror="this.src='/images/default-avatar.png'" />
+                                        <div class="msg-bubble-wrap">
+                                            <div class="msg-bubble recording-bubble d-flex align-items-center gap-2" style="background: rgba(239, 68, 68, 0.08); color: #ef4444; border: 1.5px solid rgba(239, 68, 68, 0.15); padding: 10px 14px; border-radius: 18px; border-top-left-radius: 4px;">
+                                                <span class="recording-dot"></span>
+                                                <span style="font-size: 13px; font-weight: 600;">Recording voice message...</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                }
+                                else if (isRiderTyping)
+                                {
+                                    <div class="msg-row them animate-fade-in">
+                                        <img src="@GetRiderProfileImage(int.Parse(Rider.RiderId))" class="chat-bubble-avatar" onerror="this.src='/images/default-avatar.png'" />
+                                        <div class="msg-bubble-wrap">
+                                            <div class="msg-bubble typing-bubble">
+                                                <div class="typing-dots">
+                                                    <span class="typing-dot"></span>
+                                                    <span class="typing-dot"></span>
+                                                    <span class="typing-dot"></span>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        </div>
+                        
+                        <div class="chat-footer" style="position: relative;">
+                            <InputFile id="photo-input" OnChange="UploadPhotoFile" style="display:none;" accept="image/*" />
+
+                            @if (isUploadingPhoto)
+                            {
+                                <div class="photo-upload-overlay">
+                                    <div class="photo-upload-spinner"></div>
+                                    <span class="photo-upload-label">Uploading image, please wait...</span>
+                                </div>
+                            }
+                            
+                            <button class="footer-action-btn me-1" title="Send Photo" @onclick="TriggerPhotoInput" disabled="@isUploadingPhoto"><i class="bi bi-camera"></i></button>
+                            <button class="footer-action-btn me-2" title="Add Emoji" @onclick="ToggleEmojiPicker"><i class="bi bi-emoji-smile"></i></button>
+                            
+                            @if (showEmojiPicker)
+                            {
+                                <div class="emoji-picker-popup shadow-lg border rounded-3 p-2">
+                                    <div class="emoji-grid">
+                                        @foreach (var emoji in emojis)
+                                        {
+                                            <span class="emoji-item" @onclick="() => AppendEmoji(emoji)">@emoji</span>
+                                        }
+                                    </div>
+                                </div>
+                            }
+
+                            @if (isRecording)
+                            {
+                                <div class="recording-indicator-bar flex-grow-1 d-flex align-items-center gap-2 px-3 py-1.5 rounded-pill" style="background: rgba(239, 68, 68, 0.08); color: #ef4444;">
+                                    <span class="recording-dot"></span>
+                                    <span style="font-size: 13px; font-weight: 600;">Recording voice message... @(recordDuration)s / 60s</span>
+                                </div>
+                            }
+                            else
+                            {
+                                <input type="text" 
+                                       class="chat-input" 
+                                       placeholder="@(isUploadingPhoto ? "Uploading image..." : (session.Rights.IsAdmin || session.Rights.chat_level == 2 ? "Type your message..." : session.Rights.chat_level == 1 ? "Read-only access..." : "Chat disabled..."))" 
+                                       @bind="newMessage"
+                                       @bind:event="oninput"
+                                       @onkeyup="HandleKeyUp"
+                                       disabled="@(isUploadingPhoto || !(session.Rights.IsAdmin || session.Rights.chat_level == 2))" />
+                            }
+
+                            @if (string.IsNullOrWhiteSpace(newMessage) && (session.Rights.IsAdmin || session.Rights.chat_level == 2))
+                            {
+                                <button class="footer-action-btn mic-btn ms-1 @(isRecording ? "recording" : "")"
+                                        @onmousedown="StartVoiceRecording"
+                                        @onmouseup="StopVoiceRecording"
+                                        @onmouseleave="StopVoiceRecording"
+                                        @ontouchstart="StartVoiceRecording"
+                                        @ontouchend="StopVoiceRecording"
+                                        title="Hold to record voice note">
+                                    <i class="bi bi-mic-fill"></i>
+                                </button>
+                            }
+                            else
+                            {
+                                <button class="send-btn @(!(session.Rights.IsAdmin || session.Rights.chat_level == 2) ? "disabled" : "")" @onclick="SendMessage" disabled="@(isUploadingPhoto || !(session.Rights.IsAdmin || session.Rights.chat_level == 2))">
+                                    <i class="bi bi-arrow-right-short" style="font-size: 24px;"></i>
+                                </button>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="chat-pane-header no-chat-header" style="justify-content: flex-end; border-bottom: 1px solid rgba(0,0,0,0.05); background: transparent; padding: 14px 24px;">
+                            <button class="pane-close-btn" @onclick="Close" title="Close Chat Drawer"><i class="bi bi-x-lg"></i></button>
+                        </div>
+                        <div class="empty-chat-pane" style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 40px; text-align: center;">
+                            <i class="bi bi-chat-left-dots-fill text-muted mb-3" style="font-size: 48px; opacity: 0.4;"></i>
+                            <h5 class="text-muted" style="font-weight: 500;">Select a conversation to start chatting</h5>
+                        </div>
+                    }
+                </div>
+            </div>
+    </div>
+</div>
+
+@if (selectedMemberForDetails != null)
+{
+    <div class="member-details-modal-backdrop" @onclick="CloseMemberDetails"></div>
+    <div class="member-details-modal animate-slide-up">
+        <div class="details-modal-header">
+            <h5>Contact Details</h5>
+            <button class="modal-close-btn" @onclick="CloseMemberDetails"><i class="bi bi-x-lg"></i></button>
+        </div>
+        <div class="details-modal-body">
+            <div class="details-avatar-wrap">
+                <img src="@GetRiderProfileImage(selectedMemberForDetails.Id)" class="details-avatar" onerror="this.src='/images/default-avatar.png'" />
+            </div>
+            <h4 class="details-name">@selectedMemberForDetails.Name</h4>
+            <span class="details-role">@selectedMemberForDetails.Type</span>
+            
+            <div class="details-info-grid">
+                <div class="info-row">
+                    <i class="bi bi-telephone-fill"></i>
+                    <div class="info-content">
+                        <span class="info-label">Phone</span>
+                        <span class="info-value">@selectedMemberForDetails.Mobile</span>
+                    </div>
+                </div>
+                <div class="info-row">
+                    <i class="bi bi-envelope-fill"></i>
+                    <div class="info-content">
+                        <span class="info-label">Email</span>
+                        <span class="info-value">@(string.IsNullOrEmpty(selectedMemberForDetails.Email) ? "No email provided" : selectedMemberForDetails.Email)</span>
+                    </div>
+                </div>
+                <div class="info-row">
+                    <i class="bi bi-activity"></i>
+                    <div class="info-content">
+                        <span class="info-label">Status</span>
+                        <span class="info-value">@selectedMemberForDetails.Status</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+}
+
+@if (!string.IsNullOrEmpty(galleryPhotoUrl))
+{
+    <div class="gallery-modal-backdrop" @onclick="CloseGallery"></div>
+    <div class="gallery-modal animate-fade-in" @onclick="CloseGallery">
+        <div class="gallery-modal-content" @onclick:stopPropagation="true">
+            <button class="gallery-close-btn" @onclick="CloseGallery"><i class="bi bi-x-lg"></i></button>
+            <img src="@galleryPhotoUrl" class="gallery-large-img" />
+        </div>
+    </div>
+}
+
+<style>
+    /* Premium Sliding Split Chat Drawer Layout */
+    .chat-sidebar-drawer {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 100000;
+        display: flex;
+        justify-content: flex-end;
+        background: none;
+        pointer-events: auto;
+    }
+
+    .chat-sidebar-backdrop {
+        position: absolute;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.35); /* Slate-800 style transparent backdrop */
+        z-index: 1;
+    }
+
+    .chat-sidebar-content {
+        width: 850px;
+        max-width: 95vw;
+        height: 100%;
+        background: #ffffff;
+        box-shadow: -10px 0 40px rgba(0, 0, 0, 0.1);
+        display: flex;
+        flex-direction: column;
+        border-left: 1px solid #e2e8f0;
+        overflow: hidden;
+        font-family: 'Inter', 'Outfit', sans-serif;
+        z-index: 2;
+        position: relative;
+    }
+
+    .chat-split-container {
+        display: flex;
+        flex: 1;
+        min-height: 0;
+        height: 100%;
+    }
+
+    /* Left contacts side-pane */
+    .chat-left-pane {
+        width: 320px;
+        border-right: 1px solid #e2e8f0;
+        display: flex;
+        flex-direction: column;
+        background: #f8fafc;
+    }
+
+    .chat-search-header {
+        padding: 16px;
+        border-bottom: 1px solid #e2e8f0;
+    }
+
+    .search-input-wrap {
+        position: relative;
+        display: flex;
+        align-items: center;
+        width: 100%;
+    }
+
+    .search-input-wrap i {
+        position: absolute;
+        left: 12px;
+        color: #94a3b8;
+        font-size: 14px;
+    }
+
+    .search-input-wrap input {
+        width: 100%;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        padding: 8px 36px 8px 36px;
+        border-radius: 12px;
+        color: #0f172a;
+        font-size: 13px;
+        outline: none;
+        transition: all 0.2s;
+    }
+
+    .search-input-wrap input:focus {
+        border-color: #2563eb;
+        box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15);
+    }
+    
+    .search-input-wrap .filter-icon {
+        position: absolute;
+        right: 12px;
+        color: #94a3b8;
+        font-size: 14px;
+        cursor: pointer;
+    }
+
+    .chat-members-list {
+        flex: 1;
+        overflow-y: auto;
+        padding: 8px;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .empty-members {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 40px 20px;
+        color: #94a3b8;
+        font-size: 13px;
+        text-align: center;
+    }
+
+    .chat-member-item {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+        border-radius: 12px;
+        cursor: pointer;
+        transition: all 0.2s;
+        border: 1px solid transparent;
+        background: transparent;
+        border-bottom: 1px solid #f1f5f9;
+    }
+
+    .chat-member-item:hover {
+        background: rgba(0, 0, 0, 0.02);
+    }
+
+    .chat-member-item.active {
+        background: #f1f5f9;
+        border-color: #e2e8f0;
+    }
+
+    .member-avatar-wrap {
+        position: relative;
+        flex-shrink: 0;
+    }
+
+    .member-avatar {
+        width: 44px;
+        height: 44px;
+        border-radius: 50%;
+        object-fit: cover;
+        border: 1px solid #e2e8f0;
+    }
+
+    .member-status-dot {
+        position: absolute;
+        bottom: 2px;
+        right: 2px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        border: 2px solid #ffffff;
+        background: #94a3b8;
+    }
+
+    .member-status-dot.online {
+        background: #22c55e;
+    }
+
+    .member-info {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+    }
+
+    .member-name-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .member-name {
+        font-weight: 600;
+        font-size: 14px;
+        color: #0f172a !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .member-time {
+        font-size: 11px;
+        color: #64748b !important;
+    }
+
+    .member-message-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .member-snippet {
+        font-size: 12px;
+        color: #64748b;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 170px;
+    }
+
+    .member-unread-badge {
+        background: #ef4444;
+        color: #fff;
+        font-size: 10px;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 10px;
+        line-height: 1.2;
+    }
+
+    /* Right active conversation pane */
+    .chat-right-pane {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        background: #ffffff;
+    }
+
+    .chat-pane-header {
+        padding: 16px 24px;
+        border-bottom: 1px solid #e2e8f0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        background: #ffffff;
+    }
+
+    .pane-header-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        padding-right: 16px;
+    }
+
+    .pane-app-title {
+        font-weight: 700;
+        font-size: 16px;
+        color: #0f172a;
+    }
+
+    .chat-mockup-tabs {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+    }
+
+    .tab-item {
+        font-size: 13px;
+        font-weight: 500;
+        color: #64748b;
+        cursor: pointer;
+        padding-bottom: 4px;
+        border-bottom: 2px solid transparent;
+        transition: all 0.2s;
+    }
+
+    .tab-item:hover, .tab-item.active {
+        color: #2563eb;
+    }
+    
+    .tab-item.active {
+        border-bottom-color: #2563eb;
+        font-weight: 600;
+    }
+
+    .tab-item.settings {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+    }
+
+    .pane-close-btn {
+        background: none;
+        border: none;
+        color: #64748b;
+        font-size: 18px;
+        cursor: pointer;
+        transition: color 0.2s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+    }
+
+    .pane-close-btn:hover {
+        color: #0f172a;
+        background: rgba(0,0,0,0.05);
+    }
+
+    .chat-body {
+        flex: 1;
+        padding: 20px 24px;
+        overflow-y: auto;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        background: #ffffff;
+    }
+
+    .msg-row {
+        display: flex;
+        width: 100%;
+        gap: 10px;
+    }
+
+    .msg-row.me {
+        justify-content: flex-end;
+    }
+
+    .msg-row.them {
+        justify-content: flex-start;
+    }
+
+    .chat-bubble-avatar {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        object-fit: cover;
+        align-self: flex-start;
+        border: 1px solid #e2e8f0;
+    }
+
+    .msg-bubble-wrap {
+        display: flex;
+        flex-direction: column;
+        max-width: 75%;
+    }
+
+    .msg-bubble {
+        padding: 12px 16px;
+        border-radius: 18px;
+        font-size: 14px;
+        line-height: 1.5;
+        word-wrap: break-word;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    }
+
+    .me .msg-bubble {
+        background: #ffffff; /* WhatsApp white */
+        color: #1e293b;
+        border-top-right-radius: 4px;
+        border: 1px solid #e2e8f0;
+    }
+
+    .them .msg-bubble {
+        background: #d9fdd3; /* WhatsApp light green */
+        color: #1e293b;
+        border-top-left-radius: 4px;
+        border: 1px solid #c0e8ba;
+    }
+
+    /* Typing bubble styling */
+    .typing-bubble {
+        padding: 10px 14px;
+        background: #f1f5f9;
+        border-radius: 18px;
+        border-top-left-radius: 4px;
+        border: 1px solid #e2e8f0;
+        display: flex;
+        align-items: center;
+        width: fit-content;
+    }
+    .typing-dots {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+    }
+    .typing-dot {
+        width: 6px;
+        height: 6px;
+        background: #64748b;
+        border-radius: 50%;
+        animation: typingBounce 1.4s infinite ease-in-out both;
+    }
+    .typing-dot:nth-child(1) { animation-delay: -0.32s; }
+    .typing-dot:nth-child(2) { animation-delay: -0.16s; }
+    
+    @@keyframes typingBounce {
+        0%, 80%, 100% { transform: scale(0); }
+        40% { transform: scale(1); }
+    }
+
+    /* Recording indicator */
+    .recording-dot {
+        width: 8px;
+        height: 8px;
+        background: #ef4444;
+        border-radius: 50%;
+        animation: recPulse 1s infinite alternate;
+    }
+    @@keyframes recPulse {
+        from { opacity: 0.3; transform: scale(0.9); }
+        to { opacity: 1; transform: scale(1.1); }
+    }
+    .mic-btn.recording {
+        color: #ef4444;
+        animation: recPulse 1s infinite alternate;
+    }
+
+    /* Emoji Picker */
+    .emoji-picker-popup {
+        position: absolute;
+        bottom: 70px;
+        left: 20px;
+        background: white;
+        z-index: 100050;
+        width: 260px;
+        max-height: 200px;
+        overflow-y: auto;
+    }
+    .emoji-grid {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 4px;
+    }
+    .emoji-item {
+        font-size: 20px;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 4px;
+        border-radius: 6px;
+        transition: background 0.15s;
+    }
+    .emoji-item:hover {
+        background: #f1f5f9;
+    }
+
+    /* Gallery Modal */
+    .gallery-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(15, 23, 42, 0.75);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        z-index: 100030;
+    }
+    .gallery-modal {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100040;
+        padding: 24px;
+        pointer-events: auto;
+    }
+    .gallery-modal-content {
+        position: relative;
+        max-width: 90vw;
+        max-height: 90vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .gallery-large-img {
+        max-width: 100%;
+        max-height: 85vh;
+        border-radius: 16px;
+        box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        object-fit: contain;
+    }
+    .gallery-close-btn {
+        position: absolute;
+        top: -40px;
+        right: 0;
+        background: rgba(255, 255, 255, 0.1);
+        border: none;
+        color: white;
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-size: 16px;
+        transition: background 0.2s;
+    }
+    .gallery-close-btn:hover {
+        background: rgba(255, 255, 255, 0.25);
+    }
+    .animate-fade-in {
+        animation: fadeIn 0.25s ease forwards;
+    }
+    @@keyframes fadeIn {
+        from { opacity: 0; transform: scale(0.95); }
+        to { opacity: 1; transform: scale(1); }
+    }
+
+    .msg-content {
+        margin: 0;
+    }
+
+    /* Custom Voice message player */
+    .voice-msg-player {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        background: rgba(0,0,0,0.03);
+        padding: 8px 14px;
+        border-radius: 12px;
+        min-width: 220px;
+        margin-bottom: 2px;
+    }
+
+    .audio-play-btn {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        background: #0f172a;
+        color: #ffffff;
+        border: none;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        font-size: 14px;
+        flex-shrink: 0;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+
+    .audio-progress-bar-wrap {
+        flex: 1;
+        height: 4px;
+        background: rgba(0, 0, 0, 0.1);
+        border-radius: 2px;
+        position: relative;
+        cursor: pointer;
+    }
+
+    .audio-progress-line {
+        height: 100%;
+        background: #0f172a;
+        border-radius: 2px;
+        width: 40%;
+    }
+
+    .audio-progress-thumb {
+        position: absolute;
+        top: 50%;
+        left: 40%;
+        transform: translate(-50%, -50%);
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #ffffff;
+        border: 1px solid #0f172a;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+
+    .audio-duration {
+        font-size: 11px;
+        color: #64748b;
+        font-weight: 500;
+    }
+
+    /* Shift Change Request Card in bubble */
+    .shift-change-card {
+        background: #ffffff;
+        border-radius: 16px;
+        border: 2px solid #6d28d9;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+        padding: 16px;
+        color: #1e293b;
+        min-width: 280px;
+        max-width: 320px;
+        cursor: pointer;
+        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+    }
+    .shift-change-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(109, 40, 217, 0.15);
+        border-color: #8b5cf6;
+    }
+
+    .card-header-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-bottom: 1px solid #f1f5f9;
+        padding-bottom: 8px;
+        margin-bottom: 12px;
+    }
+
+    .card-header-icon {
+        font-size: 16px;
+        color: #6d28d9;
+    }
+
+    .card-header-title {
+        font-weight: 850;
+        font-size: 11px;
+        letter-spacing: 0.5px;
+        color: #6d28d9;
+    }
+
+    .card-body-row {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        margin-bottom: 8px;
+    }
+
+    .card-label {
+        color: #64748b;
+        font-weight: 500;
+    }
+
+    .card-value {
+        color: #1e293b;
+        font-weight: 600;
+        text-align: right;
+    }
+
+    .card-section-title {
+        font-size: 10px;
+        font-weight: 800;
+        color: #64748b;
+        margin-top: 12px;
+        margin-bottom: 6px;
+        letter-spacing: 0.2px;
+    }
+
+    .card-shift-box {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 10px;
+        font-size: 12px;
+        margin-bottom: 12px;
+    }
+
+    .card-reason-notes {
+        width: 100%;
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 6px 10px;
+        font-size: 11px;
+        margin-top: 4px;
+        word-break: break-word;
+    }
+
+    .card-status-indicator {
+        font-weight: 700;
+    }
+
+    .bg-success-light {
+        background-color: rgba(34, 197, 94, 0.12) !important;
+        color: #16a34a !important;
+        border: 1px solid rgba(34, 197, 94, 0.2) !important;
+    }
+
+    .msg-time-container {
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 4px;
+        margin-top: 4px;
+        opacity: 0.8;
+    }
+
+    .msg-time {
+        font-size: 11px;
+        color: #94a3b8;
+        font-weight: 500;
+    }
+
+    /* Footer message input */
+    .chat-footer {
+        padding: 16px 24px;
+        background: #ffffff;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        border-top: 1px solid #e2e8f0;
+    }
+
+    .footer-action-btn {
+        background: none;
+        border: none;
+        color: #94a3b8;
+        font-size: 20px;
+        cursor: pointer;
+        padding: 4px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: color 0.2s;
+    }
+
+    .footer-action-btn:hover {
+        color: #2563eb;
+    }
+
+    .chat-input {
+        flex: 1;
+        background: #f1f5f9;
+        border: 1px solid #e2e8f0;
+        padding: 10px 16px;
+        border-radius: 14px;
+        font-size: 13px;
+        color: #0f172a;
+        outline: none;
+        transition: all 0.2s;
+    }
+
+    .chat-input:focus {
+        border-color: #2563eb;
+        background: #ffffff;
+    }
+
+    .send-btn {
+        width: 36px;
+        height: 36px;
+        background: #0f172a;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        transition: all 0.2s;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        flex-shrink: 0;
+    }
+
+    .send-btn:hover:not(.disabled) {
+        transform: scale(1.05);
+        background: #1e293b;
+    }
+
+    .send-btn.disabled {
+        opacity: 0.5;
+        cursor: default;
+    }
+
+    .empty-chat, .empty-chat-pane {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+    }
+
+    .empty-chat {
+        height: 100%;
+        color: #94a3b8;
+        opacity: 0.8;
+    }
+
+    .empty-chat i {
+        font-size: 48px;
+        margin-bottom: 12px;
+        color: #cbd5e1;
+    }
+
+    .empty-chat p {
+        font-size: 14px;
+        font-weight: 500;
+    }
+
+    .empty-chat-pane {
+        flex: 1;
+        padding: 40px;
+    }
+
+    .empty-chat-pane i {
+        font-size: 64px;
+        margin-bottom: 16px;
+        color: #cbd5e1;
+    }
+
+    /* ── Chat history skeleton / loading overlay ── */
+    .chat-loading-overlay {
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 20px 16px;
+        flex: 1;
+        overflow: hidden;
+    }
+
+    .chat-history-skeleton {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .skeleton-row {
+        display: flex;
+    }
+
+    .skeleton-row.sk-me { justify-content: flex-end; }
+    .skeleton-row.sk-them { justify-content: flex-start; }
+
+    .skeleton-bubble {
+        height: 36px;
+        border-radius: 16px;
+        background: linear-gradient(90deg, #e2e8f0 25%, #f1f5f9 50%, #e2e8f0 75%);
+        background-size: 200% 100%;
+        animation: shimmer 1.4s infinite;
+    }
+
+    .skeleton-bubble.sk-me  { border-bottom-right-radius: 4px; }
+    .skeleton-bubble.sk-them { border-bottom-left-radius: 4px; }
+
+    @@keyframes shimmer {
+        0%   { background-position: 200% 0; }
+        100% { background-position: -200% 0; }
+    }
+
+    .chat-loading-label {
+        text-align: center;
+        font-size: 12px;
+        color: #94a3b8;
+        font-weight: 600;
+        letter-spacing: 0.3px;
+        padding: 6px 0;
+    }
+
+    /* ── Photo upload overlay ── */
+    .photo-upload-overlay {
+        position: absolute;
+        inset: 0;
+        background: rgba(255,255,255,0.92);
+        backdrop-filter: blur(4px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        z-index: 10;
+        border-radius: 0 0 16px 16px;
+        border-top: 1.5px solid rgba(37, 99, 235, 0.15);
+    }
+
+    .photo-upload-spinner {
+        width: 20px;
+        height: 20px;
+        border: 2.5px solid rgba(37, 99, 235, 0.2);
+        border-top-color: #2563eb;
+        border-radius: 50%;
+        animation: spin 0.75s linear infinite;
+    }
+
+    @@keyframes spin {
+        to { transform: rotate(360deg); }
+    }
+
+    .photo-upload-label {
+        font-size: 12.5px;
+        font-weight: 700;
+        color: #2563eb;
+        letter-spacing: 0.3px;
+    }
+
+    .animate-slide-left {
+        animation: slideLeft 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    .animate-slide-out {
+        animation: slideOut 0.3s cubic-bezier(0.4, 0, 1, 1) forwards !important;
+    }
+
+    @@keyframes slideLeft {
+        from { transform: translateX(100%); }
+        to { transform: translateX(0); }
+    }
+
+    @@keyframes slideOut {
+        from { transform: translateX(0); opacity: 1; }
+        to { transform: translateX(100%); opacity: 0; }
+    }
+
+    /* Contact Details Modal Styles */
+    .member-details-modal-backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.4);
+        backdrop-filter: blur(4px);
+        z-index: 100010;
+    }
+
+    .member-details-modal {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        width: 380px;
+        background: #ffffff;
+        border-radius: 24px;
+        box-shadow: 0 20px 50px rgba(0,0,0,0.15);
+        border: 1px solid #e2e8f0;
+        z-index: 100020;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        font-family: 'Inter', sans-serif;
+    }
+
+    .details-modal-header {
+        padding: 16px 24px;
+        border-bottom: 1px solid #f1f5f9;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .details-modal-header h5 {
+        margin: 0;
+        font-weight: 700;
+        color: #0f172a;
+        font-size: 16px;
+    }
+
+    .modal-close-btn {
+        background: none;
+        border: none;
+        color: #64748b;
+        font-size: 16px;
+        cursor: pointer;
+    }
+
+    .details-modal-body {
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        text-align: center;
+    }
+
+    .details-avatar-wrap {
+        width: 90px;
+        height: 90px;
+        border-radius: 50%;
+        overflow: hidden;
+        border: 3px solid #e2e8f0;
+        margin-bottom: 16px;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.08);
+    }
+
+    .details-avatar {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+    }
+
+    .details-name {
+        font-size: 18px;
+        font-weight: 700;
+        color: #0f172a;
+        margin-bottom: 4px;
+    }
+
+    .details-role {
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        color: #2563eb;
+        background: rgba(37, 99, 235, 0.08);
+        padding: 4px 12px;
+        border-radius: 12px;
+        letter-spacing: 0.5px;
+        margin-bottom: 24px;
+    }
+
+    .details-info-grid {
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        text-align: left;
+    }
+
+    .info-row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 10px 14px;
+        background: #f8fafc;
+        border-radius: 14px;
+        border: 1px solid #eef2f6;
+    }
+
+    .info-row i {
+        font-size: 18px;
+        color: #64748b;
+    }
+
+    .info-content {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .info-label {
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        color: #94a3b8;
+        letter-spacing: 0.5px;
+    }
+
+    .info-value {
+        font-size: 13.5px;
+        font-weight: 600;
+        color: #1e293b;
+    }
+
+    .animate-slide-up {
+        animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @@keyframes slideUp {
+        from { transform: translate(-50%, -40%); opacity: 0; }
+        to { transform: translate(-50%, -50%); opacity: 1; }
+    }
+</style>
+
+@code {
+    [Parameter] public RiderLocation? Rider { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnBack { get; set; }
+
+    private HubConnection? hubConnection;
+    private List<ChatMessage> messages = new();
+    private string _newMessage = "";
+    private string newMessage
+    {
+        get => _newMessage;
+        set
+        {
+            if (_newMessage != value)
+            {
+                _newMessage = value;
+                _ = OnNewMessageInput(value);
+            }
+        }
+    }
+    private string? currentlyLoadingRiderId;
+    private int tempUploadCounter = 0;
+    private bool isLoading = true;
+    private bool isUploadingPhoto = false; // Bug 2: photo upload loading indicator
+
+    // Chat Upgrade state variables
+    private bool isRiderTyping = false;
+    private bool isRiderRecordingVoice = false;
+    private HashSet<int> preloadedAudioMessageIds = new();
+    private string? galleryPhotoUrl;
+    private bool isRecording = false;
+    private int recordDuration = 0;
+    private System.Threading.Timer? recordTimer;
+    private bool showEmojiPicker = false;
+    private System.Threading.Timer? typingTimer;
+    private bool isTypingSent = false;
+    private readonly string[] emojis = new[] { "😀", "😃", "😄", "😁", "😆", "😅", "😂", "🤣", "😊", "😇", "🙂", "🙃", "😉", "😌", "😍", "🥰", "😘", "😗", "😙", "😚", "😋", "😛", "😝", "😜", "🤪", "🤨", "🧐", "🤓", "😎", "🤩", "🥳", "😏", "😒", "😞", "😔", "😟", "😕", "🙁", "☹️", "😣", "😖", "😫", "😩", "🥺", "😢", "😭", "😤", "😠", "😡", "🤬", "🤯", "😳", "🥵", "🥶", "😱", "😨", "😰", "😥", "😓", "🤗", "🤔", "🤭", "🤫", "🤥", "😶", "😐", "😑", "😬", "🙄", "😯", "😦", "😧", "😮", "😲", "🥱", "😴", "🤤", "😪", "😵", "🤐", "🥴", "🤢", "🤮", "🤧", "😷", "🤒", "🤕" };
+
+    // Contact List state variables
+    private List<ChatMember> chatMembers = new();
+    private Dictionary<int, int> unreadCounts = new();
+    private string chatSearchQuery = "";
+    private ChatMember? selectedMemberForDetails;
+
+    private List<ChatMember> filteredMembers => chatMembers
+        .Where(x => string.IsNullOrWhiteSpace(chatSearchQuery) || 
+                    x.Name.Contains(chatSearchQuery, StringComparison.OrdinalIgnoreCase) ||
+                    (x.Mobile ?? "").Contains(chatSearchQuery))
+        .OrderByDescending(x => x.LastMessageTime ?? DateTime.MinValue)
+        .ToList();
+
+    private string GetConnectionStatusText()
+    {
+        if (hubConnection == null) return "Offline";
+        return hubConnection.State switch
+        {
+            HubConnectionState.Connected => "Connected",
+            HubConnectionState.Connecting => "Connecting...",
+            HubConnectionState.Reconnecting => "Reconnecting...",
+            HubConnectionState.Disconnected => "Disconnected. Retrying...",
+            _ => "Offline"
+        };
+    }
+
+    private int getUnreadCount(int senderId)
+    {
+        return unreadCounts.TryGetValue(senderId, out var count) ? count : 0;
+    }
+
+    [Inject] IOptions<APIConfiguration> ApiConfig { get; set; }
+
+    private string? previousRiderId;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // 1. Establish session if not resolved
+        if (session.UserID == 0 || string.IsNullOrWhiteSpace(_tenantState.TenantID))
+        {
+            try
+            {
+                var authState = await authStateProvider.GetAuthenticationStateAsync();
+                var user = authState.User;
+                if (user.Identity != null && user.Identity.IsAuthenticated)
+                {
+                    var userIdClaim = user.FindFirst("sub")?.Value ?? user.FindFirst("UserIdentifier")?.Value;
+                    if (int.TryParse(userIdClaim, out var parsedId))
+                    {
+                        session.UserID = parsedId;
+                    }
+                    var tenantId = user.FindFirst("TenantId")?.Value;
+                    if (!string.IsNullOrEmpty(tenantId))
+                    {
+                        session.TenantID = tenantId;
+                        _tenantState.TenantID = tenantId;
+                    }
+                    var nameClaim = user.FindFirst("unique_name")?.Value ?? user.Identity.Name;
+                    if (!string.IsNullOrEmpty(nameClaim))
+                    {
+                        session.UserName = nameClaim;
+                    }
+                    session.IsLoggedIn = true;
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error resolving user session in ChatWindow: " + ex.Message);
+            }
+
+            // Fallback to protectedSessionStore if authStateProvider failed to resolve
+            if (session.UserID == 0 || string.IsNullOrWhiteSpace(_tenantState.TenantID))
+            {
+                var loginState = await protectedSessionStore.GetAsync<bool>("IsLoggedIn");
+                if (loginState.Success && loginState.Value)
+                {
+                    var tenant = await protectedSessionStore.GetAsync<string>("TenantID");
+                    var userId = await protectedSessionStore.GetAsync<int>("UserID");
+                    var userName = await protectedSessionStore.GetAsync<string>("UserName");
+
+                    session.IsLoggedIn = true;
+                    session.TenantID = tenant.Success ? tenant.Value : null;
+                    session.UserID = userId.Success ? userId.Value : 0;
+                    session.UserName = userName.Success ? userName.Value : null;
+
+                    _tenantState.TenantID = session.TenantID;
+                }
+            }
+        }
+
+        // 2. Load members & unread counts initially
+        if (chatMembers.Count == 0)
+        {
+            await LoadMembers();
+            await LoadUnreadCounts();
+        }
+
+        // If Rider is null, automatically select the most recent conversation
+        if (Rider == null && chatMembers.Count > 0)
+        {
+            var mostRecentMember = filteredMembers.FirstOrDefault();
+            if (mostRecentMember != null)
+            {
+                var nextRider = new RiderLocation
+                {
+                    RiderId = mostRecentMember.Id.ToString(),
+                    RiderName = mostRecentMember.Name
+                };
+                Rider = nextRider;
+            }
+        }
+
+        // 3. Switch conversation if Rider parameter changes
+        if (Rider != null && Rider.RiderId != currentlyLoadingRiderId)
+        {
+            currentlyLoadingRiderId = Rider.RiderId;
+            previousRiderId = Rider.RiderId;
+            messages.Clear();
+            isLoading = true;
+            await LoadHistory();
+            await InitializeSignalR();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (messages != null)
+        {
+            var voiceMsgs = messages.Where(m => m.MessageType == "Voice" && m.Id >= 0 && !preloadedAudioMessageIds.Contains(m.Id)).ToList();
+            foreach (var msg in voiceMsgs)
+            {
+                preloadedAudioMessageIds.Add(msg.Id);
+                var playerElementId = $"voice-player-{msg.Id}";
+                var fileUrl = (msg.FilePath ?? "").StartsWith("data:", StringComparison.OrdinalIgnoreCase)
+                    ? msg.FilePath
+                    : $"{ApiConfig.Value.BaseApiUrl}Chat/file?path={Uri.EscapeDataString(msg.FilePath ?? "")}&TenantId={_tenantState.TenantID}";
+                try
+                {
+                    await JS.InvokeVoidAsync("chatInterop.preloadDuration", fileUrl, playerElementId);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("Error preloading voice duration: " + ex.Message);
+                }
+            }
+        }
+    }
+
+    private async Task LoadMembers()
+    {
+        try
+        {
+            var baseUrl = ApiConfig.Value.BaseApiUrl;
+            var response = await Http.GetAsync($"{baseUrl}Chat/members?riderId={session.UserID}");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                chatMembers = JsonConvert.DeserializeObject<List<ChatMember>>(json) ?? new();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error loading chat members: " + ex.Message);
+        }
+    }
+
+    private async Task LoadUnreadCounts()
+    {
+        try
+        {
+            var baseUrl = ApiConfig.Value.BaseApiUrl;
+            var response = await Http.GetAsync($"{baseUrl}Chat/unread-counts?recipientId={session.UserID}");
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var list = JsonConvert.DeserializeObject<List<ChatUnreadCount>>(json) ?? new();
+                unreadCounts = list.ToDictionary(x => x.SenderId, x => x.UnreadCount);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error loading unread counts: " + ex.Message);
+        }
+    }
+
+    private async Task SwitchActiveRider(ChatMember member)
+    {
+        var nextRider = new RiderLocation
+        {
+            RiderId = member.Id.ToString(),
+            RiderName = member.Name
+        };
+        Rider = nextRider;
+        currentlyLoadingRiderId = Rider.RiderId;
+        previousRiderId = Rider.RiderId;
+
+        // Bug 3 fix: Show skeleton loader BEFORE clearing messages to prevent empty-then-flicker
+        isLoading = true;
+        await InvokeAsync(StateHasChanged);
+        messages.Clear();
+        preloadedAudioMessageIds.Clear();
+        isRiderRecordingVoice = false;
+        isRiderTyping = false;
+
+        await LoadHistory();
+        await InitializeSignalR();
+    }
+
+    private async Task InitializeSignalR()
+    {
+        try
+        {
+            if (hubConnection != null)
+            {
+                await hubConnection.DisposeAsync();
+            }
+
+            if (session.UserID == 0 || string.IsNullOrWhiteSpace(_tenantState.TenantID) || Rider == null)
+            {
+                return;
+            }
+
+            var rootUrl = ApiConfig.Value.BaseApiUrl.Replace("/api/", "/").TrimEnd('/');
+            var hubUrl = $"{rootUrl}/chatHub?riderId={session.UserID}&TenantId={_tenantState.TenantID}";
+
+            hubConnection = new HubConnectionBuilder()
+                .WithUrl(hubUrl)
+                .WithAutomaticReconnect()
+                .Build();
+
+            hubConnection.On<ChatMessage>("ReceiveMessage", async (message) =>
+            {
+                if ((message.SenderId == int.Parse(Rider.RiderId)) || 
+                    (message.RecipientId == int.Parse(Rider.RiderId) && message.SenderId == session.UserID))
+                {
+                    messages.Add(message);
+                    
+                    if (message.SenderId == int.Parse(Rider.RiderId))
+                    {
+                        // Play notification sound for incoming rider messages
+                        try { await JS.InvokeVoidAsync("chatInterop.playNotificationSound"); } catch { }
+
+                        try
+                        {
+                            await hubConnection.InvokeAsync("MarkAsRead", message.SenderId, session.UserID);
+                            unreadCounts[message.SenderId] = 0;
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.WriteLine("Error calling MarkAsRead in ReceiveMessage: " + ex.Message);
+                        }
+                    }
+
+                    await InvokeAsync(StateHasChanged);
+                    await ScrollToBottom();
+                }
+                else
+                {
+                    // Update unread count for other members and play sound
+                    if (unreadCounts.ContainsKey(message.SenderId))
+                        unreadCounts[message.SenderId]++;
+                    else
+                        unreadCounts[message.SenderId] = 1;
+
+                    // Play notification sound for messages from other riders too
+                    try { await JS.InvokeVoidAsync("chatInterop.playNotificationSound"); } catch { }
+
+                    await InvokeAsync(StateHasChanged);
+                }
+            });
+
+            hubConnection.On<int>("MessagesDelivered", async (recipientId) =>
+            {
+                if (Rider != null && recipientId == int.Parse(Rider.RiderId))
+                {
+                    foreach (var msg in messages.Where(m => m.SenderId == session.UserID && !m.IsDelivered))
+                    {
+                        msg.IsDelivered = true;
+                    }
+                    await InvokeAsync(StateHasChanged);
+                }
+            });
+
+            hubConnection.On<int>("MessagesRead", async (recipientId) =>
+            {
+                if (Rider != null && recipientId == int.Parse(Rider.RiderId))
+                {
+                    foreach (var msg in messages.Where(m => m.SenderId == session.UserID))
+                    {
+                        msg.IsDelivered = true;
+                        msg.IsRead = true;
+                    }
+                    await InvokeAsync(StateHasChanged);
+                }
+            });
+
+            hubConnection.On<int, string>("UserTyping", async (senderId, senderName) =>
+            {
+                if (Rider != null && senderId == int.Parse(Rider.RiderId))
+                {
+                    isRiderTyping = true;
+                    await InvokeAsync(StateHasChanged);
+                    await ScrollToBottom();
+                }
+            });
+
+            hubConnection.On<int>("UserStoppedTyping", async (senderId) =>
+            {
+                if (Rider != null && senderId == int.Parse(Rider.RiderId))
+                {
+                    isRiderTyping = false;
+                    await InvokeAsync(StateHasChanged);
+                }
+            });
+
+            hubConnection.On<int, string>("UserRecordingVoice", async (senderId, senderName) =>
+            {
+                if (Rider != null && senderId == int.Parse(Rider.RiderId))
+                {
+                    isRiderRecordingVoice = true;
+                    await InvokeAsync(StateHasChanged);
+                    await ScrollToBottom();
+                }
+            });
+
+            hubConnection.On<int>("UserStoppedRecordingVoice", async (senderId) =>
+            {
+                if (Rider != null && senderId == int.Parse(Rider.RiderId))
+                {
+                    isRiderRecordingVoice = false;
+                    await InvokeAsync(StateHasChanged);
+                }
+            });
+
+            await hubConnection.StartAsync();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Chat SignalR Connection failed: {ex.Message}");
+        }
+    }
+
+    private async Task LoadHistory()
+    {
+        try
+        {
+            if (session.UserID == 0 || Rider == null) return;
+
+            preloadedAudioMessageIds.Clear();
+            isRiderRecordingVoice = false;
+            isRiderTyping = false;
+
+            var baseUrl = ApiConfig.Value.BaseApiUrl;
+            var url = $"{baseUrl}Chat/history?riderId={session.UserID}&targetRiderId={Rider.RiderId}";
+            
+            var response = await Http.GetAsync(url);
+            var tt = await response.Content.ReadAsStringAsync();
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (!string.IsNullOrWhiteSpace(tt) && (tt.Trim().StartsWith("[") || tt.Trim().StartsWith("{")))
+                {
+                    messages = JsonConvert.DeserializeObject<List<ChatMessage>>(tt) ?? new();
+
+                    // Fix data inconsistency: if IsRead=true but IsDelivered=false, correct it
+                    // This can happen if DB data was inserted before is_read column existed
+                    foreach (var msg in messages)
+                    {
+                        if (msg.IsRead && !msg.IsDelivered)
+                        {
+                            msg.IsDelivered = true;
+                        }
+                    }
+
+                    try
+                    {
+                        var markReadUrl = $"{baseUrl}Chat/mark-read";
+                        await Http.PostAsJsonAsync(markReadUrl, new { SenderId = int.Parse(Rider.RiderId), RecipientId = session.UserID });
+                        unreadCounts[int.Parse(Rider.RiderId)] = 0;
+
+                        // Mark all messages from the rider as read in local state too
+                        foreach (var msg in messages.Where(m => m.SenderId != session.UserID))
+                        {
+                            msg.IsRead = true;
+                            msg.IsDelivered = true;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine("Error calling mark-read in LoadHistory: " + ex.Message);
+                    }
+                }
+                else
+                {
+                    messages = new();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Exception in LoadHistory: " + ex.Message);
+        }
+        finally
+        {
+            isLoading = false;
+            await InvokeAsync(StateHasChanged);
+            ScrollToBottom();
+        }
+    }
+
+    private async Task SendMessage()
+    {
+        if (string.IsNullOrWhiteSpace(newMessage) || Rider == null) return;
+
+        var msg = new ChatMessage
+        {
+            SenderId = session.UserID,
+            RecipientId = int.Parse(Rider.RiderId),
+            MessageType = "Text",
+            Content = newMessage,
+            CreatedAt = DateTime.UtcNow
+        };
+
+        newMessage = "";
+
+        // Bug 1 fix: Stop typing indicator immediately on send
+        if (isTypingSent && hubConnection != null && hubConnection.State == HubConnectionState.Connected)
+        {
+            isTypingSent = false;
+            try { await hubConnection.InvokeAsync("TypingStopped", int.Parse(Rider.RiderId)); } catch { }
+        }
+        if (typingTimer != null) { await typingTimer.DisposeAsync(); typingTimer = null; }
+
+        await SendHubMessage(msg);
+    }
+
+    private async Task SendHubMessage(ChatMessage msg)
+    {
+        if (hubConnection == null || hubConnection.State != HubConnectionState.Connected)
+        {
+            await InitializeSignalR();
+            if (hubConnection == null || hubConnection.State != HubConnectionState.Connected)
+            {
+                return;
+            }
+        }
+
+        try
+        {
+            await hubConnection.InvokeAsync("SendMessage", msg);
+            await InvokeAsync(StateHasChanged);
+            await ScrollToBottom();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Chat: Error sending hub message: " + ex.Message);
+        }
+    }
+
+    private async Task OnNewMessageInput(string val)
+    {
+        if (string.IsNullOrEmpty(val))
+        {
+            if (isTypingSent && hubConnection != null && hubConnection.State == HubConnectionState.Connected && Rider != null)
+            {
+                isTypingSent = false;
+                try { await hubConnection.InvokeAsync("TypingStopped", int.Parse(Rider.RiderId)); } catch { }
+            }
+            if (typingTimer != null)
+            {
+                await typingTimer.DisposeAsync();
+                typingTimer = null;
+            }
+            return;
+        }
+
+        if (hubConnection != null && hubConnection.State == HubConnectionState.Connected && Rider != null)
+        {
+            if (!isTypingSent)
+            {
+                isTypingSent = true;
+                await hubConnection.InvokeAsync("TypingStarted", int.Parse(Rider.RiderId));
+            }
+
+            if (typingTimer != null)
+            {
+                await typingTimer.DisposeAsync();
+            }
+
+            typingTimer = new System.Threading.Timer(async _ =>
+            {
+                if (isTypingSent && hubConnection != null && hubConnection.State == HubConnectionState.Connected && Rider != null)
+                {
+                    isTypingSent = false;
+                    await hubConnection.InvokeAsync("TypingStopped", int.Parse(Rider.RiderId));
+                }
+            }, null, 2000, System.Threading.Timeout.Infinite);
+        }
+    }
+
+    private async Task StartVoiceRecording()
+    {
+        if (isRecording) return;
+        
+        bool started = await JS.InvokeAsync<bool>("chatInterop.startRecording");
+        if (started)
+        {
+            isRecording = true;
+            recordDuration = 0;
+
+            if (hubConnection != null && hubConnection.State == HubConnectionState.Connected && Rider != null)
+            {
+                try { await hubConnection.InvokeAsync("RecordingVoiceStarted", int.Parse(Rider.RiderId)); } catch { }
+            }
+
+            recordTimer = new System.Threading.Timer(async _ =>
+            {
+                recordDuration++;
+                if (recordDuration >= 60)
+                {
+                    await StopVoiceRecording();
+                }
+                await InvokeAsync(StateHasChanged);
+            }, null, 1000, 1000);
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private async Task StopVoiceRecording()
+    {
+        if (!isRecording) return;
+
+        isRecording = false;
+        if (recordTimer != null)
+        {
+            await recordTimer.DisposeAsync();
+            recordTimer = null;
+        }
+
+        if (hubConnection != null && hubConnection.State == HubConnectionState.Connected && Rider != null)
+        {
+            try { await hubConnection.InvokeAsync("RecordingVoiceStopped", int.Parse(Rider.RiderId)); } catch { }
+        }
+
+        string base64Audio = await JS.InvokeAsync<string>("chatInterop.stopRecording");
+        if (!string.IsNullOrEmpty(base64Audio) && Rider != null)
+        {
+            var tempMsg = new ChatMessage
+            {
+                Id = -999 - tempUploadCounter++,
+                SenderId = session.UserID,
+                RecipientId = int.Parse(Rider.RiderId),
+                MessageType = "Voice",
+                Content = "Uploading...",
+                FilePath = "",
+                CreatedAt = DateTime.UtcNow
+            };
+
+            bool uploadSucceeded = false;
+            try
+            {
+                messages.Add(tempMsg);
+                await InvokeAsync(StateHasChanged);
+                await ScrollToBottom();
+
+                byte[] bytes = Convert.FromBase64String(base64Audio);
+                using var stream = new MemoryStream(bytes);
+                using var content = new MultipartFormDataContent();
+                using var streamContent = new StreamContent(stream);
+
+                // Detect actual mimeType from base64 header for correct content-type
+                string detectedMime = "audio/webm";
+                string detectedExt = "webm";
+                if (base64Audio.Length > 4)
+                {
+                    // MediaRecorder on iOS/Safari produces mp4
+                    string header = base64Audio.Substring(0, Math.Min(8, base64Audio.Length));
+                    byte[] headerBytes = Convert.FromBase64String(header.PadRight(header.Length + (4 - header.Length % 4) % 4, '='));
+                    if (headerBytes.Length >= 4 && headerBytes[0] == 0x00 && headerBytes[1] == 0x00 && headerBytes[2] == 0x00)
+                    {
+                        detectedMime = "audio/mp4";
+                        detectedExt = "m4a";
+                    }
+                    else if (headerBytes.Length >= 4 && headerBytes[0] == 0x4F && headerBytes[1] == 0x67 && headerBytes[2] == 0x67)
+                    {
+                        detectedMime = "audio/ogg";
+                        detectedExt = "ogg";
+                    }
+                }
+
+                streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(detectedMime);
+                content.Add(streamContent, "file", $"voice_note.{detectedExt}");
+
+                var baseUrl = ApiConfig.Value.BaseApiUrl;
+                var response = await Http.PostAsync($"{baseUrl}Chat/uploadVoice", content);
+                if (response.IsSuccessStatusCode)
+                {
+                    var resultJson = await response.Content.ReadAsStringAsync();
+                    var result = JsonConvert.DeserializeAnonymousType(resultJson, new { FilePath = "" });
+                    
+                    if (result != null && !string.IsNullOrEmpty(result.FilePath))
+                    {
+                        messages.RemoveAll(m => m.Id == tempMsg.Id);
+                        uploadSucceeded = true;
+
+                        var msg = new ChatMessage
+                        {
+                            SenderId = session.UserID,
+                            RecipientId = int.Parse(Rider.RiderId),
+                            MessageType = "Voice",
+                            Content = "",
+                            FilePath = result.FilePath,
+                            CreatedAt = DateTime.UtcNow
+                        };
+                        await SendHubMessage(msg);
+                    }
+                }
+                else
+                {
+                    var errText = await response.Content.ReadAsStringAsync();
+                    Console.WriteLine("Voice upload failed: " + errText);
+                    await JS.InvokeVoidAsync("alert", "Failed to upload voice message: " + (string.IsNullOrWhiteSpace(errText) ? response.ReasonPhrase : errText));
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error processing voice upload: " + ex.Message);
+                await JS.InvokeVoidAsync("alert", "Error uploading voice message: " + ex.Message);
+            }
+            finally
+            {
+                // Only remove temp message if upload didn't succeed (on success, already removed above)
+                if (!uploadSucceeded)
+                {
+                    messages.RemoveAll(m => m.Id == tempMsg.Id);
+                }
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+
+    private async Task PlayVoiceMessage(string fileUrl, string playerElementId)
+    {
+        await JS.InvokeVoidAsync("chatInterop.playAudio", fileUrl, playerElementId);
+    }
+
+    private async Task TriggerPhotoInput()
+    {
+        await JS.InvokeVoidAsync("eval", "document.getElementById('photo-input').click()");
+    }
+
+    private async Task UploadPhotoFile(InputFileChangeEventArgs e)
+    {
+        var file = e.File;
+        if (file == null || Rider == null) return;
+
+        double sizeInMb = (double)file.Size / (1024 * 1024);
+        if (sizeInMb > 5.0)
+        {
+            await JS.InvokeVoidAsync("alert", $"Image size exceeds the 5 MB limit (Selected: {sizeInMb:F2} MB). Please select an image smaller than 5 MB.");
+            return;
+        }
+
+        string sizeStr = sizeInMb >= 0.1 ? $"{sizeInMb:F2} MB" : $"{(file.Size / 1024.0):F2} KB";
+
+        var tempMsg = new ChatMessage
+        {
+            Id = -999 - tempUploadCounter++,
+            SenderId = session.UserID,
+            RecipientId = int.Parse(Rider.RiderId),
+            MessageType = "Photo",
+            Content = "Uploading...",
+            FilePath = "",
+            CreatedAt = DateTime.UtcNow
+        };
+
+        bool uploadSucceeded = false;
+        try
+        {
+            messages.Add(tempMsg);
+            isUploadingPhoto = true;
+            await InvokeAsync(StateHasChanged);
+            await ScrollToBottom();
+
+            // Buffer the file stream into memory to ensure reliability in Blazor Server
+            using var ms = new MemoryStream();
+            await file.OpenReadStream(maxAllowedSize: 5 * 1024 * 1024).CopyToAsync(ms);
+            ms.Position = 0;
+
+            using var content = new MultipartFormDataContent();
+            using var streamContent = new StreamContent(ms);
+            streamContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(file.ContentType ?? "image/jpeg");
+            content.Add(streamContent, "file", file.Name);
+
+            var baseUrl = ApiConfig.Value.BaseApiUrl;
+            var response = await Http.PostAsync($"{baseUrl}Chat/uploadPhoto", content);
+            if (response.IsSuccessStatusCode)
+            {
+                var resultJson = await response.Content.ReadAsStringAsync();
+                var result = JsonConvert.DeserializeAnonymousType(resultJson, new { FilePath = "" });
+                
+                if (result != null && !string.IsNullOrEmpty(result.FilePath))
+                {
+                    uploadSucceeded = true;
+
+                    // Update tempMsg in-place: change it from spinner to the real image.
+                    // This avoids remove → blank flash → ReceiveMessage adds real msg race condition.
+                    tempMsg.Content = "";
+                    tempMsg.FilePath = result.FilePath;
+                    await InvokeAsync(StateHasChanged);
+
+                    // Wait a moment so browser starts loading the image before SignalR replaces tempMsg
+                    await Task.Delay(300);
+
+                    var msg = new ChatMessage
+                    {
+                        SenderId = session.UserID,
+                        RecipientId = int.Parse(Rider.RiderId),
+                        MessageType = "Photo",
+                        Content = "",
+                        FilePath = result.FilePath,
+                        CreatedAt = DateTime.UtcNow
+                    };
+                    await SendHubMessage(msg);
+                }
+            }
+            else
+            {
+                var errText = await response.Content.ReadAsStringAsync();
+                Console.WriteLine("Upload photo failed: " + errText);
+                await JS.InvokeVoidAsync("alert", $"Failed to upload photo (Size: {sizeStr}): " + (string.IsNullOrWhiteSpace(errText) ? response.ReasonPhrase : errText));
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine("Error uploading photo file: " + ex.Message);
+            await JS.InvokeVoidAsync("alert", $"Error uploading photo (Size: {sizeStr}): " + ex.Message);
+        }
+        finally
+        {
+            // Always remove tempMsg (real message will arrive via SignalR ReceiveMessage)
+            messages.RemoveAll(m => m.Id == tempMsg.Id);
+            isUploadingPhoto = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void OpenGallery(string url)
+    {
+        galleryPhotoUrl = url;
+    }
+
+    private void CloseGallery()
+    {
+        galleryPhotoUrl = null;
+    }
+
+    private void ToggleEmojiPicker()
+    {
+        showEmojiPicker = !showEmojiPicker;
+    }
+
+    private void AppendEmoji(string emoji)
+    {
+        newMessage += emoji;
+        showEmojiPicker = false;
+        StateHasChanged();
+    }
+
+    private async Task HandleKeyUp(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+        {
+            await SendMessage();
+        }
+    }
+
+    private async Task Close()
+    {
+        // Bug 5 fix: Play slide-out animation before removing the component to avoid background flicker
+        try
+        {
+            await JS.InvokeVoidAsync("eval",
+                "document.querySelector('.chat-sidebar-drawer')?.classList.add('animate-slide-out')");
+            await Task.Delay(300); // Let the slide-out animation complete
+        }
+        catch { }
+        await OnClose.InvokeAsync();
+    }
+
+    private async Task ScrollToBottom()
+    {
+        try
+        {
+            if (Rider == null) return;
+            await Task.Delay(200);
+            await JS.InvokeVoidAsync("eval", $"document.getElementById('chat-body-{Rider.RiderId}')?.scrollTo(0, 999999)");
+        }
+        catch { }
+    }
+
+    private string GetRiderProfileImage(int riderId)
+    {
+        return $"{ApiConfig.Value.BaseApiUrl}User/GetImage?imageType=profile-pics&riderId={riderId}&TenantId={_tenantState.TenantID}";
+    }
+
+    private void ShowMemberDetails(ChatMember member)
+    {
+        selectedMemberForDetails = member;
+    }
+
+    private void CloseMemberDetails()
+    {
+        selectedMemberForDetails = null;
+    }
+
+    private bool IsShiftChangeRequest(string content, out ShiftChangeRequest? request)
+    {
+        request = null;
+        if (string.IsNullOrWhiteSpace(content)) return false;
+        
+        string trimmed = content.Trim();
+        if (trimmed.StartsWith("{") && trimmed.EndsWith("}"))
+        {
+            try
+            {
+                var temp = JsonConvert.DeserializeObject<ShiftChangeRequest>(trimmed);
+                if (temp != null && (!string.IsNullOrEmpty(temp.CurrentShiftName) || !string.IsNullOrEmpty(temp.RequestedShiftName)))
+                {
+                    request = temp;
+                    if (request.Items == null) request.Items = new List<ShiftChangeRequestItem>();
+                    if (request.Items.Count == 0)
+                    {
+                        request.Items.Add(new ShiftChangeRequestItem
+                        {
+                            CurrentShiftName = request.CurrentShiftName,
+                            ShiftDetailsText = request.ShiftDetailsText,
+                            RequestedShiftName = request.RequestedShiftName
+                        });
+                    }
+                    return true;
+                }
+            }
+            catch
+            {
+                // Fallback gracefully on parsing error
+            }
+        }
+        else if (trimmed.StartsWith("[SHIFT_REQUEST]"))
+        {
+            try
+            {
+                var req = new ShiftChangeRequest();
+                
+                int riderIdx = trimmed.IndexOf("Rider:");
+                int targetIdx = trimmed.IndexOf("Target:");
+                if (riderIdx != -1 && targetIdx != -1)
+                {
+                    string riderPart = trimmed.Substring(riderIdx + 6, targetIdx - (riderIdx + 6)).Trim();
+                    int openParen = riderPart.IndexOf("(");
+                    if (openParen != -1)
+                    {
+                        req.RiderName = riderPart.Substring(0, openParen).Trim();
+                        string idStr = riderPart.Substring(openParen).Replace("(ID:", "").Replace(")", "").Trim();
+                        if (int.TryParse(idStr, out int rId))
+                        {
+                            req.RiderId = rId;
+                        }
+                    }
+                    else
+                    {
+                        req.RiderName = riderPart;
+                    }
+                }
+
+                int reasonIdx = trimmed.IndexOf("Reason:");
+                if (targetIdx != -1 && reasonIdx != -1)
+                {
+                    req.RequestedShiftName = trimmed.Substring(targetIdx + 7, reasonIdx - (targetIdx + 7)).Trim();
+                }
+
+                int shiftsIdx = trimmed.IndexOf("Shifts:");
+                if (reasonIdx != -1 && shiftsIdx != -1)
+                {
+                    req.Reason = trimmed.Substring(reasonIdx + 7, shiftsIdx - (reasonIdx + 7)).Trim();
+                }
+
+                if (shiftsIdx != -1)
+                {
+                    string shiftsPart = trimmed.Substring(shiftsIdx + 7).Trim();
+                    if (shiftsPart.StartsWith("-"))
+                    {
+                        shiftsPart = shiftsPart.Substring(1).Trim();
+                    }
+
+                    // Parse segment parts separated by |
+                    var parts = shiftsPart.Split('|', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(p => p.Trim())
+                        .ToList();
+
+                    int i = 0;
+                    string curShift = "";
+                    if (parts.Count > 0)
+                    {
+                        curShift = parts[0];
+                        i = 1;
+                    }
+
+                    while (i < parts.Count)
+                    {
+                        string datePart = parts[i];
+                        string timePart = (i + 1 < parts.Count) ? parts[i + 1] : "";
+                        string changePart = (i + 2 < parts.Count) ? parts[i + 2] : "";
+
+                        string targetShift = "";
+                        string nextShift = "";
+
+                        if (!string.IsNullOrEmpty(changePart))
+                        {
+                            string cleanChange = changePart;
+                            if (cleanChange.StartsWith("Changed to:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                cleanChange = cleanChange.Substring(11).Trim();
+                            }
+                            else if (cleanChange.StartsWith("Change to:", StringComparison.OrdinalIgnoreCase))
+                            {
+                                cleanChange = cleanChange.Substring(10).Trim();
+                            }
+
+                            var changeParts = System.Text.RegularExpressions.Regex.Split(cleanChange, @"\s+[-–—]\s+");
+                            if (changeParts.Length > 1)
+                            {
+                                targetShift = changeParts[0].Trim();
+                                nextShift = changeParts[1].Trim();
+                            }
+                            else
+                            {
+                                targetShift = cleanChange;
+                            }
+                        }
+
+                        var item = new ShiftChangeRequestItem
+                        {
+                            CurrentShiftName = curShift,
+                            ShiftDetailsText = $"{datePart} | {timePart}",
+                            RequestedShiftName = !string.IsNullOrEmpty(targetShift) ? targetShift : req.RequestedShiftName
+                        };
+                        req.Items.Add(item);
+
+                        curShift = nextShift;
+                        i += 3;
+                    }
+
+                    // Fallback to top-level properties if nothing was parsed in collection
+                    if (req.Items.Count == 0)
+                    {
+                        req.Items.Add(new ShiftChangeRequestItem
+                        {
+                            CurrentShiftName = req.CurrentShiftName,
+                            ShiftDetailsText = req.ShiftDetailsText,
+                            RequestedShiftName = req.RequestedShiftName
+                        });
+                    }
+                    else
+                    {
+                        req.CurrentShiftName = req.Items[0].CurrentShiftName;
+                        req.ShiftDetailsText = req.Items[0].ShiftDetailsText;
+                        req.RequestedShiftName = req.Items[0].RequestedShiftName;
+                    }
+                }
+
+                request = req;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Error parsing text shift request: " + ex.Message);
+            }
+        }
+        return false;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (hubConnection != null)
+        {
+            await hubConnection.DisposeAsync();
+        }
+    }
+
+    public class ChatUnreadCount
+    {
+        public int SenderId { get; set; }
+        public int UnreadCount { get; set; }
+    }
+
+    public class ShiftChangeRequestItem
+    {
+        public string CurrentShiftName { get; set; } = "";
+        public string ShiftDetailsText { get; set; } = "";
+        public string RequestedShiftName { get; set; } = "";
+    }
+
+    public class ShiftChangeRequest
+    {
+        public string RiderName { get; set; } = "Sk";
+        public int RiderId { get; set; } = 73;
+        public string CurrentShiftName { get; set; } = "Morning Shift";
+        public string ShiftDetailsText { get; set; } = "";
+        public string RequestedShiftName { get; set; } = "Night Shift";
+        public string Reason { get; set; } = "";
+        public string? StatusText { get; set; }
+        public List<ShiftChangeRequestItem> Items { get; set; } = new List<ShiftChangeRequestItem>();
+    }
+
+    public class ChatMember
+    {
+        public int Id { get; set; }
+        public string Name { get; set; } = "";
+        public string Mobile { get; set; } = "";
+        public string Email { get; set; } = "";
+        public string Type { get; set; } = "";
+        public string Status { get; set; } = "";
+        public int UnreadCount { get; set; }
+        public string? LastMessage { get; set; }
+        public DateTime? LastMessageTime { get; set; }
+    }
+
+    private void GoToRoster()
+    {
+        Navigation.NavigateTo("/Roster");
+    }
+}

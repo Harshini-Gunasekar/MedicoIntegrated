@@ -1,0 +1,243 @@
+@page "/location"
+@using Microsoft.AspNetCore.Authorization
+@* @attribute [Authorize] *@
+@rendermode InteractiveServer
+
+@inject IJSRuntime JS
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage protectedSessionStore
+@using Microsoft.Extensions.Options
+@using Newtonsoft.Json
+@using Syncfusion.Blazor.Grids
+@using Syncfusion.Blazor.Buttons
+@using Syncfusion.Blazor.Inputs
+@using Syncfusion.Blazor.Popups
+@using Syncfusion.Blazor.Calendars
+@using Syncfusion.Blazor.DropDowns
+@using System.Globalization
+@using TrackAdmin.Data
+@using TrackAdmin.Models
+@using System.Text.Json
+
+@inject NavigationManager Navigation
+@inject HttpClient http
+@inject SfDialogService dp
+
+@inject RiderTracking riderTracking
+@inject MasterData msd
+
+<h3>Geolocation Example</h3>
+<section class="row">
+    <div class="col">
+        <button type="button" @onclick="GetTrip">Get Trip</button> <br />
+        <div id="distance" style="margin-top: 10px; font-weight: bold;"></div>
+        @totaldistance
+    </div>
+
+    <div class="col">
+        <div id="mapstart" style="width:100%;height:500px"></div>
+    </div>
+</section>
+
+@if (error != null)
+{
+    <p style="color: red">@error</p>
+}
+else if (latitude != null && longitude != null)
+{
+    <p><b>Latitude:</b> @latitude</p>
+    <p><b>Longitude:</b> @longitude</p>
+}
+else
+{
+    <p>Fetching location...</p>
+}
+
+@code {
+    private double? latitude;
+    private double? longitude;
+    private string error;
+    [Inject] IOptions<APIConfiguration> ApiConfig { get; set; }
+    private DotNetObjectReference<Location>? dotNetRef;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            var loginState = await protectedSessionStore.GetAsync<bool>("IsLoggedIn");
+            if (!loginState.Success || !loginState.Value)
+            {
+                Navigation.NavigateTo("/");
+                return;
+            }
+
+            try
+            {
+
+                var position = await JS.InvokeAsync<GeolocationCoordinates>("getLocation");
+                latitude = position.Latitude;
+                longitude = position.Longitude;
+
+                StateHasChanged();
+            }
+            catch (Exception ex)
+            {
+                error = $"Error: {ex.Message}";
+                StateHasChanged();
+            }
+        }
+    }
+
+    public class GeolocationCoordinates
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
+
+    private async Task LoadStatus(Double lat, Double lng)
+    {
+        try
+        {
+            Rider_Current_Location rcl = new();
+
+            rcl = new Rider_Current_Location()
+            {
+                RiderID = 10,
+                Vehicle = "Bike",
+                Latitude = lat,
+                Longitude = lng,
+                Status = "Active",
+                EnteredDate = DateTime.Now.AddDays(-1)
+            };
+
+            RiderStatus rs = new RiderStatus
+            {
+                ID = Guid.NewGuid(),
+                Session = "New Session",
+                latitude = Convert.ToString(lat),
+                longitude = Convert.ToString(lng),
+                StartTime = DateTime.Now.AddDays(-1),
+                EndTime = DateTime.Now.AddDays(-1),
+                RiderID = 10
+            };
+
+            LoadLocation ls = new LoadLocation
+            {
+                rcl = rcl,
+                rs = rs
+            };
+
+            var res = await http.PostAsJsonAsync("LiveTracker/updatestatus", ls);
+            if (res.IsSuccessStatusCode)
+            {
+                var tt = await res.Content.ReadAsStringAsync();
+                var tt1 = tt;
+            }
+        }
+        catch (Exception ex)
+        {
+            error = $"Error: {ex.Message}";
+            StateHasChanged();
+        }
+    }
+
+    Double totaldistance = 0;
+
+    private async Task GetTrip()
+    {
+        distres.Clear();
+
+        IList<RiderStatus> rs = new List<RiderStatus>();
+        String sd = "2025-05-24 12:37:00";
+        String ed = "2025-05-24 13:40:00";
+
+        var res = await http.GetAsync($"LiveTracker/RiderRoute?id=10&sd={Uri.EscapeUriString(sd)}&ed={Uri.EscapeUriString(ed)}");
+        if (res.IsSuccessStatusCode)
+        {
+            var tt = await res.Content.ReadAsStringAsync();
+            rs = JsonConvert.DeserializeObject<IList<RiderStatus>>(tt) ?? new List<RiderStatus>();
+            rs = rs.OrderBy(x => x.StartTime).ToList();
+
+            List<(double lng, double lat)> ds = rs
+                .Select(x => (Convert.ToDouble(x.longitude), Convert.ToDouble(x.latitude)))
+                .ToList();
+
+            await JS.InvokeVoidAsync("StartMap", ds);
+
+            // List<(double longitude, double latitude)> cord1 = rs.Select(x => ( Convert.ToDouble(x.longitude),Convert.ToDouble(x.latitude) )).ToList();
+
+            // // Define the batch size
+            // int batchSize = 100;
+
+            // // Split into batches
+            // var batches = cord1
+            //     .Select((coord, index) => new { coord, index })
+            //     .GroupBy(x => x.index / batchSize)
+            //     .Select(g => g.Select(x => x.coord).ToList())
+            //     .ToList();
+            // foreach (var batch in batches)
+            // {
+            //     //var matchedRoute = await GetMatchedRouteAsync(batch);
+            //     string coordParam = string.Join(";", batch.Select(p => $"{p.longitude.ToString("G", CultureInfo.InvariantCulture)},{p.latitude.ToString("G", CultureInfo.InvariantCulture)}"));
+            //     string url = $"https://api.mapbox.com/matching/v5/mapbox/driving/{coordParam}?access_token={_accessToken}&geometries=geojson";
+            //     var response = await http.GetFromJsonAsync<MapboxMatchingResponse>(url);
+            //     distres.Add(response);
+
+            // }
+
+            // foreach(var it in distres)
+            // {
+            //     totaldistance += it.Matchings.Sum(x => x.Distance);
+            // }
+
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    string _accessToken = "YOUR_ACTUAL_SECRET_TOKEN";
+
+    List<MapboxMatchingResponse> distres = new List<MapboxMatchingResponse>();
+
+    public async Task<MapboxMatchingResponse> GetMatchedRouteAsync(List<(double longitude, double latitude)> coordinates, string profile = "driving")
+    {
+        var coordString = string.Join(";",
+            coordinates.Select(c => $"{c.longitude},{c.latitude}"));
+
+        var url = $"https://api.mapbox.com/matching/v5/mapbox/{profile}/{coordString}" +
+                  $"?access_token={_accessToken}&geometries=geojson";
+
+        var response = await http.GetFromJsonAsync<MapboxMatchingResponse>(url);
+
+        return response;
+    }
+
+    public class MapboxMatchingResponse
+    {
+        public List<MapboxMatch> Matchings { get; set; }
+        public List<MapboxTracepoint> Tracepoints { get; set; }
+
+        public double GetTotalDistance()
+        {
+            return Matchings?.Sum(m => m.Distance) ?? 0;
+        }
+    }
+
+    public class MapboxMatch
+    {
+        public double Distance { get; set; } // in meters
+        public double Duration { get; set; } // in seconds
+        public MapboxGeometry Geometry { get; set; }
+    }
+
+    public class MapboxGeometry
+    {
+        public string Type { get; set; }
+        public List<List<double>> Coordinates { get; set; }
+    }
+
+    public class MapboxTracepoint
+    {
+        public int MatchingsIndex { get; set; }
+        public int WaypointIndex { get; set; }
+        public List<double> Location { get; set; }
+    }
+}
