@@ -491,6 +491,19 @@ namespace Booking.Models
         public double total_ip_cost { get; set; }
         public double total_pharmacy_cost { get; set; }
 
+        // ── IP Summary ────────────────────────────────────────────────
+        public double total_ip_amount { get; set; }
+        public double total_bill_amount { get; set; }
+        public double ip_advance_used { get; set; }
+        public double ip_total_collected { get; set; }
+        public double ip_advance_collected { get; set; }
+        public double ip_cash_collected { get; set; }
+        public double ip_upi_collected { get; set; }
+        public double ip_other_collected { get; set; }
+        public double ip_advance_refunded { get; set; }
+        public double total_amount_refunded { get; set; }
+        public List<HmsOpPaymodeAmount> ip_paymodes { get; set; } = new();
+
         // ── Advance summary ───────────────────────────────────────────
         public double advance_collected { get; set; }
         public double total_advance_collected { get; set; }

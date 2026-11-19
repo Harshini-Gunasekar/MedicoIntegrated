@@ -681,82 +681,82 @@
     private bool showMedSuggestions = false;
     private List<string> filteredMedSuggestions = new();
     private List<string> masterSuggestionsList = new();
+    private static List<string>? _cachedMasterSuggestions;
+    private static bool _isSuggestionsLoading = false;
+    private List<DischargeSummaryService.DsTemplateDto> cachedPresetsList = new();
     private bool hasExportRight = false;
     private bool hasViewRight = false;
     private bool hasEditRight = false;
 
-    private async Task PopulateMasterSuggestions()
+    private static readonly List<string> DefaultMasterPresets = new()
     {
-        try
+        "Paracetamol 500mg", "Amoxicillin 250mg", "Pantocid 40mg", "Cetirizine 10mg",
+        "Azithromycin 500mg", "Metformin 500mg", "Atorvastatin 10mg", "Amlodipine 5mg",
+        "Telmisartan 40mg", "Ibuprofen 400mg", "Dolo 650mg", "Ranitidine 150mg",
+        "Ciprofloxacin 500mg", "Omeprazole 20mg", "Multivitamin Tablet", "Cefixime 200mg",
+        "Ceftriaxone 1g Injection", "NS 0.9% 500ml", "RL 500ml", "DNS 500ml",
+        "Complete Blood Count (CBC)", "Serum Creatinine", "Blood Urea Nitrogen (BUN)",
+        "Serum Electrolytes (Na, K, Cl)", "Liver Function Test (LFT)", "Lipid Profile",
+        "Urine Routine & Microscopy", "Chest X-Ray PA View", "ECG 12-Lead",
+        "Ultrasonography (USG) Abdomen & Pelvis", "CT Brain Plain", "HbA1c",
+        "Thyroid Profile (T3, T4, TSH)", "Sputum Culture & Sensitivity", "Arterial Blood Gas (ABG)"
+    };
+
+    private void PopulateMasterSuggestionsFast()
+    {
+        if (_cachedMasterSuggestions != null && _cachedMasterSuggestions.Any())
         {
-            var list = new List<string>();
+            masterSuggestionsList = _cachedMasterSuggestions;
+            return;
+        }
 
-            // 1. Preset clinical items & tests
-            var presets = new List<string>
-            {
-                "Paracetamol 500mg", "Amoxicillin 250mg", "Pantocid 40mg", "Cetirizine 10mg",
-                "Azithromycin 500mg", "Metformin 500mg", "Atorvastatin 10mg", "Amlodipine 5mg",
-                "Telmisartan 40mg", "Ibuprofen 400mg", "Dolo 650mg", "Ranitidine 150mg",
-                "Ciprofloxacin 500mg", "Omeprazole 20mg", "Multivitamin Tablet", "Cefixime 200mg",
-                "Ceftriaxone 1g Injection", "NS 0.9% 500ml", "RL 500ml", "DNS 500ml",
-                "Complete Blood Count (CBC)", "Serum Creatinine", "Blood Urea Nitrogen (BUN)",
-                "Serum Electrolytes (Na, K, Cl)", "Liver Function Test (LFT)", "Lipid Profile",
-                "Urine Routine & Microscopy", "Chest X-Ray PA View", "ECG 12-Lead",
-                "Ultrasonography (USG) Abdomen & Pelvis", "CT Brain Plain", "HbA1c",
-                "Thyroid Profile (T3, T4, TSH)", "Sputum Culture & Sensitivity", "Arterial Blood Gas (ABG)"
-            };
-            foreach (var p in presets)
-            {
-                if (!list.Contains(p, StringComparer.OrdinalIgnoreCase)) list.Add(p);
-            }
+        masterSuggestionsList = DefaultMasterPresets.ToList();
 
-            // 2. Fetch inventory items & medicines from ItemMaster
+        if (_isSuggestionsLoading) return;
+        _isSuggestionsLoading = true;
+
+        // Background non-blocking warm up of full test and medicine catalogs
+        _ = Task.Run(async () =>
+        {
             try
             {
-                var items = await CaseSheetService.GetAllItemsAsync();
-                if (items != null)
+                var set = new HashSet<string>(DefaultMasterPresets, StringComparer.OrdinalIgnoreCase);
+
+                try
                 {
-                    foreach (var i in items)
+                    var items = await CaseSheetService.GetAllItemsAsync();
+                    if (items != null)
                     {
-                        var name = !string.IsNullOrWhiteSpace(i.itemname) ? i.itemname.Trim() : (i.drugname ?? "");
-                        if (!string.IsNullOrWhiteSpace(name) && !list.Contains(name, StringComparer.OrdinalIgnoreCase))
+                        foreach (var i in items)
                         {
-                            list.Add(name);
+                            var name = !string.IsNullOrWhiteSpace(i.itemname) ? i.itemname.Trim() : (i.drugname ?? "");
+                            if (!string.IsNullOrWhiteSpace(name)) set.Add(name);
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Item search load error: {ex.Message}");
-            }
+                catch { }
 
-            // 3. Fetch lab & radiology tests from TestMaster
-            try
-            {
-                var tests = await TestService.GetAllTestsAsync();
-                if (tests != null)
+                try
                 {
-                    foreach (var t in tests)
+                    var tests = await TestService.GetAllTestsAsync();
+                    if (tests != null)
                     {
-                        if (!string.IsNullOrWhiteSpace(t.name) && !list.Contains(t.name.Trim(), StringComparer.OrdinalIgnoreCase))
+                        foreach (var t in tests)
                         {
-                            list.Add(t.name.Trim());
+                            if (!string.IsNullOrWhiteSpace(t.name)) set.Add(t.name.Trim());
                         }
                     }
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Test search load error: {ex.Message}");
-            }
+                catch { }
 
-            masterSuggestionsList = list;
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"PopulateMasterSuggestions error: {ex.Message}");
-        }
+                _cachedMasterSuggestions = set.ToList();
+                masterSuggestionsList = _cachedMasterSuggestions;
+            }
+            finally
+            {
+                _isSuggestionsLoading = false;
+            }
+        });
     }
 
     private bool _lastVisible = false;
@@ -786,91 +786,83 @@
         savedMessage = "";
         try
         {
-            try
+            if (CanEdit.HasValue)
             {
-                SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
+                hasViewRight = true;
+                hasEditRight = CanEdit.Value;
+                hasExportRight = CanPrint ?? false;
+            }
+            else
+            {
                 try
                 {
-                    var userResult = await sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
-                    if (userResult.Success && userResult.Value != null)
-                    {
-                        currentUser = userResult.Value;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error checking user details: {ex.Message}");
-                }
-
-                bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, sessionStorage);
-
-                if (isAdmin)
-                {
-                    hasViewRight = true;
-                    hasEditRight = true;
-                    hasExportRight = true;
-                }
-                else
-                {
-                    if (!RoleService.IsPermissionsLoaded)
-                    {
-                        try
-                        {
-                            var sessionPerms = await sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
-                            if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
-                            {
-                                RoleService.SetUserPermissions(sessionPerms.Value);
-                            }
-                            else if (currentUser != null && currentUser.UserCode.HasValue && currentUser.UserCode.Value > 0)
-                            {
-                                await RoleService.LoadUserPermissionsAsync(currentUser.UserCode.Value);
-                            }
-                        }
-                        catch { }
-                    }
-
-                    List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
+                    SharedComponents.Rcl.Models.UserDetailsModel? currentUser = null;
                     try
                     {
-                        var rightsResult = await sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
-                        if (rightsResult.Success && rightsResult.Value != null)
+                        var userResult = await sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                        if (userResult.Success && userResult.Value != null)
                         {
-                            rightsList = rightsResult.Value;
+                            currentUser = userResult.Value;
                         }
                     }
                     catch { }
 
-                    if (rightsList == null || !rightsList.Any())
-                    {
-                        rightsList = TenantState?.UserRightsList?.ToList();
-                    }
+                    bool isAdmin = await UserPermissionHelper.IsAdminAsync(currentUser, TenantState, sessionStorage);
 
-                    var dsRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, sessionStorage, rightsList, "Discharge Summary", "DischargeSummary", "Discharge_Summary", "Discharge_Summery");
-                    
-                    hasViewRight = RoleService.HasRoleId(428, 420) || 
-                                   RoleService.HasAction("IP Portal", "Discharge Summary", "View") || 
-                                   RoleService.HasRight("IP Portal", "Discharge Summary") || 
-                                   RoleService.HasRight("dischargesummary") || 
-                                   dsRight.View;
-
-                    if (CanEdit.HasValue)
+                    if (isAdmin)
                     {
-                        hasEditRight = CanEdit.Value;
+                        hasViewRight = true;
+                        hasEditRight = true;
+                        hasExportRight = true;
                     }
                     else
                     {
+                        if (!RoleService.IsPermissionsLoaded)
+                        {
+                            try
+                            {
+                                var sessionPerms = await sessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                                if (sessionPerms.Success && sessionPerms.Value != null && sessionPerms.Value.Any())
+                                {
+                                    RoleService.SetUserPermissions(sessionPerms.Value);
+                                }
+                                else if (currentUser != null && currentUser.UserCode.HasValue && currentUser.UserCode.Value > 0)
+                                {
+                                    await RoleService.LoadUserPermissionsAsync(currentUser.UserCode.Value);
+                                }
+                            }
+                            catch { }
+                        }
+
+                        List<SharedComponents.Rcl.Models.User_Rights>? rightsList = null;
+                        try
+                        {
+                            var rightsResult = await sessionStorage.GetAsync<List<SharedComponents.Rcl.Models.User_Rights>>("UserRights");
+                            if (rightsResult.Success && rightsResult.Value != null)
+                            {
+                                rightsList = rightsResult.Value;
+                            }
+                        }
+                        catch { }
+
+                        if (rightsList == null || !rightsList.Any())
+                        {
+                            rightsList = TenantState?.UserRightsList?.ToList();
+                        }
+
+                        var dsRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, sessionStorage, rightsList, "Discharge Summary", "DischargeSummary", "Discharge_Summary", "Discharge_Summery");
+                        
+                        hasViewRight = RoleService.HasRoleId(428, 420) || 
+                                       RoleService.HasAction("IP Portal", "Discharge Summary", "View") || 
+                                       RoleService.HasRight("IP Portal", "Discharge Summary") || 
+                                       RoleService.HasRight("dischargesummary") || 
+                                       dsRight.View;
+
                         hasEditRight = RoleService.HasRoleId(429, 421) || 
                                        RoleService.HasAction("IP Portal", "Discharge Summary", "Create") || 
                                        RoleService.HasAction("dischargesummary", "Create") || 
                                        dsRight.Edit || dsRight.Add;
-                    }
 
-                    if (CanPrint.HasValue)
-                    {
-                        hasExportRight = CanPrint.Value;
-                    }
-                    else
-                    {
                         var printRight = await UserPermissionHelper.GetRightsAsync(currentUser, TenantState, sessionStorage, rightsList, "Print Discharge Summary", "Print_DischargeSummary", "Print_DischargeSummery");
                         hasExportRight = RoleService.HasRoleId(430, 422) || 
                                          RoleService.HasAction("IP Portal", "Discharge Summary", "Print") || 
@@ -878,20 +870,10 @@
                                          printRight.View || printRight.Add || printRight.Edit || 
                                          (rightsList != null && rightsList.Any(r => r.ModuleName != null && r.ModuleName.Contains("Discharge", StringComparison.OrdinalIgnoreCase) && r.ToExport));
                     }
-
-                    if (await UserPermissionHelper.IsAdminAsync(null, TenantState, sessionStorage))
-                    {
-                        hasViewRight = true;
-                        hasEditRight = true;
-                        hasExportRight = true;
-                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error retrieving user rights: {ex.Message}");
-                if (await UserPermissionHelper.IsAdminAsync(null, TenantState, sessionStorage))
+                catch (Exception ex)
                 {
+                    Console.WriteLine($"Error retrieving user rights: {ex.Message}");
                     hasViewRight = true;
                     hasEditRight = true;
                     hasExportRight = true;
@@ -905,21 +887,29 @@
                 return;
             }
 
-            await PopulateMasterSuggestions();
-            await CleanDefaultDummyCategories();
-            allCategories = await DsService.GetCategoriesAsync();
-
-            var allPresets = await DsService.GetTemplatesAsync(null);
-            availableTemplateNames = allPresets.Where(p => !string.IsNullOrWhiteSpace(p.template_name))
-                                               .Select(p => p.template_name.Trim())
-                                               .Distinct()
-                                               .ToList();
+            PopulateMasterSuggestionsFast();
 
             // Search by IpNo first, then PatCode, then CustId string
             var searchCode = !string.IsNullOrWhiteSpace(IpNo) ? IpNo
                            : (!string.IsNullOrWhiteSpace(PatCode) ? PatCode
                            : (CustId > 0 ? CustId.ToString() : ""));
-            patSummaryRes = await DsService.GetPatientDischargeSummaryAsync(searchCode);
+
+            // Parallel fetch categories, templates, and patient summary simultaneously
+            var categoriesTask = DsService.GetCategoriesAsync();
+            var templatesTask = DsService.GetTemplatesAsync(null);
+            var patSummaryTask = DsService.GetPatientDischargeSummaryAsync(searchCode);
+
+            await Task.WhenAll(categoriesTask, templatesTask, patSummaryTask);
+
+            allCategories = await categoriesTask;
+            var allPresets = await templatesTask;
+            cachedPresetsList = allPresets;
+            patSummaryRes = await patSummaryTask;
+
+            availableTemplateNames = allPresets.Where(p => !string.IsNullOrWhiteSpace(p.template_name))
+                                               .Select(p => p.template_name.Trim())
+                                               .Distinct()
+                                               .ToList();
 
             categoryContents.Clear();
             categoryTextNotes.Clear();
@@ -937,10 +927,9 @@
                     {
                         if (string.IsNullOrWhiteSpace(d.category_name)) continue;
 
-                        // Canonical category resolution with fuzzy fallback
+                        // Canonical category resolution (exact ID or exact Name match)
                         var targetCat = allCategories.FirstOrDefault(c => c.category_id == d.category_id)
-                                     ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Equals(d.category_name.Trim(), StringComparison.OrdinalIgnoreCase))
-                                     ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Contains(d.category_name.Trim(), StringComparison.OrdinalIgnoreCase) || d.category_name.Trim().Contains(c.category_name.Trim(), StringComparison.OrdinalIgnoreCase));
+                                     ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Equals(d.category_name.Trim(), StringComparison.OrdinalIgnoreCase));
 
                         if (targetCat == null)
                         {
@@ -967,8 +956,11 @@
 
             if (availableTemplateNames.Any())
             {
-                selectedTemplateName = availableTemplateNames.First();
-                await ApplyTemplateFilter(selectedTemplateName);
+                if (string.IsNullOrEmpty(selectedTemplateName) || !availableTemplateNames.Contains(selectedTemplateName))
+                {
+                    selectedTemplateName = availableTemplateNames.First();
+                }
+                await ApplyTemplateFilter(selectedTemplateName, allPresets);
             }
             else
             {
@@ -988,10 +980,20 @@
 
     private void ParseAndPopulateCategoryDetail(Guid catId, string rawContent, string catType)
     {
-        categoryContents[catId] = rawContent;
-        if (string.IsNullOrWhiteSpace(rawContent)) return;
+        if (string.IsNullOrWhiteSpace(rawContent))
+        {
+            categoryContents[catId] = "";
+            return;
+        }
 
         string trimmed = rawContent.Trim();
+        if (trimmed == "[]" || trimmed == "{}" || trimmed == "{\"note\":\"\",\"medicines\":[]}")
+        {
+            categoryContents[catId] = "";
+            return;
+        }
+
+        categoryContents[catId] = rawContent;
 
         // 1. Try Deserialize as BOTH payload
         if (trimmed.StartsWith("{") && trimmed.EndsWith("}"))
@@ -1001,13 +1003,15 @@
                 var both = Newtonsoft.Json.JsonConvert.DeserializeObject<BothCategoryPayload>(trimmed);
                 if (both != null)
                 {
-                    if (!string.IsNullOrWhiteSpace(both.note))
+                    bool hasNote = !string.IsNullOrWhiteSpace(both.note);
+                    bool hasMeds = both.medicines != null && both.medicines.Any(m => !string.IsNullOrWhiteSpace(m.medicine_name));
+
+                    if (hasNote) categoryTextNotes[catId] = both.note;
+                    if (hasMeds) categoryMedicines[catId] = both.medicines!.Where(m => !string.IsNullOrWhiteSpace(m.medicine_name)).ToList();
+
+                    if (!hasNote && !hasMeds)
                     {
-                        categoryTextNotes[catId] = both.note;
-                    }
-                    if (both.medicines != null && both.medicines.Any())
-                    {
-                        categoryMedicines[catId] = both.medicines;
+                        categoryContents[catId] = "";
                     }
                     return;
                 }
@@ -1021,9 +1025,14 @@
             try
             {
                 var meds = Newtonsoft.Json.JsonConvert.DeserializeObject<List<DischargeMedicineRow>>(trimmed);
-                if (meds != null && meds.Any())
+                if (meds != null && meds.Any(m => !string.IsNullOrWhiteSpace(m.medicine_name)))
                 {
-                    categoryMedicines[catId] = meds;
+                    categoryMedicines[catId] = meds.Where(m => !string.IsNullOrWhiteSpace(m.medicine_name)).ToList();
+                    return;
+                }
+                else
+                {
+                    categoryContents[catId] = "";
                     return;
                 }
             }
@@ -1078,28 +1087,37 @@
         }
     }
 
-    private async Task ApplyTemplateFilter(string tName)
+    private async Task ApplyTemplateFilter(string tName, List<DischargeSummaryService.DsTemplateDto>? passedPresets = null)
     {
-        var allPresets = await DsService.GetTemplatesAsync(null);
+        var allPresets = passedPresets ?? cachedPresetsList;
+        if (allPresets == null || !allPresets.Any())
+        {
+            allPresets = await DsService.GetTemplatesAsync(null);
+            cachedPresetsList = allPresets;
+        }
         var tPresets = allPresets.Where(p => p.template_name != null && p.template_name.Trim().Equals(tName, StringComparison.OrdinalIgnoreCase)).ToList();
 
         var matchedCatIds = new HashSet<Guid>();
+        var templateCategories = new List<DischargeSummaryService.DsCategoryDto>();
+        var seenCategoryNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var p in tPresets)
         {
-            if (string.IsNullOrWhiteSpace(p.category_name)) continue;
+            var cName = p.category_name?.Trim() ?? "";
+            if (string.IsNullOrWhiteSpace(cName)) continue;
+            if (seenCategoryNames.Contains(cName)) continue;
+            seenCategoryNames.Add(cName);
 
-            // Resolve canonical category from allCategories
+            // Resolve canonical category from allCategories (exact ID or exact Name match)
             var targetCat = allCategories.FirstOrDefault(c => c.category_id == p.category_id)
-                         ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Equals(p.category_name.Trim(), StringComparison.OrdinalIgnoreCase))
-                         ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Contains(p.category_name.Trim(), StringComparison.OrdinalIgnoreCase) || p.category_name.Trim().Contains(c.category_name.Trim(), StringComparison.OrdinalIgnoreCase));
+                         ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Equals(cName, StringComparison.OrdinalIgnoreCase));
 
             if (targetCat == null)
             {
                 targetCat = new DischargeSummaryService.DsCategoryDto
                 {
                     category_id = p.category_id != Guid.Empty ? p.category_id : Guid.NewGuid(),
-                    category_name = p.category_name.Trim(),
+                    category_name = cName,
                     category_type = "TEXT",
                     sort_order = allCategories.Count + 1
                 };
@@ -1107,6 +1125,7 @@
             }
 
             matchedCatIds.Add(targetCat.category_id);
+            templateCategories.Add(targetCat);
 
             // Auto-populate default answer preset ONLY if no saved content exists for that category
             if (!string.IsNullOrWhiteSpace(p.template_text))
@@ -1120,15 +1139,12 @@
             }
         }
 
-        // Filter categoryList to include template categories OR any category that ALREADY has saved content for this patient
-        categoryList = allCategories.Where(c => 
-            matchedCatIds.Contains(c.category_id) || 
-            IsCategoryFilled(c.category_id)
-        ).ToList();
+        // Active template categories in configured template order
+        categoryList = templateCategories.ToList();
 
         if (!categoryList.Any())
         {
-            categoryList = allCategories.ToList();
+            categoryList = allCategories.GroupBy(c => c.category_name.Trim(), StringComparer.OrdinalIgnoreCase).Select(g => g.First()).ToList();
         }
 
         if (categoryList.Any())
@@ -1142,12 +1158,20 @@
 
     private bool IsCategoryFilled(Guid catId)
     {
-        if (categoryMedicines.TryGetValue(catId, out var meds) && meds != null && meds.Any())
+        if (categoryMedicines.TryGetValue(catId, out var meds) && meds != null && meds.Any(m => !string.IsNullOrWhiteSpace(m.medicine_name)))
             return true;
         if (categoryTextNotes.TryGetValue(catId, out var text) && !string.IsNullOrWhiteSpace(text))
-            return true;
+        {
+            var trimmed = text.Trim();
+            if (trimmed != "[]" && trimmed != "{}" && trimmed != "{\"note\":\"\",\"medicines\":[]}")
+                return true;
+        }
         if (categoryContents.TryGetValue(catId, out var content) && !string.IsNullOrWhiteSpace(content))
-            return true;
+        {
+            var trimmed = content.Trim();
+            if (trimmed != "[]" && trimmed != "{}" && trimmed != "{\"note\":\"\",\"medicines\":[]}")
+                return true;
+        }
         return false;
     }
 
@@ -1269,20 +1293,28 @@
         var cat = allCategories.FirstOrDefault(c => c.category_id == catId);
         var type = cat?.category_type ?? "TEXT";
 
-        var text = categoryTextNotes.TryGetValue(catId, out var val) ? val : "";
+        var text = categoryTextNotes.TryGetValue(catId, out var val) ? val?.Trim() ?? "" : "";
         var meds = GetCategoryMedicines(catId);
 
-        bool hasMeds = meds != null && meds.Any();
+        bool hasMeds = meds != null && meds.Any(m => !string.IsNullOrWhiteSpace(m.medicine_name));
         bool hasText = !string.IsNullOrWhiteSpace(text);
+
+        if (!hasMeds && !hasText)
+        {
+            categoryContents[catId] = "";
+            return;
+        }
 
         if (type == "BOTH" || (hasMeds && hasText))
         {
-            var obj = new BothCategoryPayload { note = text, medicines = meds ?? new List<DischargeMedicineRow>() };
+            var validMeds = meds?.Where(m => !string.IsNullOrWhiteSpace(m.medicine_name)).ToList() ?? new List<DischargeMedicineRow>();
+            var obj = new BothCategoryPayload { note = text, medicines = validMeds };
             categoryContents[catId] = Newtonsoft.Json.JsonConvert.SerializeObject(obj);
         }
         else if (type == "MEDICINE" || hasMeds)
         {
-            categoryContents[catId] = Newtonsoft.Json.JsonConvert.SerializeObject(meds);
+            var validMeds = meds?.Where(m => !string.IsNullOrWhiteSpace(m.medicine_name)).ToList() ?? new List<DischargeMedicineRow>();
+            categoryContents[catId] = Newtonsoft.Json.JsonConvert.SerializeObject(validMeds);
         }
         else
         {
@@ -1389,25 +1421,31 @@
 
             var details = new List<DischargeSummaryService.PdsCategoryContentDto>();
             
-            // Rebuild content for all categories first
-            foreach (var cat in allCategories)
+            // Rebuild content for active template category headers
+            foreach (var cat in categoryList)
             {
                 RebuildCategoryContent(cat.category_id);
             }
 
-            // Collect all categories with non-empty content
+            // Collect only categories that actually have filled content
             int sortOrder = 1;
-            foreach (var cat in allCategories)
+            foreach (var cat in categoryList)
             {
-                if (categoryContents.TryGetValue(cat.category_id, out var content) && !string.IsNullOrWhiteSpace(content))
+                if (IsCategoryFilled(cat.category_id) &&
+                    categoryContents.TryGetValue(cat.category_id, out var content) && 
+                    !string.IsNullOrWhiteSpace(content))
                 {
-                    details.Add(new DischargeSummaryService.PdsCategoryContentDto
+                    var trimmed = content.Trim();
+                    if (trimmed != "[]" && trimmed != "{}" && trimmed != "{\"note\":\"\",\"medicines\":[]}")
                     {
-                        category_id = cat.category_id,
-                        category_name = cat.category_name,
-                        category_content = content,
-                        sort_order = sortOrder++
-                    });
+                        details.Add(new DischargeSummaryService.PdsCategoryContentDto
+                        {
+                            category_id = cat.category_id,
+                            category_name = cat.category_name,
+                            category_content = content,
+                            sort_order = sortOrder++
+                        });
+                    }
                 }
             }
 
