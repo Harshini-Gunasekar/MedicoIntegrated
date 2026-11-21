@@ -352,7 +352,7 @@
                                                     }
                                                 </button>
                                             }
-                                            @if (hasEditRight)
+                                            @if (hasEditRight && !string.Equals(row.value.paymentstatus?.Trim(), "Paid", StringComparison.OrdinalIgnoreCase))
                                             {
                                                 <button class="action-btn btn-edit" @onclick="async () => await EditSales(row.value)" title="Edit"><i class="bi bi-pencil-square"></i></button>
                                             }
@@ -393,7 +393,7 @@
                                                 }
                                             </button>
                                         }
-                                        @if (hasEditRight)
+                                        @if (hasEditRight && !string.Equals(s.paymentstatus?.Trim(), "Paid", StringComparison.OrdinalIgnoreCase))
                                         {
                                             <button class="action-btn btn-edit" @onclick="async () => await EditSales(s)" title="Edit"><i class="bi bi-pencil-square"></i></button>
                                         }
@@ -1526,11 +1526,11 @@
                                             }
                                             <td style="padding: 4px 8px; text-align: center; width: 90px; position: relative;">
                                                 <input id="batch-@index" type="text" class="purchase-item-input text-center" 
-                                                       value="@CleanBatchNo(detail.batchno)"
+                                                       value="@(ActiveBatchSearchRow == index ? BatchSearchText : CleanBatchNo(detail.batchno))"
                                                        autocomplete="off"
                                                        placeholder=""
                                                        @oninput="@(e => OnBatchInput(e, detail))"
-                                                       @onfocus="@(() => { ActiveBatchSearchRow = index; })"
+                                                       @onfocus="@(() => OnBatchFocus(index))"
                                                        @onblur="@(() => OnBatchBlur(detail))"
                                                        @onkeydown="@(e => HandleRowKeyDown(e, index, 1))" />
                                                 
@@ -6147,26 +6147,6 @@
             DateTime? targetExpiry = item.ExpiryDate;
             long? targetStockCode = item.StockCode;
 
-            // If prescription had no batch (e.g. historical visits), auto-select first available active batch in store (FEFO)
-            if (string.IsNullOrWhiteSpace(targetBatch) && SelectedWarehouseCode > 0)
-            {
-                var availStock = StockList.Where(s =>
-                    s.warehousecode == SelectedWarehouseCode &&
-                    s.itemcode == detail.itemcode &&
-                    s.closingstock > 0 &&
-                    !string.IsNullOrWhiteSpace(s.batchno) &&
-                    (!s.expirydate.HasValue || s.expirydate.Value >= DateTime.Today))
-                    .OrderBy(s => s.expirydate ?? DateTime.MaxValue)
-                    .FirstOrDefault();
-
-                if (availStock != null)
-                {
-                    targetBatch = CleanBatchNo(availStock.batchno);
-                    targetExpiry = availStock.expirydate;
-                    targetStockCode = availStock.stockcode;
-                }
-            }
-
             if (!string.IsNullOrWhiteSpace(targetBatch))
             {
                 detail.batchno = targetBatch;
@@ -6250,6 +6230,10 @@
 
         item.IsAdded = true;
         CalculateTotals();
+        if (showUnbilledPrescriptionModal && !PendingPrescriptions.Any(p => !p.IsAdded && !IsPrescriptionItemInGrid(p)))
+        {
+            showUnbilledPrescriptionModal = false;
+        }
         StateHasChanged();
         ToastService.ShowSuccess($"Added '{item.DrugName}' to billing table.");
     }
@@ -6463,6 +6447,7 @@
     }
 
     private int? ActiveBatchSearchRow = null;
+    private string BatchSearchText = "";
 
     private bool IsStockMatchForItem(sales_detail detail, stock_master stock)
     {
@@ -6514,7 +6499,7 @@
                                       && s.closingstock > 0 
                                       && IsStockMatchForItem(detail, s));
 
-        var filterBatch = CleanBatchNo(detail.batchno);
+        var filterBatch = CleanBatchNo(BatchSearchText);
         if (!string.IsNullOrEmpty(filterBatch) && ActiveBatchSearchRow != null)
         {
             query = query.Where(s => s.batchno != null && s.batchno.Contains(filterBatch, StringComparison.OrdinalIgnoreCase));
@@ -6580,17 +6565,12 @@
             return;
         }
 
-        // If batch was already selected, update its details, or match empty/NA batch stock
+        // If a batch is already set, refresh its details for the selected store.
         stock_master? stock = null;
         var existingBatch = CleanBatchNo(detail.batchno);
         if (!string.IsNullOrWhiteSpace(existingBatch))
         {
             stock = itemStocks.FirstOrDefault(s => string.Equals(CleanBatchNo(s.batchno), existingBatch, StringComparison.OrdinalIgnoreCase));
-        }
-        else
-        {
-            // If empty/no batch specified, pick the empty or NA batch stock if available
-            stock = itemStocks.FirstOrDefault(s => string.IsNullOrWhiteSpace(CleanBatchNo(s.batchno)) && s.closingstock > 0);
         }
 
         if (stock != null)
@@ -6609,7 +6589,7 @@
         }
         else
         {
-            // Do NOT autoselect batch if no stock at all
+            // Keep the batch unselected until one is chosen from the dropdown.
             detail.batchno = "";
             detail.expirydate = null;
             PopulateDetailPricing(detail, null);
@@ -6619,91 +6599,24 @@
 
     private void OnBatchInput(ChangeEventArgs e, sales_detail detail)
     {
-        var rawVal = CleanBatchNo(e.Value?.ToString());
-        detail.batchno = rawVal;
+        BatchSearchText = e.Value?.ToString() ?? "";
         ActiveBatchSearchRow = CurrentRequest.details.IndexOf(detail);
-        
-        var pool = SelectedWarehouseCode > 0 
-            ? StockList.Where(s => s.warehousecode == SelectedWarehouseCode)
-            : StockList;
-
-        var stock = pool.FirstOrDefault(s => (detail.itemcode <= 0 || s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s)) 
-                                           && (string.Equals(CleanBatchNo(s.batchno), detail.batchno, StringComparison.OrdinalIgnoreCase) ||
-                                               (string.IsNullOrWhiteSpace(CleanBatchNo(s.batchno)) && string.IsNullOrWhiteSpace(detail.batchno))));
-        if (stock == null && !string.IsNullOrWhiteSpace(detail.batchno))
-        {
-            stock = pool.FirstOrDefault(s => (detail.itemcode <= 0 || s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s)) 
-                                            && s.batchno != null 
-                                            && s.batchno.Contains(detail.batchno, StringComparison.OrdinalIgnoreCase));
-        }
-
-        if (stock != null)
-        {
-            detail.expirydate = stock.expirydate;
-            detail.manufacturingdate = stock.manufacturingdate;
-            ExpiryDateTexts.Remove(detail.GetHashCode());
-            var matchedItem = ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode || (stock != null && i.itemcode == stock.itemcode));
-            if (detail.itemcode <= 0 && stock.itemcode > 0)
-            {
-                detail.itemcode = stock.itemcode;
-                var itemName = ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode)?.itemname;
-                if (!string.IsNullOrEmpty(itemName))
-                {
-                    ItemSearchTexts[detail] = itemName;
-                }
-            }
-            PopulateDetailPricing(detail, stock);
-        }
-        else
-        {
-            PopulateDetailPricing(detail, null);
-        }
-        CalculateRow(detail);
     }
 
-    private async Task OnBatchBlur(sales_detail detail)
+    private void OnBatchFocus(int rowIndex)
     {
-        await Task.Delay(200);
-        ActiveBatchSearchRow = null;
-        if (detail != null)
+        ActiveBatchSearchRow = rowIndex;
+        BatchSearchText = "";
+    }
+
+    private void OnBatchBlur(sales_detail detail)
+    {
+        var rowIndex = CurrentRequest.details.IndexOf(detail);
+        if (ActiveBatchSearchRow == rowIndex)
         {
-            detail.batchno = CleanBatchNo(detail.batchno);
-            var pool = SelectedWarehouseCode > 0 
-                ? StockList.Where(s => s.warehousecode == SelectedWarehouseCode)
-                : StockList;
-
-            var stock = pool.FirstOrDefault(s => (detail.itemcode <= 0 || s.itemcode == detail.itemcode || IsStockMatchForItem(detail, s)) 
-                                               && (string.Equals(CleanBatchNo(s.batchno), detail.batchno, StringComparison.OrdinalIgnoreCase) ||
-                                                   (string.IsNullOrWhiteSpace(CleanBatchNo(s.batchno)) && string.IsNullOrWhiteSpace(detail.batchno)) ||
-                                                   (s.batchno != null && !string.IsNullOrWhiteSpace(detail.batchno) && s.batchno.Contains(detail.batchno, StringComparison.OrdinalIgnoreCase))));
-            if (stock != null)
-            {
-                detail.batchno = CleanBatchNo(stock.batchno);
-                detail.expirydate = stock.expirydate;
-                detail.manufacturingdate = stock.manufacturingdate;
-                ExpiryDateTexts.Remove(detail.GetHashCode());
-                var matchedItem = ItemList.FirstOrDefault(i => i.itemcode == detail.itemcode || (stock != null && i.itemcode == stock.itemcode));
-                if (detail.itemcode <= 0 && stock.itemcode > 0)
-                {
-                    detail.itemcode = stock.itemcode;
-                    var itemName = ItemList.FirstOrDefault(i => i.itemcode == stock.itemcode)?.itemname;
-                    if (!string.IsNullOrEmpty(itemName))
-                    {
-                        ItemSearchTexts[detail] = itemName;
-                    }
-                }
-                PopulateDetailPricing(detail, stock);
-                CalculateRow(detail);
-
-                if (detail.expirydate.HasValue && detail.expirydate.Value.Date < DateTime.Today)
-                {
-                    var itemName = matchedItem?.itemname ?? "Item";
-                    var expStr = detail.expirydate.Value.ToString("MM/yy", System.Globalization.CultureInfo.InvariantCulture);
-                    ToastService.ShowError($"Entered batch '{detail.batchno}' for '{itemName}' is expired ({expStr}). Expired medicines cannot be billed.");
-                }
-            }
+            ActiveBatchSearchRow = null;
+            BatchSearchText = "";
         }
-        StateHasChanged();
     }
 
     private void SelectBatchFromDropdown(sales_detail detail, stock_master stock)
@@ -6724,6 +6637,7 @@
         }
         PopulateDetailPricing(detail, stock);
         ActiveBatchSearchRow = null;
+        BatchSearchText = "";
         CalculateRow(detail);
 
         if (detail.expirydate.HasValue && detail.expirydate.Value.Date < DateTime.Today)
@@ -6923,6 +6837,7 @@
         if (rIdx >= 0)
         {
             ActiveBatchSearchRow = rIdx;
+            BatchSearchText = "";
             StateHasChanged();
             await Task.Delay(50);
             try
@@ -6999,6 +6914,7 @@
                 {
                     ActiveItemSearchRow = null;
                     ActiveBatchSearchRow = rowIndex;
+                    BatchSearchText = "";
                     StateHasChanged();
                     await Task.Delay(50);
                     try

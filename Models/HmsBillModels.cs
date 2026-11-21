@@ -49,6 +49,7 @@ namespace Booking.Models
         public string? policyno { get; set; }
         public string? authorisationno { get; set; }
         public string? concessionreason { get; set; }
+        public string? referral_concession_reason { get; set; }
         public string? card_refno { get; set; }
         public string reference_no { get; set; } = string.Empty;
         public string? bank_app { get; set; }

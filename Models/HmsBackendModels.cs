@@ -91,6 +91,7 @@ namespace Booking.Models
         public double? general_concession_amount { get; set; }
         public double? referral_concession_per { get; set; }
         public double? referral_concession_amount { get; set; }
+        public string? referral_concession_reason { get; set; }
         public double? tax_amount { get; set; }
         public double? net_amount { get; set; }
         public double? paid_amount { get; set; }

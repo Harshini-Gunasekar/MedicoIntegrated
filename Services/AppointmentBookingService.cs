@@ -739,6 +739,9 @@ namespace Booking.Services
                     "COMPLETED" or "VISITED" or "CONFIRMED" => "COMPLETED",
                     "CANCELLED" or "CANCELED" or "NOT ATTENDED" => "CANCELLED",
                     "RESCHEDULED" or "REBOOKED" => "RESCHEDULED",
+                    "REPORT" => "REPORT",
+                    "BOOKED" => "BOOKED",
+                    "ARRIVED" => "ARRIVED",
                     _ => visitStatus?.Trim().ToUpperInvariant() ?? string.Empty
                 };
 

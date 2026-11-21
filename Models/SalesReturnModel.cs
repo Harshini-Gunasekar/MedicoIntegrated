@@ -48,6 +48,11 @@ public class sales_return_request
     public long? usercode { get; set; }
     public string? tenantcode { get; set; }
     public string? remarks { get; set; }   // header-level remark, optional
+    public int? bh_code { get; set; }
+    public int? cntcode { get; set; }
+    public string? paymentmode { get; set; }
+    public string? referenceno { get; set; }
+    public decimal? refundamount { get; set; }
 
     public List<sales_return_item_request> items { get; set; } = new();
 }
@@ -67,7 +72,13 @@ public class sales_return_master
     public decimal totalqty { get; set; }
     public decimal rate { get; set; }
     public decimal amount { get; set; }
+    public decimal? refundamount { get; set; }
+    public int? bh_code { get; set; }
+    public decimal? cntcode { get; set; }
+    public string? cnttid { get; set; }
     public long? warehousecode { get; set; }
+    public string? paymentmode { get; set; }
+    public string? referenceno { get; set; }
     public string? remarks { get; set; }
     public bool isactive { get; set; }
     public bool deleted { get; set; }

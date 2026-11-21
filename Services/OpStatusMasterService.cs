@@ -51,6 +51,9 @@ namespace Booking.Services
                 "COMPLETED" or "VISITED" or "CONFIRMED" => "COMPLETED",
                 "CANCELLED" or "CANCELED" => "CANCELLED",
                 "RESCHEDULED" => "RESCHEDULED",
+                "REPORT" => "REPORT",
+                "BOOKED" => "BOOKED",
+                "ARRIVED" => "ARRIVED",
                 _ => status.Trim().ToUpperInvariant()
             };
         }
@@ -63,7 +66,10 @@ namespace Booking.Services
                 ("IN_CONSULTATION", "In Consultation"),
                 ("COMPLETED", "Completed"),
                 ("CANCELLED", "Cancelled"),
-                ("RESCHEDULED", "Rescheduled")
+                ("RESCHEDULED", "Rescheduled"),
+                ("REPORT", "Report"),
+                ("BOOKED", "Booked"),
+                ("ARRIVED", "Arrived")
             };
 
             return defaults.Select((d, index) =>

@@ -40,6 +40,8 @@ namespace Booking.Models
 
     public string? paymentstatus { get; set; }
 
+    public bool isdraft { get; set; }
+
     public string? currencycode { get; set; }
 
     public bool isactive { get; set; }
