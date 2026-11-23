@@ -43,9 +43,20 @@ public class sales_master
 
     public decimal netamount { get; set; }
 
+    public decimal collectedamount { get; set; }
+
     public string? paymentmode { get; set; }
 
     public string? paymentstatus { get; set; }
+
+    public string? pmc1 { get; set; }
+    public decimal pmc1_amount { get; set; }
+
+    public string? pmc2 { get; set; }
+    public decimal pmc2_amount { get; set; }
+
+    public string? pmc3 { get; set; }
+    public decimal pmc3_amount { get; set; }
 
     public string? currencycode { get; set; }
 

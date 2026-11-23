@@ -787,8 +787,17 @@
                         </div>
                         @if (!string.IsNullOrEmpty(billModel.op_id) || billModel.ip_id != null || billModel.custid > 0)
                         {
-                            <button type="button" class="btn-save" style="font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 0.5rem; padding: 0 1rem; color: white; background: linear-gradient(135deg, #4f46e5, #4338ca); border: none; border-radius: 6px; height: 38px; box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);" @onclick="OpenUnbilledModal">
-                                <i class="bi bi-clock-history"></i> Unbilled Charges (@unbilledCharges.Count(uc => !IsItemAddedToGrid(uc)))
+                            <button type="button" class="btn-save" style="font-weight: 600; white-space: nowrap; display: flex; align-items: center; gap: 0.5rem; padding: 0 1rem; color: white; background: linear-gradient(135deg, #4f46e5, #4338ca); border: none; border-radius: 6px; height: 38px; box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);" @onclick="OpenUnbilledModal" disabled="@loadingUnbilled">
+                                @if (loadingUnbilled || !unbilledChargesLoaded)
+                                {
+                                    <i class="bi bi-clock-history"></i>
+                                    <span>Unbilled Charges</span>
+                                }
+                                else
+                                {
+                                    <i class="bi bi-clock-history"></i>
+                                    <span>Unbilled Charges (@unbilledCharges.Count(uc => !IsItemAddedToGrid(uc)))</span>
+                                }
                             </button>
                         }
                     </div>
@@ -1836,6 +1845,7 @@
 
     // Unbilled charges states
     private List<UnbilledChargeSummary> unbilledCharges = new();
+    private bool unbilledChargesLoaded = false;
     private bool showAddConsultationForm = false;
     private double consultationRate = 250;
     private double consultationQty = 1;
@@ -1992,6 +2002,7 @@
         if (item.UnbilledCharges != null && item.UnbilledCharges.Any())
         {
             unbilledCharges = item.UnbilledCharges.Where(uc => uc.billedstatus != true).ToList();
+            unbilledChargesLoaded = true;
         }
 
         // Render immediately so user sees the patient on screen in 0ms!
@@ -2106,7 +2117,6 @@
     private bool showPatientDropdown = false;
     private List<OPRegistrationModel.OpRegistrationModel> allRegistrations = new();
     private List<OPRegistrationModel.OpRegistrationModel> filteredRegistrations = new();
-    private List<DoctorBookingListModel> bookingsCache = new();
     private string? selectedOpNo = "-";
     private List<IPRegistrationModel.IpRegistrationModel> activeAdmissions = new();
     private string? selectedIpNo = "-";
@@ -2584,6 +2594,7 @@
     private async Task SelectCustomerPatient(Booking.Models.CustomerWithOpModel pat)
     {
         // 1. Immediately set patient details on billModel for zero UI delay
+        unbilledChargesLoaded = false;
         billModel.custid = pat.custid;
         billModel.op_id = pat.op_id;
         selectedOpNo = !string.IsNullOrEmpty(pat.op_no) ? pat.op_no : "-";
@@ -2750,88 +2761,82 @@
     {
         await LoadBranchesAsync();
         await LoadCountersAsync();
-        await CheckBillNoSequenceAsync();
 
-        try
+        async Task LoadLabSettingAsync()
         {
-            labSetting = await LabSettingService.GetLabSettingAsync() ?? new Booking.Models.LabSettingModel();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error loading lab setting: {ex.Message}");
-            labSetting = new();
-        }
-
-        try
-        {
-            doctorsCache = await DoctorService.GetDoctorsAsync() ?? new();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error loading doctors: {ex.Message}");
-            doctorsCache ??= new();
-        }
-
-        await LoadPaymodesAsync();
-
-        try
-        {
-            allRegistrations = await AppointmentBookingService.GetAllOpRegistrationsAsync() ?? new();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error loading registrations: {ex.Message}");
-            allRegistrations ??= new();
-        }
-
-        try
-        {
-            activeAdmissions = await IpRegistrationService.GetActiveAdmissionsAsync() ?? new();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error loading active admissions: {ex.Message}");
-            activeAdmissions ??= new();
-        }
-
-        try
-        {
-            allItems = await CaseSheetService.GetAllItemsAsync() ?? new();
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error loading items: {ex.Message}");
-            allItems ??= new();
-        }
-
-        // test_master loaded separately after session is ready (see LoadTestMastersAsync)
-
-        try
-        {
-            if (doctorsCache != null)
+            try
             {
-                // Cache doctor bookings to pull patient names easily by custid
-                foreach (var doc in doctorsCache)
-                {
-                    try
-                    {
-                        var bookList = await AppointmentBookingService.GetDoctorBookingsAsync(doc.dcode, DateOnly.FromDateTime(DateTime.Today));
-                        if (bookList != null)
-                        {
-                            bookingsCache.AddRange(bookList);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.WriteLine($"Error loading bookings for doctor {doc.dcode}: {ex.Message}");
-                    }
-                }
+                labSetting = await LabSettingService.GetLabSettingAsync() ?? new Booking.Models.LabSettingModel();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading lab setting: {ex.Message}");
+                labSetting = new();
             }
         }
-        catch (Exception ex)
+
+        async Task LoadDoctorsAsync()
         {
-            Console.WriteLine($"Error caching doctor bookings: {ex.Message}");
+            try
+            {
+                doctorsCache = await DoctorService.GetDoctorsAsync() ?? new();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading doctors: {ex.Message}");
+                doctorsCache ??= new();
+            }
         }
+
+        async Task LoadRegistrationsAsync()
+        {
+            try
+            {
+                allRegistrations = await AppointmentBookingService.GetAllOpRegistrationsAsync() ?? new();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading registrations: {ex.Message}");
+                allRegistrations ??= new();
+            }
+        }
+
+        async Task LoadActiveAdmissionsAsync()
+        {
+            try
+            {
+                activeAdmissions = await IpRegistrationService.GetActiveAdmissionsAsync() ?? new();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading active admissions: {ex.Message}");
+                activeAdmissions ??= new();
+            }
+        }
+
+        async Task LoadItemsAsync()
+        {
+            try
+            {
+                allItems = await CaseSheetService.GetAllItemsAsync() ?? new();
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error loading items: {ex.Message}");
+                allItems ??= new();
+            }
+        }
+
+        await Task.WhenAll(
+            CheckBillNoSequenceAsync(),
+            LoadLabSettingAsync(),
+            LoadDoctorsAsync(),
+            LoadPaymodesAsync(),
+            LoadRegistrationsAsync(),
+            LoadActiveAdmissionsAsync(),
+            LoadItemsAsync());
+
+        // test_master loaded separately after session is ready (see LoadTestMastersAsync)
 
         EnsurePredefinedData();
     }
@@ -2839,7 +2844,6 @@
     private void EnsurePredefinedData()
     {
         if (allRegistrations == null) allRegistrations = new();
-        if (bookingsCache == null) bookingsCache = new();
         if (doctorsCache == null) doctorsCache = new();
         if (allItems == null) allItems = new();
     }
@@ -2979,6 +2983,19 @@
                     (!string.IsNullOrEmpty(a.ip_no) && string.Equals(a.ip_no.Trim(), opIdStr.Trim(), StringComparison.OrdinalIgnoreCase)) ||
                     (a.custid.ToString() == opIdStr.Trim())
                 );
+            }
+
+            if (reg != null)
+            {
+                var initialPatientName = string.IsNullOrWhiteSpace(reg.patient_name)
+                    ? $"Patient ID {reg.custid}"
+                    : reg.patient_name;
+                var initialMobile = !string.IsNullOrWhiteSpace(reg.mobile)
+                    ? reg.mobile
+                    : reg.notes ?? reg.op_no;
+
+                SelectPatient(reg, initialPatientName, initialMobile, false);
+                StateHasChanged();
             }
 
             // 0. Try to load as a direct edit (requestguid)
@@ -3243,16 +3260,6 @@
 
                 if (string.IsNullOrEmpty(patientName) || patientName.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
                 {
-                    var bk = bookingsCache.FirstOrDefault(b => b.custid == reg.custid);
-                    if (bk != null && !string.IsNullOrWhiteSpace(bk.patient_name) && !bk.patient_name.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
-                    {
-                        patientName = bk.patient_name;
-                        if (!string.IsNullOrWhiteSpace(bk.notes)) mobile = bk.notes;
-                    }
-                }
-
-                if (string.IsNullOrEmpty(patientName) || patientName.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
-                {
                     var bookingsOnDay = await AppointmentBookingService.GetDoctorBookingsAsync(reg.dcode, reg.visit_date);
                     var match = bookingsOnDay?.FirstOrDefault(b => b.custid == reg.custid);
                     if (match != null && !string.IsNullOrWhiteSpace(match.patient_name) && !match.patient_name.StartsWith("Patient ID", StringComparison.OrdinalIgnoreCase))
@@ -3385,13 +3392,6 @@
             }
             await LoadUnbilledChargesAsync();
 
-            if (string.IsNullOrEmpty(billModel.requestguid))
-            {
-                if (billModel.items.Count == 0 && unbilledCharges.Count > 0)
-                {
-                    showUnbilledModal = true;
-                }
-            }
         }
         catch (Exception ex)
         {
@@ -3407,13 +3407,16 @@
 
     private async Task LoadUnbilledChargesAsync()
     {
+        unbilledChargesLoaded = false;
         unbilledCharges.Clear();
         if (string.IsNullOrEmpty(billModel.op_id) && billModel.ip_id == null && billModel.custid <= 0)
         {
+            unbilledChargesLoaded = true;
             return;
         }
 
         loadingUnbilled = true;
+        StateHasChanged();
         try
         {
             // 1. Hit api/UnbilledCharges/ip-room-rent-summary BEFORE by-visit to generate/calculate room rent entries
@@ -3446,6 +3449,8 @@
         finally
         {
             loadingUnbilled = false;
+            unbilledChargesLoaded = true;
+            StateHasChanged();
         }
     }
 
@@ -4112,6 +4117,7 @@
 
     private void SelectPatient(OPRegistrationModel.OpRegistrationModel reg, string name, string mobile, bool loadExistingData = true)
     {
+        unbilledChargesLoaded = false;
         billModel.custid = reg.custid;
         billModel.op_id = reg.op_id.ToString();
         selectedOpNo = reg.op_no;
@@ -4146,6 +4152,7 @@
 
     private void ClearSelectedPatient()
     {
+        unbilledChargesLoaded = false;
         billModel.custid = 0;
         billModel.op_id = null;
         billModel.ip_id = null;
@@ -5288,6 +5295,7 @@
         selectedIpNo = "-";
         
         unbilledCharges.Clear();
+        unbilledChargesLoaded = false;
         showAddConsultationForm = false;
         
         showPaymode2 = false;
@@ -5569,6 +5577,7 @@
             selectedOpNo = BillingStateSvc.SelectedOpNo;
             selectedIpNo = BillingStateSvc.SelectedIpNo;
             unbilledCharges = BillingStateSvc.UnbilledCharges != null ? new List<UnbilledChargeSummary>(BillingStateSvc.UnbilledCharges) : new();
+            unbilledChargesLoaded = BillingStateSvc.UnbilledCharges != null;
             showPaymode2 = BillingStateSvc.ShowPaymode2;
             showPaymode3 = BillingStateSvc.ShowPaymode3;
             showAddConsultationForm = BillingStateSvc.ShowAddConsultationForm;

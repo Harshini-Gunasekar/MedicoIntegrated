@@ -7,6 +7,7 @@
 @using SharedComponents.Rcl.Services
 @using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
 @inject HmsBillingService BillingService
+@inject Booking.Services.PharmacyDueCollectionService PharmacyDueCollectionService
 @inject CounterMasterService CounterMasterService
 @inject IHttpClientFactory ClientFactory
 @inject TenantSessionState TenantState
@@ -89,9 +90,9 @@
             {
                 <aside class="account-summary-grand-total" aria-label="Total amount collected">
                     <div class="grand-total-heading">
-                        <span>Total amount</span>
+                        <span>Total Amount Collected</span>
                     </div>
-                    <strong class="grand-total-amount">@Money(GrandTotalCollected)</strong>
+                    <strong class="grand-total-amount">@(string.IsNullOrEmpty(pharmacyDataError) ? Money(GrandTotalCollected) : "Unavailable")</strong>
                     <div class="grand-total-modes" aria-label="Cash and UPI split">
                         <span class="grand-total-mode grand-total-cash">
                             <span class="grand-total-mode-label">Cash:</span>
@@ -135,7 +136,10 @@
                         <article class="account-summary-stat stat-clinical">
                             <span><i class="bi bi-hospital"></i> Department collection</span>
                             <strong>@Money(ClinicalCollected)</strong>
-                            <small>Cash @Money(ClinicalCash) <b>·</b> UPI @Money(ClinicalUpi)</small>
+                            @if (ClinicalCollected > 0)
+                            {
+                                <small>Cash @Money(ClinicalCash) <b>·</b> UPI @Money(ClinicalUpi)</small>
+                            }
                         </article>
                         <article class="account-summary-stat stat-due">
                             <span><i class="bi bi-check2-circle"></i> Due collected</span>
@@ -183,11 +187,33 @@
                         <span class="overview-heading-icon pharmacy-icon"><i class="bi bi-capsule"></i></span>
                         <div>
                             <h2>Pharmacy</h2>
-                            <p>Payments received</p>
+                            <p>Payments received + due − sales returns</p>
                         </div>
                     </div>
-                    <strong class="pharmacy-total">@Money(PharmacyCollected)</strong>
-                    <span class="pharmacy-total-label">Total pharmacy collection</span>
+                    @if (!string.IsNullOrEmpty(pharmacyDataError))
+                    {
+                        <div class="pharmacy-data-warning" role="alert">@pharmacyDataError</div>
+                    }
+                    <strong class="pharmacy-total">@(string.IsNullOrEmpty(pharmacyDataError) ? Money(PharmacyFinalCollected) : "Unavailable")</strong>
+                    <span class="pharmacy-total-label">Final pharmacy amount</span>
+                    <div class="pharmacy-overview-adjustments">
+                        <div class="pharmacy-adjustment pharmacy-discount">
+                            <span><i class="bi bi-tag-fill"></i> Discount</span>
+                            <strong>− @Money(PharmacyDiscount)</strong>
+                        </div>
+                        <div class="pharmacy-adjustment pharmacy-due">
+                            <span title="Outstanding amount not yet collected"><i class="bi bi-hourglass-split"></i> Due outstanding</span>
+                            <strong>@Money(PharmacyDue)</strong>
+                        </div>
+                        <div class="pharmacy-adjustment pharmacy-due-collected">
+                            <span><i class="bi bi-check2-circle"></i> Due collected</span>
+                            <strong>@(string.IsNullOrEmpty(pharmacyDataError) ? Money(PharmacyDueCollected) : "Unavailable")</strong>
+                        </div>
+                        <div class="pharmacy-adjustment pharmacy-sales-return">
+                            <span><i class="bi bi-arrow-return-left"></i> Sales return</span>
+                            <strong>@(string.IsNullOrEmpty(pharmacyDataError) ? $"− {Money(PharmacySalesReturnAmount)}" : "Unavailable")</strong>
+                        </div>
+                    </div>
                     <div class="pharmacy-payment-split">
                         <div><span>Cash</span><strong>@Money(PharmacyCash)</strong></div>
                         <div><span>UPI</span><strong>@Money(PharmacyUpi)</strong></div>
@@ -264,7 +290,10 @@
                             <p>Collected amount by payment mode</p>
                         </div>
                     </div>
-                    @if (PharmacyCollections.Count == 0)
+                    @if (string.IsNullOrEmpty(pharmacyDataError) &&
+                        PharmacyCollections.Count == 0 &&
+                        PharmacyDueCollected == 0 &&
+                        PharmacySalesReturnAmount == 0)
                     {
                         <div class="pharmacy-empty-state">
                             <i class="bi bi-capsule"></i>
@@ -292,15 +321,9 @@
                                     <strong>@Money(PharmacyAdvance)</strong>
                                 </article>
                             </div>
-                            <div class="pharmacy-report-foot">
-                                <div class="pharmacy-adjustment pharmacy-discount">
-                                    <span><i class="bi bi-tag-fill"></i> Discount</span>
-                                    <strong>− @Money(PharmacyDiscount)</strong>
-                                </div>
-                                <div class="pharmacy-adjustment pharmacy-due">
-                                    <span title="Outstanding amount not yet collected"><i class="bi bi-hourglass-split"></i> Due outstanding</span>
-                                    <strong>@Money(PharmacyDue)</strong>
-                                </div>
+                            <div class="pharmacy-report-total">
+                                <span>Final pharmacy amount</span>
+                                <strong>@(string.IsNullOrEmpty(pharmacyDataError) ? Money(PharmacyFinalCollected) : "Unavailable")</strong>
                             </div>
                         </div>
                     }
@@ -313,8 +336,8 @@
                     <strong>@Money(HospitalNetCollected)</strong>
                 </div>
                 <div class="bottom-total-item pharmacy-bottom-total">
-                    <span><i class="bi bi-capsule"></i> Pharmacy total collected</span>
-                    <strong>@Money(PharmacyCollected)</strong>
+                    <span><i class="bi bi-capsule"></i> Final pharmacy amount</span>
+                    <strong>@(string.IsNullOrEmpty(pharmacyDataError) ? Money(PharmacyFinalCollected) : "Unavailable")</strong>
                 </div>
             </footer>
         }
@@ -323,6 +346,8 @@
 
 @code {
     private HmsOpCategoryCollectionResponse? reportData;
+    private List<PharmacyDueCollectionRecord> pharmacyDueCollections = new();
+    private List<sales_return_master> salesReturnRefunds = new();
     private List<Booking.Models.BranchModel> branches = new();
     private List<Medico_Backend.Model.CounterMasterModel> counters = new();
     private DateTime fromDate = DateTime.Today;
@@ -332,6 +357,7 @@
     private string DefaultTenant = "";
     private string AuthToken = "";
     private string errorMessage = "";
+    private string pharmacyDataError = "";
     private bool isLoading;
     private bool hasViewRight = true;
     private bool hasLoadedData;
@@ -348,6 +374,46 @@
         reportData?.categories?
             .Where(row => IsPharmacyCategory(row.category))
             .ToList() ?? new();
+
+    private IEnumerable<PharmacyDueCollectionRecord> PharmacyDueCollectionsInPeriod
+    {
+        get
+        {
+            var query = pharmacyDueCollections.Where(record =>
+                record.master != null &&
+                !record.master.deleted &&
+                MatchesTenant(record.master.tenantcode));
+
+            if (selectedBhCode > 0)
+            {
+                query = query.Where(record => record.master!.bh_code == selectedBhCode);
+            }
+
+            if (selectedCntCode > 0)
+            {
+                query = query.Where(record => record.master!.cntcode == selectedCntCode);
+            }
+
+            return query.Where(record =>
+            {
+                var date = record.master!.requestdate != default
+                    ? record.master.requestdate
+                    : record.master.createddate;
+                return date.Date >= fromDate.Date && date.Date <= toDate.Date;
+            });
+        }
+    }
+
+    private IEnumerable<sales_return_master> PharmacySalesReturnsInPeriod =>
+        salesReturnRefunds
+            .Where(salesReturn =>
+                !salesReturn.deleted &&
+                IsRefundedSalesReturn(salesReturn) &&
+                MatchesTenant(salesReturn.tenantcode) &&
+                salesReturn.createddate.Date >= fromDate.Date &&
+                salesReturn.createddate.Date <= toDate.Date)
+            .Where(salesReturn => selectedBhCode <= 0 || salesReturn.bh_code == selectedBhCode)
+            .Where(salesReturn => selectedCntCode <= 0 || salesReturn.cntcode == selectedCntCode);
 
     private static bool IsPharmacyCategory(string? category) =>
         !string.IsNullOrWhiteSpace(category) &&
@@ -409,8 +475,8 @@
             .Sum(row => row.amount) ?? 0;
 
     private double ClinicalCollected => ClinicalCollections.Sum(row => row.collected_amount);
-    private double ClinicalCash => ClinicalCollections.Sum(row => row.CashAmount);
-    private double ClinicalUpi => ClinicalCollections.Sum(row => row.UpiAmount);
+    private double ClinicalCash => ClinicalCollected > 0 ? ClinicalCollections.Sum(row => row.CashAmount) : 0;
+    private double ClinicalUpi => ClinicalCollected > 0 ? ClinicalCollections.Sum(row => row.UpiAmount) : 0;
     private double ClinicalDiscount => ClinicalCollections.Sum(row =>
         Math.Abs(row.discount_amount != 0 ? row.discount_amount : row.discount));
     private double PharmacyCollected => PharmacyCollections.Sum(row => row.collected_amount);
@@ -421,11 +487,34 @@
     private double PharmacyDiscount => PharmacyCollections.Sum(row =>
         Math.Abs(row.discount_amount != 0 ? row.discount_amount : row.discount));
     private double PharmacyDue => PharmacyCollections.Sum(row => row.due_amount);
+    private double PharmacyDueCollected => PharmacyDueCollectionsInPeriod.Sum(record =>
+        (double)(record.master?.totalcollectedamount ?? 0));
+    private double PharmacySalesReturnAmount => PharmacySalesReturnsInPeriod.Sum(salesReturn =>
+        (double)salesReturn.refundamount.GetValueOrDefault());
+    private double PharmacyFinalCollected => PharmacyCollected + PharmacyDueCollected - PharmacySalesReturnAmount;
     private double HospitalNetCollected =>
         ClinicalCollected + AdvanceCollected + DueClearedAmount - AdvanceRefunded - ClinicalDiscount;
-    private double GrandTotalCollected => HospitalNetCollected + PharmacyCollected;
+    private double GrandTotalCollected => HospitalNetCollected + PharmacyFinalCollected;
     private double CombinedCashReceived => ClinicalCash + DueClearedCash + AdvanceCash + PharmacyCash;
     private double CombinedUpiReceived => ClinicalUpi + DueClearedUpi + AdvanceUpi + PharmacyUpi;
+
+    private bool MatchesTenant(string? itemTenant)
+    {
+        if (string.IsNullOrWhiteSpace(DefaultTenant) || string.IsNullOrWhiteSpace(itemTenant))
+        {
+            return true;
+        }
+
+        return string.Equals(itemTenant.Trim(), DefaultTenant.Trim(), StringComparison.OrdinalIgnoreCase) ||
+            (int.TryParse(itemTenant.Trim(), out var itemTenantNumber) &&
+             int.TryParse(DefaultTenant.Trim(), out var defaultTenantNumber) &&
+             itemTenantNumber == defaultTenantNumber);
+    }
+
+    private static bool IsRefundedSalesReturn(sales_return_master salesReturn) =>
+        !string.IsNullOrWhiteSpace(salesReturn.paymentmode) &&
+        !string.IsNullOrWhiteSpace(salesReturn.cnttid) &&
+        salesReturn.referenceno?.StartsWith("SR-REFUNDED:", StringComparison.OrdinalIgnoreCase) == true;
 
     private static string Money(double amount) => $"₹{amount:N2}";
 
@@ -574,17 +663,40 @@
     {
         isLoading = true;
         errorMessage = "";
+        pharmacyDataError = "";
         StateHasChanged();
 
         try
         {
-            reportData = await BillingService.GetOpCategoryCollectionReportAsync(
+            var reportTask = BillingService.GetOpCategoryCollectionReportAsync(
                 fromDate,
                 toDate,
                 selectedBhCode > 0 ? selectedBhCode : null,
                 selectedCntCode > 0 ? selectedCntCode : null,
                 tenantCode: DefaultTenant,
                 authToken: AuthToken);
+            var dueCollectionsTask = PharmacyDueCollectionService.GetAllDueCollectionsAsync(DefaultTenant);
+            var salesReturnsTask = LoadSalesReturnRefundsAsync();
+
+            await Task.WhenAll(reportTask, dueCollectionsTask, salesReturnsTask);
+            reportData = await reportTask;
+
+            var dueCollectionsResult = await dueCollectionsTask;
+            pharmacyDueCollections = dueCollectionsResult.Success ? dueCollectionsResult.Data : new();
+            if (!dueCollectionsResult.Success)
+            {
+                pharmacyDataError = $"Pharmacy due collections could not be loaded: {dueCollectionsResult.Message}";
+            }
+
+            var salesReturnsResult = await salesReturnsTask;
+            salesReturnRefunds = salesReturnsResult.Success ? salesReturnsResult.Data : new();
+            if (!salesReturnsResult.Success)
+            {
+                var salesReturnError = $"Pharmacy sales returns could not be loaded: {salesReturnsResult.Message}";
+                pharmacyDataError = string.IsNullOrEmpty(pharmacyDataError)
+                    ? salesReturnError
+                    : $"{pharmacyDataError} {salesReturnError}";
+            }
 
             if (reportData == null)
             {
@@ -602,6 +714,181 @@
             isLoading = false;
             StateHasChanged();
         }
+    }
+
+    private async Task<(bool Success, string Message, List<sales_return_master> Data)> LoadSalesReturnRefundsAsync()
+    {
+        var client = ClientFactory.CreateClient("DoctorApi");
+        var tenantCode = Uri.EscapeDataString(DefaultTenant);
+        var urls = new[]
+        {
+            $"api/ItemMaster/getallsalesreturn?tenantcode={tenantCode}",
+            "api/ItemMaster/getallsalesreturn",
+            "ItemMaster/getallsalesreturn",
+            $"api/ItemMaster/getallsalesreturns?tenantcode={tenantCode}",
+            "api/ItemMaster/getallsalesreturns"
+        };
+        string? lastError = null;
+
+        foreach (var url in urls)
+        {
+            try
+            {
+                using var request = new HttpRequestMessage(HttpMethod.Get, url);
+                request.Headers.TryAddWithoutValidation("tenantcode", DefaultTenant);
+                request.Headers.TryAddWithoutValidation("tenant_code", DefaultTenant);
+                request.Headers.TryAddWithoutValidation("tenant-code", DefaultTenant);
+                if (!string.IsNullOrWhiteSpace(AuthToken))
+                {
+                    request.Headers.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+                }
+
+                using var response = await client.SendAsync(request);
+                if (!response.IsSuccessStatusCode)
+                {
+                    lastError = $"HTTP {(int)response.StatusCode} from {url}.";
+                    continue;
+                }
+
+                var json = await response.Content.ReadAsStringAsync();
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    lastError = $"The response from {url} was empty.";
+                    continue;
+                }
+
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
+                for (var depth = 0; depth < 3 && root.ValueKind == JsonValueKind.Object; depth++)
+                {
+                    if (TryGetJsonProperty(root, out var nested, "data", "value", "result", "records") &&
+                        nested.ValueKind is JsonValueKind.Array or JsonValueKind.Object)
+                    {
+                        root = nested;
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+
+                if (root.ValueKind != JsonValueKind.Array)
+                {
+                    lastError = $"The response from {url} did not contain a sales return list.";
+                    continue;
+                }
+
+                var records = root.EnumerateArray()
+                    .Where(item => item.ValueKind == JsonValueKind.Object)
+                    .Select(ParseSalesReturnSummaryRecord)
+                    .Where(salesReturn => !salesReturn.deleted)
+                    .ToList();
+                return (true, "", records);
+            }
+            catch (Exception ex)
+            {
+                lastError = $"{url}: {ex.Message}";
+            }
+        }
+
+        return (false, lastError ?? "No sales return endpoint responded.", new());
+    }
+
+    private static sales_return_master ParseSalesReturnSummaryRecord(JsonElement item) => new()
+    {
+        refundamount = ReadJsonDecimal(item, "refundamount", "refund_amount"),
+        paymentmode = ReadJsonText(item, "paymentmode", "payment_mode"),
+        referenceno = ReadJsonText(item, "referenceno", "reference_no", "referenceNumber"),
+        cnttid = ReadJsonText(item, "cnttid", "countershiftid", "counter_shift_id"),
+        bh_code = ReadJsonInt(item, "bh_code", "bhcode", "branchcode"),
+        cntcode = ReadJsonDecimal(item, "cntcode", "countercode"),
+        tenantcode = ReadJsonText(item, "tenantcode", "tenant_code", "tenantCode"),
+        createddate = ReadJsonDate(item, "createddate", "created_date", "returndate", "return_date"),
+        deleted = ReadJsonBoolean(item, "deleted")
+    };
+
+    private static bool TryGetJsonProperty(JsonElement element, out JsonElement value, params string[] names)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (names.Any(name => string.Equals(property.Name, name, StringComparison.OrdinalIgnoreCase)))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private static string? ReadJsonText(JsonElement element, params string[] names)
+    {
+        if (!TryGetJsonProperty(element, out var value, names) ||
+            value.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined)
+        {
+            return null;
+        }
+
+        return value.ValueKind == JsonValueKind.String ? value.GetString() : value.ToString();
+    }
+
+    private static decimal? ReadJsonDecimal(JsonElement element, params string[] names) =>
+        decimal.TryParse(
+            ReadJsonText(element, names),
+            System.Globalization.NumberStyles.Any,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var value)
+            ? value
+            : null;
+
+    private static int? ReadJsonInt(JsonElement element, params string[] names) =>
+        int.TryParse(ReadJsonText(element, names), out var value) ? value : null;
+
+    private static DateTime ReadJsonDate(JsonElement element, params string[] names)
+    {
+        if (!TryGetJsonProperty(element, out var value, names))
+        {
+            return default;
+        }
+
+        if (value.ValueKind == JsonValueKind.Number && value.TryGetInt64(out var timestamp))
+        {
+            try
+            {
+                return timestamp > 1000000000000L
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(timestamp).LocalDateTime
+                    : DateTimeOffset.FromUnixTimeSeconds(timestamp).LocalDateTime;
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                return default;
+            }
+        }
+
+        return DateTime.TryParse(
+            ReadJsonText(element, names),
+            System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.AssumeLocal,
+            out var date)
+            ? date
+            : default;
+    }
+
+    private static bool ReadJsonBoolean(JsonElement element, params string[] names)
+    {
+        if (!TryGetJsonProperty(element, out var value, names))
+        {
+            return false;
+        }
+
+        return value.ValueKind == JsonValueKind.True ||
+            (value.ValueKind == JsonValueKind.String && bool.TryParse(value.GetString(), out var parsed) && parsed) ||
+            (value.ValueKind == JsonValueKind.Number && value.TryGetInt32(out var number) && number != 0);
     }
 
     private async Task ResetFiltersAsync()

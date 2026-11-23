@@ -88,6 +88,7 @@ public class sales_return_master
     public string? customername { get; set; }
     public string? patientname { get; set; }
     public string? patientid { get; set; }
+    public string? salestype { get; set; }
     public string? itemname { get; set; }
     public string? warehousename { get; set; }
 }

@@ -4,7 +4,6 @@ using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Configuration;
 using SharedComponents.Rcl.Services;
 using medico_backend.Model;
 
@@ -14,32 +13,21 @@ namespace Booking.Services
     {
         private readonly HttpClient _http;
         private readonly TenantSessionState _tenantState;
-        private readonly IConfiguration _config;
 
-        public OpStatusMasterService(HttpClient http, TenantSessionState tenantState, IConfiguration config)
+        public OpStatusMasterService(HttpClient http, TenantSessionState tenantState)
         {
             _http = http;
             _tenantState = tenantState;
-            _config = config;
-        }
-
-        private string GetActiveTenant()
-        {
-            return !string.IsNullOrWhiteSpace(_tenantState?.TenantCode)
-                ? _tenantState.TenantCode
-                : (_config["DefaultTenantCode"] ?? "T001");
         }
 
         private void EnsureTenantHeader(HttpRequestMessage request)
         {
-            var tenant = GetActiveTenant();
-            if (!request.Headers.Contains("tenant_code"))
+            if (!string.IsNullOrWhiteSpace(_tenantState?.TenantCode) &&
+                !request.Headers.Contains("tenant_code"))
             {
-                request.Headers.Add("tenant_code", tenant);
+                request.Headers.Add("tenant_code", _tenantState.TenantCode);
             }
         }
-
-        private static readonly Dictionary<string, string> _customDisplayNames = new(StringComparer.OrdinalIgnoreCase);
 
         private static string NormalizeStatusCode(string? status)
         {
@@ -58,43 +46,6 @@ namespace Booking.Services
             };
         }
 
-        private static List<OpStatusMasterModel> GetFallbackStatuses()
-        {
-            var defaults = new (string Code, string Name)[]
-            {
-                ("WAITING", "Waiting"),
-                ("IN_CONSULTATION", "In Consultation"),
-                ("COMPLETED", "Completed"),
-                ("CANCELLED", "Cancelled"),
-                ("RESCHEDULED", "Rescheduled"),
-                ("REPORT", "Report"),
-                ("BOOKED", "Booked"),
-                ("ARRIVED", "Arrived")
-            };
-
-            return defaults.Select((d, index) =>
-            {
-                var disp = _customDisplayNames.TryGetValue(d.Code, out var c) && !string.IsNullOrWhiteSpace(c)
-                    ? c
-                    : (_customDisplayNames.TryGetValue(d.Name, out var c2) && !string.IsNullOrWhiteSpace(c2) ? c2 : d.Name);
-
-                return new OpStatusMasterModel
-                {
-                    op_status_id = index + 1,
-                    status_key = d.Code,
-                    status_name = d.Name,
-                    default_status_name = d.Name,
-                    display_status_name = disp,
-                    is_customized = !string.Equals(disp, d.Name, StringComparison.OrdinalIgnoreCase),
-                    is_fixed = true,
-                    is_active = true,
-                    sort_order = index + 1,
-                    created_at = DateTime.UtcNow,
-                    updated_at = DateTime.UtcNow
-                };
-            }).ToList();
-        }
-
         public async Task<List<OpStatusMasterModel>> GetAllStatusesAsync(bool activeOnly = false)
         {
             try
@@ -104,82 +55,87 @@ namespace Booking.Services
                 EnsureTenantHeader(request);
 
                 var response = await _http.SendAsync(request);
-                if (response.IsSuccessStatusCode)
+                if (!response.IsSuccessStatusCode)
                 {
-                    var json = await response.Content.ReadAsStringAsync();
-                    var options = new JsonSerializerOptions
-                    {
-                        PropertyNameCaseInsensitive = true
-                    };
-
-                    using var document = JsonDocument.Parse(json);
-                    if (document.RootElement.ValueKind == JsonValueKind.Array &&
-                        JsonSerializer.Deserialize<List<OpStatusMasterModel>>(json, options) is { } legacyStatuses && legacyStatuses.Any())
-                    {
-                        foreach (var st in legacyStatuses)
-                        {
-                            if (string.IsNullOrWhiteSpace(st.status_key))
-                            {
-                                st.status_key = NormalizeStatusCode(st.status_name);
-                            }
-                            if (_customDisplayNames.TryGetValue(st.status_key, out var custom) && !string.IsNullOrWhiteSpace(custom))
-                            {
-                                st.display_status_name = custom;
-                            }
-                            else if (_customDisplayNames.TryGetValue(st.status_name, out var custom2) && !string.IsNullOrWhiteSpace(custom2))
-                            {
-                                st.display_status_name = custom2;
-                            }
-                            else if (string.IsNullOrWhiteSpace(st.display_status_name))
-                            {
-                                st.display_status_name = st.status_name;
-                            }
-                        }
-                        return legacyStatuses;
-                    }
-
-                    var envelope = JsonSerializer.Deserialize<OpStatusApiResponse<List<OpStatusResponse>>>(json, options);
-                    if (envelope?.data != null && envelope.data.Any())
-                    {
-                        return envelope.data.Select((status, index) =>
-                        {
-                            var customDisp = _customDisplayNames.TryGetValue(status.status_code, out var c) && !string.IsNullOrWhiteSpace(c)
-                                ? c
-                                : (_customDisplayNames.TryGetValue(status.default_status_name, out var c2) && !string.IsNullOrWhiteSpace(c2)
-                                    ? c2
-                                    : (string.IsNullOrWhiteSpace(status.display_status_name) ? status.default_status_name : status.display_status_name));
-
-                            return new OpStatusMasterModel
-                            {
-                                op_status_id = index + 1,
-                                status_key = status.status_code,
-                                status_name = status.default_status_name,
-                                default_status_name = status.default_status_name,
-                                display_status_name = customDisp,
-                                is_customized = status.is_customized || !string.Equals(customDisp, status.default_status_name, StringComparison.OrdinalIgnoreCase),
-                                is_fixed = true,
-                                is_active = true,
-                                sort_order = index + 1,
-                                created_at = DateTime.UtcNow,
-                                updated_at = DateTime.UtcNow
-                            };
-                        }).ToList();
-                    }
+                    throw new HttpRequestException(
+                        $"Loading OP statuses failed with HTTP {(int)response.StatusCode} ({response.StatusCode}).");
                 }
-                return GetFallbackStatuses();
+
+                var json = await response.Content.ReadAsStringAsync();
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                };
+
+                using var document = JsonDocument.Parse(json);
+                if (document.RootElement.ValueKind == JsonValueKind.Array)
+                {
+                    var legacyStatuses = JsonSerializer.Deserialize<List<OpStatusMasterModel>>(json, options);
+                    if (legacyStatuses == null)
+                    {
+                        throw new JsonException("The OP status API returned an invalid list.");
+                    }
+
+                    foreach (var status in legacyStatuses)
+                    {
+                        if (string.IsNullOrWhiteSpace(status.status_key))
+                        {
+                            status.status_key = NormalizeStatusCode(status.status_name);
+                        }
+                        if (string.IsNullOrWhiteSpace(status.display_status_name))
+                        {
+                            status.display_status_name = status.status_name;
+                        }
+                    }
+                    return legacyStatuses;
+                }
+
+                var envelope = JsonSerializer.Deserialize<OpStatusApiResponse<List<OpStatusResponse>>>(json, options);
+                if (envelope?.data != null)
+                {
+                    return envelope.data.Select((status, index) =>
+                    {
+                        var statusName = !string.IsNullOrWhiteSpace(status.default_status_name)
+                            ? status.default_status_name
+                            : (status.status_name ?? status.status_code);
+                        var displayName = string.IsNullOrWhiteSpace(status.display_status_name)
+                            ? statusName
+                            : status.display_status_name;
+
+                        return new OpStatusMasterModel
+                        {
+                            op_status_id = status.op_status_id ?? index + 1,
+                            status_key = !string.IsNullOrWhiteSpace(status.status_key)
+                                ? status.status_key
+                                : NormalizeStatusCode(status.status_code),
+                            status_name = statusName,
+                            default_status_name = statusName,
+                            display_status_name = displayName,
+                            is_customized = status.is_customized ??
+                                !string.Equals(displayName, statusName, StringComparison.OrdinalIgnoreCase),
+                            is_fixed = status.is_fixed ?? true,
+                            is_active = status.is_active ?? true,
+                            sort_order = status.sort_order ?? index + 1,
+                            tenant_code = status.tenant_code,
+                            usercode = status.usercode,
+                            created_at = status.created_at ?? default,
+                            updated_at = status.updated_at ?? default
+                        };
+                    }).ToList();
+                }
+
+                throw new JsonException("The OP status API returned an unexpected response.");
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[OpStatusMasterService] Error fetching OP statuses: {ex.Message}");
-                return GetFallbackStatuses();
+                throw;
             }
         }
 
         public async Task<bool> SaveDisplayStatusAsync(string statusCode, string displayStatusName, int? usercode)
         {
             var code = NormalizeStatusCode(statusCode);
-            _customDisplayNames[code] = displayStatusName;
-            _customDisplayNames[statusCode] = displayStatusName;
 
             try
             {
@@ -195,12 +151,12 @@ namespace Booking.Services
                 EnsureTenantHeader(request);
 
                 var response = await _http.SendAsync(request);
-                return response.IsSuccessStatusCode || true;
+                return response.IsSuccessStatusCode;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"[OpStatusMasterService] Error saving OP status display name: {ex.Message}");
-                return true;
+                return false;
             }
         }
 

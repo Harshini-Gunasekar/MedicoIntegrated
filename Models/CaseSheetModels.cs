@@ -162,6 +162,7 @@ namespace medico_backend.Model
         public bool before_food { get; set; } = false;
         public bool after_food { get; set; } = false;
         public int? days { get; set; }
+        public string? frequency { get; set; }   // Daily / Weekly twice / Alternate days ...
         public string? duration { get; set; }
         public decimal? qty { get; set; }
         public string? route { get; set; }   // ORAL / IV / IM / TOPICAL
@@ -389,6 +390,7 @@ namespace medico_backend.Model
         public bool before_food { get; set; } = false;
         public bool after_food { get; set; } = false;
         public int? days { get; set; }
+        public string? frequency { get; set; }   // Daily / Weekly twice / Alternate days ...
         public string? duration { get; set; }
         public decimal? qty { get; set; }
         public string? route { get; set; }
@@ -661,6 +663,7 @@ namespace medico_backend.Model
         public bool before_food { get; set; }
         public bool after_food { get; set; }
         public int? days { get; set; }
+        public string? frequency { get; set; }   // Daily / Weekly twice / Alternate days ...
         public decimal? qty { get; set; }
         public string? route { get; set; }
         public string? notes { get; set; }

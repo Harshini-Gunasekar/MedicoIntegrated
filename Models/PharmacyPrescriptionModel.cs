@@ -29,6 +29,7 @@ public class PharmacyPrescriptionQueueRow
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public string? frequency { get; set; }
     public int? no_of_days { get; set; }
     public int? prescribed_days { get; set; }
     public int? prescribeddays { get; set; }
@@ -81,6 +82,7 @@ public class PrescriptionQueueItem
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public string? frequency { get; set; }
     public int? no_of_days { get; set; }
     public int? prescribed_days { get; set; }
     public int? prescribeddays { get; set; }
