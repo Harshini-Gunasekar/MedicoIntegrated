@@ -45,10 +45,13 @@ public class sales_master
 
     public decimal collectedamount { get; set; }
 
+    public decimal paidviarecipt { get; set; }
+
     public string? paymentmode { get; set; }
 
     public string? paymentstatus { get; set; }
 
+    // Paymode Master codes are text here to match the backend sales_master contract.
     public string? pmc1 { get; set; }
     public decimal pmc1_amount { get; set; }
 

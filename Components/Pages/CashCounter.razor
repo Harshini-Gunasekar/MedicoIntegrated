@@ -8,6 +8,7 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject Booking.Services.ToastService ToastService
 @inject Booking.Services.HmsDueCollectionService DueCollectionService
+@inject Booking.Services.PharmacyDueCollectionService PharmacyDueCollectionService
 @inject Booking.Services.AppointmentBookingService AppointmentBookingService
 @inject Booking.Services.DoctorService DoctorService
 @inject Booking.Services.IpRegistrationService IpService
@@ -681,9 +682,9 @@
                             int sno = (pharmacyPage - 1) * filter.pagesize + 1;
                             @foreach (var s in PagedPharmacySales)
                             {
-                                var isSettled = string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) || string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase);
-                                var balance = isSettled ? 0 : s.netamount;
-                                var paid = isSettled ? s.netamount : 0;
+                                var balance = GetPharmacyBalance(s);
+                                var isSettled = balance <= 0;
+                                var paid = GetPharmacyPaidAmount(s);
                                 var pharmacyBillNoKey = string.IsNullOrWhiteSpace(s.billno) ? s.salescode.ToString() : s.billno;
                                 <tr>
                                     <td>@(sno++)</td>
@@ -3323,13 +3324,26 @@
         .Where(s =>
             (string.IsNullOrEmpty(DefaultTenant) || string.IsNullOrEmpty(s.tenantcode) || string.Equals(s.tenantcode, DefaultTenant, StringComparison.OrdinalIgnoreCase)) &&
             (!filter.fromdate.HasValue || s.billdate.Date >= filter.fromdate.Value.Date) &&
-            (!filter.todate.HasValue || s.billdate.Date <= filter.todate.Value.Date) &&
-            (string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) || string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase))
+            (!filter.todate.HasValue || s.billdate.Date <= filter.todate.Value.Date)
         )
-        .Sum(s => s.netamount);
+        .Sum(GetPharmacyPaidAmount);
 
     private decimal TotalPharmacyNet => FilteredPharmacySales.Sum(s => s.netamount);
-    private decimal TotalPharmacyBalance => FilteredPharmacySales.Where(s => !string.Equals(s.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) && !string.Equals(s.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase)).Sum(s => s.netamount);
+    private decimal TotalPharmacyBalance => FilteredPharmacySales.Sum(GetPharmacyBalance);
+
+    private static decimal GetPharmacyPaidAmount(sales_master sale)
+    {
+        if (string.Equals(sale.paymentstatus, "Paid", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(sale.paymentstatus, "Settled", StringComparison.OrdinalIgnoreCase))
+        {
+            return sale.netamount;
+        }
+
+        return Math.Min(sale.netamount, Math.Max(0m, sale.collectedamount + sale.paidviarecipt));
+    }
+
+    private static decimal GetPharmacyBalance(sales_master sale) =>
+        Math.Max(0m, sale.netamount - GetPharmacyPaidAmount(sale));
 
     private decimal TotalHospitalNet => totalHospitalNet > 0 ? totalHospitalNet : (billsList?.data?.Sum(b => (decimal)(b.net_amount ?? 0)) ?? 0);
     private decimal TotalHospitalBalance => (totalHospitalBalance > 0 || totalHospitalNet > 0) ? totalHospitalBalance : (billsList?.data?.Sum(b => (decimal)(b.balance_amount ?? Math.Max(0, (b.net_amount ?? 0) - (b.paid_amount ?? 0)))) ?? 0);
@@ -6438,13 +6452,21 @@
 
         if (paymodes != null && paymodes.Count > 0)
         {
-            var cashPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CASH", StringComparison.OrdinalIgnoreCase));
+            var cashPm = paymodes.FirstOrDefault(p =>
+                string.Equals(p.shortname?.Trim(), "CASH", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "CASH", StringComparison.OrdinalIgnoreCase));
             defaultPmc1 = cashPm != null ? cashPm.pmcode : paymodes[0].pmcode;
 
-            var cardPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
+            var cardPm = paymodes.FirstOrDefault(p =>
+                string.Equals(p.shortname?.Trim(), "CARD", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "CARD", StringComparison.OrdinalIgnoreCase));
             if (cardPm != null) defaultPmc2 = cardPm.pmcode;
 
-            var upiPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
+            var upiPm = paymodes.FirstOrDefault(p =>
+                string.Equals(p.shortname?.Trim(), "UPI", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.shortname?.Trim(), "GPAY", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "UPI", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "GPAY", StringComparison.OrdinalIgnoreCase));
             if (upiPm != null) defaultPmc3 = upiPm.pmcode;
         }
 
@@ -6517,7 +6539,8 @@
         }
 
         selectedPharmacySale = sale;
-        var dueAmt = (double)sale.netamount;
+        var dueAmt = (double)GetPharmacyBalance(sale);
+        var paidAmount = (double)GetPharmacyPaidAmount(sale);
 
         decimal? defaultPmc1 = null;
         decimal? defaultPmc2 = null;
@@ -6525,13 +6548,21 @@
 
         if (paymodes != null && paymodes.Count > 0)
         {
-            var cashPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CASH", StringComparison.OrdinalIgnoreCase));
+            var cashPm = paymodes.FirstOrDefault(p =>
+                string.Equals(p.shortname?.Trim(), "CASH", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "CASH", StringComparison.OrdinalIgnoreCase));
             defaultPmc1 = cashPm != null ? cashPm.pmcode : paymodes[0].pmcode;
 
-            var cardPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "CARD", StringComparison.OrdinalIgnoreCase));
+            var cardPm = paymodes.FirstOrDefault(p =>
+                string.Equals(p.shortname?.Trim(), "CARD", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "CARD", StringComparison.OrdinalIgnoreCase));
             if (cardPm != null) defaultPmc2 = cardPm.pmcode;
 
-            var upiPm = paymodes.FirstOrDefault(p => string.Equals(p.shortname, "UPI", StringComparison.OrdinalIgnoreCase) || string.Equals(p.shortname, "GPAY", StringComparison.OrdinalIgnoreCase));
+            var upiPm = paymodes.FirstOrDefault(p =>
+                string.Equals(p.shortname?.Trim(), "UPI", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.shortname?.Trim(), "GPAY", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "UPI", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(p.name?.Trim(), "GPAY", StringComparison.OrdinalIgnoreCase));
             if (upiPm != null) defaultPmc3 = upiPm.pmcode;
         }
 
@@ -6542,8 +6573,8 @@
             gross_amount = (double)sale.grossamount,
             discount_amount = (double)sale.discountamount,
             net_amount = (double)sale.netamount,
-            paid_amount = 0,
-            balance_amount = (double)sale.netamount,
+            paid_amount = paidAmount,
+            balance_amount = dueAmt,
             bill_date = sale.billdate,
             doctor_name = sale.consultant,
             cntcode = filter.cntcode,
@@ -6618,40 +6649,36 @@
 
         paymentRequest.amount = Math.Round(a1 + a2 + a3, 2);
 
-        int activeCount = 0;
-        string singleMode = "CASH";
+        var selectedPaymodeCodes = new List<decimal>();
+        if (a1 > 0 && paymentRequest.pmc1.HasValue) selectedPaymodeCodes.Add(paymentRequest.pmc1.Value);
+        if (a2 > 0 && paymentRequest.pmc2.HasValue) selectedPaymodeCodes.Add(paymentRequest.pmc2.Value);
+        if (a3 > 0 && paymentRequest.pmc3.HasValue) selectedPaymodeCodes.Add(paymentRequest.pmc3.Value);
 
-        if (a1 > 0 && paymentRequest.pmc1.HasValue)
-        {
-            activeCount++;
-            var pm1 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc1.Value);
-            if (pm1 != null && !string.IsNullOrEmpty(pm1.shortname)) singleMode = pm1.shortname;
-        }
-        if (a2 > 0 && paymentRequest.pmc2.HasValue)
-        {
-            activeCount++;
-            var pm2 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc2.Value);
-            if (pm2 != null && !string.IsNullOrEmpty(pm2.shortname)) singleMode = pm2.shortname;
-        }
-        if (a3 > 0 && paymentRequest.pmc3.HasValue)
-        {
-            activeCount++;
-            var pm3 = paymodes.FirstOrDefault(p => p.pmcode == paymentRequest.pmc3.Value);
-            if (pm3 != null && !string.IsNullOrEmpty(pm3.shortname)) singleMode = pm3.shortname;
-        }
+        var selectedPaymodes = selectedPaymodeCodes
+            .Distinct()
+            .Select(code => paymodes.FirstOrDefault(paymode => paymode.pmcode == code))
+            .ToList();
 
-        if (activeCount > 1)
+        if (selectedPaymodes.Count > 1)
         {
             paymentRequest.collection_type = "MIXED";
         }
-        else if (activeCount == 1)
+        else if (selectedPaymodes.Count == 1)
         {
-            paymentRequest.collection_type = singleMode;
+            paymentRequest.collection_type = GetPaymodeCollectionType(selectedPaymodes[0]);
         }
         else
         {
             paymentRequest.collection_type = "CASH";
         }
+    }
+
+    private static string? GetPaymodeCollectionType(PaymodeMasterModel? paymode)
+    {
+        var value = !string.IsNullOrWhiteSpace(paymode?.shortname)
+            ? paymode.shortname
+            : paymode?.name;
+        return string.IsNullOrWhiteSpace(value) ? null : value.Trim().ToUpperInvariant();
     }
 
     private void OnTotalAmountInput(ChangeEventArgs e)
@@ -6870,6 +6897,8 @@
             paymentRequest.amount = dueAmt;
         }
 
+        RecalculatePaymentTotals();
+
         try
         {
             // Detect if Advance paymode was used
@@ -6923,7 +6952,9 @@
                         ispatient       = true
                     };
 
-                    var dueRes = await DueCollectionService.CollectBulkDueAsync(bulkReq);
+                    var dueRes = selectedPharmacySale == null
+                        ? await DueCollectionService.CollectBulkDueAsync(bulkReq)
+                        : null;
                     if (dueRes != null)
                     {
                         advanceProcessedSuccessfully = true;
@@ -6959,38 +6990,103 @@
             // If this is a PHARMACY bill payment:
             if (selectedPharmacySale != null)
             {
-                var saleReq = await FetchPharmacySaleRequestAsync(selectedPharmacySale);
-                if (saleReq != null && saleReq.master != null && (saleReq.details?.Any() == true || (selectedPharmacySale.grossamount == 0 && selectedPharmacySale.netamount == 0)))
+                if (advanceUsed > 0 && !advanceProcessedSuccessfully)
                 {
-                    saleReq.master.paymentstatus = "Paid";
-                    saleReq.master.paymentmode = paymentRequest.collection_type ?? "CASH";
-                    saleReq.master.modifieddate = DateTime.Now;
-                    if (paymentRequest.usercode > 0) saleReq.master.usercode = paymentRequest.usercode;
-
-                    bool saved = await SavePharmacySaleUpdateAsync(saleReq);
-                    if (!saved)
-                    {
-                        ToastService.ShowError("Failed to update pharmacy bill payment status on server.");
-                        return;
-                    }
-                }
-                else
-                {
-                    ToastService.ShowError("Unable to retrieve pharmacy bill details. Payment was not recorded to prevent loss of bill items.");
+                    ToastService.ShowError("Patient advance could not be applied to this pharmacy bill.");
                     return;
                 }
 
-                // Also record the cash counter collection transaction for HMS hospital invoices (if valid Guid)
-                if (Guid.TryParse(paymentRequest.requestguid, out _))
+                var collectedAmount = Math.Round((decimal)paymentRequest.amount, 2);
+                var outstandingAmount = Math.Round((decimal)dueAmt, 2);
+                if (collectedAmount <= 0)
                 {
-                    try
-                    {
-                        await HmsBillingService.AddPaymentAsync(paymentRequest);
-                    }
-                    catch { }
+                    ToastService.ShowError("Enter an amount greater than zero.");
+                    return;
+                }
+                if (!IsValidPharmacyPaymodeAllocation(paymentRequest.pmc1, paymentRequest.pmc1_amount) ||
+                    !IsValidPharmacyPaymodeAllocation(paymentRequest.pmc2, paymentRequest.pmc2_amount) ||
+                    !IsValidPharmacyPaymodeAllocation(paymentRequest.pmc3, paymentRequest.pmc3_amount))
+                {
+                    ToastService.ShowError("Select a valid Paymode Master entry for each collected amount.");
+                    return;
                 }
 
-                ToastService.ShowSuccess("Pharmacy bill payment received successfully!");
+                var remainingAmount = Math.Max(0m, outstandingAmount - collectedAmount);
+                var sale = selectedPharmacySale;
+                var tenantCode = !string.IsNullOrWhiteSpace(sale.tenantcode)
+                    ? sale.tenantcode
+                    : TenantState?.TenantCode;
+                var paymentMode = paymentRequest.collection_type?.Trim().ToUpperInvariant();
+                if (string.IsNullOrWhiteSpace(paymentMode))
+                {
+                    ToastService.ShowError("The selected paymode is not available in Paymode Master.");
+                    return;
+                }
+                var dueCollectionRequest = new due_collection_request
+                {
+                    master = new due_collection_master
+                    {
+                        requestdate = DateTime.Now,
+                        salestype = sale.salestype,
+                        patientid = sale.patientid,
+                        patientname = sale.patientname,
+                        mobileno = sale.mobileno,
+                        address = sale.address,
+                        custid = sale.customercode,
+                        totalbills = 1,
+                        totaldueamount = outstandingAmount,
+                        totalcollectedamount = collectedAmount,
+                        totalremainingamount = remainingAmount,
+                        paymentmode = paymentMode,
+                        chequeno = paymentMode == "CHEQUE" ? paymentRequest.reference_no : null,
+                        referenceno = paymentRequest.reference_no,
+                        remarks = $"Cash counter pharmacy payment for bill {sale.billno}",
+                        status = remainingAmount == 0 ? "PAID" : "PARTIAL",
+                        isactive = true,
+                        usercode = paymentRequest.usercode > 0 ? paymentRequest.usercode : null,
+                        tenantcode = tenantCode,
+                        branchcode = sale.branchcode ?? paymentRequest.enteredbhcode.ToString(),
+                        companycode = sale.companycode,
+                        bh_code = paymentRequest.enteredbhcode > 0 ? paymentRequest.enteredbhcode : sale.bh_code,
+                        cntcode = paymentRequest.cntcode > 0 ? paymentRequest.cntcode : sale.cntcode,
+                        cnttid = sale.cnttid ?? Guid.NewGuid().ToString()
+                    },
+                    details = new List<due_collection_detail>
+                    {
+                        new()
+                        {
+                            salescode = sale.salescode,
+                            billno = sale.billno,
+                            billdate = sale.billdate,
+                            salestype = sale.salestype,
+                            billamount = sale.netamount,
+                            previouslypaidamount = GetPharmacyPaidAmount(sale),
+                            dueamount = outstandingAmount,
+                            collectedamount = collectedAmount,
+                            remainingamount = remainingAmount,
+                            paymentstatus = remainingAmount == 0 ? "PAID" : "PARTIAL",
+                            remarks = $"Cash counter pharmacy payment for bill {sale.billno}",
+                            tenantcode = tenantCode
+                        }
+                    }
+                };
+
+                var collectionResult = await PharmacyDueCollectionService.InsertDueCollectionAsync(dueCollectionRequest);
+                if (!collectionResult.IsSuccess)
+                {
+                    ToastService.ShowError(collectionResult.Message ?? "Failed to save pharmacy due collection.");
+                    return;
+                }
+
+                var paymodeFieldsUpdated = await UpdatePharmacySalePaymodeFieldsAsync(sale);
+                if (paymodeFieldsUpdated)
+                {
+                    ToastService.ShowSuccess("Pharmacy bill payment received successfully!");
+                }
+                else
+                {
+                    ToastService.ShowWarning("Payment was received, but the sales paymode fields could not be updated. Check the due collection receipt before retrying.");
+                }
                 ClosePaymentModal();
                 await LoadPharmacySalesAsync();
                 return;
@@ -7336,6 +7432,120 @@
         return false;
     }
 
+    private async Task<bool> UpdatePharmacySalePaymodeFieldsAsync(sales_master sale)
+    {
+        var saleRequest = await FetchPharmacySaleRequestAsync(sale);
+        if (saleRequest?.master == null)
+        {
+            Console.Error.WriteLine($"[CashCounter] Could not reload sale {sale.salescode} after receipt creation to update paymode fields.");
+            return false;
+        }
+
+        var allocations = new List<(decimal Code, string Label, decimal Amount)>();
+        var hasUnmappedExistingMode = false;
+
+        void AddAllocation(decimal code, string? label, decimal amount)
+        {
+            if (code <= 0m || amount <= 0m)
+            {
+                return;
+            }
+
+            var existingIndex = allocations.FindIndex(item =>
+                item.Code == code);
+            if (existingIndex >= 0)
+            {
+                var existing = allocations[existingIndex];
+                allocations[existingIndex] = (existing.Code, existing.Label, existing.Amount + amount);
+            }
+            else
+            {
+                allocations.Add((code, string.IsNullOrWhiteSpace(label) ? code.ToString(System.Globalization.CultureInfo.InvariantCulture) : label.Trim(), amount));
+            }
+        }
+
+        void AddExistingAllocation(string? storedCode, decimal amount)
+        {
+            if (amount <= 0m)
+            {
+                return;
+            }
+
+            var storedValue = storedCode?.Trim();
+            var paymode = paymodes.FirstOrDefault(item =>
+                string.Equals(item.pmcode.ToString(System.Globalization.CultureInfo.InvariantCulture), storedValue, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(item.name?.Trim(), storedValue, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(item.shortname?.Trim(), storedValue, StringComparison.OrdinalIgnoreCase));
+            if (paymode != null && paymode.pmcode > 0m)
+            {
+                AddAllocation(paymode.pmcode, paymode.name ?? paymode.shortname, amount);
+            }
+            else if (decimal.TryParse(storedValue, System.Globalization.NumberStyles.Number, System.Globalization.CultureInfo.InvariantCulture, out var storedPaymodeCode) &&
+                     storedPaymodeCode > 0m)
+            {
+                AddAllocation(storedPaymodeCode, storedValue, amount);
+            }
+            else
+            {
+                hasUnmappedExistingMode = true;
+            }
+        }
+
+        AddExistingAllocation(saleRequest.master.pmc1, saleRequest.master.pmc1_amount);
+        AddExistingAllocation(saleRequest.master.pmc2, saleRequest.master.pmc2_amount);
+        AddExistingAllocation(saleRequest.master.pmc3, saleRequest.master.pmc3_amount);
+
+        AddReceiptPaymodeAllocation(paymentRequest.pmc1, paymentRequest.pmc1_amount, AddAllocation);
+        AddReceiptPaymodeAllocation(paymentRequest.pmc2, paymentRequest.pmc2_amount, AddAllocation);
+        AddReceiptPaymodeAllocation(paymentRequest.pmc3, paymentRequest.pmc3_amount, AddAllocation);
+
+        if (hasUnmappedExistingMode || allocations.Count > 3)
+        {
+            Console.Error.WriteLine($"[CashCounter] Unable to map all sale paymodes to Paymode Master codes for salescode {sale.salescode}.");
+            return false;
+        }
+
+        var master = saleRequest.master;
+        master.pmc1 = allocations.Count > 0 ? allocations[0].Code.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+        master.pmc1_amount = allocations.Count > 0 ? allocations[0].Amount : 0m;
+        master.pmc2 = allocations.Count > 1 ? allocations[1].Code.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+        master.pmc2_amount = allocations.Count > 1 ? allocations[1].Amount : 0m;
+        master.pmc3 = allocations.Count > 2 ? allocations[2].Code.ToString(System.Globalization.CultureInfo.InvariantCulture) : null;
+        master.pmc3_amount = allocations.Count > 2 ? allocations[2].Amount : 0m;
+        master.paymentmode = allocations.Count switch
+        {
+            1 => allocations[0].Label,
+            > 1 => "MIXED",
+            _ => paymentRequest.collection_type
+        };
+
+        return await SavePharmacySaleUpdateAsync(saleRequest);
+    }
+
+    private void AddReceiptPaymodeAllocation(
+        decimal? paymodeCode,
+        double? amount,
+        Action<decimal, string?, decimal> addAllocation)
+    {
+        if (!paymodeCode.HasValue || !amount.HasValue || amount.Value <= 0d)
+        {
+            return;
+        }
+
+        var paymode = paymodes.FirstOrDefault(item => item.pmcode == paymodeCode.Value);
+        if (paymode == null || paymode.pmcode <= 0m)
+        {
+            return;
+        }
+
+        var label = !string.IsNullOrWhiteSpace(paymode.name) ? paymode.name : paymode.shortname;
+        addAllocation(paymode.pmcode, label, Math.Round((decimal)amount.Value, 2));
+    }
+
+    private bool IsValidPharmacyPaymodeAllocation(decimal? paymodeCode, double? amount) =>
+        !amount.HasValue || amount.Value <= 0d ||
+        (paymodeCode.HasValue && paymodeCode.Value > 0m && paymodes.Any(paymode => paymode.pmcode == paymodeCode.Value));
+
     private List<sales_master> ParsePharmacySalesListResponse(string json)
     {
         if (string.IsNullOrWhiteSpace(json)) return new();
@@ -7598,6 +7808,23 @@
                 {
                     if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var dVal)) { m.netamount = dVal; break; }
                     else if (p.ValueKind == JsonValueKind.String && decimal.TryParse(p.GetString(), out var val)) { m.netamount = val; break; }
+                }
+            }
+        }
+        foreach (var key in new[] { "paidviarecipt", "paidviareceipt" })
+        {
+            if (TryGetPropertyIgnoreCase(target, key, out var p))
+            {
+                if (p.ValueKind == JsonValueKind.Number && p.TryGetDecimal(out var receiptPaid))
+                {
+                    m.paidviarecipt = receiptPaid;
+                    break;
+                }
+                if (p.ValueKind == JsonValueKind.String &&
+                    decimal.TryParse(p.GetString(), System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out receiptPaid))
+                {
+                    m.paidviarecipt = receiptPaid;
+                    break;
                 }
             }
         }
