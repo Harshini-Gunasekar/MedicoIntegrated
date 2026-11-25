@@ -72,6 +72,8 @@ namespace Booking.Services
                 if (!setting.payment_required_online_reg.HasValue) setting.payment_required_online_reg = false;
                 if (!setting.enable_combo_registration.HasValue) setting.enable_combo_registration = false;
                 if (!setting.auto_route_billing_after_register.HasValue) setting.auto_route_billing_after_register = false;
+                if (!setting.use_inventory_billno_sequence.HasValue) setting.use_inventory_billno_sequence = true;
+                if (string.IsNullOrWhiteSpace(setting.inventory_bill_seq_mode)) setting.inventory_bill_seq_mode = "OLD";
 
                 _cachedSetting = setting;
                 _cachedTenantCode = currentTenant;

@@ -58,6 +58,7 @@ namespace Booking.Models
         public decimal? revert_pmcode { get; set; }
         public string? revert_reference_no { get; set; }
         public string? revert_reason { get; set; }
+        public string? cancel_reason { get; set; }
         public List<string>? unbilled_charge_ids { get; set; } = new();
 
         public List<HmsBillItemModel> items { get; set; } = new();
@@ -495,6 +496,7 @@ namespace Booking.Models
         // ── IP Summary ────────────────────────────────────────────────
         public double total_ip_amount { get; set; }
         public double total_bill_amount { get; set; }
+        public int ip_bill_count { get; set; }
         public double ip_advance_used { get; set; }
         public double ip_total_collected { get; set; }
         public double ip_advance_collected { get; set; }

@@ -180,6 +180,9 @@ namespace Booking.Models
         public bool? show_dob_address_in_quick_register { get; set; } = false;
         public bool? show_all_status_patients { get; set; } = false;
         public bool? op_status_order_start_with_booking { get; set; } = false;
+        public bool? use_inventory_billno_sequence { get; set; } = true;
+        public string? inventory_bill_seq_mode { get; set; } = "OLD";
+        public bool? is_pharmacy_payment_required { get; set; } = false;
         // Shift timing: FIXED = system closes at shift_end_time (or midnight); VARIABLE = user closes / closes at midnight
         public string? shift_timing_mode { get; set; } = "VARIABLE";
         public string? shift_end_time { get; set; }   // "HH:mm", used only when FIXED

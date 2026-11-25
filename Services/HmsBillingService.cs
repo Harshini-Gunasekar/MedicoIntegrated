@@ -218,12 +218,17 @@ namespace Booking.Services
         {
             try
             {
-                var payload = new { requestguid, usercode, reason };
+                var payload = new { requestguid, usercode, reason, cancel_reason = reason };
                 var response = await GetClient().PostAsJsonAsync("api/HmsBilling/cancel-bill", payload);
                 var rawResponse = await response.Content.ReadAsStringAsync();
                 
                 Console.WriteLine($"--- API RESPONSE (CANCEL): {rawResponse} ---");
                 
+                if (!response.IsSuccessStatusCode)
+                {
+                    return $"Error|{response.StatusCode}: {rawResponse}";
+                }
+
                 return rawResponse;
             }
             catch (Exception ex)

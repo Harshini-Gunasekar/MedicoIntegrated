@@ -46,6 +46,7 @@ public class sales_master
     public decimal collectedamount { get; set; }
 
     public decimal paidviarecipt { get; set; }
+    public decimal paidviareceipt { get => paidviarecipt; set => paidviarecipt = value; }
 
     public string? paymentmode { get; set; }
 
@@ -88,6 +89,8 @@ public class sales_master
     public int? bh_code { get; set; }
 
     public string? cnttid { get; set; }   // counter shift session id
+
+    public long? bncode { get; set; }
 
     // Legacy / UI compatibility aliases (syncs automatically with database fields)
     [System.Text.Json.Serialization.JsonIgnore]

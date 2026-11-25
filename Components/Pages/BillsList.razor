@@ -313,7 +313,7 @@
                                                 }
                                                 @if (canCancelBill)
                                                 {
-                                                    <button type="button" class="dropdown-item" @onclick="() => RunAction(() => CancelBill(bill.requestguid))">
+                                                    <button type="button" class="dropdown-item" @onclick="() => RunAction(() => OpenCancelBillDialog(bill))">
                                                         <i class="bi bi-x-circle text-danger"></i>
                                                         <span>Cancel Bill</span>
                                                     </button>
@@ -362,6 +362,63 @@
 
 
 </div>
+
+@if (showCancelBillModal && billPendingCancel != null)
+{
+    <div class="modal-backdrop cancel-bill-backdrop" @onclick="CloseCancelBillDialog">
+        <div class="cancel-bill-dialog" role="dialog" aria-modal="true" aria-labelledby="cancel-bill-title" @onclick:stopPropagation>
+            <div class="cancel-bill-dialog-header">
+                <div class="cancel-bill-dialog-icon"><i class="bi bi-exclamation-triangle-fill"></i></div>
+                <div class="cancel-bill-dialog-heading">
+                    <span>BILL CANCELLATION</span>
+                    <h2 id="cancel-bill-title">Cancel Bill</h2>
+                </div>
+                <button type="button" class="cancel-bill-close" @onclick="CloseCancelBillDialog" disabled="@isCancellingBill" aria-label="Close dialog">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </div>
+            <div class="cancel-bill-dialog-body">
+                <div class="cancel-bill-summary">
+                    <div class="cancel-bill-summary-icon"><i class="bi bi-receipt"></i></div>
+                    <div class="cancel-bill-summary-details">
+                        <span>Bill @billPendingCancel.bill_no</span>
+                        <strong>@billPendingCancel.patient_name</strong>
+                    </div>
+                    <strong class="cancel-bill-amount">₹@string.Format("{0:N2}", billPendingCancel.net_amount ?? 0)</strong>
+                </div>
+
+                <div class="cancel-bill-notice">
+                    <i class="bi bi-info-circle-fill"></i>
+                    <span>Enter the reason for cancelling this bill. The reason will be recorded with the cancellation.</span>
+                </div>
+
+                <label class="cancel-bill-reason-label" for="cancel-bill-reason">Cancellation Reason <span>Required</span></label>
+                <textarea id="cancel-bill-reason"
+                          class="cancel-bill-reason-input"
+                          @bind="cancelBillReason"
+                          @bind:event="oninput"
+                          placeholder="Describe why this bill is being cancelled..."
+                          rows="4"
+                          disabled="@isCancellingBill"></textarea>
+            </div>
+            <div class="cancel-bill-dialog-footer">
+                <button type="button" class="cancel-bill-secondary-btn" @onclick="CloseCancelBillDialog" disabled="@isCancellingBill">Keep Bill</button>
+                <button type="button" class="cancel-bill-confirm-btn" @onclick="ConfirmCancelBillAsync" disabled="@(isCancellingBill || string.IsNullOrWhiteSpace(cancelBillReason))">
+                    @if (isCancellingBill)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                        <span>Cancelling...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-x-circle"></i>
+                        <span>Confirm Cancellation</span>
+                    }
+                </button>
+            </div>
+        </div>
+    </div>
+}
 
 <!-- Modal for Bill Details/Print -->
 @if (showDetailsModal && selectedBill != null)
@@ -643,6 +700,10 @@
     private int ipCount = 0;
 
     private bool showDetailsModal = false;
+    private bool showCancelBillModal = false;
+    private bool isCancellingBill = false;
+    private HmsBillSummary? billPendingCancel;
+    private string cancelBillReason = string.Empty;
     private bool showReportsModal = false;
     private bool isPrintingReport = false;
     private string errorMessage = "";
@@ -1512,20 +1573,78 @@
         }
     }
 
-    private async Task CancelBill(string? guid)
+    private void OpenCancelBillDialog(HmsBillSummary bill)
     {
         if (!canCancelBill)
         {
             ToastService.ShowError("You do not have permission to cancel bills.");
             return;
         }
-        if (string.IsNullOrEmpty(guid)) return;
-        
-        bool confirmed = await JS.InvokeAsync<bool>("confirm", "Are you sure you want to cancel this bill?");
-        if (!confirmed) return;
-        
-        var result = await HmsBillingService.CancelBillAsync(guid, 10, "Cancelled from view bills page");
-        await LoadBillsAsync();
+        if (string.IsNullOrWhiteSpace(bill.requestguid))
+        {
+            ToastService.ShowError("This bill cannot be cancelled because it has no valid identifier.");
+            return;
+        }
+
+        billPendingCancel = bill;
+        cancelBillReason = string.Empty;
+        showCancelBillModal = true;
+    }
+
+    private void CloseCancelBillDialog()
+    {
+        if (isCancellingBill) return;
+        showCancelBillModal = false;
+        billPendingCancel = null;
+        cancelBillReason = string.Empty;
+    }
+
+    private async Task ConfirmCancelBillAsync()
+    {
+        if (!canCancelBill)
+        {
+            ToastService.ShowError("You do not have permission to cancel bills.");
+            return;
+        }
+
+        var bill = billPendingCancel;
+        var guid = bill?.requestguid;
+        var reason = cancelBillReason.Trim();
+        if (string.IsNullOrWhiteSpace(guid))
+        {
+            ToastService.ShowError("This bill cannot be cancelled because it has no valid identifier.");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(reason))
+        {
+            ToastService.ShowWarning("Enter a cancellation reason to continue.");
+            return;
+        }
+
+        isCancellingBill = true;
+        try
+        {
+            var result = await HmsBillingService.CancelBillAsync(guid, 10, reason);
+            if (result.StartsWith("Error|", StringComparison.OrdinalIgnoreCase))
+            {
+                ToastService.ShowError(result.Substring("Error|".Length));
+                return;
+            }
+
+            ToastService.ShowSuccess("Bill cancelled successfully.");
+            showCancelBillModal = false;
+            billPendingCancel = null;
+            cancelBillReason = string.Empty;
+            await LoadBillsAsync();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to cancel bill: {ex.Message}");
+        }
+        finally
+        {
+            isCancellingBill = false;
+        }
     }
 
     private void EvaluateRights()

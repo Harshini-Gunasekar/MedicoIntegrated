@@ -213,6 +213,49 @@ namespace Booking.Models
         public string? msmeno { get; set; }
     }
 
+    [Dapper.Contrib.Extensions.Table("inv_billno_master")]
+    public class InvBillNoMaster
+    {
+        [Dapper.Contrib.Extensions.ExplicitKey]
+        public long bncode { get; set; }
+        public string? name { get; set; }
+        public string shortname { get; set; } = "INV";
+        public string? prefix_format { get; set; }
+        public int orderno { get; set; } = 1;
+        public int digits { get; set; } = 4;
+        public int? bhcode { get; set; }
+        public int? cntcode { get; set; }
+        public long? warehousecode { get; set; }
+        public bool? allbranch { get; set; } = false;
+        public bool? allcounter { get; set; } = false;
+        public bool? allwarehouse { get; set; } = false;
+        public bool? isdefault { get; set; } = false;
+        public bool? restartfinancialyear { get; set; } = false;
+        public bool? restartcalendaryear { get; set; } = false;
+        public bool? restartmonthly { get; set; } = false;
+        public bool? restartdaily { get; set; } = false;
+        public bool deleted { get; set; } = false;
+        public string? tenantcode { get; set; }
+        public int usercode { get; set; } = 0;
+        public DateTime entereddate { get; set; } = DateTime.UtcNow;
+        public DateTime? modifieddate { get; set; }
+    }
+
+    [Dapper.Contrib.Extensions.Table("inv_billno_sequence")]
+    public class InvBillNoSequence
+    {
+        [Dapper.Contrib.Extensions.Key]
+        public long seq_id { get; set; }
+        public long bncode { get; set; }
+        public int? bhcode { get; set; }
+        public int? cntcode { get; set; }
+        public long? warehousecode { get; set; }
+        public int orderno { get; set; }
+        public DateTime? last_used_date { get; set; }
+        public string? tenantcode { get; set; }
+        public string? snoprint { get; set; }
+    }
+
     public class item_master
     {
         private int _itemcode;
