@@ -1,0 +1,588 @@
+@page "/UserRights"
+@using SharedComponents.Rcl.Models
+@using Newtonsoft.Json
+@using Microsoft.AspNetCore.Components.Authorization
+@inject HttpClient Http
+@inject IJSRuntime JS
+@inject SharedComponents.Rcl.Services.TenantSessionState State
+@inject NavigationManager NavManager
+@inject AuthenticationStateProvider AuthStateProvider
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedSessionStorage protectedSessionStore
+@inject IServiceProvider ServiceProvider
+
+<div class="user-rights-container">
+    <div class="page-header glass-morphic">
+        <div class="header-main">
+            <div class="title-area">
+                <i class="bi bi-shield-lock-fill title-icon"></i>
+                <div class="title-text">
+                    <h1>Security Control Center</h1>
+                    <p>Manage granular access permissions across applications</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="management-grid mt-3">
+        <!-- Configuration Panel -->
+        <div class="config-sidebar glass-morphic">
+            <div class="sidebar-section">
+                <label class="config-label">Select Application</label>
+                <div class="custom-select-wrap">
+                    <select class="custom-select" @bind="selectedProductId" @bind:after="OnProductChanged">
+                        @foreach (var prod in products)
+                        {
+                            <option value="@prod.ProductId">@prod.ProductName</option>
+                        }
+                    </select>
+                    <i class="bi bi-app-indicator select-icon"></i>
+                </div>
+            </div>
+
+            <div class="sidebar-section mt-4">
+                <label class="config-label">Select User</label>
+                <div class="custom-select-wrap">
+                    <select class="custom-select" @bind="selectedUserId" @bind:after="LoadUserPermissions">
+                        <option value="0">-- Choose Staff --</option>
+                        @foreach (var user in users)
+                        {
+                            <option value="@user.UserID">@user.Name (@user.ShortName)</option>
+                        }
+                    </select>
+                    <i class="bi bi-person-circle select-icon"></i>
+                </div>
+            </div>
+
+            <div class="sidebar-section mt-4">
+                <label class="config-label">Role Template</label>
+                <div class="role-pills">
+                    @foreach (var template in customTemplates)
+                    {
+                        <button class="role-pill @(currentRole == template.RoleName ? "active" : "")" @onclick="() => ApplyCustomTemplate(template)">
+                            @template.RoleName
+                        </button>
+                    }
+                    <div class="role-pill @(isNewCustom ? "active" : "")" @onclick="PrepareNewCustom">
+                        <i class="bi bi-plus-circle-fill me-1"></i> New Custom
+                    </div>
+                </div>
+            </div>
+
+            <div class="sidebar-section mt-4">
+                <label class="config-label">Role Display Name</label>
+                <div class="custom-name-wrap">
+                    <input type="text" class="matrix-input-text" @bind="currentRole" placeholder="e.g. Manager 3" />
+                    <i class="bi bi-pencil-square"></i>
+                </div>
+            </div>
+
+            <div class="sidebar-footer mt-5">
+                <button class="btn-save-rights @(isSaving ? "loading" : "")" @onclick="SavePermissions" disabled="@(selectedUserId == 0)">
+                    @if (isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status"></span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-cloud-check-fill"></i>
+                        <span>Apply Rights</span>
+                    }
+                </button>
+            </div>
+        </div>
+
+        <!-- Dynamic Access Matrix -->
+        <div class="rights-matrix-viewport glass-morphic">
+            <div class="matrix-header">
+                <div class="d-flex align-items-center gap-3">
+                    <div class="app-tag">@selectedProductId</div>
+                    <h3 class="m-0">Access Matrix</h3>
+                </div>
+                <div class="matrix-info">
+                    <i class="bi bi-info-circle"></i>
+                    <span>Changes are not saved until you click 'Apply Rights'</span>
+                </div>
+            </div>
+
+            <div class="matrix-table-container">
+                @if (isLoadingFeatures)
+                {
+                    <div class="text-center p-5">
+                        <div class="spinner-border text-primary" role="status"></div>
+                        <p class="mt-2">Loading application features...</p>
+                    </div>
+                }
+                else
+                {
+                    <table class="matrix-table">
+                        <thead>
+                            <tr>
+                                <th>Module / Feature</th>
+                                <th class="text-center">View</th>
+                                <th class="text-center">Create</th>
+                                <th class="text-center">Edit</th>
+                                <th class="text-center">Delete</th>
+                                <th class="text-center">Export</th>
+                                <th class="text-center">Chart</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var feature in activeFeatures.OrderBy(f => f.FeatureName))
+                            {
+                                var key = feature.FeatureKey;
+                                // Initialize if missing
+                                if (!rights.Features.ContainsKey(key)) rights.Features[key] = new FeatureAccess();
+                                var access = rights.Features[key];
+
+                                <tr>
+                                    <td>
+                                        <div class="module-info">
+                                            <span class="module-name">@feature.FeatureName</span>
+                                            <span class="module-desc">@feature.FeatureDescription</span>
+                                        </div>
+                                    </td>
+                                    <td class="text-center">
+                                        @if (feature.HasView)
+                                        {
+                                            <input type="checkbox" @bind="access.View" @oninput="MarkAsCustom" />
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-dash text-muted"></i>
+                                        }
+                                    </td>
+                                    <td class="text-center">
+                                        @if (feature.HasCreate)
+                                        {
+                                            <input type="checkbox" @bind="access.Create" @oninput="MarkAsCustom" />
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-dash text-muted"></i>
+                                        }
+                                    </td>
+                                    <td class="text-center">
+                                        @if (feature.HasEdit)
+                                        {
+                                            <input type="checkbox" @bind="access.Edit" @oninput="MarkAsCustom" />
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-dash text-muted"></i>
+                                        }
+                                    </td>
+                                    <td class="text-center">
+                                        @if (feature.HasDelete)
+                                        {
+                                            <input type="checkbox" @bind="access.Delete" @oninput="MarkAsCustom" />
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-dash text-muted"></i>
+                                        }
+                                    </td>
+                                    <td class="text-center">
+                                        @if (feature.HasExport)
+                                        {
+                                            <input type="checkbox" @bind="access.Export" @oninput="MarkAsCustom" />
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-dash text-muted"></i>
+                                        }
+                                    </td>
+                                    <td class="text-center">
+                                        @if (feature.HasChart)
+                                        {
+                                            <input type="checkbox" @bind="access.Chart" @oninput="MarkAsCustom" />
+                                        }
+                                        else
+                                        {
+                                            <i class="bi bi-dash text-muted"></i>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                            
+                            <!-- Communication Level (Always available or handled as a special feature) -->
+                            <tr>
+                                <td>
+                                    <div class="module-info">
+                                        <span class="module-name">Communication Level</span>
+                                        <span class="module-desc">WhatsApp &amp; Chat interaction depth</span>
+                                    </div>
+                                </td>
+                                <td colspan="6">
+                                    <div class="chat-level-selector">
+                                        <div class="level-option @(rights.chat_level == 0 ? "active" : "")" @onclick="() => SetChatLevel(0)">
+                                            <i class="bi bi-eye-slash"></i>
+                                            <span>Hidden</span>
+                                        </div>
+                                        <div class="level-option @(rights.chat_level == 1 ? "active" : "")" @onclick="() => SetChatLevel(1)">
+                                            <i class="bi bi-eye"></i>
+                                            <span>Read Only</span>
+                                        </div>
+                                        <div class="level-option @(rights.chat_level == 2 ? "active" : "")" @onclick="() => SetChatLevel(2)">
+                                            <i class="bi bi-chat-dots"></i>
+                                            <span>Full Access</span>
+                                        </div>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    .user-rights-container { padding: 1rem 1.5rem; background: #f8fafc; min-height: 100vh; color: #0f172a; font-family: 'Inter', system-ui, sans-serif; }
+    .glass-morphic { background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05), 0 2px 4px -1px rgba(0,0,0,0.03); }
+    .page-header { padding: 0.75rem 1.25rem; border-radius: 10px; }
+    .header-main { display: flex; justify-content: space-between; align-items: center; }
+    .title-area { display: flex; align-items: center; gap: 1rem; }
+    .title-icon { font-size: 1.4rem; color: #0ea5e9; background: rgba(14, 165, 233, 0.1); padding: 0.5rem; border-radius: 8px; }
+    .title-text h1 { margin: 0; font-size: 1.25rem; font-weight: 700; color: #0f172a; }
+    .title-text p { margin: 0; color: #64748b; font-size: 0.8rem; }
+    .management-grid { display: grid; grid-template-columns: 350px 1fr; gap: 1.5rem; align-items: start; }
+    .config-sidebar { padding: 2rem; position: sticky; top: 2rem; }
+    .config-label { display: block; color: #475569; text-transform: uppercase; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; margin-bottom: 0.8rem; }
+    .custom-select-wrap { position: relative; }
+    .custom-select { width: 100%; background: #ffffff; border: 1px solid #cbd5e1; color: #0f172a; padding: 0.8rem 1rem 0.8rem 2.8rem; border-radius: 10px; appearance: none; cursor: pointer; transition: all 0.2s; font-weight: 500; }
+    .custom-select:focus { border-color: #0ea5e9; outline: none; box-shadow: 0 0 0 4px rgba(14, 165, 233, 0.1); }
+    .select-icon { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #0ea5e9; }
+    .role-pills { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+    .role-pill { background: #f1f5f9; border: 1px solid #e2e8f0; color: #475569; padding: 0.5rem 1rem; border-radius: 20px; font-size: 0.85rem; cursor: pointer; transition: all 0.2s; font-weight: 600; }
+    .role-pill:hover { background: #e2e8f0; color: #0f172a; }
+    .role-pill.active { background: #0ea5e9; color: #ffffff; font-weight: 600; border-color: #0ea5e9; }
+    .custom-name-wrap { position: relative; }
+    .matrix-input-text { width: 100%; background: #ffffff; border: 1px solid #cbd5e1; color: #0f172a; padding: 0.8rem 1rem 0.8rem 2.8rem; border-radius: 10px; font-weight: 500; }
+    .matrix-input-text:focus { border-color: #0ea5e9; outline: none; }
+    .custom-name-wrap i { position: absolute; left: 1rem; top: 50%; transform: translateY(-50%); color: #0ea5e9; }
+    .btn-save-rights { width: 100%; background: linear-gradient(135deg, #38bdf8, #0ea5e9); border: none; color: #fff; padding: 1rem; border-radius: 12px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 0.8rem; transition: all 0.3s; cursor: pointer; }
+    .btn-save-rights:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 10px 20px rgba(14, 165, 233, 0.2); }
+    .btn-save-rights:disabled { opacity: 0.5; cursor: not-allowed; filter: grayscale(1); }
+    .rights-matrix-viewport { padding: 0; overflow: hidden; }
+    .matrix-header { padding: 1.5rem 2rem; border-bottom: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: center; background: #f8fafc; }
+    .matrix-header h3 { font-size: 1.25rem; font-weight: 700; color: #0f172a; }
+    .app-tag { background: #0ea5e9; color: white; padding: 0.2rem 0.8rem; border-radius: 6px; font-size: 0.75rem; font-weight: 700; text-transform: uppercase; }
+    .matrix-info { display: flex; align-items: center; gap: 0.5rem; color: #64748b; font-size: 0.85rem; }
+    .matrix-table-container { padding: 1rem; }
+    .matrix-table { width: 100%; border-collapse: separate; border-spacing: 0 0.5rem; }
+    .matrix-table th { padding: 1rem; color: #475569; font-size: 0.75rem; text-transform: uppercase; font-weight: 700; border-bottom: 1px solid #e2e8f0; }
+    .matrix-table td { padding: 1.2rem 1rem; background: #f8fafc; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; }
+    .matrix-table tr td:first-child { border-radius: 12px 0 0 12px; border-left: 1px solid #e2e8f0; }
+    .matrix-table tr td:last-child { border-radius: 0 12px 12px 0; border-right: 1px solid #e2e8f0; }
+    .module-info { display: flex; flex-direction: column; }
+    .module-name { font-weight: 600; color: #1e293b; }
+    .module-desc { font-size: 0.8rem; color: #64748b; }
+    .chat-level-selector { display: flex; gap: 1rem; justify-content: center; }
+    .level-option { flex: 1; padding: 1rem; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 12px; text-align: center; cursor: pointer; transition: all 0.2s; }
+    .level-option i { display: block; font-size: 1.5rem; margin-bottom: 0.5rem; color: #64748b; }
+    .level-option span { font-size: 0.85rem; color: #475569; font-weight: 600; }
+    .level-option.active { border-color: #0ea5e9; background: rgba(14, 165, 233, 0.05); }
+    .level-option.active i { color: #0ea5e9; }
+    .level-option.active span { color: #0ea5e9; font-weight: 700; }
+    input[type="checkbox"] { width: 1.2rem; height: 1.2rem; cursor: pointer; accent-color: #0ea5e9; }
+</style>
+
+@code {
+    private List<User_Master> users = new();
+    private List<ProductList> products = new();
+    private List<RoleTemplate> customTemplates = new();
+    private List<ProductFeature> activeFeatures = new();
+    
+    private int selectedUserId = 0;
+    private string selectedProductId = "RIDO_APP";
+    private UserRights rights = new();
+    private string currentRole = "Supervisor";
+    private bool isNewCustom = false;
+    private bool isSaving = false;
+    private bool isLoadingFeatures = false;
+
+    private TrackAdmin.Data.PageMetadataService? Metadata => ServiceProvider.GetService(typeof(TrackAdmin.Data.PageMetadataService)) as TrackAdmin.Data.PageMetadataService;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Metadata?.UpdatePage("Security Control Center", "Manage granular access permissions across applications", "bi-shield-lock-fill");
+
+        var authState = await AuthStateProvider.GetAuthenticationStateAsync();
+        var user = authState.User;
+        var isAdmin = user.FindFirst("IsAdmin")?.Value == "true" || user.IsInRole("Administrator") || user.IsInRole("Admin");
+
+        if (!isAdmin)
+        {
+            NavManager.NavigateTo("/");
+            return;
+        }
+
+        if (!string.IsNullOrEmpty(State.TenantCode))
+        {
+            await InitialLoad();
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender && string.IsNullOrEmpty(State.TenantCode))
+        {
+            // Support both potential session keys used by client apps
+            var savedTenant = await protectedSessionStore.GetAsync<string>("TenantID");
+            if (!savedTenant.Success || string.IsNullOrEmpty(savedTenant.Value))
+            {
+                savedTenant = await protectedSessionStore.GetAsync<string>("tenant_code");
+            }
+
+            if (savedTenant.Success && !string.IsNullOrEmpty(savedTenant.Value))
+            {
+                State.SetSession(savedTenant.Value, State.AuthToken, State.TenantName);
+                await InitialLoad();
+                StateHasChanged();
+            }
+        }
+    }
+
+    private async Task InitialLoad()
+    {
+        try
+        {
+            products = await Http.GetFromJsonAsync<List<ProductList>>($"Tenant/GetTenantProducts?tenantCode={State.TenantCode}") ?? new List<ProductList>();
+            if (products.Any())
+            {
+                selectedProductId = products.First().ProductId;
+                await OnProductChanged();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading tenant products: {ex.Message}");
+        }
+    }
+
+    private async Task OnProductChanged()
+    {
+        isLoadingFeatures = true;
+        StateHasChanged();
+
+        try
+        {
+            // 1. Load Features
+            var rawFeatures = await Http.GetFromJsonAsync<List<ProductFeature>>($"User/GetProductFeatures?productId={selectedProductId}") ?? new List<ProductFeature>(); activeFeatures = rawFeatures.OrderBy(f => f.FeatureName).ToList();
+            
+            // 2. Load Users for this product
+            users = await Http.GetFromJsonAsync<List<User_Master>>($"User/allstaff?productId={selectedProductId}") ?? new List<User_Master>();
+            
+            // 3. Load Templates
+            await LoadRoleTemplates();
+            
+            if (selectedUserId != 0)
+            {
+                await LoadUserPermissions();
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error changing product context: {ex.Message}");
+        }
+        finally
+        {
+            isLoadingFeatures = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadRoleTemplates()
+    {
+        try
+        {
+            customTemplates = await Http.GetFromJsonAsync<List<RoleTemplate>>($"User/GetRoleTemplates?tenantId={State.TenantCode}&productId={selectedProductId}") ?? new List<RoleTemplate>();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading role templates: {ex.Message}");
+        }
+        StateHasChanged();
+    }
+
+    private void PrepareNewCustom()
+    {
+        currentRole = "New Custom Role";
+        isNewCustom = true;
+        rights = new UserRights(); 
+    }
+
+    private void ApplyCustomTemplate(RoleTemplate template)
+    {
+        if (template == null) return;
+        try
+        {
+            currentRole = template.RoleName;
+            var json = template.RightsJson;
+            rights = new UserRights();
+            if (string.IsNullOrEmpty(json)) return;
+
+            var jObj = Newtonsoft.Json.Linq.JObject.Parse(json);
+            
+            if (jObj.ContainsKey("Features"))
+            {
+                rights = JsonConvert.DeserializeObject<UserRights>(json) ?? new UserRights();
+            }
+            else
+            {
+                foreach (var prop in jObj.Properties())
+                {
+                    if (prop.Name == "chat_level")
+                    {
+                        rights.chat_level = (int)prop.Value;
+                    }
+                    else
+                    {
+                        try 
+                        {
+                            var access = prop.Value.ToObject<FeatureAccess>();
+                            if (access != null) rights.Features[prop.Name] = access;
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            isNewCustom = false;
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error applying template: {ex.Message}");
+        }
+    }
+
+    private async Task LoadUserPermissions()
+    {
+        if (selectedUserId == 0) return;
+        try
+        {
+            var result = await Http.GetFromJsonAsync<ProductPermission>($"User/GetPermissions?userId={selectedUserId}&tenantId={State.TenantCode}&productId={selectedProductId}");
+            rights = new UserRights();
+            
+            if (result != null)
+            {
+                var json = result.RightsJson;
+                if (!string.IsNullOrEmpty(json))
+                {
+                    var jObj = Newtonsoft.Json.Linq.JObject.Parse(json);
+                    if (jObj.ContainsKey("Features"))
+                    {
+                        rights = JsonConvert.DeserializeObject<UserRights>(json) ?? new UserRights();
+                    }
+                    else
+                    {
+                        foreach (var prop in jObj.Properties())
+                        {
+                            if (prop.Name == "chat_level")
+                            {
+                                rights.chat_level = (int)prop.Value;
+                            }
+                            else
+                            {
+                                try 
+                                {
+                                    if (prop.Value.Type == Newtonsoft.Json.Linq.JTokenType.Boolean)
+                                    {
+                                        var rawKey = prop.Name.Replace("can_view_", "").Replace("can_edit_", "").Replace("can_delete_", "").Replace("can_create_", "");
+                                        var targetKey = rawKey switch {
+                                            "details" => "staff",
+                                            "rider" => "staff",
+                                            "referral" => "client",
+                                            _ => rawKey
+                                        };
+
+                                        if (!rights.Features.ContainsKey(targetKey)) 
+                                            rights.Features[targetKey] = new FeatureAccess();
+                                        
+                                        if (prop.Name.Contains("view")) rights.Features[targetKey].View = (bool)prop.Value;
+                                        if (prop.Name.Contains("create")) rights.Features[targetKey].Create = (bool)prop.Value;
+                                        if (prop.Name.Contains("edit")) rights.Features[targetKey].Edit = (bool)prop.Value;
+                                        if (prop.Name.Contains("delete")) rights.Features[targetKey].Delete = (bool)prop.Value;
+                                    }
+                                    else
+                                    {
+                                        var access = prop.Value.ToObject<FeatureAccess>();
+                                        if (access != null) rights.Features[prop.Name] = access;
+                                    }
+                                }
+                                catch { }
+                            }
+                        }
+                    }
+                }
+                currentRole = result.RoleName;
+            }
+            else
+            {
+                currentRole = "Staff";
+            }
+
+            isNewCustom = !customTemplates.Any(t => t.RoleName == currentRole);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error loading permissions: {ex.Message}");
+        }
+    }
+
+    private void MarkAsCustom()
+    {
+    }
+
+    private void SetChatLevel(int level)
+    {
+        rights.chat_level = level;
+        MarkAsCustom();
+    }
+
+    private async Task SavePermissions()
+    {
+        if (selectedUserId == 0) return;
+
+        try 
+        {
+            isSaving = true;
+            StateHasChanged();
+
+            var pp = new ProductPermission
+            {
+                UserID = selectedUserId,
+                TenantID = State.TenantCode,
+                ProductId = selectedProductId,
+                RoleName = currentRole,
+                RightsJson = JsonConvert.SerializeObject(rights)
+            };
+
+            var response = await Http.PostAsJsonAsync("User/SavePermissions", pp);
+            isSaving = false;
+
+            if (response.IsSuccessStatusCode)
+            {
+                await LoadRoleTemplates();
+                await JS.InvokeVoidAsync("alert", "Permissions updated successfully!");
+            }
+            else
+            {
+                await JS.InvokeVoidAsync("alert", "Error saving permissions.");
+            }
+        }
+        catch (Exception ex)
+        {
+            isSaving = false;
+            await JS.InvokeVoidAsync("alert", "Unexpected error: " + ex.Message);
+        }
+        finally
+        {
+            StateHasChanged();
+        }
+    }
+}

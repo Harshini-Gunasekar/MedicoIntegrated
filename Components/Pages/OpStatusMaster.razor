@@ -1,4 +1,4 @@
-﻿
+
 
 
 
@@ -122,8 +122,8 @@ else
                     <tr>
                         <th style="width: 70px;">S.NO</th>
                         <th>STATUS NAME</th>
+                        <th>DISPLAY NAME</th>
                         <th style="width: 140px; text-align: center;">STATUS</th>
-                        <th style="width: 120px;">USER CODE</th>
                         <th style="width: 180px;">CREATED AT</th>
                         <th style="width: 180px;">UPDATED AT</th>
                         <th style="width: 110px; text-align: center;">ACTION</th>
@@ -153,6 +153,9 @@ else
                                         <span class="status-name-text">@item.status_name</span>
                                     </div>
                                 </td>
+                                <td class="col-name">
+                                    <span class="status-name-text">@(string.IsNullOrWhiteSpace(item.display_status_name) ? item.status_name : item.display_status_name)</span>
+                                </td>
                                 <td style="text-align: center;">
                                     <button type="button" class="status-badge-btn @(item.is_active ? "badge-active" : "badge-inactive")"
                                             title="Click to toggle Active/Inactive"
@@ -160,9 +163,6 @@ else
                                         <i class="bi @(item.is_active ? "bi-check-circle-fill" : "bi-x-circle-fill") me-1"></i>
                                         @(item.is_active ? "Active" : "Inactive")
                                     </button>
-                                </td>
-                                <td class="col-usercode">
-                                    <span class="usercode-badge">@(item.usercode?.ToString() ?? "—")</span>
                                 </td>
                                 <td class="col-date">
                                     @(item.created_at == default ? "—" : FormatToIst(item.created_at))
@@ -251,11 +251,26 @@ else
                     <label class="cm-label">Status Name <span style="color: #ef4444;">*</span></label>
                     <input type="text" 
                            class="cm-input" 
-                           placeholder="e.g. Waiting, In Consultation, Completed, Cancelled" 
-                           @bind="currentStatus.status_name" />
+                           placeholder="Enter a status name"
+                           value="@currentStatus.status_name"
+                           @oninput="OnStatusNameInput"
+                           readonly="@currentStatus.is_fixed" />
                     @if (showValidation && string.IsNullOrWhiteSpace(currentStatus.status_name))
                     {
                         <span class="text-danger" style="font-size: 0.75rem;">Status Name is required.</span>
+                    }
+                </div>
+
+                <div class="cm-field-group">
+                    <label class="cm-label">Display Name <span style="color: #ef4444;">*</span></label>
+                    <input type="text"
+                           class="cm-input"
+                           placeholder="Enter the name shown to users"
+                           value="@currentStatus.display_status_name"
+                           @oninput="OnDisplayNameInput" />
+                    @if (showValidation && string.IsNullOrWhiteSpace(currentStatus.display_status_name))
+                    {
+                        <span class="text-danger" style="font-size: 0.75rem;">Display Name is required.</span>
                     }
                 </div>
 
@@ -351,6 +366,7 @@ else
     private bool showModal = false;
     private bool isEditMode = false;
     private bool showValidation = false;
+    private bool isDisplayNameCustomized = false;
     private OpStatusMasterModel currentStatus = new();
 
     private bool showDeleteConfirm = false;
@@ -379,7 +395,8 @@ else
         statusList
             .Where(s => !activeOnly || s.is_active)
             .Where(s => string.IsNullOrWhiteSpace(searchQuery) || 
-                        (s.status_name?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
+                        (s.status_name?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                        (s.display_status_name?.Contains(searchQuery, StringComparison.OrdinalIgnoreCase) ?? false));
 
     private int TotalPages => Math.Max(1, (int)Math.Ceiling((double)FilteredStatuses.Count() / pageSize));
 
@@ -469,6 +486,30 @@ else
         }
     }
 
+    private void OnStatusNameInput(ChangeEventArgs e)
+    {
+        var val = e.Value?.ToString() ?? string.Empty;
+        currentStatus.status_name = val;
+        if (!isDisplayNameCustomized)
+        {
+            currentStatus.display_status_name = val;
+        }
+    }
+
+    private void OnDisplayNameInput(ChangeEventArgs e)
+    {
+        var val = e.Value?.ToString() ?? string.Empty;
+        currentStatus.display_status_name = val;
+        if (string.IsNullOrWhiteSpace(val))
+        {
+            isDisplayNameCustomized = false;
+        }
+        else
+        {
+            isDisplayNameCustomized = true;
+        }
+    }
+
     private void OpenNewModal()
     {
         if (!hasCreateRight)
@@ -480,8 +521,11 @@ else
         currentStatus = new OpStatusMasterModel
         {
             is_active = true,
-            usercode = GetEffectiveUserCode()
+            usercode = GetEffectiveUserCode(),
+            status_name = string.Empty,
+            display_status_name = string.Empty
         };
+        isDisplayNameCustomized = false;
         isEditMode = false;
         showValidation = false;
         showModal = true;
@@ -495,16 +539,25 @@ else
             return;
         }
 
+        var dispName = string.IsNullOrWhiteSpace(item.display_status_name) ? item.status_name : item.display_status_name;
+
         currentStatus = new OpStatusMasterModel
         {
             op_status_id = item.op_status_id,
             status_name = item.status_name,
+            display_status_name = dispName,
             is_active = item.is_active,
             tenant_code = item.tenant_code,
             usercode = item.usercode ?? GetEffectiveUserCode(),
+            is_fixed = item.is_fixed,
+            status_key = item.status_key,
+            default_status_name = item.default_status_name,
+            is_customized = item.is_customized,
             created_at = item.created_at,
             updated_at = item.updated_at
         };
+        isDisplayNameCustomized = !string.IsNullOrWhiteSpace(item.display_status_name) &&
+                                  !item.display_status_name.Equals(item.status_name, StringComparison.OrdinalIgnoreCase);
         isEditMode = true;
         showValidation = false;
         showModal = true;
@@ -514,6 +567,31 @@ else
     {
         showModal = false;
         showValidation = false;
+        isDisplayNameCustomized = false;
+    }
+
+    private bool HasDuplicateTenantStatusName()
+    {
+        var candidateNames = new[]
+        {
+            currentStatus.status_name?.Trim(),
+            currentStatus.display_status_name?.Trim()
+        }
+        .Where(name => !string.IsNullOrWhiteSpace(name))
+        .Distinct(StringComparer.OrdinalIgnoreCase);
+
+        return statusList.Any(existing =>
+        {
+            var isCurrent = isEditMode &&
+                ((currentStatus.op_status_id > 0 && existing.op_status_id == currentStatus.op_status_id) ||
+                 (!string.IsNullOrWhiteSpace(currentStatus.status_key) &&
+                  string.Equals(existing.status_key, currentStatus.status_key, StringComparison.OrdinalIgnoreCase)));
+            if (isCurrent) return false;
+
+            return candidateNames.Any(candidate =>
+                string.Equals(existing.status_name, candidate, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(existing.display_status_name, candidate, StringComparison.OrdinalIgnoreCase));
+        });
     }
 
     private async Task SaveStatusAsync()
@@ -524,12 +602,44 @@ else
             ToastService.ShowWarning("Please enter a valid Status Name.");
             return;
         }
+        if (string.IsNullOrWhiteSpace(currentStatus.display_status_name))
+        {
+            currentStatus.display_status_name = currentStatus.status_name.Trim();
+        }
+        if (HasDuplicateTenantStatusName())
+        {
+            showValidation = true;
+            ToastService.ShowWarning("Status names must be unique within this tenant.");
+            return;
+        }
 
         isSaving = true;
         try
         {
+            var statusKey = !string.IsNullOrWhiteSpace(currentStatus.status_key)
+                ? currentStatus.status_key
+                : currentStatus.status_name.Trim().ToUpperInvariant() switch
+                {
+                    "WAITING" => "WAITING",
+                    "IN CONSULTATION" or "IN_CONSULTATION" => "IN_CONSULTATION",
+                    "COMPLETED" => "COMPLETED",
+                    "CANCELLED" or "CANCELED" => "CANCELLED",
+                    "RESCHEDULED" => "RESCHEDULED",
+                    "REPORT" => "REPORT",
+                    "BOOKED" => "BOOKED",
+                    "ARRIVED" => "ARRIVED",
+                    _ => string.Empty
+                };
+
             bool ok;
-            if (isEditMode)
+            if (isEditMode && !string.IsNullOrWhiteSpace(statusKey))
+            {
+                ok = await StatusService.SaveDisplayStatusAsync(
+                    statusKey,
+                    currentStatus.display_status_name.Trim(),
+                    GetEffectiveUserCode());
+            }
+            else if (isEditMode)
             {
                 ok = await StatusService.UpdateStatusAsync(currentStatus.op_status_id, currentStatus.status_name.Trim(), currentStatus.is_active, GetEffectiveUserCode());
             }
@@ -571,10 +681,8 @@ else
         bool ok = await StatusService.UpdateStatusAsync(item.op_status_id, item.status_name, newStatus, GetEffectiveUserCode());
         if (ok)
         {
-            item.is_active = newStatus;
-            item.updated_at = DateTime.UtcNow;
+            await LoadStatusesAsync();
             ToastService.ShowSuccess($"Status '{item.status_name}' marked as {(newStatus ? "Active" : "Inactive")}.");
-            StateHasChanged();
         }
         else
         {

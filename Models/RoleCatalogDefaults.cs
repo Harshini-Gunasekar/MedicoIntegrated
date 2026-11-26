@@ -3,7 +3,7 @@ using System.Collections.Generic;
 namespace Booking.Models
 {
     /// <summary>
-    /// Pre-compiled static catalog containing all 376 security permissions for MEDICO_APP.
+    /// Pre-compiled static catalog containing all 390 security permissions for MEDICO_APP.
     /// Enables instantaneous 0ms UI rendering with zero layout shift.
     /// </summary>
     public static class RoleCatalogDefaults
@@ -398,6 +398,16 @@ namespace Booking.Models
             new RolePermissionItem { Role_id = 1044, Main_module = "Billing Portal", Sub_module = "Billing Categorization", Module = "Create", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 1045, Main_module = "Billing Portal", Sub_module = "Billing Categorization", Module = "Edit", Product_id = "MEDICO_APP" },
             new RolePermissionItem { Role_id = 1046, Main_module = "Billing Portal", Sub_module = "Billing Categorization", Module = "Delete", Product_id = "MEDICO_APP" },
+
+            // Newly added page permissions (Roles 1056 - 1063)
+            new RolePermissionItem { Role_id = 1056, Main_module = "Billing Portal", Sub_module = "Account Summary", Module = "View", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1057, Main_module = "Doctor Portal", Sub_module = "Prescription Template Master", Module = "View", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1058, Main_module = "Doctor Portal", Sub_module = "Prescription Template Master", Module = "Create", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1059, Main_module = "Doctor Portal", Sub_module = "Prescription Template Master", Module = "Edit", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1060, Main_module = "Doctor Portal", Sub_module = "Prescription Template Master", Module = "Delete", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1061, Main_module = "Inventory", Sub_module = "Stock", Module = "Edit MRP", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1062, Main_module = "Inventory", Sub_module = "Opening Stock", Module = "View", Product_id = "MEDICO_APP" },
+            new RolePermissionItem { Role_id = 1063, Main_module = "Inventory", Sub_module = "Opening Stock", Module = "Create", Product_id = "MEDICO_APP" },
         };
     }
 }

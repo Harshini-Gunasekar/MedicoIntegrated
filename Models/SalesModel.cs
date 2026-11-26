@@ -43,9 +43,24 @@ public class sales_master
 
     public decimal netamount { get; set; }
 
+    public decimal collectedamount { get; set; }
+
+    public decimal paidviarecipt { get; set; }
+    public decimal paidviareceipt { get => paidviarecipt; set => paidviarecipt = value; }
+
     public string? paymentmode { get; set; }
 
     public string? paymentstatus { get; set; }
+
+    // Paymode Master codes are text here to match the backend sales_master contract.
+    public string? pmc1 { get; set; }
+    public decimal pmc1_amount { get; set; }
+
+    public string? pmc2 { get; set; }
+    public decimal pmc2_amount { get; set; }
+
+    public string? pmc3 { get; set; }
+    public decimal pmc3_amount { get; set; }
 
     public string? currencycode { get; set; }
 
@@ -74,6 +89,8 @@ public class sales_master
     public int? bh_code { get; set; }
 
     public string? cnttid { get; set; }   // counter shift session id
+
+    public long? bncode { get; set; }
 
     // Legacy / UI compatibility aliases (syncs automatically with database fields)
     [System.Text.Json.Serialization.JsonIgnore]
@@ -154,6 +171,12 @@ public class sales_detail
 
     public Guid? pr_det_id { get; set; }
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    public Guid? prescription_item_id { get; set; }
+
+    [System.Text.Json.Serialization.JsonIgnore]
+    public DateTime? prescription_date { get; set; }
+
     public string? dosage { get; set; }
 
     public string? instructions { get; set; }
@@ -192,4 +215,11 @@ public class sales_request
     public sales_master master { get; set; } = new();
     public List<sales_detail> details { get; set; } = new();
     public List<Guid>? queue_ids { get; set; }   // pharmacy queue rows being billed in this sale
+}
+
+public class UnbillCancelQueueRequest
+{
+    public List<Guid> queue_ids { get; set; } = new();
+    public bool cancel { get; set; } = false;
+    public string? reason { get; set; }
 }

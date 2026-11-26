@@ -76,6 +76,10 @@ namespace Booking.Models
         public string? doctor_name { get; set; }
         public string? fee_type { get; set; }
         public string? pay_mode { get; set; }
+        public string? paymode { get; set; }
+        public string? collection_type { get; set; }
+        public double? pmcode { get; set; }
+        public double? pm_code { get; set; }
         public string? counter_name { get; set; }
         public int? enteredbhcode { get; set; }
         public int? cntcode { get; set; }
@@ -87,6 +91,7 @@ namespace Booking.Models
         public double? general_concession_amount { get; set; }
         public double? referral_concession_per { get; set; }
         public double? referral_concession_amount { get; set; }
+        public string? referral_concession_reason { get; set; }
         public double? tax_amount { get; set; }
         public double? net_amount { get; set; }
         public double? paid_amount { get; set; }

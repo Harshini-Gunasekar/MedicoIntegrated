@@ -537,7 +537,7 @@
         return new List<SidebarMenuItemModel>
         {
             new SidebarMenuItemModel { Title = "Dashboard", Href = "/home", Icon = "bi-grid-fill", Category = "Dashboard" },
-            new SidebarMenuItemModel { Title = "Patient Check-In", Href = "/booking/reception", Icon = "bi-people-fill", Category = "OP portal" },
+            new SidebarMenuItemModel { Title = "Pre Booking", Href = "/booking/reception", Icon = "bi-people-fill", Category = "OP portal" },
             new SidebarMenuItemModel { Title = "Outpatient Visiting", Href = "/booking/outpatient", Icon = "bi-hospital", Category = "OP portal" },
             new SidebarMenuItemModel { Title = "OP Token Display", Href = "/op-token-display", Icon = "bi-display", Category = "OP portal" },
             new SidebarMenuItemModel { Title = "Customer History", Href = "/booking/customer", Icon = "bi-person-lines-fill", Category = "OP portal" },
@@ -586,6 +586,7 @@
             new SidebarMenuItemModel { Title = "Due Collection History", Href = "/due-collection-history", Icon = "bi-clock-history", Category = "Billing Portal" },
             new SidebarMenuItemModel { Title = "Bills List", Href = "/bills", Icon = "bi-file-earmark-text", Category = "Billing Portal" },
             new SidebarMenuItemModel { Title = "Billing Summary", Href = "/billing-summary", Icon = "bi-receipt-cutoff", Category = "Billing Portal" },
+            new SidebarMenuItemModel { Title = "Account Summary", Href = "/account-summary", Icon = "bi-calculator", Category = "Billing Portal" },
             new SidebarMenuItemModel { Title = "Reports", Href = "/billing-reports", Icon = "bi-file-earmark-bar-graph", Category = "Billing Portal" },
             new SidebarMenuItemModel { Title = "Billing Categorization", Href = "/billing/categorization", Icon = "bi-pie-chart-fill", Category = "Billing Portal" },
             new SidebarMenuItemModel { Title = "Auto Bill OP", Href = "/auto-bill-op", Icon = "bi-lightning-charge-fill", Category = "Billing Portal" },
@@ -845,6 +846,11 @@
     private bool CheckPathPermission(string path)
     {
         path = NormalizePath(path);
+        if (path.StartsWith("billing/", StringComparison.OrdinalIgnoreCase) &&
+            Guid.TryParse(path.Substring("billing/".Length), out _))
+        {
+            path = "billing";
+        }
 
         if (IsAnonymousPath(path))
         {
@@ -898,6 +904,10 @@
 
             // Billing & Finance
             case "billing":
+                return HasRight("Billing Portal", "Billing Portal") ||
+                       RoleService.HasPermission(490) ||
+                       HasAction("Billing Portal", "Billing Portal", "Create") ||
+                       HasAction("Billing", "Billing Portal", "Create");
             case "billing/unpaid-patients":
                 return HasRight("Billing Portal", "Billing Portal");
             case "due-collection":
@@ -910,6 +920,9 @@
                 return HasRight("Billing Portal", "Bill List");
             case "billing-summary":
                 return HasRight("Billing Portal", "Bill Summary");
+            case "account-summary":
+            case "billing/account-summary":
+                return HasRight("Billing Portal", "Account Summary") || HasRight("Billing Portal", "Billing Categorization") || HasRight("Billing Portal", "Billing Categories");
             case "billing-reports":
             case "billingreports":
             case "reports":
@@ -974,7 +987,7 @@
             case "stock":
                 return HasRight("Inventory", "Stock");
             case "openingstock":
-                return HasRight("Inventory", "Stock") || HasRight("Inventory", "Stock Adjustment");
+                return HasRight("Inventory", "Opening Stock") || HasRight("Inventory", "Stock") || HasRight("Inventory", "Stock Adjustment");
             case "stockadjustment":
                 return HasRight("Inventory", "Stock Adjustment");
             case "issuestock":
@@ -1509,6 +1522,8 @@
             case "billing/categorization":
             case "billingcategorization":
             case "billing-categorization": return "Billing Categorization";
+            case "account-summary":
+            case "billing/account-summary": return "Account Summary";
             case "op-status-master": return "OP Status Master";
             case "cash-counter": return "Cash Counter";
             case "billno-sequence": return "Bill No Sequence";
@@ -1740,6 +1755,7 @@
             string tenantCode = "";
             string authToken = "";
             string tenantName = "";
+            string sessionDateStr = "";
             bool isTenantAdminSession = false;
             bool isBranchConfirmed = false;
             int? localBhCode = null;
@@ -1755,6 +1771,7 @@
                     authToken = jObj["authToken"]?.ToString() ?? "";
                     tenantCode = jObj["tenant_code"]?.ToString() ?? "";
                     tenantName = jObj["tenant_name"]?.ToString() ?? "";
+                    sessionDateStr = jObj["session_date"]?.ToString() ?? "";
                     directUserName = jObj["user_name"]?.ToString() ?? "";
                     loginInput = jObj["login_input"]?.ToString() ?? "";
                     directUserRole = jObj["user_role"]?.ToString() ?? "";
@@ -1782,7 +1799,6 @@
                             BranchCode = localBhCode,
                             CounterCode = localCntCode
                         };
-                        TenantState.SetSession(tenantCode, authToken, user.TenantName, directUserCode, localBhCode, localCntCode, user, TenantState.UserRightsList?.ToList() ?? new List<SharedComponents.Rcl.Models.User_Rights>());
                     }
                 }
             }
@@ -1919,8 +1935,62 @@
                 catch { }
             }
 
+            // Validate token expiration and midnight shift boundary
+            if (string.IsNullOrWhiteSpace(sessionDateStr))
+            {
+                try
+                {
+                    var sdRes = await _sessionStorage.GetAsync<string>("session_date");
+                    if (sdRes.Success && !string.IsNullOrWhiteSpace(sdRes.Value)) sessionDateStr = sdRes.Value;
+                }
+                catch { }
+            }
+
+            var todayIst = DateTime.UtcNow.ToIndianTime().ToString("yyyy-MM-dd");
+            bool isSessionExpired = false;
+
+            if (!string.IsNullOrWhiteSpace(authToken))
+            {
+                if (JwtAuthenticationStateProvider.IsTokenExpired(authToken))
+                {
+                    isSessionExpired = true;
+                    Console.WriteLine("[MainLayout] Stored JWT auth token is expired.");
+                }
+            }
+
+            if (!isSessionExpired && !string.IsNullOrWhiteSpace(sessionDateStr))
+            {
+                if (sessionDateStr != todayIst)
+                {
+                    isSessionExpired = true;
+                    Console.WriteLine($"[MainLayout] Shift/session date ({sessionDateStr}) is prior to today ({todayIst}). Shift closed at midnight.");
+                }
+            }
+
+            if (isSessionExpired)
+            {
+                try { await JS.InvokeVoidAsync("medicoSessionHelper.clearSession"); } catch { }
+                try { await _sessionStorage.DeleteAsync("UserDetails"); } catch { }
+                try { await _sessionStorage.DeleteAsync("authToken"); } catch { }
+                try { await _sessionStorage.DeleteAsync("tenant_code"); } catch { }
+                try { await _sessionStorage.DeleteAsync("user_code"); } catch { }
+                try { await _sessionStorage.DeleteAsync("session_date"); } catch { }
+                try { await _sessionStorage.DeleteAsync("UserRights"); } catch { }
+                try { await _sessionStorage.DeleteAsync("UserRolePermissions"); } catch { }
+                try { await _sessionStorage.DeleteAsync("IsTenantAdmin"); } catch { }
+                TenantState.Clear();
+                user = null;
+                authToken = "";
+                directUserName = "";
+                directUserCode = 0;
+                tenantCode = "";
+                loginInput = "";
+                directUserRole = "";
+                directUserDescription = "";
+            }
+
             // Always resolve real user description from database if description is missing or numeric
-            if ((string.IsNullOrWhiteSpace(directUserDescription) || int.TryParse(directUserDescription.Trim(), out _)) && directUserCode > 0)
+            if (!isSessionExpired && (string.IsNullOrWhiteSpace(directUserDescription) || int.TryParse(directUserDescription.Trim(), out _)) && directUserCode > 0)
             {
                 try
                 {
@@ -2105,9 +2175,11 @@
                         bhcode = effectiveConfirmedBranch ?? user.BranchCode,
                         cntcode = user.CounterCode,
                         isAdmin = isAdminUser,
-                        session_branch_confirmed = isBranchConfirmed
+                        session_branch_confirmed = isBranchConfirmed,
+                        session_date = todayIst
                     };
                     await JS.InvokeVoidAsync("medicoSessionHelper.saveSession", JsonConvert.SerializeObject(crossTab));
+                    try { await _sessionStorage.SetAsync("session_date", todayIst); } catch { }
                 }
                 catch { }
 

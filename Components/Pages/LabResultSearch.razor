@@ -2347,6 +2347,25 @@
                                     </span>
                                 </label>
                             </div>
+                            @if (currentItem.isculture != true && !selectedTestDetails.Any(x => x.isselected && x.isculture))
+                            {
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px;">
+                                    <label style="display: flex; flex-direction: column; gap: 3px; margin: 0; color: #64748b; font-size: 0.58rem; font-weight: 750; text-transform: uppercase;">
+                                        Paper Size
+                                        <select @bind="labReportPaperSize" style="width: 100%; height: 27px; padding: 2px 6px; border: 1px solid #dbe3ec; border-radius: 5px; background: #ffffff; color: #334155; font-size: 0.66rem; font-weight: 650;">
+                                            <option value="A4">A4</option>
+                                            <option value="A5">A5</option>
+                                        </select>
+                                    </label>
+                                    <label style="display: flex; flex-direction: column; gap: 3px; margin: 0; color: #64748b; font-size: 0.58rem; font-weight: 750; text-transform: uppercase;">
+                                        Orientation
+                                        <select @bind="labReportOrientation" style="width: 100%; height: 27px; padding: 2px 6px; border: 1px solid #dbe3ec; border-radius: 5px; background: #ffffff; color: #334155; font-size: 0.66rem; font-weight: 650;">
+                                            <option value="Portrait">Portrait</option>
+                                            <option value="Landscape">Landscape</option>
+                                        </select>
+                                    </label>
+                                </div>
+                            }
                         </div>
                     </div>
 
@@ -2654,6 +2673,8 @@
     // State
     private bool isLoading = false;
     private bool isLetterhead = true;
+    private string labReportPaperSize = "A4";
+    private string labReportOrientation = "Portrait";
     private bool isPatientModalOpen = false;
     private int selectedRowIndex = -1;
     private List<ViewResultSearch> allResults = new();
@@ -2855,7 +2876,7 @@
                     fromdate = fromDate.Date.AddDays(-14),
                     todate = toDate.Date.AddDays(2),
                     pagesize = 1000
-                });
+                }, userTenantCode);
             }
             catch { }
 
@@ -2893,6 +2914,7 @@
             // Index bills
             var billsByGuid = new Dictionary<string, HmsBillSummary>(StringComparer.OrdinalIgnoreCase);
             var billsByBillNo = new Dictionary<string, HmsBillSummary>(StringComparer.OrdinalIgnoreCase);
+            var billsBySerial = new Dictionary<string, HmsBillSummary>(StringComparer.OrdinalIgnoreCase);
             var billsByOpVisit = new Dictionary<string, HmsBillSummary>(StringComparer.OrdinalIgnoreCase);
             var billsByMobile = new Dictionary<string, HmsBillSummary>(StringComparer.OrdinalIgnoreCase);
 
@@ -2902,8 +2924,23 @@
                 {
                     if (!string.IsNullOrWhiteSpace(b.requestguid) && !billsByGuid.ContainsKey(b.requestguid.Trim()))
                         billsByGuid[b.requestguid.Trim()] = b;
-                    if (!string.IsNullOrWhiteSpace(b.bill_no) && !billsByBillNo.ContainsKey(b.bill_no.Trim()))
-                        billsByBillNo[b.bill_no.Trim()] = b;
+                    if (!string.IsNullOrWhiteSpace(b.bill_no))
+                    {
+                        var bNo = b.bill_no.Trim();
+                        if (!billsByBillNo.ContainsKey(bNo))
+                            billsByBillNo[bNo] = b;
+
+                        var parts = bNo.Split(new[] { '/', '-' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var part in parts)
+                        {
+                            if (int.TryParse(part, out int snoVal) && snoVal > 0 && snoVal < 1000000)
+                            {
+                                var key = snoVal.ToString();
+                                if (!billsBySerial.ContainsKey(key))
+                                    billsBySerial[key] = b;
+                            }
+                        }
+                    }
                     if (!string.IsNullOrWhiteSpace(b.opvisitid) && !billsByOpVisit.ContainsKey(b.opvisitid.Trim()))
                         billsByOpVisit[b.opvisitid.Trim()] = b;
                     if (!string.IsNullOrWhiteSpace(b.mobileno) && !billsByMobile.ContainsKey(b.mobileno.Trim()))
@@ -2976,7 +3013,8 @@
                 if (!string.IsNullOrEmpty(rGuid) && billsByGuid.TryGetValue(rGuid, out var b1)) matchedBill = b1;
                 else if (!string.IsNullOrEmpty(opVis) && billsByOpVisit.TryGetValue(opVis, out var b2)) matchedBill = b2;
                 else if (!string.IsNullOrEmpty(billNo) && billsByBillNo.TryGetValue(billNo, out var b3)) matchedBill = b3;
-                else if (!string.IsNullOrEmpty(mob) && billsByMobile.TryGetValue(mob, out var b4)) matchedBill = b4;
+                else if (item.requestsno > 0 && billsBySerial.TryGetValue(item.requestsno.ToString(), out var b4)) matchedBill = b4;
+                else if (!string.IsNullOrEmpty(mob) && billsByMobile.TryGetValue(mob, out var b5)) matchedBill = b5;
 
                 if (matchedBill != null)
                 {
@@ -3051,6 +3089,38 @@
                             item.custcode = matchedCs.custcode ?? (!string.IsNullOrEmpty(matchedCs.op_id) ? matchedCs.op_id : "");
                         if (string.IsNullOrWhiteSpace(item.mobile) && !string.IsNullOrWhiteSpace(matchedCs.mobile))
                             item.mobile = matchedCs.mobile.Trim();
+                    }
+                }
+            }
+
+            // Targeted fallback for any remaining items still missing patient name
+            var stillMissing = results.Where(x => string.IsNullOrWhiteSpace(x.name) || x.name.Trim().StartsWith("-")).ToList();
+            if (stillMissing.Any())
+            {
+                foreach (var unhydrated in stillMissing.Take(30))
+                {
+                    string g = unhydrated.requestguid.HasValue ? unhydrated.requestguid.Value.ToString() : "";
+                    if (!string.IsNullOrEmpty(g))
+                    {
+                        try
+                        {
+                            var directBill = await HmsBillingService.GetBillByGuidAsync(g, userTenantCode);
+                            if (directBill != null && !string.IsNullOrWhiteSpace(directBill.patient_name))
+                            {
+                                unhydrated.name = directBill.patient_name.Trim();
+                                if (string.IsNullOrWhiteSpace(unhydrated.mobile) && !string.IsNullOrWhiteSpace(directBill.mobileno))
+                                    unhydrated.mobile = directBill.mobileno.Trim();
+                                if (string.IsNullOrWhiteSpace(unhydrated.billnoprint) && !string.IsNullOrWhiteSpace(directBill.bill_no))
+                                    unhydrated.billnoprint = directBill.bill_no.Trim();
+                                if (string.IsNullOrWhiteSpace(unhydrated.sex) && !string.IsNullOrWhiteSpace(directBill.gender))
+                                    unhydrated.sex = directBill.gender.Trim();
+                                if (string.IsNullOrWhiteSpace(unhydrated.age) && !string.IsNullOrWhiteSpace(directBill.ageyears))
+                                    unhydrated.age = directBill.ageyears.Trim();
+                                if (string.IsNullOrWhiteSpace(unhydrated.custcode) && directBill.custid.HasValue && directBill.custid.Value > 0)
+                                    unhydrated.custcode = $"CUST-{directBill.custid.Value}";
+                            }
+                        }
+                        catch { }
                     }
                 }
             }
@@ -3550,12 +3620,6 @@
 
                         return true;
                     }).ToList();
-
-                    int sno = 1;
-                    foreach (var item in filteredVrsList)
-                    {
-                        item.requestsno = sno++;
-                    }
 
                     // Hydrate missing patient details from HMS Bills, OP Registrations, and CaseSheet
                     await HydrateResultsWithPatientDataAsync(filteredVrsList, token);
@@ -4382,9 +4446,9 @@
             }
         }
 
-        string endpoint = isCulture 
-            ? $"api/report/culture-report?requestguid={item.requestguid}&isletterhead={isLetterhead.ToString().ToLower()}" 
-            : $"api/report/labreport?requestguid={item.requestguid}&isletterhead={isLetterhead.ToString().ToLower()}";
+        string endpoint = isCulture
+            ? $"api/report/culture-report?requestguid={item.requestguid}&isletterhead={isLetterhead.ToString().ToLower()}"
+            : $"api/report/labreport?requestguid={item.requestguid}&isletterhead={isLetterhead.ToString().ToLower()}&paper_size={Uri.EscapeDataString(labReportPaperSize)}&orientation={Uri.EscapeDataString(labReportOrientation)}";
 
         if (!string.IsNullOrEmpty(filterTcode))
         {
@@ -4532,8 +4596,9 @@
             {
                 bool isLetterheadVal = isLetterhead;
                 string tcodeSuffix = !string.IsNullOrEmpty(filterTcode) ? $"&tcode={filterTcode}" : "";
-                candidateUrls.Add($"api/report/labreport?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}{tcodeSuffix}");
-                candidateUrls.Add($"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}{tcodeSuffix}");
+                string labReportLayoutSuffix = $"&paper_size={Uri.EscapeDataString(labReportPaperSize)}&orientation={Uri.EscapeDataString(labReportOrientation)}";
+                candidateUrls.Add($"api/report/labreport?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}{tcodeSuffix}{labReportLayoutSuffix}");
+                candidateUrls.Add($"api/Report/LabReport?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}{tcodeSuffix}{labReportLayoutSuffix}");
                 candidateUrls.Add($"api/report/culture-report?requestguid={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}{tcodeSuffix}");
                 candidateUrls.Add($"api/report/getopcasesheet?op_id={activeGuid}&isletterhead={isLetterheadVal.ToString().ToLower()}{tcodeSuffix}");
             }

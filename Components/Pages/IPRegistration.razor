@@ -1434,6 +1434,65 @@ else
     </div>
 }
 
+@if (showReportTypeModal && selectedBillReportAdmission is not null)
+{
+    <div class="report-type-modal-backdrop" @onclick="CloseReportTypeModal">
+        <section class="report-type-modal" role="dialog" aria-modal="true" aria-labelledby="report-type-title" @onclick:stopPropagation="true">
+            <header class="report-type-modal-header">
+                <div>
+                    <h2 id="report-type-title">Choose Report Type</h2>
+                    <p>Select the content to include before previewing the consolidated bill.</p>
+                </div>
+                <button type="button" class="report-type-close" aria-label="Close" @onclick="CloseReportTypeModal" disabled="@isPrintingBill">
+                    <i class="bi bi-x-lg"></i>
+                </button>
+            </header>
+
+            <div class="report-type-patient">
+                <span class="report-type-patient-icon"><i class="bi bi-person-vcard"></i></span>
+                <div>
+                    <strong>@(string.IsNullOrWhiteSpace(selectedBillReportAdmission.patient_name) ? selectedBillReportAdmission.custid.ToString() : selectedBillReportAdmission.patient_name)</strong>
+                    <span>IP No: @selectedBillReportAdmission.ip_no</span>
+                </div>
+            </div>
+
+            <div class="report-type-options" role="radiogroup" aria-label="Consolidated bill report type">
+                <button type="button" role="radio" aria-checked="@(selectedBillReportFilter == "OVERVIEW")" class="report-type-option @(selectedBillReportFilter == "OVERVIEW" ? "selected" : "")" @onclick='() => selectedBillReportFilter = "OVERVIEW"' disabled="@isPrintingBill">
+                    <span class="report-type-option-icon overview"><i class="bi bi-clipboard-data"></i></span>
+                    <strong>Overview Only</strong>
+                    <span>Bill summary and totals</span>
+                </button>
+                <button type="button" role="radio" aria-checked="@(selectedBillReportFilter == "DETAILED")" class="report-type-option @(selectedBillReportFilter == "DETAILED" ? "selected" : "")" @onclick='() => selectedBillReportFilter = "DETAILED"' disabled="@isPrintingBill">
+                    <span class="report-type-option-icon detailed"><i class="bi bi-list-ul"></i></span>
+                    <strong>Detailed Break</strong>
+                    <span>Itemized charges and details</span>
+                </button>
+                <button type="button" role="radio" aria-checked="@(selectedBillReportFilter == "BOTH")" class="report-type-option @(selectedBillReportFilter == "BOTH" ? "selected" : "")" @onclick='() => selectedBillReportFilter = "BOTH"' disabled="@isPrintingBill">
+                    <span class="report-type-option-icon full"><i class="bi bi-files"></i></span>
+                    <strong>Full Bill</strong>
+                    <span>Overview and detailed break</span>
+                </button>
+            </div>
+
+            <footer class="report-type-modal-footer">
+                <button type="button" class="report-type-cancel" @onclick="CloseReportTypeModal" disabled="@isPrintingBill">Cancel</button>
+                <button type="button" class="report-type-preview" @onclick="PreviewSelectedConsolidatedBillAsync" disabled="@(string.IsNullOrWhiteSpace(selectedBillReportFilter) || isPrintingBill)">
+                    @if (isPrintingBill)
+                    {
+                        <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                        <span>Loading Preview...</span>
+                    }
+                    else
+                    {
+                        <i class="bi bi-eye"></i>
+                        <span>Preview Report</span>
+                    }
+                </button>
+            </footer>
+        </section>
+    </div>
+}
+
 @code {
     private Guid? activeDropdownIpId = null;
 
@@ -2673,8 +2732,11 @@ else
 
     private bool isPrintingBill = false;
     private bool isDownloadingBillPdf = false;
+    private bool showReportTypeModal = false;
+    private IPRegistrationModel.IpRegistrationModel? selectedBillReportAdmission;
+    private string selectedBillReportFilter = "";
 
-    private async Task<string> FetchConsolidatedBillBase64(Guid requestGuid)
+    private async Task<string> FetchConsolidatedBillBase64(Guid requestGuid, string reportFilter)
     {
         string tenant = !string.IsNullOrWhiteSpace(TenantCode) ? TenantCode : (TenantState?.TenantCode ?? "0010");
         string token = !string.IsNullOrWhiteSpace(AuthToken) ? AuthToken : (TenantState?.AuthToken ?? "");
@@ -2697,15 +2759,16 @@ else
         }
 
         var baseApi = Configuration["ApiBaseUrl"]?.TrimEnd('/') ?? "";
+        var reportQuery = $"requestguid={requestGuid}&filter={Uri.EscapeDataString(reportFilter)}&format=pdf&isletterhead=true&tenantcode={Uri.EscapeDataString(tenant)}&tenant_code={Uri.EscapeDataString(tenant)}";
         var candidateUrls = new List<string>
         {
-            $"api/report/getconsolidatedbill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
-            $"api/Report/getconsolidatedbill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}",
-            $"api/Report/GetConsolidatedBill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}"
+            $"api/report/getconsolidatedbill?{reportQuery}",
+            $"api/Report/getconsolidatedbill?{reportQuery}",
+            $"api/Report/GetConsolidatedBill?{reportQuery}"
         };
         if (!string.IsNullOrEmpty(baseApi))
         {
-            candidateUrls.Add($"{baseApi}/api/report/getconsolidatedbill?requestguid={requestGuid}&isletterhead=true&tenantcode={tenant}&tenant_code={tenant}");
+            candidateUrls.Add($"{baseApi}/api/report/getconsolidatedbill?{reportQuery}");
         }
 
         var client = CreateClient();
@@ -2715,7 +2778,7 @@ else
         {
             try
             {
-                var req = new HttpRequestMessage(HttpMethod.Get, url);
+                using var req = new HttpRequestMessage(HttpMethod.Get, url);
                 if (!string.IsNullOrEmpty(token))
                 {
                     req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
@@ -2724,12 +2787,20 @@ else
                 req.Headers.Add("tenant_code", tenant);
                 req.Headers.Add("tenant-code", tenant);
 
-                var response = await client.SendAsync(req);
+                using var response = await client.SendAsync(req);
 
                 if (response.IsSuccessStatusCode && response.StatusCode != System.Net.HttpStatusCode.NoContent)
                 {
-                    var contentStr = await response.Content.ReadAsStringAsync();
-                    contentStr = contentStr.Trim('"').Trim();
+                    var responseBytes = await response.Content.ReadAsByteArrayAsync();
+                    var contentType = response.Content.Headers.ContentType?.MediaType;
+                    if (responseBytes.Length > 0 &&
+                        (string.Equals(contentType, "application/pdf", StringComparison.OrdinalIgnoreCase) ||
+                         (responseBytes.Length >= 4 && responseBytes[0] == 0x25 && responseBytes[1] == 0x50 && responseBytes[2] == 0x44 && responseBytes[3] == 0x46)))
+                    {
+                        return $"data:application/pdf;base64,{Convert.ToBase64String(responseBytes)}";
+                    }
+
+                    var contentStr = System.Text.Encoding.UTF8.GetString(responseBytes).Trim('"').Trim();
 
                     string base64Data = contentStr;
                     try
@@ -2749,10 +2820,24 @@ else
                     }
                     catch { }
 
-                    if (!string.IsNullOrWhiteSpace(base64Data) && base64Data.Length >= 50)
+                    if (!string.IsNullOrWhiteSpace(base64Data) && base64Data.StartsWith("data:application/pdf;base64,", StringComparison.OrdinalIgnoreCase))
                     {
                         return base64Data;
                     }
+
+                    try
+                    {
+                        var pdfBytes = Convert.FromBase64String(base64Data);
+                        if (pdfBytes.Length >= 4 && pdfBytes[0] == 0x25 && pdfBytes[1] == 0x50 && pdfBytes[2] == 0x44 && pdfBytes[3] == 0x46)
+                        {
+                            return $"data:application/pdf;base64,{base64Data}";
+                        }
+                    }
+                    catch (FormatException)
+                    {
+                    }
+
+                    lastError = "Backend report endpoint returned empty or invalid PDF data.";
                 }
                 else
                 {
@@ -2769,23 +2854,50 @@ else
         throw new Exception(string.IsNullOrEmpty(lastError) ? "Backend report endpoint returned empty data." : lastError);
     }
 
-    private async Task PreviewConsolidatedBill(IPRegistrationModel.IpRegistrationModel admission)
+    private void PreviewConsolidatedBill(IPRegistrationModel.IpRegistrationModel admission)
     {
         if (!hasPreviewBillRight)
         {
             ToastService.ShowError("You do not have permission to preview consolidated bill.");
             return;
         }
+        selectedBillReportAdmission = admission;
+        selectedBillReportFilter = "";
+        showReportTypeModal = true;
+    }
+
+    private void CloseReportTypeModal()
+    {
+        if (isPrintingBill)
+        {
+            return;
+        }
+        showReportTypeModal = false;
+        selectedBillReportAdmission = null;
+        selectedBillReportFilter = "";
+    }
+
+    private async Task PreviewSelectedConsolidatedBillAsync()
+    {
+        if (selectedBillReportAdmission is null || string.IsNullOrWhiteSpace(selectedBillReportFilter))
+        {
+            return;
+        }
+
         try
         {
             isPrintingBill = true;
             StateHasChanged();
 
-            Guid requestGuid = admission.ip_id;
-            string base64Data = await FetchConsolidatedBillBase64(requestGuid);
+            var admission = selectedBillReportAdmission;
+            var reportFilter = selectedBillReportFilter;
+            string base64Data = await FetchConsolidatedBillBase64(admission.ip_id, reportFilter);
 
             if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
             {
+                showReportTypeModal = false;
+                selectedBillReportAdmission = null;
+                selectedBillReportFilter = "";
                 await JSRuntime.InvokeVoidAsync("openPdfPreviewModal", base64Data, $"Consolidated Bill - {admission.ip_no}");
             }
             else
@@ -2817,7 +2929,7 @@ else
             StateHasChanged();
 
             Guid requestGuid = admission.ip_id;
-            string base64Data = await FetchConsolidatedBillBase64(requestGuid);
+            string base64Data = await FetchConsolidatedBillBase64(requestGuid, "BOTH");
 
             if (!string.IsNullOrWhiteSpace(base64Data) && (base64Data.StartsWith("data:application/pdf") || base64Data.Length > 100))
             {

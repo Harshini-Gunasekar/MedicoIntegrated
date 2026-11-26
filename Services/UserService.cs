@@ -361,8 +361,8 @@ namespace LabCare.Services
                 // Canonical model binding prefix
                 addPart($"Profile.User.{name}", value);
                 addPart(name, value);
-                addPart($"user.{name}", value);
                 addPart($"User.{name}", value);
+                addPart($"user.{name}", value);
 
                 if (name.Equals("user_code", StringComparison.OrdinalIgnoreCase))
                 {

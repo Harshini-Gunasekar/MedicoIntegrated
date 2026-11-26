@@ -69,9 +69,9 @@ namespace medico_backend.Model
 
 
         // Classification
-        public string? diagnosis_type { get; set; } // PRIMARY / SECONDARY / COMORBIDITY
-        public string? condition_type { get; set; } // ACUTE / CHRONIC / FOLLOWUP
-        public string? severity { get; set; } // MILD / MODERATE / SEVERE
+        public string? diagnosis_type { get; set; }   // PRIMARY / SECONDARY / COMORBIDITY
+        public string? condition_type { get; set; }   // ACUTE / CHRONIC / FOLLOWUP
+        public string? severity { get; set; }         // MILD / MODERATE / SEVERE
         public string status { get; set; } = "ACTIVE"; // ACTIVE / RESOLVED / ONGOING
 
 
@@ -95,7 +95,7 @@ namespace medico_backend.Model
 
         public string symptom_text { get; set; } = string.Empty;
         public string? duration { get; set; }
-        public string? severity { get; set; } // MILD / MODERATE / SEVERE
+        public string? severity { get; set; }  // MILD / MODERATE / SEVERE
         public string? notes { get; set; }
 
 
@@ -109,7 +109,7 @@ namespace medico_backend.Model
     {
         [ExplicitKey]
         public Guid pr_id { get; set; } = Guid.NewGuid();
-        public string pr_code { get; set; } = string.Empty; // PR/2026/06/0001
+        public string pr_code { get; set; } = string.Empty;   // PR/2026/06/0001
         public Guid? sheet_id { get; set; }
         public Guid? op_id { get; set; }
         public Guid? ip_id { get; set; }
@@ -158,13 +158,14 @@ namespace medico_backend.Model
         public string? afternoon_dose { get; set; }
         public string? evening_dose { get; set; }
         public string? night_dose { get; set; }
-        public string? dose_unit { get; set; }   // mg / ml / tab / etc.
+        public string? dose_unit { get; set; }
         public bool before_food { get; set; } = false;
         public bool after_food { get; set; } = false;
         public int? days { get; set; }
+        public string? frequency { get; set; }   // Daily / Weekly twice / Alternate days ...
         public string? duration { get; set; }
         public decimal? qty { get; set; }
-        public string? route { get; set; } // ORAL / IV / IM / TOPICAL
+        public string? route { get; set; }   // ORAL / IV / IM / TOPICAL
 
 
         // Billing
@@ -172,9 +173,9 @@ namespace medico_backend.Model
         public decimal? mrp { get; set; }
         public bool is_billed { get; set; } = false;
 
-        // Batch Details
-        public string? batchno { get; set; }
-        public string? batch_no { get => batchno; set => batchno = value; }
+        // Batch
+        public string? batch_no { get; set; }
+        public string? batchno { get => batch_no; set => batch_no = value; }
         public DateTime? batch_expiry_date { get; set; }
         public long? stockcode { get; set; }
         public long? warehousecode { get; set; }
@@ -187,13 +188,24 @@ namespace medico_backend.Model
         public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
     }
 
+    public class BatchOptionViewModel
+    {
+        public long stockcode { get; set; }
+        public string batchno { get; set; } = string.Empty;
+        public DateTime? expirydate { get; set; }
+        public decimal closingstock { get; set; }
+        public decimal mrpunit { get; set; }
+        public decimal unitcost { get; set; }
+        public long warehousecode { get; set; }
+    }
+
 
     [Table("op_investigation_master")]
     public class OpInvestigationMasterModel
     {
         [ExplicitKey]
         public Guid inv_id { get; set; } = Guid.NewGuid();
-        public string inv_code { get; set; } = string.Empty; // INV/2026/06/0001
+        public string inv_code { get; set; } = string.Empty;   // INV/2026/06/0001
         public Guid? sheet_id { get; set; }
         public Guid? op_id { get; set; }
         public Guid? ip_id { get; set; }
@@ -205,7 +217,7 @@ namespace medico_backend.Model
         public DateTime inv_date { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
         public string? notes { get; set; }
         public bool is_urgent { get; set; } = false;
-        public string status { get; set; } = "ORDERED"; // ORDERED / PARTIAL / COMPLETED
+        public string status { get; set; } = "ORDERED";  // ORDERED / PARTIAL / COMPLETED
 
 
         public string? tenant_code { get; set; }
@@ -236,7 +248,7 @@ namespace medico_backend.Model
 
 
         // Result tracking
-        public string result_status { get; set; } = "PENDING"; // PENDING / COMPLETED
+        public string result_status { get; set; } = "PENDING";  // PENDING / COMPLETED
         public string? result_value { get; set; }
         public DateTime? result_date { get; set; }
         public string? result_notes { get; set; }
@@ -263,8 +275,7 @@ namespace medico_backend.Model
     public class SaveCaseSheetRequest
     {
         // Visit identifiers
-        public string? op_id { get; set; }
-        public string? op_no { get; set; } = string.Empty;
+        public string? op_id { get; set; } = string.Empty;
         public string? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
@@ -276,7 +287,7 @@ namespace medico_backend.Model
 
         // Clinical notes (free text)
         public string? chief_complaint { get; set; }
-        public string? symptoms { get; set; } // free-text paragraph (legacy support)
+        public string? symptoms { get; set; }        // free-text paragraph (legacy support)
         public string? examination { get; set; }
         public string? advise { get; set; }
         public string? notes { get; set; }
@@ -307,6 +318,7 @@ namespace medico_backend.Model
         public CaseSheetPrescriptionRequest? prescription { get; set; }
         public List<CaseSheetPrescriptionRequest> prescription_list { get; set; } = new();
 
+
         // Investigation
         public CaseSheetInvestigationRequest? investigation { get; set; }
     }
@@ -316,8 +328,8 @@ namespace medico_backend.Model
     {
         public int sno { get; set; }
         public string symptom_text { get; set; } = string.Empty;
-        public string? duration { get; set; } // "3 days", "1 week"
-        public string? severity { get; set; } // MILD / MODERATE / SEVERE
+        public string? duration { get; set; }        // "3 days", "1 week"
+        public string? severity { get; set; }        // MILD / MODERATE / SEVERE
         public string? notes { get; set; }
     }
 
@@ -328,9 +340,9 @@ namespace medico_backend.Model
         public string? icd_code { get; set; }
         public string? icd_description { get; set; }
         public string? diagnosis_text { get; set; }
-        public string? diagnosis_type { get; set; } // PRIMARY / SECONDARY / COMORBIDITY
-        public string? condition_type { get; set; } // ACUTE / CHRONIC / FOLLOWUP
-        public string? severity { get; set; } // MILD / MODERATE / SEVERE
+        public string? diagnosis_type { get; set; }  // PRIMARY / SECONDARY / COMORBIDITY
+        public string? condition_type { get; set; }  // ACUTE / CHRONIC / FOLLOWUP
+        public string? severity { get; set; }        // MILD / MODERATE / SEVERE
         public string status { get; set; } = "ACTIVE";
     }
 
@@ -354,14 +366,14 @@ namespace medico_backend.Model
         public string? entry_date_str
         {
             get => entry_date.ToString("yyyy-MM-dd");
-            set { if (DateOnly.TryParse(value, out var d)) entry_date = d; }
+            set { if (DateOnly.TryParse(value, out var date)) entry_date = date; }
         }
         public string? entry_time_str
         {
             get => entry_time.ToString("HH:mm");
-            set { if (TimeOnly.TryParse(value, out var t)) entry_time = t; }
+            set { if (TimeOnly.TryParse(value, out var time)) entry_time = time; }
         }
-        public string? diag_id { get; set; } // link to specific diagnosis
+        public string? diag_id { get; set; }         // link to specific diagnosis
         public string drug_name { get; set; } = string.Empty;
         public decimal? drug_code { get; set; }
         public string? generic_name { get; set; }
@@ -374,41 +386,32 @@ namespace medico_backend.Model
         public string? afternoon_dose { get; set; }
         public string? evening_dose { get; set; }
         public string? night_dose { get; set; }
-        public string? dose_unit { get; set; }   // mg / ml / tab / etc.
+        public string? dose_unit { get; set; }
         public bool before_food { get; set; } = false;
         public bool after_food { get; set; } = false;
         public int? days { get; set; }
+        public string? frequency { get; set; }   // Daily / Weekly twice / Alternate days ...
         public string? duration { get; set; }
         public decimal? qty { get; set; }
         public string? route { get; set; }
         public decimal? rate { get; set; }
         public decimal? mrp { get; set; }
-        public string? batchno { get; set; }
-        public string? batch_no { get => batchno; set => batchno = value; }
+
+        // Batch
+        public string? batch_no { get; set; }
+        public string? batchno { get => batch_no; set => batch_no = value; }
         public DateTime? batch_expiry_date { get; set; }
         public long? stockcode { get; set; }
         public long? warehousecode { get; set; }
 
-        // UI / Frontend helpers (not sent to API)
+        public string? notes { get; set; }
+        public string? instructions { get => notes; set => notes = value; }
+
         [System.Text.Json.Serialization.JsonIgnore]
         public List<BatchOptionViewModel>? availableBatches { get; set; }
 
         [System.Text.Json.Serialization.JsonIgnore]
         public decimal? availableStock { get; set; }
-
-        public string? notes { get; set; }
-        public string? instructions { get => notes; set => notes = value; }
-    }
-
-    public class BatchOptionViewModel
-    {
-        public long stockcode { get; set; }
-        public string batchno { get; set; } = string.Empty;
-        public DateTime? expirydate { get; set; }
-        public decimal closingstock { get; set; }
-        public decimal mrpunit { get; set; }
-        public decimal unitcost { get; set; }
-        public long warehousecode { get; set; }
     }
 
 
@@ -425,7 +428,7 @@ namespace medico_backend.Model
     public class CaseSheetInvestigationItem
     {
         public int sno { get; set; }
-        public string? diag_id { get; set; } // link to specific diagnosis
+        public string? diag_id { get; set; }         // link to specific diagnosis
         public string test_name { get; set; } = string.Empty;
         public int? test_code { get; set; }
         public string? test_category { get; set; }
@@ -466,7 +469,6 @@ namespace medico_backend.Model
     {
         public string? sheet_id { get; set; }
         public string? op_id { get; set; }
-        public string? op_no { get; set; }
         public string? ip_id { get; set; }
         public decimal custid { get; set; }
         public int dcode { get; set; }
@@ -502,8 +504,8 @@ namespace medico_backend.Model
 
         // Prescription
         public CaseSheetPrescriptionViewModel? prescription { get; set; }
-        public List<CaseSheetPrescriptionViewModel> prescription_list { get; set; } = new();
 
+        public List<CaseSheetPrescriptionViewModel> prescription_list { get; set; } = new();
         // Investigation
         public CaseSheetInvestigationViewModel? investigation { get; set; }
     }
@@ -519,22 +521,6 @@ namespace medico_backend.Model
         public bool is_dispensed { get; set; }
         public List<OpPrescriptionDetailModel> items { get; set; } = new();
     }
-
-
-    public class LastVisitPrescriptionViewModel
-    {
-        public decimal custid { get; set; }
-        public string? op_id { get; set; }
-        public string? op_no { get; set; }
-        public string? ip_id { get; set; }
-        public DateTime? visit_date { get; set; }
-        public int dcode { get; set; }
-        public string? doctor_name { get; set; }
-
-        // all prescriptions of that visit, newest first
-        public List<CaseSheetPrescriptionViewModel> prescription_list { get; set; } = new();
-    }
-
 
 
     public class CaseSheetInvestigationViewModel
@@ -563,6 +549,25 @@ namespace medico_backend.Model
 
         public bool is_active { get; set; } = true;
     }
+
+    public class IcdSearchResult
+    {
+        public string icd_code { get; set; } = string.Empty;
+        public string icd_description { get; set; } = string.Empty;
+        public string? icd_category { get; set; }
+        public string? icd_chapter { get; set; }
+    }
+
+    public class IcdItem
+    {
+        public int icd_id { get; set; }
+        public string icd_code { get; set; } = string.Empty;
+        public string icd_description { get; set; } = string.Empty;
+        public string? icd_category { get; set; }
+        public string? icd_chapter { get; set; }
+        public bool is_active { get; set; } = true;
+    }
+
     [Table("doctor_patient_visit_track")]
     public class DoctorPatientVisitTrack
     {
@@ -600,22 +605,112 @@ namespace medico_backend.Model
         public int? dcode { get; set; }
         public string? notes { get; set; }
     }
-
-    public class IcdSearchResult
+    public class SavePrescriptionOnlyRequest
     {
-        public string icd_code { get; set; } = string.Empty;
-        public string icd_description { get; set; } = string.Empty;
-        public string? icd_category { get; set; }
-        public string? icd_chapter { get; set; }
+        public string? op_id { get; set; }
+        public string? ip_id { get; set; }
+        public decimal custid { get; set; }
+        public int dcode { get; set; }
+        public CaseSheetPrescriptionRequest prescription { get; set; } = new();
+    }
+    public class LastVisitPrescriptionViewModel
+    {
+        public decimal custid { get; set; }
+        public string? op_id { get; set; }
+        public string? ip_id { get; set; }
+        public DateTime? visit_date { get; set; }
+        public int dcode { get; set; }
+        public string? doctor_name { get; set; }
+
+        // all prescriptions of that visit, newest first
+        public List<CaseSheetPrescriptionViewModel> prescription_list { get; set; } = new();
+    }
+    [Table("op_prescription_template")]
+    public class OpPrescriptionTemplateModel
+    {
+        [ExplicitKey] public Guid template_id { get; set; } = Guid.NewGuid();
+        public string template_name { get; set; } = string.Empty;
+        public string? description { get; set; }
+        public int dcode { get; set; }
+        public bool is_shared { get; set; } = false;
+        public string? topremarks { get; set; }
+        public string? bottonremarks { get; set; }
+        public string? tenant_code { get; set; }
+        public bool isdeleted { get; set; } = false;
+        public DateTime created_at { get; set; }
+        public DateTime updated_at { get; set; }
     }
 
-    public class IcdItem
+    [Table("op_prescription_template_detail")]
+    public class OpPrescriptionTemplateDetailModel
     {
-        public int icd_id { get; set; }
-        public string icd_code { get; set; } = string.Empty;
-        public string icd_description { get; set; } = string.Empty;
-        public string? icd_category { get; set; }
-        public string? icd_chapter { get; set; }
-        public bool is_active { get; set; } = true;
+        [ExplicitKey] public Guid tmpl_det_id { get; set; } = Guid.NewGuid();
+        public Guid template_id { get; set; }
+        public int sno { get; set; }
+        public string drug_name { get; set; } = string.Empty;
+        public decimal? drug_code { get; set; }
+        public string? generic_name { get; set; }
+        public string? drug_category { get; set; }
+        public string morning { get; set; } = "0";
+        public string afternoon { get; set; } = "0";
+        public string evening { get; set; } = "0";
+        public string night { get; set; } = "0";
+        public string? morning_dose { get; set; }
+        public string? afternoon_dose { get; set; }
+        public string? evening_dose { get; set; }
+        public string? night_dose { get; set; }
+        public string? dose_unit { get; set; }
+        public bool before_food { get; set; }
+        public bool after_food { get; set; }
+        public int? days { get; set; }
+        public string? frequency { get; set; }   // Daily / Weekly twice / Alternate days ...
+        public decimal? qty { get; set; }
+        public string? route { get; set; }
+        public string? notes { get; set; }
+        public string? tenant_code { get; set; }
+        public bool isdeleted { get; set; }
+        public DateTime created_at { get; set; }
     }
-}
+
+    // Request: items reuse your existing CaseSheetPrescriptionItem shape,
+    // so the UI can send the same drug rows it already has on screen.
+    public class SavePrescriptionTemplateRequest
+    {
+        public string? template_id { get; set; }          // null = new, value = update
+        public string template_name { get; set; } = string.Empty;
+        public string? description { get; set; }
+        public int dcode { get; set; }
+        public bool is_shared { get; set; } = false;
+        public string? topremarks { get; set; }
+        public string? bottonremarks { get; set; }
+        public List<CaseSheetPrescriptionItem> items { get; set; } = new();
+    }
+
+    public class PrescriptionTemplateViewModel
+    {
+        public string? template_id { get; set; }
+        public string? template_name { get; set; }
+        public string? description { get; set; }
+        public int dcode { get; set; }
+        public string? doctor_name { get; set; }
+        public bool is_shared { get; set; }
+        public string? topremarks { get; set; }
+        public string? bottonremarks { get; set; }
+        public int item_count { get; set; }
+        public DateTime? updated_at { get; set; }
+        public List<OpPrescriptionTemplateDetailModel> items { get; set; } = new();
+    }
+
+    // One row per past visit with its prescriptions
+    public class PrescriptionVisitHistoryViewModel
+    {
+        public string? op_id { get; set; }
+        public string? ip_id { get; set; }
+        public string? op_number { get; set; }
+        public string? ip_number { get; set; }
+        public DateTime? visit_date { get; set; }
+        public int dcode { get; set; }
+        public string? doctor_name { get; set; }
+        public List<CaseSheetPrescriptionViewModel> prescription_list { get; set; } = new();
+    }
+}

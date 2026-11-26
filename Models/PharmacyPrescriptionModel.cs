@@ -1,6 +1,10 @@
 public class PharmacyPrescriptionQueueRow
 {
     public Guid queue_id { get; set; } = Guid.NewGuid();
+    [System.Text.Json.Serialization.JsonPropertyName("queueid")]
+    public Guid? queueid { get => queue_id; set { if (value.HasValue && value.Value != Guid.Empty) queue_id = value.Value; } }
+    [System.Text.Json.Serialization.JsonPropertyName("id")]
+    public Guid? id { get => queue_id; set { if (value.HasValue && value.Value != Guid.Empty) queue_id = value.Value; } }
     public Guid? pr_det_id { get; set; }
     public string? pr_code { get; set; }
     public Guid? sheet_id { get; set; }
@@ -25,6 +29,7 @@ public class PharmacyPrescriptionQueueRow
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public string? frequency { get; set; }
     public int? no_of_days { get; set; }
     public int? prescribed_days { get; set; }
     public int? prescribeddays { get; set; }
@@ -77,6 +82,7 @@ public class PrescriptionQueueItem
     public bool before_food { get; set; }
     public bool after_food { get; set; }
     public int? days { get; set; }
+    public string? frequency { get; set; }
     public int? no_of_days { get; set; }
     public int? prescribed_days { get; set; }
     public int? prescribeddays { get; set; }

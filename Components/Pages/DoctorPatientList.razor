@@ -27,7 +27,9 @@
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
 @inject LabSettingService LabSettingService
 @inject OtService OtService
+@inject Booking.Services.OpStatusMasterService OpStatusMasterService
 @inject Booking.Services.RoleMasterService RoleService
+@inject LabCare.Services.UserService UserService
 
 @implements IDisposable
 
@@ -50,6 +52,13 @@
             else
             {
                 <h1 style="font-size: 1.15rem; font-weight: 800; margin: 0;">Inpatient Admissions Dashboard</h1>
+            }
+            @if (!string.IsNullOrWhiteSpace(currentDoctorName))
+            {
+                <div class="doctor-patient-current-doctor">
+                    <i class="bi bi-person-badge-fill"></i>
+                    <span>@currentDoctorName</span>
+                </div>
             }
         </div>
         <div style="display: flex; gap: 8px; align-items: center; position: relative;">
@@ -148,12 +157,12 @@
                             <div class="stat-popup-item orange">
                                 <i class="bi bi-hourglass-split"></i>
                                 <span class="label">Pending</span>
-                                <span class="num">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "BOOKED")</span>
+                                <span class="num">@GetFilteredBookings().Count(b => GetStatusCode(b.booking_status) == "WAITING")</span>
                             </div>
                             <div class="stat-popup-item green">
                                 <i class="bi bi-check2-all"></i>
                                 <span class="label">Confirmed/Served</span>
-                                <span class="num">@GetFilteredBookings().Count(b => b.booking_status?.ToUpper() == "CONFIRMED" || b.booking_status?.ToUpper() == "COMPLETED" || b.booking_status?.ToUpper() == "VISITED")</span>
+                                <span class="num">@GetFilteredBookings().Count(b => GetStatusCode(b.booking_status) == "COMPLETED")</span>
                             </div>
                         }
                         else
@@ -205,26 +214,39 @@
                     <input type="date" class="form-control filter-input" @bind="selectedDate" @bind:after="OnDateChanged" />
                 </div>
 
-                <div class="filter-group filter-doc-col">
-                    <label class="filter-label">DOCTOR SPECIALIST</label>
-                    <select class="form-select filter-select" @bind="selectedDoctorDcode" @bind:after="OnDoctorChanged">
-                        <option value="">All Specialists</option>
-                        @foreach (var doc in doctors)
-                        {
-                            <option value="@doc.dcode">@(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname : doc.name)</option>
-                        }
-                    </select>
-                </div>
+                @if (!currentDoctorDcode.HasValue)
+                {
+                    <div class="filter-group filter-doc-col">
+                        <label class="filter-label">DOCTOR</label>
+                        <select class="form-select filter-select" @bind="selectedDoctorDcode" @bind:after="OnDoctorFilterChanged">
+                            <option value="">All Doctors</option>
+                            @foreach (var doctor in doctors.Where(d => !d.deleted).OrderBy(d => d.name))
+                            {
+                                <option value="@doctor.dcode">Dr. @(string.IsNullOrWhiteSpace(doctor.name) ? doctor.doctorfullname ?? $"Doctor {doctor.dcode}" : doctor.name)</option>
+                            }
+                        </select>
+                    </div>
+                }
 
                 <div class="filter-group filter-status-col">
                     <label class="filter-label">STATUS</label>
                     <select class="form-select filter-select" @bind="statusFilter" @bind:after="OnStatusChanged">
-                        <option value="WAITING">Waiting</option>
-                        <option value="IN_CONSULTATION">In Consultation</option>
-                        <option value="COMPLETED">Completed</option>
-                        <option value="BOOKED">Booked</option>
-                        <option value="CONFIRMED">Confirmed</option>
-                        <option value="CANCELLED">Cancelled</option>
+                        @if (OpStatusOrderStartsWithBooking || ShowAllStatusPatients)
+                        {
+                            @foreach (var status in OrderedOpStatusOptions)
+                            {
+                                <option value="@GetStatusCode(GetOpStatusIdentifier(status))">@GetStatusDisplayName(GetOpStatusIdentifier(status))</option>
+                            }
+                        }
+                        else
+                        {
+                            <option value="WAITING">@GetStatusDisplayName("Waiting")</option>
+                            <option value="IN_CONSULTATION">@GetStatusDisplayName("In Consultation")</option>
+                            <option value="COMPLETED">@GetStatusDisplayName("Completed")</option>
+                            <option value="BOOKED">Booked</option>
+                            <option value="CONFIRMED">Confirmed</option>
+                            <option value="CANCELLED">@GetStatusDisplayName("Cancelled")</option>
+                        }
                         <option value="ALL">All Statuses</option>
                     </select>
                 </div>
@@ -258,7 +280,7 @@
                 </div>
                 
                 <div class="filter-group filter-search-col">
-                    <label class="filter-label">SEARCH PATIENT / DOCTOR</label>
+                    <label class="filter-label">SEARCH PATIENT</label>
                     <input type="text" class="form-control filter-input" placeholder="e.g. CUST-1001, 2026..." @bind="searchQuery" @bind:event="oninput" />
                 </div>
 
@@ -363,6 +385,10 @@
                                 }
                                 <th style="width: 140px;">Status</th>
                                 <th style="width: 120px;">Payment Status</th>
+                                @if (canAccessVitals)
+                                {
+                                    <th style="width: 80px; text-align: center;">Vitals</th>
+                                }
                                 <th style="width: 110px; text-align: center;">VIP</th>
                             </tr>
                         </thead>
@@ -375,7 +401,8 @@
                             }
                             @foreach (var b in pagedOpList)
                             {
-                                <tr class="@(b.isvip == true ? "vip-row" : "")" @ondblclick="() => OpenCaseSheetForBooking(b)" style="cursor: pointer;" title="Double-click to open clinical Case Sheet">
+                                var bIsVip = IsPatientVip(b.custid, b.isvip, b.viprole);
+                                <tr class="@(bIsVip ? "vip-row" : "")" @ondblclick="() => OpenCaseSheetForBooking(b)" style="cursor: pointer;" title="Double-click to open clinical Case Sheet">
                                     <td>
                                         <div class="badge-op-container">
                                             <span class="badge-op">@(string.IsNullOrWhiteSpace(b.display_token_no) || b.display_token_no == "0" ? (b.token_no > 0 ? b.token_no.ToString() : "-") : b.display_token_no)</span>
@@ -395,11 +422,11 @@
                                             </div>
                                         }
                                         @{
-                                            var bVipRole = (b.isvip == true)
+                                            var bVipRole = bIsVip
                                                 ? (!string.IsNullOrWhiteSpace(b.viprole) ? b.viprole : GetPatientVipRole(b.custid))
                                                 : string.Empty;
                                         }
-                                        @if (b.isvip == true)
+                                        @if (bIsVip)
                                         {
                                             <div class="vip-badge-row">
                                                 <span class="vip-badge" title="VIP Patient"><i class="bi bi-star-fill"></i> VIP</span>
@@ -483,9 +510,32 @@
                                         </td>
                                     }
                                     <td>
-                                        <span class="status-pill @(b.booking_status?.ToLower().Replace(" ", "_") ?? "")">
-                                            @b.booking_status
-                                        </span>
+                                        @if (ShowAllStatusPatients || OpStatusOrderStartsWithBooking)
+                                        {
+                                            var bookingStatusCode = GetStatusCode(b.booking_status);
+                                            var bookingStatusOptions = GetAvailableStatusTransitions(b.booking_status);
+                                            <select @key="@($"doctor_status_{b.op_id}_{bookingStatusCode}")"
+                                                    disabled="@(!hasEditRight || updatingOpStatusIds.Contains(b.op_id))"
+                                                    class="status-select @bookingStatusCode.ToLowerInvariant() @bookingStatusCode.ToLowerInvariant().Replace("_", "-")"
+                                                    value="@bookingStatusCode"
+                                                    @onchange="(e) => UpdateDoctorOpStatusAsync(b, e.Value?.ToString())">
+                                                @if (!bookingStatusOptions.Any(status => GetStatusCode(GetOpStatusIdentifier(status)) == bookingStatusCode))
+                                                {
+                                                    <option value="@bookingStatusCode">@GetStatusDisplayName(b.booking_status)</option>
+                                                }
+                                                @foreach (var status in bookingStatusOptions)
+                                                {
+                                                    var optionCode = GetStatusCode(GetOpStatusIdentifier(status));
+                                                    <option value="@optionCode">@GetStatusDisplayName(GetOpStatusIdentifier(status))</option>
+                                                }
+                                            </select>
+                                        }
+                                        else
+                                        {
+                                            <span class="status-pill @GetStatusCode(b.booking_status).ToLowerInvariant()">
+                                                @GetStatusDisplayName(b.booking_status)
+                                            </span>
+                                        }
                                     </td>
                                     <td>
                                         @* --- PAID / UNPAID BADGE --- *@
@@ -508,9 +558,31 @@
                                             </span>
                                         }
                                     </td>
-                                    <td class="@(b.isvip == true ? "vip-highlighted" : "")" style="text-align: center; vertical-align: middle;">
+                                    @if (canAccessVitals)
+                                    {
+                                        <td style="text-align: center; vertical-align: middle;">
+                                            <button type="button"
+                                                    class="doctor-vitals-trigger"
+                                                    disabled="@(b.op_id == Guid.Empty || loadingVitalsFor == b.op_id)"
+                                                    title="Add or view patient vitals"
+                                                    aria-label="Add or view vitals for @b.patient_name"
+                                                    @onclick="() => OpenDoctorVitalsAsync(b)"
+                                                    @onclick:stopPropagation="true"
+                                                    @ondblclick:stopPropagation="true">
+                                                @if (loadingVitalsFor == b.op_id)
+                                                {
+                                                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                                                }
+                                                else
+                                                {
+                                                    <i class="bi bi-heart-pulse-fill"></i>
+                                                }
+                                            </button>
+                                        </td>
+                                    }
+                                    <td class="@(bIsVip ? "vip-highlighted" : "")" style="text-align: center; vertical-align: middle;">
                                         <div class="vip-action-container">
-                                            @if (b.isvip == true)
+                                            @if (bIsVip)
                                             {
                                                 <button type="button" class="btn-vip-active" title="Edit VIP: @b.viprole" @onclick="() => OpenVipModal(b)">
                                                     <i class="bi bi-star-fill"></i> VIP
@@ -594,16 +666,6 @@
                 </select>
             </div>
             <div class="filter-group">
-                <label>Doctor Specialist</label>
-                <select class="filter-control" @bind="filterDoctor" @bind:after="ApplyFilters">
-                    <option value="0">All Doctors</option>
-                    @foreach (var doc in doctors)
-                    {
-                        <option value="@doc.dcode">Dr. @(string.IsNullOrWhiteSpace(doc.name) ? doc.doctorfullname ?? "Specialist" : doc.name)</option>
-                    }
-                </select>
-            </div>
-            <div class="filter-group">
                 <label>Search Patient</label>
                 <input type="text" class="filter-control" @bind="filterSearch" @bind:event="oninput" @bind:after="ApplyFilters" placeholder="Search by name/IP no..." />
             </div>
@@ -674,17 +736,18 @@
                         @for (int rowIndex = 0; rowIndex < currentPageItems.Count; rowIndex++)
                         {
                             var a = currentPageItems[rowIndex];
+                            var aIsVip = IsPatientVip(a.custid, a.isvip == true || a.is_vip == true, a.viprole);
                             var isFirstRow = rowIndex == 0;
-                            <tr class="lc-table-row @(a.isvip == true || a.is_vip == true ? "vip-row" : "")" @ondblclick="() => OpenCaseSheetForIp(a)" style="cursor: pointer;" title="Double-click to open clinical Case Sheet">
+                            <tr class="lc-table-row @(aIsVip ? "vip-row" : "")" @ondblclick="() => OpenCaseSheetForIp(a)" style="cursor: pointer;" title="Double-click to open clinical Case Sheet">
                                 <td class="font-bold" style="color: #034f75;">@a.ip_no</td>
                                 <td class="font-bold text-slate-800">
                                     <span>@(string.IsNullOrWhiteSpace(a.patient_name) ? a.custid.ToString() : FormatPatientName(a.custid, a.patient_name))</span>
                                     @{
-                                        var aVipRole = (a.isvip == true || a.is_vip == true)
+                                        var aVipRole = aIsVip
                                             ? (!string.IsNullOrWhiteSpace(a.viprole) ? a.viprole : GetPatientVipRole(a.custid))
                                             : string.Empty;
                                     }
-                                    @if (a.isvip == true || a.is_vip == true)
+                                    @if (aIsVip)
                                     {
                                         <span class="vip-badge" title="VIP Patient"><i class="bi bi-star-fill"></i> VIP</span>
                                         @if (!string.IsNullOrWhiteSpace(aVipRole))
@@ -919,6 +982,69 @@
     </div>
 }
 </div>
+
+@if (showDoctorVitalsModal && selectedVitalsBooking != null)
+{
+    <div class="doctor-vitals-backdrop" @onclick="CloseDoctorVitalsModal"></div>
+    <div class="doctor-vitals-modal" role="dialog" aria-modal="true" aria-labelledby="doctor-vitals-title" @onclick:stopPropagation>
+        <div class="doctor-vitals-modal-header">
+            <div>
+                <h3 id="doctor-vitals-title"><i class="bi bi-heart-pulse-fill"></i> Patient Vitals</h3>
+                <span>@selectedVitalsBooking.patient_name · OP No: @selectedVitalsBooking.op_no</span>
+            </div>
+            <button type="button" class="doctor-vitals-close" @onclick="CloseDoctorVitalsModal" aria-label="Close">&times;</button>
+        </div>
+        <div class="doctor-vitals-modal-body">
+            @if (loadingDoctorVitals)
+            {
+                <div class="doctor-vitals-loading">
+                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                    <span>Loading vitals...</span>
+                </div>
+            }
+            else
+            {
+                <div class="doctor-vitals-grid">
+                    <div class="doctor-vitals-field">
+                        <label>BP (mmHg)</label>
+                        <div class="doctor-vitals-bp-inputs">
+                            <input type="number" class="form-control" @bind="doctorVitalsRequest.bp_systolic" aria-label="Systolic blood pressure" placeholder="Systolic" />
+                            <span>/</span>
+                            <input type="number" class="form-control" @bind="doctorVitalsRequest.bp_diastolic" aria-label="Diastolic blood pressure" placeholder="Diastolic" />
+                        </div>
+                    </div>
+                    <div class="doctor-vitals-field">
+                        <label>Pulse (BPM)</label>
+                        <input type="number" class="form-control" @bind="doctorVitalsRequest.pulse_rate" />
+                    </div>
+                    <div class="doctor-vitals-field">
+                        <label>SpO2 (%)</label>
+                        <input type="number" class="form-control" @bind="doctorVitalsRequest.spo2" />
+                    </div>
+                    <div class="doctor-vitals-field">
+                        <label>Temp (°F)</label>
+                        <input type="number" class="form-control" @bind="doctorVitalsRequest.temperature_f" />
+                    </div>
+                </div>
+            }
+        </div>
+        <div class="doctor-vitals-modal-footer">
+            <button type="button" class="doctor-vitals-cancel" @onclick="CloseDoctorVitalsModal">Cancel</button>
+            <button type="button" class="doctor-vitals-save" @onclick="SaveDoctorVitalsAsync" disabled="@(savingDoctorVitals || loadingDoctorVitals)">
+                @if (savingDoctorVitals)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                    <span>Saving...</span>
+                }
+                else
+                {
+                    <i class="bi bi-check-lg"></i>
+                    <span>Save Vitals</span>
+                }
+            </button>
+        </div>
+    </div>
+}
 
 <!-- Case Sheet Workspace Modal -->
 <CaseSheetComponent @bind-Visible="showCaseSheetModal"
@@ -1289,32 +1415,50 @@
 
 @if (showVipModal)
 {
-    <div class="modal-backdrop" style="position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.5); z-index: 1050;" @onclick="CloseVipModal"></div>
-    <div class="vip-modal-container" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); border-radius: 14px; box-shadow: 0 10px 25px rgba(0,0,0,0.25); z-index: 1060; width: 420px; max-width: 90%; display: flex; flex-direction: column; overflow: hidden; border: 1px solid #cbd5e1;">
-        <div class="vip-modal-header" style="background: linear-gradient(135deg, #004c7a 0%, #0369a1 100%); color: white; padding: 1rem 1.25rem; display: flex; justify-content: space-between; align-items: center;">
-            <h3 style="margin: 0; font-size: 1.1rem; font-weight: 700; display: flex; align-items: center; gap: 8px; color: white;">
-                <i class="bi bi-star-fill" style="color: #f59e0b;"></i> Set VIP Status
-            </h3>
-            <button type="button" @onclick="CloseVipModal" style="background: transparent; border: none; color: white; font-size: 1.5rem; cursor: pointer; line-height: 1; padding: 0;">&times;</button>
-        </div>
-        <div class="vip-modal-body" style="padding: 1.5rem; display: flex; flex-direction: column; gap: 1rem;">
-            <div style="font-size: 0.9rem; font-weight: 500;">
-                Patient Name: <strong class="text-slate-900">@vipPatientName</strong> (ID: @vipCustId)
+    <div class="vip-status-backdrop" @onclick="CloseVipModal"></div>
+    <div class="vip-status-modal" role="dialog" aria-modal="true" aria-labelledby="vip-status-title">
+        <div class="vip-status-modal-header">
+            <div class="vip-status-heading">
+                <span class="vip-status-heading-icon"><i class="bi bi-star-fill"></i></span>
+                <div>
+                    <h3 id="vip-status-title">Set VIP Status</h3>
+                    <p>Record this patient's VIP designation</p>
+                </div>
             </div>
-            
-            <div style="display: flex; flex-direction: column; gap: 0.5rem;">
-                <label style="font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.4px;">VIP Role / Description</label>
-                <input type="text" class="form-control" @bind="vipRoleText" placeholder="e.g. Govt Official, Friend of MD..." style="border-radius: 8px; padding: 0.6rem 0.8rem; font-size: 0.88rem; width: 100%; box-sizing: border-box;" />
+            <button type="button" class="vip-status-close" @onclick="CloseVipModal" aria-label="Close VIP status dialog">&times;</button>
+        </div>
+        <div class="vip-status-modal-body">
+            <div class="vip-status-patient-card">
+                <span class="vip-status-patient-icon"><i class="bi bi-person-fill"></i></span>
+                <div class="vip-status-patient-info">
+                    <span class="vip-status-eyebrow">Patient</span>
+                    <strong>@vipPatientName</strong>
+                </div>
+                <span class="vip-status-patient-id">ID: @vipCustId</span>
+            </div>
+
+            <div class="vip-status-form-group">
+                <label for="vip-role-description">VIP role or description</label>
+                <input id="vip-role-description"
+                       type="text"
+                       class="vip-status-input"
+                       @bind="vipRoleText"
+                       placeholder="e.g. Govt Official, Friend of MD..." />
             </div>
         </div>
-        <div class="vip-modal-footer" style="padding: 1rem 1.25rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid rgba(226, 232, 240, 0.5);">
-            <button type="button" @onclick="CloseVipModal" class="btn-cancel-modal" style="padding: 0.5rem 1.1rem; border-radius: 8px; font-weight: 600; font-size: 0.85rem; cursor: pointer;">Cancel</button>
-            <button type="button" @onclick="SaveVipStatus" disabled="@isVipSaving" class="btn-vip-save" style="background: linear-gradient(135deg, #d97706 0%, #b45309 100%); border: none; color: white; padding: 0.5rem 1.1rem; border-radius: 8px; font-weight: 700; font-size: 0.85rem; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 2px 6px rgba(217, 119, 6, 0.3);">
+        <div class="vip-status-modal-footer">
+            <button type="button" @onclick="CloseVipModal" class="vip-status-cancel">Cancel</button>
+            <button type="button" @onclick="SaveVipStatus" disabled="@isVipSaving" class="vip-status-save">
                 @if (isVipSaving)
                 {
-                    <span class="spinner-border spinner-border-sm" role="status" style="margin: 0;"></span>
+                    <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span>
+                    <span>Saving...</span>
                 }
-                Save VIP Status
+                else
+                {
+                    <i class="bi bi-star-fill"></i>
+                    <span>Save VIP Status</span>
+                }
             </button>
         </div>
     </div>
@@ -1669,6 +1813,7 @@
     private bool hasEditRight = true;
     private bool hasDeleteRight = true;
     private bool hasDischargeViewRight = true;
+    private bool canAccessVitals = false;
 
     private void EvaluateRights()
     {
@@ -1681,6 +1826,7 @@
             hasEditRight = true;
             hasDeleteRight = true;
             hasDischargeViewRight = true;
+            canAccessVitals = true;
             return;
         }
 
@@ -1692,6 +1838,12 @@
             hasDeleteRight = RoleService.HasRoleId(415);
             hasCaseSheetViewRight = RoleService.HasRoleId(375) || RoleService.HasRoleId(656) || RoleService.HasRoleId(657) || RoleService.HasRight("Doctor Portal", "Doctor Patient List") || RoleService.HasRight("OP Portal", "Preview Casesheet");
             hasDischargeViewRight = RoleService.HasRoleId(428) || RoleService.HasRight("IP Portal", "Discharge Summary");
+            canAccessVitals = RoleService.HasRoleId(378) ||
+                              RoleService.HasRoleId(379) ||
+                              RoleService.HasAction("OP Portal", "Outpatient Visiting", "View vitals") ||
+                              RoleService.HasAction("OP Portal", "Outpatient Visiting", "Add vitals") ||
+                              RoleService.HasAction("Doctor Portal", "Doctor Patient List", "View vitals") ||
+                              RoleService.HasAction("Doctor Portal", "Doctor Patient List", "Add vitals");
         }
         else
         {
@@ -1700,6 +1852,7 @@
             var csRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "View CaseSheet", "View_CaseSheet", "CaseSheet", "Case Sheet", "Preview Casesheet");
             var ipRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Admission IP", "Admission_IP", "Ip Registration", "Ip_Registration", "IP Registration");
             var dsRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Discharge Summary", "DischargeSummary", "Discharge_Summary", "Discharge_Summery");
+            var opVisitingRight = UserPermissionHelper.GetRights(null, TenantState, rightsList, "Outpatient Visiting", "Outpatient_Visiting", "OutpatientVisiting");
 
             hasViewRight = dplRight.View || ipRight.View;
             hasCreateRight = dplRight.Add || ipRight.Add;
@@ -1707,6 +1860,7 @@
             hasDeleteRight = dplRight.Delete || ipRight.Delete;
             hasCaseSheetViewRight = csRight.View || dplRight.View;
             hasDischargeViewRight = dsRight.View;
+            canAccessVitals = opVisitingRight.View || opVisitingRight.Add;
         }
     }
 
@@ -1730,7 +1884,6 @@
 
     // IP filter bindings
     private string filterStatus = "ADMITTED";
-    private int filterDoctor = 0;
     private string filterSearch = "";
     private DateTime? filterFromDate = null;
     private DateTime? filterToDate = null;
@@ -1875,7 +2028,11 @@
 
     private List<DoctorMasterModel> doctors = new();
     private List<DoctorBookingListModel> todayBookings = new();
-    private int? selectedDoctorDcode = null; // Defaulting to all specialists
+    private List<OpStatusMasterModel> opStatuses = new();
+    private LabSettingModel labSetting = new();
+    private int? currentDoctorDcode;
+    private int? selectedDoctorDcode;
+    private string currentDoctorName = "";
     private DateTime selectedDate = DateTime.UtcNow.ToIndianTime().Date; // Defaulting to current date
     private string searchQuery = string.Empty;
     private string statusFilter = "WAITING";
@@ -1886,6 +2043,63 @@
     private string selectedCategoryFilter = "OP"; // "OP", "DRESSING", "OTHERS", "ALL"
     private bool showCategoryDropdown = false;
     private bool loading = true;
+    private HashSet<Guid> updatingOpStatusIds = new();
+    private bool showDoctorVitalsModal = false;
+    private bool loadingDoctorVitals = false;
+    private bool savingDoctorVitals = false;
+    private bool isEditingDoctorVitals = false;
+    private Guid? loadingVitalsFor;
+    private DoctorBookingListModel? selectedVitalsBooking;
+    private OPRegistrationModel.PatientVitalsModel doctorVitalsRequest = new();
+
+    private static readonly string[] BookingFirstStatusOrder =
+    {
+        "BOOKED", "ARRIVED", "IN_CONSULTATION", "WAITING", "REPORT", "COMPLETED", "CANCELLED"
+    };
+
+    private static readonly string[] TotalStatusTableOrder =
+    {
+        "IN_CONSULTATION", "REPORT", "ARRIVED", "WAITING", "BOOKED", "COMPLETED", "CANCELLED"
+    };
+
+    private static readonly string[] AllStatusPatientQueueOrder =
+    {
+        "IN_CONSULTATION", "WAITING", "ARRIVED", "REPORT", "BOOKED", "COMPLETED", "CANCELLED"
+    };
+
+    private bool ShowAllStatusPatients => labSetting.show_all_status_patients == true;
+    private bool OpStatusOrderStartsWithBooking => labSetting.op_status_order_start_with_booking == true;
+
+    private static string? GetOpStatusIdentifier(OpStatusMasterModel status) =>
+        !string.IsNullOrWhiteSpace(status.status_key) ? status.status_key : status.status_name;
+
+    private IEnumerable<OpStatusMasterModel> OrderedOpStatusOptions =>
+        opStatuses
+            .Where(status => !string.IsNullOrWhiteSpace(status.status_key) || !string.IsNullOrWhiteSpace(status.status_name))
+            .GroupBy(status => GetStatusCode(GetOpStatusIdentifier(status)), StringComparer.OrdinalIgnoreCase)
+            .Select(group => group.First())
+            .OrderBy(status =>
+            {
+                var code = GetStatusCode(GetOpStatusIdentifier(status));
+                if (OpStatusOrderStartsWithBooking)
+                {
+                    var fallbackIndex = Array.IndexOf(BookingFirstStatusOrder, code);
+                    return fallbackIndex < 0 ? BookingFirstStatusOrder.Length : fallbackIndex;
+                }
+
+                if (ShowAllStatusPatients)
+                {
+                    var queueIndex = Array.IndexOf(AllStatusPatientQueueOrder, code);
+                    return queueIndex < 0 ? AllStatusPatientQueueOrder.Length : queueIndex;
+                }
+
+                var index = Array.IndexOf(BookingFirstStatusOrder, code);
+                return index < 0 ? BookingFirstStatusOrder.Length : index;
+            })
+            .ThenBy(status => status.sort_order);
+
+    private IEnumerable<OpStatusMasterModel> GetAvailableStatusTransitions(string? currentStatus) =>
+        OrderedOpStatusOptions;
 
     private void SetBillingStatusFilter(string status)
     {
@@ -2214,6 +2428,99 @@
 
     private System.Threading.Timer? autoRefreshTimer;
 
+    private string GetDefaultStatusName(string? statusCode)
+    {
+        if (string.IsNullOrWhiteSpace(statusCode)) return "Waiting";
+        if (OpStatusOrderStartsWithBooking || ShowAllStatusPatients)
+        {
+            var canonicalName = GetCanonicalOpStatusName(GetStatusCode(statusCode));
+            if (canonicalName != null) return canonicalName;
+        }
+
+        return statusCode.Trim().ToUpperInvariant() switch
+        {
+            "WAITING" or "WAIT" or "QUEUE" or "BOOKED" => "Waiting",
+            "IN CONSULTATION" or "IN_CONSULTATION" or "CONSULTING" or "ON GOING" or "ONGOING" => "In Consultation",
+            "COMPLETED" or "VISITED" or "CONFIRMED" => "Completed",
+            "CANCELLED" or "CANCELED" or "NOT ATTENDED" => "Cancelled",
+            "RESCHEDULED" or "REBOOKED" => "Rescheduled",
+            _ => statusCode.Trim()
+        };
+    }
+
+    private string GetStatusCode(string? statusCode)
+    {
+        if (string.IsNullOrWhiteSpace(statusCode)) return "WAITING";
+        var normalizedStatus = statusCode.Trim().ToUpperInvariant();
+        if (OpStatusOrderStartsWithBooking || ShowAllStatusPatients)
+        {
+            switch (normalizedStatus)
+            {
+                case "BOOKING":
+                case "BOOKED":
+                    return "BOOKED";
+                case "REPORT":
+                    return "REPORT";
+                case "REPORT ARRIVED":
+                case "REPORT_ARRIVED":
+                case "ARRIVED":
+                    return "ARRIVED";
+            }
+        }
+
+        return normalizedStatus switch
+        {
+            "WAITING" or "WAIT" or "QUEUE" or "BOOKED" => "WAITING",
+            "IN CONSULTATION" or "IN_CONSULTATION" or "CONSULTING" or "ON GOING" or "ONGOING" => "IN_CONSULTATION",
+            "COMPLETED" or "VISITED" or "CONFIRMED" => "COMPLETED",
+            "CANCELLED" or "CANCELED" or "NOT ATTENDED" => "CANCELLED",
+            "RESCHEDULED" or "REBOOKED" => "RESCHEDULED",
+            _ => normalizedStatus
+        };
+    }
+
+    private string GetStatusDisplayName(string? statusCode)
+    {
+        var rawCode = string.IsNullOrWhiteSpace(statusCode) ? "WAITING" : statusCode.Trim();
+        var code = GetStatusCode(rawCode);
+
+        if (OpStatusOrderStartsWithBooking || ShowAllStatusPatients)
+        {
+            var canonicalName = GetCanonicalOpStatusName(code);
+            if (canonicalName != null) return canonicalName;
+        }
+
+        // 1. Check OP Status Master for custom display name
+        if (opStatuses != null && opStatuses.Any())
+        {
+            var status = opStatuses.FirstOrDefault(s =>
+                GetStatusCode(s.status_key) == code ||
+                GetStatusCode(s.status_name) == code ||
+                GetStatusCode(s.default_status_name) == code ||
+                string.Equals(s.display_status_name, rawCode, StringComparison.OrdinalIgnoreCase));
+
+            if (status != null && !string.IsNullOrWhiteSpace(status.display_status_name))
+            {
+                return status.display_status_name.Trim();
+            }
+        }
+
+        // 2. When no display name is chosen, return the default display name
+        return GetDefaultStatusName(code);
+    }
+
+    private static string? GetCanonicalOpStatusName(string statusCode) => statusCode switch
+    {
+        "BOOKED" => "Booked",
+        "IN_CONSULTATION" => "In Consultation",
+        "REPORT" => "Report",
+        "ARRIVED" => "Arrived",
+        "WAITING" => "Waiting",
+        "COMPLETED" => "Completed",
+        "CANCELLED" => "Cancelled",
+        _ => null
+    };
+
     protected override async Task OnInitializedAsync()
     {
         try
@@ -2226,7 +2533,17 @@
         }
         catch { }
 
-        // Parallelize primary OP view data loading so patient list appears immediately
+        await LoadCurrentDoctorAsync();
+
+        await Task.WhenAll(LoadOpStatusesAsync(), LoadLabSettingsAsync());
+        if (ShowAllStatusPatients)
+        {
+            statusFilter = "ALL";
+            selectedCategoryFilter = "ALL";
+            billingStatusFilter = "ALL";
+        }
+
+        // Load bookings after settings so their default filter and status mapping are applied.
         await Task.WhenAll(
             LoadDoctorsAsync(),
             LoadTodayBookingsAsync()
@@ -2245,7 +2562,7 @@
             {
                 await InvokeAsync(async () =>
                 {
-                    await RefreshActiveTabQueue();
+                    await RefreshActiveTabQueue(isSilent: true);
                 });
             }
             catch { }
@@ -2280,7 +2597,9 @@
         StateHasChanged();
     }
 
-    private async Task RefreshActiveTabQueue()
+    private Task RefreshActiveTabQueue() => RefreshActiveTabQueue(false);
+
+    private async Task RefreshActiveTabQueue(bool isSilent)
     {
         if (showUnbilledCharges)
         {
@@ -2289,11 +2608,14 @@
 
         if (activeTab == "OP")
         {
-            await LoadTodayBookingsAsync();
+            await Task.WhenAll(
+                LoadTodayBookingsAsync(isSilent),
+                LoadOpStatusesAsync()
+            );
         }
         else if (activeTab == "IP")
         {
-            await LoadIpDataAsync();
+            await LoadIpDataAsync(isSilent);
         }
         else if (activeTab == "OT")
         {
@@ -2334,7 +2656,7 @@
             selectedDcode = match.dcode;
             selectedPatientName = FormatPatientName(booking.custid, booking.patient_name ?? "Walk-in Patient");
             selectedVisitDate = selectedDate;
-            selectedOpStatus = match.visit_status;
+            selectedOpStatus = !string.IsNullOrWhiteSpace(booking.booking_status) ? booking.booking_status : match.visit_status;
             initialCaseSheetTab = "notes";
 
             showCaseSheetModal = true;
@@ -2351,12 +2673,18 @@
         try
         {
             doctors = await DoctorService.GetDoctorsAsync();
-            if (selectedDoctorDcode.HasValue && !doctors.Any(d => d.dcode == selectedDoctorDcode.Value))
+            if (currentDoctorDcode.HasValue)
             {
-                // Fallback to first doctor if 18 doesn't exist
-                if (doctors.Any())
+                var doctor = doctors.FirstOrDefault(d => d.dcode == currentDoctorDcode.Value && !d.deleted);
+                if (doctor != null)
                 {
-                    selectedDoctorDcode = doctors.First().dcode;
+                    currentDoctorName = string.IsNullOrWhiteSpace(doctor.name)
+                        ? doctor.doctorfullname ?? $"Doctor {doctor.dcode}"
+                        : doctor.name;
+                }
+                else
+                {
+                    ToastService.ShowWarning("The doctor linked to this user is not active in Doctor Master.");
                 }
             }
         }
@@ -2366,13 +2694,58 @@
         }
     }
 
-    private async Task OnDoctorChanged()
+    private async Task LoadCurrentDoctorAsync()
     {
-        await LoadTodayBookingsAsync();
+        var userCode = TenantState.UserCode;
+        var authToken = TenantState.AuthToken;
+        var tenantCode = TenantState.TenantCode;
+        if (userCode <= 0)
+        {
+            try
+            {
+                var storedUser = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                if (storedUser.Success && storedUser.Value != null)
+                {
+                    userCode = storedUser.Value.UserCode ?? 0;
+                    authToken = storedUser.Value.AuthToken ?? authToken;
+                    tenantCode = storedUser.Value.TenantCode ?? tenantCode;
+                }
+            }
+            catch (Exception ex)
+            {
+                ToastService.ShowError($"Failed to load the signed-in user profile: {ex.Message}");
+                return;
+            }
+        }
+
+        if (userCode <= 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var user = await UserService.GetUserMasterAsync(userCode, authToken, tenantCode);
+            if (user?.consultant_dcode is > 0)
+            {
+                currentDoctorDcode = user.consultant_dcode.Value;
+                currentDoctorName = $"Doctor {currentDoctorDcode.Value}";
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to resolve the signed-in doctor's profile: {ex.Message}");
+        }
     }
 
     private async Task OnDateChanged()
     {
+        await LoadTodayBookingsAsync();
+    }
+
+    private async Task OnDoctorFilterChanged()
+    {
+        currentPage = 1;
         await LoadTodayBookingsAsync();
     }
 
@@ -2382,14 +2755,188 @@
         StateHasChanged();
     }
 
+    private async Task OpenDoctorVitalsAsync(DoctorBookingListModel booking)
+    {
+        if (!canAccessVitals)
+        {
+            ToastService.ShowWarning("You do not have permission to access patient vitals.");
+            return;
+        }
+
+        if (booking.op_id == Guid.Empty)
+        {
+            ToastService.ShowError("This outpatient visit does not have a valid OP ID.");
+            return;
+        }
+
+        selectedVitalsBooking = booking;
+        doctorVitalsRequest = new OPRegistrationModel.PatientVitalsModel
+        {
+            op_id = booking.op_id,
+            op_no = booking.op_no,
+            custid = booking.custid,
+            dcode = booking.dcode,
+            tenant_code = TenantState?.TenantCode
+        };
+        isEditingDoctorVitals = false;
+        loadingDoctorVitals = true;
+        loadingVitalsFor = booking.op_id;
+        showDoctorVitalsModal = true;
+
+        try
+        {
+            var existingVitals = await BookingService.GetOpVitalsAsync(booking.op_id);
+            var latestVitals = existingVitals
+                .Where(vitals => !vitals.isdeleted)
+                .OrderByDescending(vitals => vitals.created_at)
+                .FirstOrDefault();
+
+            if (latestVitals != null)
+            {
+                doctorVitalsRequest = latestVitals;
+                isEditingDoctorVitals = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load patient vitals: {ex.Message}");
+        }
+        finally
+        {
+            loadingDoctorVitals = false;
+            loadingVitalsFor = null;
+        }
+    }
+
+    private void CloseDoctorVitalsModal()
+    {
+        showDoctorVitalsModal = false;
+        selectedVitalsBooking = null;
+    }
+
+    private async Task SaveDoctorVitalsAsync()
+    {
+        if (selectedVitalsBooking == null || loadingDoctorVitals || savingDoctorVitals)
+        {
+            return;
+        }
+
+        savingDoctorVitals = true;
+        try
+        {
+            doctorVitalsRequest.op_id = selectedVitalsBooking.op_id;
+            doctorVitalsRequest.op_no = selectedVitalsBooking.op_no;
+            doctorVitalsRequest.custid = selectedVitalsBooking.custid;
+            doctorVitalsRequest.dcode = selectedVitalsBooking.dcode;
+            doctorVitalsRequest.tenant_code ??= TenantState?.TenantCode;
+            doctorVitalsRequest.usercode = await ResolveVitalsUserCodeAsync();
+
+            var success = isEditingDoctorVitals
+                ? await BookingService.UpdateOpVitalsAsync(doctorVitalsRequest)
+                : await BookingService.SaveOpVitalsAsync(doctorVitalsRequest);
+
+            if (success)
+            {
+                ToastService.ShowSuccess("Vitals saved successfully!");
+                CloseDoctorVitalsModal();
+            }
+            else
+            {
+                ToastService.ShowError("Failed to save vitals.");
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Vitals saving error: {ex.Message}");
+        }
+        finally
+        {
+            savingDoctorVitals = false;
+        }
+    }
+
+    private async Task<int> ResolveVitalsUserCodeAsync()
+    {
+        if (TenantState?.UserCode > 0)
+        {
+            return TenantState.UserCode;
+        }
+
+        if (TenantState?.UserData?.UserCode is > 0)
+        {
+            return TenantState.UserData.UserCode.Value;
+        }
+
+        try
+        {
+            var userResult = await _sessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+            if (userResult.Success && userResult.Value?.UserCode is > 0)
+            {
+                return userResult.Value.UserCode.Value;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Failed to resolve the current user for vitals: {ex.Message}");
+        }
+
+        return 1;
+    }
+
+    private async Task UpdateDoctorOpStatusAsync(DoctorBookingListModel booking, string? newStatus)
+    {
+        if (string.IsNullOrWhiteSpace(newStatus) || booking.op_id == Guid.Empty)
+        {
+            return;
+        }
+
+        if (!hasEditRight)
+        {
+            ToastService.ShowWarning("You do not have permission to update outpatient status.");
+            return;
+        }
+
+        var statusCode = GetStatusCode(newStatus);
+        if (GetStatusCode(booking.booking_status) == statusCode ||
+            !updatingOpStatusIds.Add(booking.op_id))
+        {
+            return;
+        }
+
+        try
+        {
+            if (!await BookingService.UpdateOpStatusAsync(booking.op_id, statusCode))
+            {
+                ToastService.ShowError("Failed to update outpatient status.");
+                return;
+            }
+
+            ToastService.ShowSuccess($"Status updated to {GetStatusDisplayName(statusCode)}");
+            await LoadTodayBookingsAsync(isSilent: true);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to update outpatient status: {ex.Message}");
+        }
+        finally
+        {
+            updatingOpStatusIds.Remove(booking.op_id);
+            StateHasChanged();
+        }
+    }
+
     private async Task ResetFilters()
     {
-        selectedDoctorDcode = null;
         selectedDate = DateTime.UtcNow.ToIndianTime().Date;
-        statusFilter = "WAITING";
-        billingStatusFilter = "PAID";
+        statusFilter = ShowAllStatusPatients ? "ALL" : "WAITING";
+        billingStatusFilter = ShowAllStatusPatients ? "ALL" : "PAID";
+        if (ShowAllStatusPatients)
+        {
+            selectedCategoryFilter = "ALL";
+        }
         bookingTypeFilter = "ALL";
         slotFilter = "ALL";
+        selectedDoctorDcode = null;
         searchQuery = string.Empty;
         paginationOption = "YES";
         currentPage = 1;
@@ -2403,9 +2950,32 @@
         }
     }
 
-    private async Task LoadTodayBookingsAsync()
+    private async Task LoadOpStatusesAsync()
     {
-        loading = true;
+        opStatuses = await OpStatusMasterService.GetAllStatusesAsync(activeOnly: true);
+    }
+
+    private async Task LoadLabSettingsAsync()
+    {
+        try
+        {
+            labSetting = await LabSettingService.GetLabSettingAsync() ?? new LabSettingModel();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[DoctorPatientList] Failed to load OP settings: {ex.Message}");
+        }
+    }
+
+    private Task LoadTodayBookingsAsync() => LoadTodayBookingsAsync(false);
+
+    private async Task LoadTodayBookingsAsync(bool isSilent)
+    {
+        if (!isSilent)
+        {
+            loading = true;
+            StateHasChanged();
+        }
         try
         {
             var dateOnly = DateOnly.FromDateTime(selectedDate);
@@ -2424,10 +2994,11 @@
                 .Where(r => r.visit_date == dateOnly && !r.isdeleted)
                 .ToList();
 
-            // 3. Filter by selected doctor if one is chosen
-            if (selectedDoctorDcode.HasValue && selectedDoctorDcode.Value != 0)
+            // 3. Restrict linked-doctor accounts or apply the selected doctor filter.
+            var doctorFilterDcode = currentDoctorDcode ?? selectedDoctorDcode;
+            if (doctorFilterDcode.HasValue)
             {
-                var docCode = selectedDoctorDcode.Value;
+                var docCode = doctorFilterDcode.Value;
                 filteredRegs = filteredRegs
                     .Where(r => r.dcode == docCode || r.duty_dcode == docCode || r.transferred_to_dcode == docCode)
                     .ToList();
@@ -2472,7 +3043,7 @@
                 }
             }
 
-            // 6. Map registrations to DoctorBookingListModel
+            // 6. Map registrations to DoctorBookingListModel immediately
             var mappedBookings = new List<DoctorBookingListModel>(filteredRegs.Count);
             foreach (var r in filteredRegs)
             {
@@ -2495,6 +3066,39 @@
                     slotEndTime = slotInfo.slot_end_time;
                 }
 
+                // Determine effective status:
+                // 1. Cancelled or Rescheduled stays as is.
+                // 2. Completed / Visited / Confirmed stays as completed.
+                // 3. In consultation stays as in consultation.
+                // 4. Default is waiting.
+                var rawVisitStatus = r.visit_status?.Trim().ToUpperInvariant() ?? "";
+                string effectiveStatus;
+                if (rawVisitStatus is "CANCELLED" or "CANCELED" or "NOT ATTENDED")
+                {
+                    effectiveStatus = "CANCELLED";
+                }
+                else if (rawVisitStatus is "RESCHEDULED" or "REBOOKED")
+                {
+                    effectiveStatus = "RESCHEDULED";
+                }
+                else if (rawVisitStatus is "COMPLETED" or "VISITED" or "CONFIRMED")
+                {
+                    effectiveStatus = "COMPLETED";
+                }
+                else if (rawVisitStatus is "IN_CONSULTATION" or "IN CONSULTATION" or "CONSULTING" or "ON GOING" or "ONGOING")
+                {
+                    effectiveStatus = "IN_CONSULTATION";
+                }
+                else if ((OpStatusOrderStartsWithBooking || ShowAllStatusPatients) &&
+                         GetStatusCode(rawVisitStatus) is ("BOOKED" or "REPORT" or "ARRIVED"))
+                {
+                    effectiveStatus = GetStatusCode(rawVisitStatus);
+                }
+                else
+                {
+                    effectiveStatus = "WAITING";
+                }
+
                 var model = new DoctorBookingListModel
                 {
                     booking_id = (r.booking_id.HasValue && r.booking_id.Value != Guid.Empty) ? r.booking_id.Value : r.op_id,
@@ -2506,7 +3110,7 @@
                     slot_start_time = slotStartTime,
                     slot_end_time = slotEndTime,
                     token_no = int.TryParse(r.token_no, out int parsedTokenNo) ? parsedTokenNo : 0,
-                    booking_status = r.visit_status,
+                    booking_status = effectiveStatus,
                     booking_type = bookingType,
                     reg_type = !string.IsNullOrWhiteSpace(r.reg_type) ? r.reg_type : (bookingType ?? "WALKIN"),
                     notes = r.notes,
@@ -2527,6 +3131,9 @@
 
             // Sort by start time then token number
             todayBookings = mappedBookings.OrderBy(b => b.slot_start_time).ThenBy(b => b.token_no).ToList();
+
+            // Background non-blocking enrichment for case sheet statuses
+            _ = EnrichCaseSheetStatusesAsync(filteredRegs);
         }
         catch (Exception ex)
         {
@@ -2535,6 +3142,70 @@
         finally
         {
             loading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task EnrichCaseSheetStatusesAsync(List<OPRegistrationModel.OpRegistrationModel> regs)
+    {
+        try
+        {
+            // Only check visits that might need status updates (not already completed/cancelled/rescheduled)
+            var candidateRegs = regs.Where(r =>
+            {
+                var s = r.visit_status?.Trim().ToUpperInvariant() ?? "";
+                return s is not ("COMPLETED" or "VISITED" or "CONFIRMED" or "CANCELLED" or "CANCELED" or "NOT ATTENDED" or "RESCHEDULED" or "REBOOKED");
+            }).ToList();
+
+            if (!candidateRegs.Any()) return;
+
+            var csTasks = candidateRegs.Select(async r =>
+            {
+                try
+                {
+                    var cs = await CaseSheetService.GetCaseSheetByVisitAsync(r.op_id, null);
+                    return (opId: r.op_id, cs: cs);
+                }
+                catch
+                {
+                    return (opId: r.op_id, cs: (CaseSheetViewModel?)null);
+                }
+            }).ToList();
+
+            var csResults = await Task.WhenAll(csTasks);
+            bool updated = false;
+
+            foreach (var (opId, cs) in csResults)
+            {
+                if (cs == null || string.IsNullOrEmpty(cs.sheet_id)) continue;
+
+                var booking = todayBookings.FirstOrDefault(b => b.op_id == opId || b.booking_id == opId);
+                if (booking == null) continue;
+
+                if (string.Equals(cs.sheet_status, "FINALIZED", StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(cs.sheet_status, "COMPLETED", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (booking.booking_status != "COMPLETED")
+                    {
+                        booking.booking_status = "COMPLETED";
+                        updated = true;
+                    }
+                }
+                else if (!ShowAllStatusPatients && booking.booking_status == "WAITING")
+                {
+                    booking.booking_status = "IN_CONSULTATION";
+                    updated = true;
+                }
+            }
+
+            if (updated)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[EnrichCaseSheetStatusesAsync] Error: {ex.Message}");
         }
     }
 
@@ -2560,24 +3231,19 @@
         {
             if (statusFilter.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase))
             {
-                result = result.Where(b => 
-                    (b.booking_status?.Equals("COMPLETED", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (b.booking_status?.Equals("VISITED", StringComparison.OrdinalIgnoreCase) ?? false)
-                ).ToList();
+                result = result.Where(b => GetStatusCode(b.booking_status) == "COMPLETED").ToList();
             }
             else if (statusFilter.Equals("WAITING", StringComparison.OrdinalIgnoreCase))
             {
-                result = result.Where(b => 
-                    (b.booking_status?.Equals("WAITING", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (b.booking_status?.Equals("BOOKED", StringComparison.OrdinalIgnoreCase) ?? false)
-                ).ToList();
+                result = result.Where(b => GetStatusCode(b.booking_status) == "WAITING").ToList();
             }
             else if (statusFilter.Equals("IN_CONSULTATION", StringComparison.OrdinalIgnoreCase))
             {
-                result = result.Where(b => 
-                    (b.booking_status?.Equals("IN_CONSULTATION", StringComparison.OrdinalIgnoreCase) ?? false) ||
-                    (b.booking_status?.Equals("IN CONSULTATION", StringComparison.OrdinalIgnoreCase) ?? false)
-                ).ToList();
+                result = result.Where(b => GetStatusCode(b.booking_status) == "IN_CONSULTATION").ToList();
+            }
+            else if (statusFilter.Equals("CANCELLED", StringComparison.OrdinalIgnoreCase))
+            {
+                result = result.Where(b => GetStatusCode(b.booking_status) == "CANCELLED").ToList();
             }
             else
             {
@@ -2645,6 +3311,27 @@
             result = result.Where(b => !IsBookingPaid(b)).ToList();
         }
 
+        if (OpStatusOrderStartsWithBooking && statusFilter == "ALL")
+        {
+            result = result
+                .OrderBy(booking =>
+                {
+                    var index = Array.IndexOf(TotalStatusTableOrder, GetStatusCode(booking.booking_status));
+                    return index < 0 ? TotalStatusTableOrder.Length : index;
+                })
+                .ToList();
+        }
+        else if (ShowAllStatusPatients)
+        {
+            result = result
+                .OrderBy(booking =>
+                {
+                    var index = Array.IndexOf(AllStatusPatientQueueOrder, GetStatusCode(booking.booking_status));
+                    return index < 0 ? AllStatusPatientQueueOrder.Length : index;
+                })
+                .ToList();
+        }
+
         return result;
     }
 
@@ -2663,7 +3350,7 @@
     {
         vipCustId = booking.custid;
         vipPatientName = FormatPatientName(booking.custid, booking.patient_name ?? "Walk-in Patient");
-        vipRoleText = booking.viprole ?? string.Empty;
+        vipRoleText = !string.IsNullOrWhiteSpace(booking.viprole) ? booking.viprole : GetPatientVipRole(booking.custid);
         showVipModal = true;
         StateHasChanged();
     }
@@ -2707,6 +3394,7 @@
             {
                 ToastService.ShowSuccess($"Successfully marked {vipPatientName} as VIP.");
                 showVipModal = false;
+                await LoadCustomersAsync();
                 await LoadTodayBookingsAsync();
             }
             else
@@ -2751,9 +3439,9 @@
                 g => g.OrderByDescending(s => s.updated_at != default ? s.updated_at : s.created_at).First()
             );
 
-            if (selectedDoctorDcode.HasValue && selectedDoctorDcode.Value > 0)
+            if (currentDoctorDcode.HasValue && currentDoctorDcode.Value > 0)
             {
-                SelectDoctorForStatusModal(selectedDoctorDcode.Value);
+                SelectDoctorForStatusModal(currentDoctorDcode.Value);
             }
             else if (doctors.Any())
             {
@@ -2997,17 +3685,26 @@
         }
     }
 
-    private async Task LoadIpDataAsync()
+    private Task LoadIpDataAsync() => LoadIpDataAsync(false);
+
+    private async Task LoadIpDataAsync(bool isSilent)
     {
-        loading = true;
+        if (!isSilent)
+        {
+            loading = true;
+            StateHasChanged();
+        }
         try
         {
-            // Load IP dropdown lists
-            floorsList = await FloorService.GetFloorMastersAsync();
-            roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
-            wardsList = await WardService.GetWardMastersAsync();
-            bedsList = await BedService.GetBedMastersAsync();
-            blocksList = await BlockService.GetBlockMastersAsync();
+            // Load IP dropdown lists only if not already loaded
+            if (floorsList == null || !floorsList.Any())
+            {
+                floorsList = await FloorService.GetFloorMastersAsync();
+                roomTypes = await RoomTypeService.GetRoomTypeMastersAsync();
+                wardsList = await WardService.GetWardMastersAsync();
+                bedsList = await BedService.GetBedMastersAsync();
+                blocksList = await BlockService.GetBlockMastersAsync();
+            }
 
             // Load IP Admissions and HMS Bills in parallel
             var activeTask = IpService.GetIpRegistrationsAsync("ADMITTED");
@@ -3069,6 +3766,7 @@
         finally
         {
             loading = false;
+            StateHasChanged();
         }
     }
 
@@ -3149,9 +3847,9 @@
             result = result.Where(a => string.Equals(a.ip_status, filterStatus, StringComparison.OrdinalIgnoreCase)).ToList();
         }
 
-        if (filterDoctor > 0)
+        if (currentDoctorDcode.HasValue && currentDoctorDcode.Value > 0)
         {
-            result = result.Where(a => a.dcode == filterDoctor).ToList();
+            result = result.Where(a => a.dcode == currentDoctorDcode.Value).ToList();
         }
 
         if (filterFromDate.HasValue)
@@ -3681,6 +4379,15 @@
         var pat = customersList.FirstOrDefault(c => c.custid == custid);
         if (pat == null) return string.Empty;
         return pat.viprole ?? string.Empty;
+    }
+
+    private bool IsPatientVip(decimal custid, bool? registrationVip, string? registrationVipRole = null)
+    {
+        var customer = customersList.FirstOrDefault(c => c.custid == custid);
+        return registrationVip == true ||
+               !string.IsNullOrWhiteSpace(registrationVipRole) ||
+               customer?.isvip == true ||
+               !string.IsNullOrWhiteSpace(customer?.viprole);
     }
 
     // ==========================================

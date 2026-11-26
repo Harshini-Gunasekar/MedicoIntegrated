@@ -684,9 +684,18 @@
             modal.appendChild(modalContent);
             document.body.appendChild(modal);
 
-            document.getElementById('pdfModalCloseBtn').onclick = () => {
+            const handleModalClose = () => {
                 modal.remove();
                 URL.revokeObjectURL(blobUrl);
+                if (dotNetHelper && typeof dotNetHelper.invokeMethodAsync === 'function') {
+                    try {
+                        dotNetHelper.invokeMethodAsync('OnPdfModalClosed');
+                    } catch (e) { }
+                }
+            };
+
+            document.getElementById('pdfModalCloseBtn').onclick = () => {
+                handleModalClose();
             };
 
             document.getElementById('pdfModalDownloadBtn').onclick = async () => {
@@ -720,13 +729,6 @@
             const printBtn = document.getElementById('pdfModalPrintBtn');
             if (printBtn) {
                 printBtn.onclick = async () => {
-                    if (dotNetHelper && typeof dotNetHelper.invokeMethodAsync === 'function') {
-                        try {
-                            await dotNetHelper.invokeMethodAsync('OnPdfModalPrintClicked');
-                        } catch (e) {
-                            console.error('dotNetHelper OnPdfModalPrintClicked error:', e);
-                        }
-                    }
                     try {
                         window.dispatchEvent(new CustomEvent('pdfPreviewModalPrintClicked', { detail: { title: title } }));
                     } catch (e) { }
@@ -748,18 +750,24 @@
                     } catch (e) {
                         console.error('Print iframe failed:', e);
                     }
+
+                    if (dotNetHelper && typeof dotNetHelper.invokeMethodAsync === 'function') {
+                        try {
+                            await dotNetHelper.invokeMethodAsync('OnPdfModalPrintClicked');
+                        } catch (e) {
+                            console.error('dotNetHelper OnPdfModalPrintClicked error:', e);
+                        }
+                    }
                 };
             }
             modal.onclick = (e) => {
                 if (e.target === modal) {
-                    modal.remove();
-                    URL.revokeObjectURL(blobUrl);
+                    handleModalClose();
                 }
             };
             document.addEventListener('keydown', function escListener(e) {
                 if (e.key === 'Escape') {
-                    modal.remove();
-                    URL.revokeObjectURL(blobUrl);
+                    handleModalClose();
                     document.removeEventListener('keydown', escListener);
                 }
             });
@@ -768,6 +776,21 @@
         } catch (err) {
             console.error('openPdfPreviewModal failed:', err);
             return false;
+        }
+    };
+
+    window.closePdfPreviewModal = function () {
+        try {
+            const modal = document.getElementById('pdfPreviewInPageModal');
+            if (modal) {
+                const iframe = modal.querySelector('iframe');
+                if (iframe && iframe.src && iframe.src.startsWith('blob:')) {
+                    URL.revokeObjectURL(iframe.src);
+                }
+                modal.remove();
+            }
+        } catch (e) {
+            console.error('closePdfPreviewModal failed:', e);
         }
     };
 

@@ -99,6 +99,37 @@ namespace Booking.Services
             }
         }
 
+        public async Task<(HmsAdvanceUsageResponse? data, string? message)> GetAdvanceUsageAsync(string requestGuid)
+        {
+            try
+            {
+                var response = await _http.GetAsync($"api/HmsDueCollection/advance/used/{requestGuid}");
+                var body = await response.Content.ReadFromJsonAsync<HmsApiResponse<HmsAdvanceUsageResponse>>();
+                return (body?.data, body?.message);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in GetAdvanceUsageAsync: {ex.Message}");
+                return (null, ex.Message);
+            }
+        }
+
+        public async Task<(HmsAdvanceRevertResult? data, string? message)> RevertUsedAdvanceAsync(HmsAdvanceRevertRequest request)
+        {
+            try
+            {
+                request.reference_no ??= string.Empty;
+                var response = await _http.PostAsJsonAsync("api/HmsDueCollection/advance/revert-used", request);
+                var body = await response.Content.ReadFromJsonAsync<HmsApiResponse<HmsAdvanceRevertResult>>();
+                return (body?.data, body?.message ?? (!response.IsSuccessStatusCode ? await response.Content.ReadAsStringAsync() : null));
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error in RevertUsedAdvanceAsync: {ex.Message}");
+                return (null, ex.Message);
+            }
+        }
+
         public async Task<HmsDueCollectionResponse?> CollectDueAsync(HmsDueCollectionRequest request)
         {
             try

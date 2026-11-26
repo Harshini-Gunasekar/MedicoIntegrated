@@ -361,6 +361,152 @@ namespace Booking.Services
             }
         }
 
+        public async Task<List<PrescriptionTemplateViewModel>> GetPrescriptionTemplatesAsync(int dcode, string? search = null, string? tenantCode = null)
+        {
+            var client = GetClient(tenantCode);
+            var url = $"api/CaseSheet/prescription/template/list?dcode={dcode}";
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                url += $"&search={Uri.EscapeDataString(search.Trim())}";
+            }
+
+            using var response = await client.GetAsync(url);
+            if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
+            {
+                return new List<PrescriptionTemplateViewModel>();
+            }
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStringAsync();
+            return DeserializeApiResponse<List<PrescriptionTemplateViewModel>>(json, "data", "templates", "items")
+                ?? new List<PrescriptionTemplateViewModel>();
+        }
+
+        public async Task<PrescriptionTemplateViewModel?> GetPrescriptionTemplateAsync(string templateId, string? tenantCode = null)
+        {
+            if (string.IsNullOrWhiteSpace(templateId))
+            {
+                throw new ArgumentException("A template ID is required.", nameof(templateId));
+            }
+
+            var client = GetClient(tenantCode);
+            var url = $"api/CaseSheet/prescription/template/get?template_id={Uri.EscapeDataString(templateId)}";
+            using var response = await client.GetAsync(url);
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                return null;
+            }
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStringAsync();
+            return DeserializeApiResponse<PrescriptionTemplateViewModel>(json, "data", "template");
+        }
+
+        public async Task<string?> SavePrescriptionTemplateAsync(SavePrescriptionTemplateRequest request, string? tenantCode = null)
+        {
+            ArgumentNullException.ThrowIfNull(request);
+            var client = GetClient(tenantCode);
+            using var response = await client.PostAsJsonAsync("api/CaseSheet/prescription/template/save", request);
+            response.EnsureSuccessStatusCode();
+
+            var responseJson = await response.Content.ReadAsStringAsync();
+            if (!string.IsNullOrWhiteSpace(request.template_id))
+            {
+                return request.template_id;
+            }
+            if (string.IsNullOrWhiteSpace(responseJson))
+            {
+                return null;
+            }
+
+            try
+            {
+                using var document = System.Text.Json.JsonDocument.Parse(responseJson);
+                var payload = document.RootElement;
+                while (payload.ValueKind == System.Text.Json.JsonValueKind.Object)
+                {
+                    System.Text.Json.JsonElement? nestedPayload = null;
+                    foreach (var property in payload.EnumerateObject())
+                    {
+                        if (string.Equals(property.Name, "template_id", StringComparison.OrdinalIgnoreCase))
+                        {
+                            return property.Value.ToString();
+                        }
+                        if (string.Equals(property.Name, "data", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(property.Name, "template", StringComparison.OrdinalIgnoreCase))
+                        {
+                            nestedPayload = property.Value;
+                            break;
+                        }
+                    }
+
+                    if (!nestedPayload.HasValue)
+                    {
+                        break;
+                    }
+                    payload = nestedPayload.Value;
+                }
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                return null;
+            }
+
+            return null;
+        }
+
+        public async Task<List<PrescriptionVisitHistoryViewModel>> GetPrescriptionHistoryAsync(
+            decimal custId,
+            int pageNo = 1,
+            int pageSize = 10,
+            string? tenantCode = null)
+        {
+            var client = GetClient(tenantCode);
+            var url = $"api/CaseSheet/prescription/history?custid={Uri.EscapeDataString(custId.ToString(System.Globalization.CultureInfo.InvariantCulture))}&pageNo={Math.Max(pageNo, 1)}&pageSize={Math.Max(pageSize, 1)}";
+            using var response = await client.GetAsync(url);
+            if (response.StatusCode == System.Net.HttpStatusCode.NoContent)
+            {
+                return new List<PrescriptionVisitHistoryViewModel>();
+            }
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStringAsync();
+            return DeserializeApiResponse<List<PrescriptionVisitHistoryViewModel>>(json, "data", "history", "visits")
+                ?? new List<PrescriptionVisitHistoryViewModel>();
+        }
+
+        private static T? DeserializeApiResponse<T>(string json, params string[] payloadProperties)
+        {
+            if (string.IsNullOrWhiteSpace(json))
+            {
+                return default;
+            }
+
+            using var document = System.Text.Json.JsonDocument.Parse(json);
+            var payload = document.RootElement;
+            while (payload.ValueKind == System.Text.Json.JsonValueKind.Object)
+            {
+                System.Text.Json.JsonElement? nestedPayload = null;
+                foreach (var property in payload.EnumerateObject())
+                {
+                    if (payloadProperties.Any(name => string.Equals(name, property.Name, StringComparison.OrdinalIgnoreCase)))
+                    {
+                        nestedPayload = property.Value;
+                        break;
+                    }
+                }
+                if (!nestedPayload.HasValue)
+                {
+                    break;
+                }
+                payload = nestedPayload.Value;
+            }
+
+            return System.Text.Json.JsonSerializer.Deserialize<T>(
+                payload.GetRawText(),
+                new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        }
+
         public async Task<List<item_master>> GetAllItemsAsync(string? tenantCode = null)
         {
             try
@@ -452,6 +598,7 @@ namespace Booking.Services
                                 if (items.Count > 0) break;
                             }
                         }
+
                     }
                 }
                 else

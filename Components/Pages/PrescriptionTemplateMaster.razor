@@ -1,0 +1,890 @@
+@page "/prescription-template-master"
+@rendermode InteractiveServer
+
+@using Booking.Models
+@using Booking.Services
+@using medico_backend.Model
+@inject CaseSheetService CaseSheetService
+@inject DoctorService DoctorService
+@inject ToastService ToastService
+@inject NavigationManager Navigation
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage SessionStorage
+@inject RoleMasterService RoleService
+@inject LabCare.Services.UserService UserService
+
+<div class="prescription-master-page">
+    <header class="prescription-master-page-header">
+        <h1 class="prescription-master-page-title">Prescription Template Master</h1>
+        <div class="prescription-master-header-actions">
+            @if (requiresDoctorSelection)
+            {
+                <label class="prescription-master-header-doctor">
+                    Doctor
+                    <select @bind="selectedDcode" @bind:after="OnDoctorSelectionChanged" disabled="@isInitializing">
+                        <option value="0">Select doctor</option>
+                        @foreach (var doctor in doctors)
+                        {
+                            <option value="@doctor.dcode">@GetDoctorName(doctor)</option>
+                        }
+                    </select>
+                </label>
+            }
+            else if (selectedDcode > 0)
+            {
+                <div class="prescription-master-doctor-badge">
+                    <span class="material-symbols-outlined">medical_services</span>
+                    <span><small>Doctor</small><strong>@selectedDoctorName</strong></span>
+                </div>
+            }
+            @if (hasCreateRight || hasEditRight)
+            {
+                <button type="button" class="prescription-master-primary" @onclick="SaveTemplateAsync" disabled="@(!showEditor || savingTemplate)">
+                    @if (showEditor && savingTemplate)
+                    {
+                        <span class="material-symbols-outlined">progress_activity</span>
+                        <span>Saving...</span>
+                    }
+                    else
+                    {
+                        <span class="material-symbols-outlined">save</span>
+                        <span>Save Template</span>
+                    }
+                </button>
+            }
+            @if (hasCreateRight)
+            {
+                <button type="button" class="prescription-master-primary" @onclick="StartNewTemplate" disabled="@(selectedDcode <= 0 || isInitializing || showEditor)">
+                    <span class="material-symbols-outlined">add</span>
+                    New Template
+                </button>
+            }
+        </div>
+    </header>
+
+    @if (isInitializing)
+    {
+        <div class="prescription-master-state">Loading prescription template master...</div>
+    }
+    else
+    {
+        <section class="prescription-master-toolbar">
+            <label class="prescription-master-search">
+                <input @bind="searchText" @bind:event="oninput" placeholder="Search by template name" />
+            </label>
+        </section>
+
+        <section class="prescription-master-list">
+            @if (selectedDcode <= 0)
+            {
+                <div class="prescription-master-state">Select a doctor above to view prescription templates.</div>
+            }
+            else if (loadingTemplates)
+            {
+                <div class="prescription-master-state">Loading templates...</div>
+            }
+            else if (!FilteredTemplates.Any())
+            {
+                <div class="prescription-master-state">
+                    <span class="material-symbols-outlined">description</span>
+                    <strong>No templates found</strong>
+                    <span>Create a reusable prescription template.</span>
+                </div>
+            }
+            else
+            {
+                <div class="prescription-master-table-wrap">
+                    <table class="prescription-master-table">
+                        <thead>
+                            <tr>
+                                <th>Name</th>
+                                <th>Description</th>
+                                <th>Medicines</th>
+                                <th>Updated</th>
+                                <th class="actions-column">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var template in FilteredTemplates)
+                            {
+                                <tr>
+                                    <td class="template-name-cell">@template.template_name</td>
+                                    <td>@(string.IsNullOrWhiteSpace(template.description) ? "-" : template.description)</td>
+                                    <td><span class="prescription-master-count">@GetItemCount(template)</span></td>
+                                    <td>@FormatDate(template.updated_at)</td>
+                                    <td class="actions-column">
+                                        @if (hasEditRight && !string.IsNullOrWhiteSpace(template.template_id))
+                                        {
+                                            <button type="button" class="prescription-master-row-action" title="Edit template" aria-label="Edit template" @onclick="() => EditTemplateAsync(template.template_id!)">
+                                                <i class="bi bi-pencil"></i>
+                                            </button>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </section>
+    }
+</div>
+
+@if (showEditor)
+{
+    <div class="prescription-master-backdrop" @onclick="CloseEditor">
+        <section class="prescription-master-dialog" role="dialog" aria-modal="true" aria-labelledby="template-dialog-title" @onclick:stopPropagation="true">
+            <header class="prescription-master-dialog-header">
+                <div>
+                    <h2 id="template-dialog-title">@(string.IsNullOrWhiteSpace(editingTemplateId) ? "New Prescription Template" : "Edit Prescription Template")</h2>
+                </div>
+                <button type="button" class="prescription-master-close" aria-label="Close" @onclick="CloseEditor">×</button>
+            </header>
+
+            <div class="prescription-master-dialog-body">
+                <div class="prescription-master-fields">
+                    <div class="prescription-master-doctor-field">
+                        <span>Doctor <em>*</em></span>
+                        <strong>@selectedDoctorName</strong>
+                    </div>
+                    <label>
+                        Template name <em>*</em>
+                        <input @bind="templateName" maxlength="150" placeholder="e.g. Viral Fever Adult" />
+                    </label>
+                    <label>
+                        Description
+                        <input @bind="templateDescription" maxlength="300" placeholder="Optional description" />
+                    </label>
+                </div>
+
+                <div class="prescription-master-items-header">
+                    <div>
+                        <h3>Medicines</h3>
+                        <p>Enter the dosage schedule and instructions to include in this template.</p>
+                    </div>
+                </div>
+
+                <div class="prescription-master-medicine-picker">
+                    <label for="template-medicine-search">Drug name</label>
+                    <div class="prescription-master-medicine-search">
+                        <span class="material-symbols-outlined">search</span>
+                        <input id="template-medicine-search"
+                               value="@medicineSearchQuery"
+                               placeholder="Search medicines by name or generic"
+                               autocomplete="off"
+                               @oninput="e => SearchTemplateMedicineAsync(e.Value?.ToString() ?? string.Empty)"
+                               @onblur="CloseMedicineSearchAsync" />
+                        @if (showMedicinePickerSuggestions)
+                        {
+                            <div class="template-rx-suggestions">
+                                @if (medicineSearchResults.Count == 0)
+                                {
+                                    <div class="template-rx-no-suggestions">No matching medicines found.</div>
+                                }
+                                else
+                                {
+                                    @foreach (var medicine in medicineSearchResults)
+                                    {
+                                        <button type="button"
+                                                @onmousedown="() => SelectMedicineFromPicker(medicine)">
+                                            <strong>@GetMedicineName(medicine)</strong>
+                                            @if (!string.IsNullOrWhiteSpace(medicine.description))
+                                            {
+                                                <small>@medicine.description</small>
+                                            }
+                                        </button>
+                                    }
+                                }
+                            </div>
+                        }
+                    </div>
+                    <small>Select a result to add it to the prescription.</small>
+                </div>
+
+                <div class="prescription-master-rx-table-wrap">
+                    <table class="prescription-master-rx-table">
+                        <thead>
+                            <tr>
+                                <th>S.No</th>
+                                <th>Drug Name</th>
+                                <th>Generic Name</th>
+                                <th>Dosage (M-A-E-N)</th>
+                                <th>Unit</th>
+                                <th>Timing</th>
+                                <th>Days</th>
+                                <th>Qty</th>
+                                <th>Instructions</th>
+                                <th aria-label="Actions"></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (templateItems.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="10" class="template-rx-empty">No medicines added yet.</td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @foreach (var item in templateItems)
+                                {
+                                    <tr>
+                                        <td class="template-rx-sno">@item.sno</td>
+                                        <td class="template-rx-drug">
+                                            <input class="template-rx-input" @bind="item.drug_name" placeholder="Medicine name" />
+                                        </td>
+                                        <td><input class="template-rx-input" @bind="item.generic_name" placeholder="Generic" /></td>
+                                        <td>
+                                            <div class="template-rx-dosage">
+                                                <div class="template-rx-dose-slot @(IsTemplateDoseActive(item, "morning") ? "active" : "")">
+                                                    <button type="button" class="template-rx-dose-toggle @(IsTemplateDoseActive(item, "morning") ? "active" : "")" @onclick='() => ToggleTemplateDose(item, "morning")' title="Morning (M)">M</button>
+                                                    <input class="template-rx-dose-input" type="text" inputmode="decimal" value='@GetDoseValue(item, "morning")' @oninput='e => SetDoseValue(item, "morning", e.Value?.ToString())' />
+                                                </div>
+                                                <div class="template-rx-dose-slot @(IsTemplateDoseActive(item, "afternoon") ? "active" : "")">
+                                                    <button type="button" class="template-rx-dose-toggle @(IsTemplateDoseActive(item, "afternoon") ? "active" : "")" @onclick='() => ToggleTemplateDose(item, "afternoon")' title="Afternoon (A)">A</button>
+                                                    <input class="template-rx-dose-input" type="text" inputmode="decimal" value='@GetDoseValue(item, "afternoon")' @oninput='e => SetDoseValue(item, "afternoon", e.Value?.ToString())' />
+                                                </div>
+                                                <div class="template-rx-dose-slot @(IsTemplateDoseActive(item, "evening") ? "active" : "")">
+                                                    <button type="button" class="template-rx-dose-toggle @(IsTemplateDoseActive(item, "evening") ? "active" : "")" @onclick='() => ToggleTemplateDose(item, "evening")' title="Evening (E)">E</button>
+                                                    <input class="template-rx-dose-input" type="text" inputmode="decimal" value='@GetDoseValue(item, "evening")' @oninput='e => SetDoseValue(item, "evening", e.Value?.ToString())' />
+                                                </div>
+                                                <div class="template-rx-dose-slot @(IsTemplateDoseActive(item, "night") ? "active" : "")">
+                                                    <button type="button" class="template-rx-dose-toggle @(IsTemplateDoseActive(item, "night") ? "active" : "")" @onclick='() => ToggleTemplateDose(item, "night")' title="Night (N)">N</button>
+                                                    <input class="template-rx-dose-input" type="text" inputmode="decimal" value='@GetDoseValue(item, "night")' @oninput='e => SetDoseValue(item, "night", e.Value?.ToString())' />
+                                                </div>
+                                            </div>
+                                        </td>
+                                        <td><input class="template-rx-input template-rx-short-input" @bind="item.dose_unit" placeholder="Unit" /></td>
+                                        <td>
+                                            <select class="template-rx-input template-rx-timing" value="@GetFoodTiming(item)" @onchange="e => SetFoodTiming(item, e.Value?.ToString())">
+                                                <option value="">None</option>
+                                                <option value="BEFORE">Before Food (AC)</option>
+                                                <option value="AFTER">After Food (PC)</option>
+                                            </select>
+                                        </td>
+                                        <td><input class="template-rx-input template-rx-number" type="number" min="1" value="@item.days" @oninput="e => SetTemplateDays(item, e.Value?.ToString())" placeholder="Days" /></td>
+                                        <td><input class="template-rx-input template-rx-number template-rx-quantity" type="number" value="@item.qty?.ToString(System.Globalization.CultureInfo.InvariantCulture)" placeholder="Auto" readonly aria-label="Calculated quantity" /></td>
+                                        <td><input class="template-rx-input" @bind="item.notes" placeholder="Instructions" /></td>
+                                        <td class="template-rx-action">
+                                            <button type="button" class="prescription-master-remove" @onclick="() => RemoveTemplateItem(item)" aria-label="Remove medicine" title="Remove medicine">
+                                                <span class="material-symbols-outlined">delete</span>
+                                            </button>
+                                        </td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                        <tfoot>
+                            <tr>
+                                <td colspan="10">
+                                    <button type="button" class="template-rx-add-button" @onclick="AddTemplateItem">
+                                        <span class="material-symbols-outlined">add_circle</span>
+                                        Add Medicine
+                                    </button>
+                                </td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+
+            <footer class="prescription-master-dialog-footer">
+                <button type="button" class="prescription-master-secondary" @onclick="CloseEditor" disabled="@savingTemplate">Cancel</button>
+            </footer>
+        </section>
+    </div>
+}
+
+@code {
+    private List<DoctorMasterModel> doctors = new();
+    private List<item_master> medicineItems = new();
+    private List<item_master> medicineSearchResults = new();
+    private List<PrescriptionTemplateViewModel> templates = new();
+    private List<CaseSheetPrescriptionItem> templateItems = new();
+    private int selectedDcode;
+    private int templateDcode;
+    private string searchText = "";
+    private string medicineSearchQuery = "";
+    private string selectedDoctorName = "";
+    private string templateName = "";
+    private string templateDescription = "";
+    private string? editingTemplateId;
+    private bool isInitializing = true;
+    private bool loadingTemplates;
+    private bool savingTemplate;
+    private bool showEditor;
+    private bool medicineItemsLoaded;
+    private bool showMedicinePickerSuggestions;
+    private bool hasViewRight;
+    private bool hasCreateRight;
+    private bool hasEditRight;
+    private bool requiresDoctorSelection;
+
+    private IEnumerable<PrescriptionTemplateViewModel> FilteredTemplates =>
+        templates.Where(template =>
+            string.IsNullOrWhiteSpace(searchText) ||
+            (template.template_name?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false) ||
+            (template.description?.Contains(searchText, StringComparison.OrdinalIgnoreCase) ?? false));
+
+    protected override void OnInitialized()
+    {
+        EvaluateRights();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender)
+        {
+            return;
+        }
+
+        if (!RoleService.IsPermissionsLoaded && !UserPermissionHelper.IsAdmin(null, TenantState))
+        {
+            try
+            {
+                var storedPermissions = await SessionStorage.GetAsync<List<RolePermissionItem>>("UserRolePermissions");
+                if (storedPermissions.Success && storedPermissions.Value?.Any() == true)
+                {
+                    RoleService.SetUserPermissions(storedPermissions.Value);
+                }
+                else if (TenantState?.UserCode > 0)
+                {
+                    await RoleService.LoadUserPermissionsAsync(TenantState.UserCode, TenantState.TenantCode);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Unable to load Prescription Template Master permissions: {ex.Message}");
+            }
+        }
+
+        EvaluateRights();
+        if (!hasViewRight)
+        {
+            ToastService.ShowError("You do not have permission to access Prescription Template Master.");
+            Navigation.NavigateTo("/home");
+            return;
+        }
+
+        try
+        {
+            doctors = (await DoctorService.GetDoctorsAsync())
+                .Where(doctor => !doctor.deleted && doctor.dcode > 0)
+                .OrderBy(doctor => doctor.orderno ?? int.MaxValue)
+                .ThenBy(doctor => doctor.dcode)
+                .ToList();
+            if (doctors.Count == 0)
+            {
+                ToastService.ShowError("No active doctor was found in Doctor Master.");
+            }
+            else
+            {
+                var userCode = TenantState.UserCode;
+                var authToken = TenantState.AuthToken;
+                var tenantCode = TenantState.TenantCode;
+                if (userCode <= 0)
+                {
+                    var storedUser = await SessionStorage.GetAsync<SharedComponents.Rcl.Models.UserDetailsModel>("UserDetails");
+                    if (storedUser.Success && storedUser.Value != null)
+                    {
+                        userCode = storedUser.Value.UserCode ?? 0;
+                        authToken = storedUser.Value.AuthToken ?? authToken;
+                        tenantCode = storedUser.Value.TenantCode ?? tenantCode;
+                    }
+                }
+
+                if (userCode <= 0)
+                {
+                    ToastService.ShowError("Unable to identify the signed-in user for doctor lookup.");
+                }
+                else
+                {
+                    var user = await UserService.GetUserMasterAsync(userCode, authToken, tenantCode);
+                    var consultantDcode = user?.consultant_dcode;
+                    if (consultantDcode.HasValue && consultantDcode.Value > 0)
+                    {
+                        var doctor = doctors.FirstOrDefault(candidate => candidate.dcode == consultantDcode.Value);
+                        if (doctor != null)
+                        {
+                            selectedDcode = doctor.dcode;
+                            selectedDoctorName = GetDoctorName(doctor);
+                            await LoadTemplatesAsync();
+                        }
+                        else
+                        {
+                            ToastService.ShowError("The doctor linked to this user is not active in Doctor Master.");
+                        }
+                    }
+                    else
+                    {
+                        requiresDoctorSelection = true;
+                    }
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load doctors: {ex.Message}");
+        }
+        finally
+        {
+            isInitializing = false;
+            StateHasChanged();
+        }
+    }
+
+    private void EvaluateRights()
+    {
+        if (UserPermissionHelper.IsAdmin(null, TenantState))
+        {
+            hasViewRight = true;
+            hasCreateRight = true;
+            hasEditRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(1057) ||
+                RoleService.HasAction("Doctor Portal", "Prescription Template Master", "View") ||
+                RoleService.HasRoleId(665) ||
+                RoleService.HasAction("Doctor Portal", "Doctors Master", "View") ||
+                RoleService.HasRight("Doctor Portal", "Doctors Master");
+            hasCreateRight = RoleService.HasRoleId(1058) ||
+                RoleService.HasAction("Doctor Portal", "Prescription Template Master", "Create") ||
+                RoleService.HasRoleId(666) ||
+                RoleService.HasAction("Doctor Portal", "Doctors Master", "Create");
+            hasEditRight = RoleService.HasRoleId(1059) ||
+                RoleService.HasAction("Doctor Portal", "Prescription Template Master", "Edit") ||
+                RoleService.HasRoleId(667) ||
+                RoleService.HasAction("Doctor Portal", "Doctors Master", "Edit");
+            return;
+        }
+
+        var rights = UserPermissionHelper.GetRights(
+            null,
+            TenantState,
+            TenantState?.UserRightsList?.ToList(),
+            "Prescription Template Master",
+            "Prescription_Template_Master",
+            "Doctors Master",
+            "Doctors_Master",
+            "Doctor Master",
+            "Doctor_Master",
+            "DoctorMaster",
+            "Doctors");
+        hasViewRight = rights.View;
+        hasCreateRight = rights.Add;
+        hasEditRight = rights.Edit;
+    }
+
+    private async Task LoadTemplatesAsync()
+    {
+        if (selectedDcode <= 0)
+        {
+            templates.Clear();
+            return;
+        }
+
+        loadingTemplates = true;
+        try
+        {
+            templates = await CaseSheetService.GetPrescriptionTemplatesAsync(
+                selectedDcode,
+                null,
+                TenantState?.TenantCode);
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load prescription templates: {ex.Message}");
+        }
+        finally
+        {
+            loadingTemplates = false;
+        }
+    }
+
+    private async Task OnDoctorSelectionChanged()
+    {
+        var doctor = doctors.FirstOrDefault(candidate =>
+            candidate.dcode == selectedDcode && !candidate.deleted);
+        if (doctor == null)
+        {
+            selectedDcode = 0;
+            selectedDoctorName = "";
+            templates.Clear();
+            return;
+        }
+
+        selectedDoctorName = GetDoctorName(doctor);
+        templates.Clear();
+        await LoadTemplatesAsync();
+    }
+
+    private void StartNewTemplate()
+    {
+        if (!hasCreateRight || selectedDcode <= 0)
+        {
+            return;
+        }
+
+        medicineSearchQuery = "";
+        showMedicinePickerSuggestions = false;
+        medicineSearchResults.Clear();
+        editingTemplateId = null;
+        templateDcode = selectedDcode;
+        templateName = "";
+        templateDescription = "";
+        templateItems = new List<CaseSheetPrescriptionItem> { CreateEmptyItem(1) };
+        showEditor = true;
+    }
+
+    private async Task EditTemplateAsync(string templateId)
+    {
+        if (!hasEditRight)
+        {
+            return;
+        }
+
+        try
+        {
+            medicineSearchQuery = "";
+            showMedicinePickerSuggestions = false;
+            medicineSearchResults.Clear();
+            var template = await CaseSheetService.GetPrescriptionTemplateAsync(templateId, TenantState?.TenantCode);
+            if (template == null)
+            {
+                ToastService.ShowWarning("The selected prescription template could not be found.");
+                return;
+            }
+
+            editingTemplateId = template.template_id ?? templateId;
+            templateDcode = selectedDcode;
+            templateName = template.template_name ?? "";
+            templateDescription = template.description ?? "";
+            templateItems = template.items
+                .Where(item => !string.IsNullOrWhiteSpace(item.drug_name))
+                .Select((item, index) => MapTemplateItem(item, index + 1))
+                .ToList();
+            if (templateItems.Count == 0)
+            {
+                templateItems.Add(CreateEmptyItem(1));
+            }
+            showEditor = true;
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load template details: {ex.Message}");
+        }
+    }
+
+    private async Task SaveTemplateAsync()
+    {
+        if (!showEditor || savingTemplate)
+        {
+            return;
+        }
+        if (templateDcode <= 0 || !doctors.Any(doctor => doctor.dcode == templateDcode && !doctor.deleted))
+        {
+            ToastService.ShowWarning("Select an active doctor for this template.");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(templateName))
+        {
+            ToastService.ShowWarning("Enter a template name.");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(editingTemplateId) && !hasCreateRight ||
+            !string.IsNullOrWhiteSpace(editingTemplateId) && !hasEditRight)
+        {
+            ToastService.ShowError("You do not have permission to save this template.");
+            return;
+        }
+
+        var items = templateItems
+            .Where(item => !string.IsNullOrWhiteSpace(item.drug_name))
+            .Select((item, index) => new CaseSheetPrescriptionItem
+            {
+                sno = index + 1,
+                drug_name = item.drug_name.Trim(),
+                drug_code = item.drug_code,
+                generic_name = item.generic_name,
+                drug_category = item.drug_category,
+                morning = item.morning,
+                afternoon = item.afternoon,
+                evening = item.evening,
+                night = item.night,
+                morning_dose = item.morning_dose,
+                afternoon_dose = item.afternoon_dose,
+                evening_dose = item.evening_dose,
+                night_dose = item.night_dose,
+                dose_unit = item.dose_unit,
+                before_food = item.before_food,
+                after_food = item.after_food,
+                days = item.days,
+                qty = item.qty,
+                route = item.route,
+                notes = item.notes
+            })
+            .ToList();
+
+        if (items.Count == 0)
+        {
+            ToastService.ShowWarning("Add at least one medicine to the template.");
+            return;
+        }
+
+        savingTemplate = true;
+        try
+        {
+            var request = new SavePrescriptionTemplateRequest
+            {
+                template_id = editingTemplateId,
+                template_name = templateName.Trim(),
+                description = string.IsNullOrWhiteSpace(templateDescription) ? null : templateDescription.Trim(),
+                dcode = templateDcode,
+                is_shared = true,
+                topremarks = null,
+                bottonremarks = null,
+                items = items
+            };
+
+            await CaseSheetService.SavePrescriptionTemplateAsync(request, TenantState?.TenantCode);
+            showEditor = false;
+            selectedDcode = templateDcode;
+            await LoadTemplatesAsync();
+            ToastService.ShowSuccess("Prescription template saved successfully.");
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to save prescription template: {ex.Message}");
+        }
+        finally
+        {
+            savingTemplate = false;
+        }
+    }
+
+    private void AddTemplateItem() => templateItems.Add(CreateEmptyItem(templateItems.Count + 1));
+
+    private void RemoveTemplateItem(CaseSheetPrescriptionItem item)
+    {
+        templateItems.Remove(item);
+        for (var index = 0; index < templateItems.Count; index++)
+        {
+            templateItems[index].sno = index + 1;
+        }
+    }
+
+    private void CloseEditor()
+    {
+        if (!savingTemplate)
+        {
+            showEditor = false;
+            medicineSearchQuery = "";
+            showMedicinePickerSuggestions = false;
+            medicineSearchResults.Clear();
+        }
+    }
+
+    private static CaseSheetPrescriptionItem CreateEmptyItem(int sno) => new()
+    {
+        sno = sno,
+        morning = "0",
+        afternoon = "0",
+        evening = "0",
+        night = "0",
+        route = "ORAL"
+    };
+
+    private async Task SearchTemplateMedicineAsync(string query)
+    {
+        medicineSearchQuery = query;
+        showMedicinePickerSuggestions = !string.IsNullOrWhiteSpace(query);
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            medicineSearchResults.Clear();
+            return;
+        }
+
+        if (!medicineItemsLoaded)
+        {
+            medicineItems = await CaseSheetService.GetAllItemsAsync(TenantState?.TenantCode);
+            medicineItemsLoaded = true;
+        }
+
+        medicineSearchResults = medicineItems
+            .Where(medicine => !medicine.deleted &&
+                ((medicine.itemname?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                 (medicine.drugname?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                 (medicine.shortname?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false) ||
+                 (medicine.description?.Contains(query, StringComparison.OrdinalIgnoreCase) ?? false)))
+            .Take(15)
+            .ToList();
+    }
+
+    private void SelectMedicineFromPicker(item_master medicine)
+    {
+        var item = templateItems.FirstOrDefault(candidate => string.IsNullOrWhiteSpace(candidate.drug_name));
+        if (item == null)
+        {
+            AddTemplateItem();
+            item = templateItems[^1];
+        }
+
+        SelectTemplateMedicine(item, medicine);
+        medicineSearchQuery = "";
+        showMedicinePickerSuggestions = false;
+        medicineSearchResults.Clear();
+    }
+
+    private void SelectTemplateMedicine(CaseSheetPrescriptionItem item, item_master medicine)
+    {
+        item.drug_name = GetMedicineName(medicine);
+        item.drug_code = medicine.itemcode;
+        item.generic_name = medicine.description;
+        item.dose_unit = medicine.uomname ?? medicine.uom_name ?? medicine.uom ?? medicine.unit ?? item.dose_unit;
+    }
+
+    private async Task CloseMedicineSearchAsync()
+    {
+        await Task.Delay(200);
+        showMedicinePickerSuggestions = false;
+        medicineSearchResults.Clear();
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private static string GetMedicineName(item_master medicine) =>
+        string.IsNullOrWhiteSpace(medicine.drugname) ? medicine.itemname ?? "" : medicine.drugname;
+
+    private static string GetDoctorName(DoctorMasterModel doctor) =>
+        string.IsNullOrWhiteSpace(doctor.name)
+            ? doctor.doctorfullname ?? $"Doctor {doctor.dcode}"
+            : doctor.name;
+
+    private static string GetDoseValue(CaseSheetPrescriptionItem item, string period) => period switch
+    {
+        "morning" => item.morning_dose ?? item.morning ?? "0",
+        "afternoon" => item.afternoon_dose ?? item.afternoon ?? "0",
+        "evening" => item.evening_dose ?? item.evening ?? "0",
+        "night" => item.night_dose ?? item.night ?? "0",
+        _ => "0"
+    };
+
+    private static bool IsTemplateDoseActive(CaseSheetPrescriptionItem item, string period) =>
+        GetFrequencyValue(item, period) == "1" ||
+        ParseDose(GetDoseValue(item, period)) > 0;
+
+    private static void ToggleTemplateDose(CaseSheetPrescriptionItem item, string period)
+    {
+        SetDoseValue(item, period, IsTemplateDoseActive(item, period) ? "0" : "1");
+        RecalculateTemplateQuantity(item);
+    }
+
+    private static string GetFrequencyValue(CaseSheetPrescriptionItem item, string period) => period switch
+    {
+        "morning" => item.morning,
+        "afternoon" => item.afternoon,
+        "evening" => item.evening,
+        "night" => item.night,
+        _ => "0"
+    };
+
+    private static void SetDoseValue(CaseSheetPrescriptionItem item, string period, string? value)
+    {
+        var amount = value ?? string.Empty;
+        var isUsed = ParseDose(amount) > 0;
+        switch (period)
+        {
+            case "morning":
+                item.morning_dose = amount;
+                item.morning = isUsed ? "1" : "0";
+                break;
+            case "afternoon":
+                item.afternoon_dose = amount;
+                item.afternoon = isUsed ? "1" : "0";
+                break;
+            case "evening":
+                item.evening_dose = amount;
+                item.evening = isUsed ? "1" : "0";
+                break;
+            case "night":
+                item.night_dose = amount;
+                item.night = isUsed ? "1" : "0";
+                break;
+        }
+        RecalculateTemplateQuantity(item);
+    }
+
+    private static string GetFoodTiming(CaseSheetPrescriptionItem item) =>
+        item.before_food ? "BEFORE" : item.after_food ? "AFTER" : "";
+
+    private static void SetFoodTiming(CaseSheetPrescriptionItem item, string? timing)
+    {
+        item.before_food = timing == "BEFORE";
+        item.after_food = timing == "AFTER";
+    }
+
+    private static void SetTemplateDays(CaseSheetPrescriptionItem item, string? value)
+    {
+        item.days = int.TryParse(value, out var days) ? days : null;
+        RecalculateTemplateQuantity(item);
+    }
+
+    private static void RecalculateTemplateQuantity(CaseSheetPrescriptionItem item)
+    {
+        if (!item.days.HasValue || item.days.Value < 1)
+        {
+            item.qty = null;
+            return;
+        }
+
+        var dailyDose =
+            ParseDose(item.morning_dose ?? item.morning) +
+            ParseDose(item.afternoon_dose ?? item.afternoon) +
+            ParseDose(item.evening_dose ?? item.evening) +
+            ParseDose(item.night_dose ?? item.night);
+        item.qty = dailyDose * item.days.Value;
+    }
+
+    private static decimal ParseDose(string? value) =>
+        decimal.TryParse(
+            value,
+            System.Globalization.NumberStyles.Number,
+            System.Globalization.CultureInfo.InvariantCulture,
+            out var dose) && dose > 0
+                ? dose
+                : 0;
+
+    private static CaseSheetPrescriptionItem MapTemplateItem(OpPrescriptionTemplateDetailModel item, int sno) => new()
+    {
+        sno = sno,
+        drug_name = item.drug_name,
+        drug_code = item.drug_code,
+        generic_name = item.generic_name,
+        drug_category = item.drug_category,
+        morning = item.morning,
+        afternoon = item.afternoon,
+        evening = item.evening,
+        night = item.night,
+        morning_dose = item.morning_dose,
+        afternoon_dose = item.afternoon_dose,
+        evening_dose = item.evening_dose,
+        night_dose = item.night_dose,
+        dose_unit = item.dose_unit,
+        before_food = item.before_food,
+        after_food = item.after_food,
+        days = item.days,
+        qty = item.qty,
+        route = item.route,
+        notes = item.notes
+    };
+
+    private static int GetItemCount(PrescriptionTemplateViewModel template)
+    {
+        var itemCount = template.items?.Count(item => !string.IsNullOrWhiteSpace(item.drug_name)) ?? 0;
+        return itemCount > 0 ? itemCount : template.item_count;
+    }
+
+    private static string FormatDate(DateTime? date) => date?.ToString("dd MMM yyyy") ?? "-";
+}

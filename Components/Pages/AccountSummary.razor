@@ -1,0 +1,770 @@
+@page "/account-summary"
+@page "/billing/account-summary"
+@rendermode InteractiveServer
+@using System.Text.Json
+@using Booking.Models
+@using Booking.Services
+@using SharedComponents.Rcl.Services
+@using Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage
+@inject HmsBillingService BillingService
+@inject CounterMasterService CounterMasterService
+@inject IHttpClientFactory ClientFactory
+@inject TenantSessionState TenantState
+@inject ProtectedLocalStorage SessionStorage
+@inject ToastService ToastService
+@inject RoleMasterService RoleService
+@implements IDisposable
+
+<PageTitle>Account Summary | Medico</PageTitle>
+
+<div class="account-summary-page">
+    @if (!hasViewRight)
+    {
+        <div class="account-summary-empty account-summary-denied">
+            <i class="bi bi-shield-lock"></i>
+            <h2>Access denied</h2>
+            <p>You do not have permission to view Account Summary.</p>
+        </div>
+    }
+    else
+    {
+        <header class="account-summary-header">
+            <div class="account-summary-heading">
+                <div class="account-summary-heading-icon"><i class="bi bi-wallet2"></i></div>
+                <div class="account-summary-heading-copy">
+                    <h1>Account Summary</h1>
+                </div>
+            </div>
+
+            <section class="account-summary-filter" aria-label="Account summary filters">
+                <div class="account-summary-filter-field">
+                    <label for="account-summary-branch"><i class="bi bi-building"></i> Branch</label>
+                    <select id="account-summary-branch" class="form-select" @bind="selectedBhCode" @bind:after="OnBranchChanged">
+                        <option value="0">All branches</option>
+                        @foreach (var branch in branches)
+                        {
+                            <option value="@branch.bh_code">@branch.name</option>
+                        }
+                    </select>
+                </div>
+                <div class="account-summary-filter-field">
+                    <label for="account-summary-counter"><i class="bi bi-shop"></i> Counter</label>
+                    <select id="account-summary-counter" class="form-select" @bind="selectedCntCode">
+                        <option value="0">All counters</option>
+                        @foreach (var counter in FilteredCounters)
+                        {
+                            <option value="@((int)counter.cntcode)">@(string.IsNullOrWhiteSpace(counter.name) ? $"Counter {counter.cntcode}" : counter.name)</option>
+                        }
+                    </select>
+                </div>
+                <div class="account-summary-filter-field">
+                    <label for="account-summary-from"><i class="bi bi-calendar3"></i> From</label>
+                    <input id="account-summary-from" type="date" class="form-control" @bind="fromDate" />
+                </div>
+                <div class="account-summary-filter-field">
+                    <label for="account-summary-to"><i class="bi bi-calendar3"></i> To</label>
+                    <input id="account-summary-to" type="date" class="form-control" @bind="toDate" />
+                </div>
+                <div class="account-summary-filter-actions">
+                    <button type="button" class="account-summary-search" @onclick="LoadSummaryAsync" disabled="@isLoading">
+                        @if (isLoading)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status"></span>
+                            <span>Loading</span>
+                        }
+                        else
+                        {
+                            <i class="bi bi-search"></i>
+                            <span>Search</span>
+                        }
+                    </button>
+                    <button type="button" class="account-summary-reset" @onclick="ResetFiltersAsync" disabled="@isLoading">
+                        <i class="bi bi-arrow-clockwise"></i>
+                        <span>Reset</span>
+                    </button>
+                </div>
+            </section>
+
+        </header>
+
+        @if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="account-summary-error" role="alert">
+                <i class="bi bi-exclamation-circle"></i>
+                <span>@errorMessage</span>
+            </div>
+        }
+        else if (isLoading && reportData == null)
+        {
+            <div class="account-summary-empty">
+                <span class="spinner-border text-primary" role="status"></span>
+                <span>Loading account summary...</span>
+            </div>
+        }
+        else if (reportData != null)
+        {
+            <section class="account-summary-overview" aria-label="Hospital, Hospital IP, and pharmacy bills">
+                <article class="account-summary-billing-card hospital-billing-card">
+                    <div class="account-summary-billing-heading">
+                        <span class="overview-heading-icon clinical-icon"><i class="bi bi-heart-pulse"></i></span>
+                        <h2>Hospital</h2>
+                    </div>
+                    <div class="account-summary-billing-metrics">
+                        <div><span>Bill Count</span><strong>@HospitalBillCount</strong></div>
+                        <div><span>Bill Amount</span><strong>@Money(HospitalBillAmount)</strong></div>
+                        <div><span>Collected</span><strong>@Money(HospitalCollected)</strong></div>
+                    </div>
+                    <h3>Collected by paymode</h3>
+                    <table class="account-summary-paymode-table">
+                        <thead><tr><th>Pay Mode</th><th>Collected Amount</th></tr></thead>
+                        <tbody>
+                            @if (HospitalPaymodes.Count == 0)
+                            {
+                                <tr><td colspan="2" class="paymode-empty">No paymode details returned.</td></tr>
+                            }
+                            else
+                            {
+                                @foreach (var mode in HospitalPaymodes)
+                                {
+                                    <tr><td>@mode.paymode</td><td>@Money(mode.amount)</td></tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </article>
+
+                <article class="account-summary-billing-card hospital-ip-card">
+                    <div class="account-summary-billing-heading">
+                        <span class="overview-heading-icon clinical-icon"><i class="bi bi-hospital"></i></span>
+                        <h2>Hospital IP</h2>
+                    </div>
+                    <div class="account-summary-billing-metrics">
+                        <div><span>Bill Count</span><strong>@HospitalIpBillCount</strong></div>
+                        <div><span>Bill Amount</span><strong>@Money(HospitalIpBillAmount)</strong></div>
+                        <div><span>Collected</span><strong>@Money(HospitalIpCollected)</strong></div>
+                    </div>
+                    <h3>Collected by paymode</h3>
+                    <table class="account-summary-paymode-table">
+                        <thead><tr><th>Pay Mode</th><th>Collected Amount</th></tr></thead>
+                        <tbody>
+                            @if (HospitalIpPaymodes.Count == 0)
+                            {
+                                <tr><td colspan="2" class="paymode-empty">No paymode details returned.</td></tr>
+                            }
+                            else
+                            {
+                                @foreach (var mode in HospitalIpPaymodes)
+                                {
+                                    <tr><td>@mode.paymode</td><td>@Money(mode.amount)</td></tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </article>
+
+                <article class="account-summary-billing-card pharmacy-billing-card">
+                    <div class="account-summary-billing-heading">
+                        <span class="overview-heading-icon pharmacy-icon"><i class="bi bi-capsule"></i></span>
+                        <h2>Pharmacy</h2>
+                    </div>
+                    <div class="account-summary-billing-metrics">
+                        <div><span>Bill Count</span><strong>@PharmacyBillCount</strong></div>
+                        <div><span>Bill Amount</span><strong>@Money(PharmacyBillAmount)</strong></div>
+                        <div><span>Collected</span><strong>@Money(PharmacyCollected)</strong></div>
+                    </div>
+                    <div class="account-summary-pharmacy-adjustments">
+                        <div><span>Sales Return</span><strong>@Money(PharmacySalesReturnAmount)</strong></div>
+                        <div><span>Old Due Collected</span><strong>@Money(PharmacyOldDueCollected)</strong></div>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(PharmacyDataError))
+                    {
+                        <div class="account-summary-pharmacy-data-error" role="status">@PharmacyDataError</div>
+                    }
+                    <h3>Collected by paymode</h3>
+                    <table class="account-summary-paymode-table">
+                        <thead><tr><th>Pay Mode</th><th>Collected Amount</th></tr></thead>
+                        <tbody>
+                            @if (PharmacyPaymodes.Count == 0)
+                            {
+                                <tr><td colspan="2" class="paymode-empty">No paymode details returned.</td></tr>
+                            }
+                            else
+                            {
+                                @foreach (var mode in PharmacyPaymodes)
+                                {
+                                    <tr><td>@mode.paymode</td><td>@Money(mode.amount)</td></tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </article>
+            </section>
+
+            <section class="account-summary-department-details">
+                <button type="button" class="account-summary-department-toggle"
+                        aria-expanded="@showDepartmentDetails"
+                        @onclick="() => showDepartmentDetails = !showDepartmentDetails">
+                    <span>
+                        <i class="bi bi-diagram-3"></i>
+                        Department details
+                        <small>@ClinicalCollections.Count departments</small>
+                    </span>
+                    <i class="bi @(showDepartmentDetails ? "bi-chevron-up" : "bi-chevron-down")"></i>
+                </button>
+                @if (showDepartmentDetails)
+                {
+                    <div class="account-summary-department-table-wrap">
+                        <table class="account-summary-table">
+                            <thead>
+                                <tr>
+                                    <th>Department</th>
+                                    <th>Bills</th>
+                                    <th>Bill Amount</th>
+                                    <th>Cash</th>
+                                    <th>UPI</th>
+                                    <th>Other</th>
+                                    <th>Collected</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @if (ClinicalCollections.Count == 0)
+                                {
+                                    <tr>
+                                        <td colspan="7" class="account-summary-no-data">No department details found for this period.</td>
+                                    </tr>
+                                }
+                                else
+                                {
+                                    @for (var index = 0; index < ClinicalCollections.Count; index++)
+                                    {
+                                        var department = ClinicalCollections[index];
+                                        <tr>
+                                            <td>
+                                                <span class="account-summary-department">
+                                                    <span class="account-summary-department-icon department-tone-@(index % 6)"><i class="bi bi-building"></i></span>
+                                                    <span class="account-summary-department-name">@department.category</span>
+                                                </span>
+                                            </td>
+                                            <td class="amount-count">@department.bill_count</td>
+                                            <td class="amount-number">@Money(CategoryBillAmount(department))</td>
+                                            <td class="amount-cash">@Money(department.CashAmount)</td>
+                                            <td class="amount-upi">@Money(department.UpiAmount)</td>
+                                            <td class="amount-number">@Money(CategoryOtherPaymodeAmount(department))</td>
+                                            <td class="amount-total">@Money(CategoryCollectedAmount(department))</td>
+                                        </tr>
+                                    }
+                                }
+                            </tbody>
+                            @if (ClinicalCollections.Count > 0)
+                            {
+                                <tfoot>
+                                    <tr>
+                                        <th class="table-total-label">Department total</th>
+                                        <th class="amount-count">@ClinicalCollections.Sum(x => x.bill_count)</th>
+                                        <th class="amount-number">@Money(ClinicalCollections.Sum(CategoryBillAmount))</th>
+                                        <th class="amount-cash">@Money(ClinicalCash)</th>
+                                        <th class="amount-upi">@Money(ClinicalUpi)</th>
+                                        <th class="amount-number">@Money(ClinicalOtherPaymodeAmount)</th>
+                                        <th class="amount-total">@Money(ClinicalCollected)</th>
+                                    </tr>
+                                </tfoot>
+                            }
+                        </table>
+                    </div>
+                }
+            </section>
+
+            <footer class="account-summary-final-total">
+                <span><i class="bi bi-wallet2"></i> Total amount collected</span>
+                <div class="account-summary-final-total-split">
+                    <span>Cash <strong>@Money(TotalCashCollected)</strong></span>
+                    <span>UPI <strong>@Money(TotalUpiCollected)</strong></span>
+                </div>
+                <strong class="account-summary-final-total-amount">@Money(TotalAmountCollected)</strong>
+            </footer>
+        }
+    }
+</div>
+
+@code {
+    private HmsOpCategoryCollectionResponse? reportData;
+    private List<sales_return_master> pharmacySalesReturns = new();
+    private List<Booking.Models.BranchModel> branches = new();
+    private List<Medico_Backend.Model.CounterMasterModel> counters = new();
+    private DateTime fromDate = DateTime.Today;
+    private DateTime toDate = DateTime.Today;
+    private int selectedBhCode;
+    private int selectedCntCode;
+    private string DefaultTenant = "";
+    private string AuthToken = "";
+    private string errorMessage = "";
+    private string pharmacySalesReturnError = "";
+    private bool isLoading;
+    private bool hasViewRight = true;
+    private bool hasLoadedData;
+    private bool showDepartmentDetails;
+
+    private bool IsAdmin => UserPermissionHelper.IsAdmin(null, TenantState);
+    private string PharmacyDataError => pharmacySalesReturnError;
+
+    private List<HmsOpCategoryAmountRow> ClinicalCollections =>
+        reportData?.categories?
+            .Where(row => !IsPharmacyCategory(row.category) && !IsSalesReturnCategory(row.category))
+            .OrderBy(row => row.category, StringComparer.OrdinalIgnoreCase)
+            .ToList() ?? new();
+
+    private List<HmsOpCategoryAmountRow> PharmacyCollections =>
+        reportData?.categories?
+            .Where(row => IsPharmacyCategory(row.category) && !IsSalesReturnCategory(row.category))
+            .ToList() ?? new();
+
+    private List<HmsOpCategoryAmountRow> HospitalCollections =>
+        ClinicalCollections
+            .Where(row => !IsIpCategory(row.category))
+            .ToList();
+
+    private int HospitalIpBillCount =>
+        reportData == null ? 0 :
+        reportData.ip_bill_count > 0 ? reportData.ip_bill_count :
+        reportData.categories?.Where(row => IsIpCategory(row.category)).Sum(row => row.bill_count) ?? 0;
+
+    private double HospitalIpBillAmount
+    {
+        get
+        {
+            if (reportData == null) return 0;
+            if (reportData.total_ip_amount != 0) return reportData.total_ip_amount;
+            var categoryAmount = reportData.categories?
+                .Where(row => IsIpCategory(row.category))
+                .Sum(CategoryBillAmount) ?? 0;
+            return categoryAmount != 0 ? categoryAmount : reportData.total_bill_amount;
+        }
+    }
+
+    private int HospitalBillCount => HospitalCollections.Sum(row => row.bill_count);
+    private double HospitalBillAmount => HospitalCollections.Sum(CategoryBillAmount);
+    private double HospitalCollected => HospitalCollections.Sum(CategoryCollectedAmount);
+    private double HospitalIpCollected
+    {
+        get
+        {
+            if (reportData == null) return 0;
+            if (reportData.ip_total_collected != 0) return reportData.ip_total_collected;
+            var paymodeTotal = HospitalIpPaymodes.Sum(mode => mode.amount);
+            return paymodeTotal != 0
+                ? paymodeTotal
+                : reportData.ip_cash_collected + reportData.ip_upi_collected + reportData.ip_other_collected;
+        }
+    }
+
+    private List<HmsOpPaymodeAmount> HospitalIpPaymodes
+    {
+        get
+        {
+            var modes = reportData?.ip_paymodes?.Where(mode => mode.amount != 0).ToList() ?? new();
+            if (modes.Count > 0 || reportData == null)
+            {
+                return modes;
+            }
+
+            var fallbackModes = new List<HmsOpPaymodeAmount>();
+            if (reportData.ip_cash_collected != 0)
+                fallbackModes.Add(new HmsOpPaymodeAmount { paymode = "Cash", amount = reportData.ip_cash_collected });
+            if (reportData.ip_upi_collected != 0)
+                fallbackModes.Add(new HmsOpPaymodeAmount { paymode = "UPI", amount = reportData.ip_upi_collected });
+            if (reportData.ip_other_collected != 0)
+                fallbackModes.Add(new HmsOpPaymodeAmount { paymode = "Other", amount = reportData.ip_other_collected });
+            return fallbackModes;
+        }
+    }
+
+    private int PharmacyBillCount => PharmacyCollections.Sum(row => row.bill_count);
+    private double PharmacyBillAmount => PharmacyCollections.Sum(CategoryBillAmount);
+    private double PharmacySalesReturnAmount => (double)PharmacySalesReturnsInRange.Sum(row => row.amount);
+    private double PharmacyOldDueCollected =>
+        reportData == null ? 0 :
+        reportData.total_due_cleared != 0 ? reportData.total_due_cleared :
+        reportData.due_cleared_today;
+    private double PharmacyCollected =>
+        PharmacyCollections.Sum(CategoryCollectedAmount) + PharmacyOldDueCollected;
+
+    private IEnumerable<sales_return_master> PharmacySalesReturnsInRange =>
+        pharmacySalesReturns
+            .Where(row => !row.deleted && row.createddate != default &&
+                          row.createddate.Date >= fromDate.Date && row.createddate.Date <= toDate.Date)
+            .Where(row => selectedBhCode <= 0 || row.bh_code == selectedBhCode)
+            .Where(row => selectedCntCode <= 0 || row.cntcode == selectedCntCode);
+
+    private List<HmsOpPaymodeAmount> HospitalPaymodes => AggregatePaymodes(HospitalCollections);
+
+    private List<HmsOpPaymodeAmount> PharmacyPaymodes =>
+        AggregatePaymodes(
+            AggregatePaymodes(PharmacyCollections)
+                .Concat(reportData?.due_cleared_by_paymode ?? new List<HmsOpPaymodeAmount>()));
+
+    private static List<HmsOpPaymodeAmount> AggregatePaymodes(IEnumerable<HmsOpCategoryAmountRow> rows) =>
+        AggregatePaymodes(rows.SelectMany(row => row.paymodes ?? new List<HmsOpPaymodeAmount>()));
+
+    private static List<HmsOpPaymodeAmount> AggregatePaymodes(IEnumerable<HmsOpPaymodeAmount> modes) =>
+        modes
+            .GroupBy(mode => mode.paymode?.Trim() ?? "", StringComparer.OrdinalIgnoreCase)
+            .Where(group => !string.IsNullOrWhiteSpace(group.Key))
+            .Select(group => new HmsOpPaymodeAmount
+            {
+                paymode = group.Key,
+                pmcode = group.First().pmcode,
+                amount = group.Sum(mode => mode.amount)
+            })
+            .OrderBy(mode => mode.paymode, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+    private double ClinicalCollected => ClinicalCollections.Sum(CategoryCollectedAmount);
+    private double ClinicalCash => ClinicalCollections.Sum(row => row.CashAmount);
+    private double ClinicalUpi => ClinicalCollections.Sum(row => row.UpiAmount);
+    private double ClinicalOtherPaymodeAmount => ClinicalCollections.Sum(CategoryOtherPaymodeAmount);
+    private double TotalAmountCollected => HospitalCollected + HospitalIpCollected + PharmacyCollected;
+    private double TotalCashCollected =>
+        SumPaymodeAmount(HospitalPaymodes, HmsOpCategoryAmountRow.IsCash) +
+        SumPaymodeAmount(HospitalIpPaymodes, HmsOpCategoryAmountRow.IsCash) +
+        SumPaymodeAmount(PharmacyPaymodes, HmsOpCategoryAmountRow.IsCash);
+    private double TotalUpiCollected =>
+        SumPaymodeAmount(HospitalPaymodes, HmsOpCategoryAmountRow.IsUpi) +
+        SumPaymodeAmount(HospitalIpPaymodes, HmsOpCategoryAmountRow.IsUpi) +
+        SumPaymodeAmount(PharmacyPaymodes, HmsOpCategoryAmountRow.IsUpi);
+
+    private static double SumPaymodeAmount(
+        IEnumerable<HmsOpPaymodeAmount> paymodes,
+        Func<string?, decimal?, bool> matches) =>
+        paymodes.Where(mode => matches(mode.paymode, mode.pmcode)).Sum(mode => mode.amount);
+
+    private static bool IsPharmacyCategory(string? category) =>
+        !string.IsNullOrWhiteSpace(category) &&
+        category.Contains("PHARMACY", StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsIpCategory(string? category) =>
+        !string.IsNullOrWhiteSpace(category) &&
+        (string.Equals(category.Trim(), "IP", StringComparison.OrdinalIgnoreCase) ||
+         category.Contains("INPATIENT", StringComparison.OrdinalIgnoreCase) ||
+         category.Contains("IP BILL", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsSalesReturnCategory(string? category) =>
+        !string.IsNullOrWhiteSpace(category) &&
+        category.Replace(" ", "", StringComparison.Ordinal)
+            .Replace("_", "", StringComparison.Ordinal)
+            .Replace("-", "", StringComparison.Ordinal)
+            .Contains("SALESRETURN", StringComparison.OrdinalIgnoreCase);
+
+    private static double CategoryBillAmount(HmsOpCategoryAmountRow row) =>
+        row.net_amount != 0 ? row.net_amount :
+        row.net != 0 ? row.net :
+        row.gross_amount != 0 ? row.gross_amount : row.gross;
+
+    private static double CategoryCollectedAmount(HmsOpCategoryAmountRow row) =>
+        row.collected_amount != 0 ? row.collected_amount : row.collected;
+
+    private static double CategoryOtherPaymodeAmount(HmsOpCategoryAmountRow row) =>
+        row.paymodes?.Any() == true
+            ? row.paymodes
+                .Where(mode => !HmsOpCategoryAmountRow.IsCash(mode.paymode, mode.pmcode) &&
+                              !HmsOpCategoryAmountRow.IsUpi(mode.paymode, mode.pmcode))
+                .Sum(mode => mode.amount)
+            : Math.Max(0, CategoryCollectedAmount(row) - row.CashAmount - row.UpiAmount);
+
+    private IEnumerable<Medico_Backend.Model.CounterMasterModel> FilteredCounters
+    {
+        get
+        {
+            if (selectedBhCode <= 0)
+            {
+                return counters;
+            }
+
+            var branchCounters = counters
+                .Where(counter => counter.bhcode == selectedBhCode || counter.bhcode == 0 || counter.bhcode == null)
+                .ToList();
+            return branchCounters.Count > 0 ? branchCounters : counters;
+        }
+    }
+
+    private static string Money(double amount) => $"₹{amount:N2}";
+
+    protected override async Task OnInitializedAsync()
+    {
+        RoleService.OnPermissionsChanged += HandlePermissionsChanged;
+        EvaluateRights();
+        if (hasViewRight)
+        {
+            await InitializeDataAsync();
+        }
+    }
+
+    private void EvaluateRights()
+    {
+        if (IsAdmin)
+        {
+            hasViewRight = true;
+            return;
+        }
+
+        if (RoleService.IsPermissionsLoaded)
+        {
+            hasViewRight = RoleService.HasRoleId(1056) ||
+                RoleService.HasAction("Billing Portal", "Account Summary", "View") ||
+                RoleService.HasRoleId(1043) ||
+                RoleService.HasAction("Billing Portal", "Billing Categorization", "View") ||
+                RoleService.HasRight("Billing Portal", "Billing Categorization") ||
+                RoleService.HasRight("Billing Portal", "Billing Categories");
+            return;
+        }
+
+        var rights = UserPermissionHelper.GetRights(
+            null,
+            TenantState,
+            TenantState?.UserRightsList?.ToList(),
+            "Account Summary",
+            "Account_Summary",
+            "Billing Categorization",
+            "Billing Categories",
+            "Billing_Categorization");
+        hasViewRight = rights.View;
+    }
+
+    private void HandlePermissionsChanged()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            EvaluateRights();
+            if (hasViewRight && !hasLoadedData)
+            {
+                await InitializeDataAsync();
+            }
+            StateHasChanged();
+        });
+    }
+
+    private async Task InitializeDataAsync()
+    {
+        if (hasLoadedData)
+        {
+            return;
+        }
+
+        hasLoadedData = true;
+        await LoadSessionAndTenantAsync();
+        await Task.WhenAll(LoadBranchesAsync(), LoadCountersAsync());
+        await LoadSummaryAsync();
+    }
+
+    private async Task LoadSessionAndTenantAsync()
+    {
+        var tenantResult = await SessionStorage.GetAsync<string>("tenant_code");
+        DefaultTenant = tenantResult.Success && !string.IsNullOrWhiteSpace(tenantResult.Value)
+            ? tenantResult.Value
+            : TenantState?.TenantCode ?? "0010";
+
+        var tokenResult = await SessionStorage.GetAsync<string>("authToken");
+        if (!tokenResult.Success || string.IsNullOrWhiteSpace(tokenResult.Value))
+        {
+            tokenResult = await SessionStorage.GetAsync<string>("auth_token");
+        }
+        AuthToken = tokenResult.Success ? tokenResult.Value ?? "" : TenantState?.AuthToken ?? "";
+    }
+
+    private async Task LoadBranchesAsync()
+    {
+        try
+        {
+            var client = ClientFactory.CreateClient("LabCareUrl");
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Remove("tenantcode");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("tenant_code", DefaultTenant);
+            client.DefaultRequestHeaders.TryAddWithoutValidation("tenantcode", DefaultTenant);
+            if (!string.IsNullOrWhiteSpace(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            using var response = await client.GetAsync("api/Branch/get");
+            if (!response.IsSuccessStatusCode)
+            {
+                ToastService.ShowError("Unable to load branches for Account Summary.");
+                return;
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            branches = JsonSerializer.Deserialize<List<Booking.Models.BranchModel>>(
+                json,
+                new JsonSerializerOptions { PropertyNameCaseInsensitive = true })?
+                .Where(branch => !branch.deleted)
+                .ToList() ?? new();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AccountSummary] Error loading branches: {ex.Message}");
+            ToastService.ShowError("Unable to load branches for Account Summary.");
+        }
+    }
+
+    private async Task LoadCountersAsync()
+    {
+        try
+        {
+            counters = (await CounterMasterService.GetCountersAsync() ?? new())
+                .Where(counter => !counter.deleted)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AccountSummary] Error loading counters: {ex.Message}");
+            ToastService.ShowError("Unable to load counters for Account Summary.");
+        }
+    }
+
+    private void OnBranchChanged()
+    {
+        if (!FilteredCounters.Any(counter => (int)counter.cntcode == selectedCntCode))
+        {
+            selectedCntCode = 0;
+        }
+    }
+
+    private async Task LoadSummaryAsync()
+    {
+        isLoading = true;
+        errorMessage = "";
+        StateHasChanged();
+
+        try
+        {
+            reportData = await BillingService.GetOpCategoryCollectionReportAsync(
+                fromDate,
+                toDate,
+                selectedBhCode > 0 ? selectedBhCode : null,
+                selectedCntCode > 0 ? selectedCntCode : null,
+                tenantCode: DefaultTenant,
+                authToken: AuthToken);
+
+            pharmacySalesReturnError = "";
+            await LoadPharmacySalesReturnsAsync();
+
+            if (reportData == null)
+            {
+                errorMessage = "Account Summary could not be loaded. Please try again.";
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[AccountSummary] Error loading summary: {ex.Message}");
+            errorMessage = "Account Summary could not be loaded. Please try again.";
+            ToastService.ShowError(errorMessage);
+        }
+        finally
+        {
+            isLoading = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task LoadPharmacySalesReturnsAsync()
+    {
+        pharmacySalesReturns = new();
+        var client = ClientFactory.CreateClient("DoctorApi");
+        client.DefaultRequestHeaders.Remove("tenantcode");
+        client.DefaultRequestHeaders.Remove("tenant_code");
+        client.DefaultRequestHeaders.TryAddWithoutValidation("tenantcode", DefaultTenant);
+        client.DefaultRequestHeaders.TryAddWithoutValidation("tenant_code", DefaultTenant);
+        if (!string.IsNullOrWhiteSpace(AuthToken))
+        {
+            client.DefaultRequestHeaders.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+        }
+
+        var urls = new[]
+        {
+            $"api/ItemMaster/getallsalesreturn?tenantcode={Uri.EscapeDataString(DefaultTenant)}",
+            "api/ItemMaster/getallsalesreturn",
+            "ItemMaster/getallsalesreturn",
+            $"api/ItemMaster/getallsalesreturns?tenantcode={Uri.EscapeDataString(DefaultTenant)}",
+            "api/ItemMaster/getallsalesreturns"
+        };
+        System.Net.HttpStatusCode? lastStatusCode = null;
+        string? lastRequestError = null;
+
+        foreach (var url in urls)
+        {
+            try
+            {
+                using var response = await client.GetAsync(url);
+                if (!response.IsSuccessStatusCode)
+                {
+                    lastStatusCode = response.StatusCode;
+                    continue;
+                }
+
+                var json = await response.Content.ReadAsStringAsync();
+                if (string.IsNullOrWhiteSpace(json))
+                {
+                    continue;
+                }
+
+                using var document = JsonDocument.Parse(json);
+                var root = document.RootElement;
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    foreach (var property in root.EnumerateObject())
+                    {
+                        if (string.Equals(property.Name, "data", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(property.Name, "value", StringComparison.OrdinalIgnoreCase))
+                        {
+                            root = property.Value;
+                            break;
+                        }
+                    }
+                }
+
+                if (root.ValueKind != JsonValueKind.Array)
+                {
+                    pharmacySalesReturnError = "Pharmacy sales returns were returned in an unsupported format.";
+                    return;
+                }
+
+                pharmacySalesReturns = JsonSerializer.Deserialize<List<sales_return_master>>(
+                    root.GetRawText(),
+                    new JsonSerializerOptions
+                    {
+                        PropertyNameCaseInsensitive = true,
+                        NumberHandling = System.Text.Json.Serialization.JsonNumberHandling.AllowReadingFromString
+                    }) ?? new();
+                return;
+            }
+            catch (HttpRequestException ex)
+            {
+                lastRequestError = ex.Message;
+            }
+            catch (JsonException ex)
+            {
+                pharmacySalesReturnError = $"Pharmacy sales returns could not be read: {ex.Message}";
+                return;
+            }
+        }
+
+        pharmacySalesReturnError = lastStatusCode.HasValue
+            ? $"Pharmacy sales returns could not be loaded (HTTP {(int)lastStatusCode.Value})."
+            : $"Pharmacy sales returns could not be loaded: {lastRequestError ?? "No response was returned."}";
+    }
+
+    private async Task ResetFiltersAsync()
+    {
+        fromDate = DateTime.Today;
+        toDate = DateTime.Today;
+        selectedBhCode = 0;
+        selectedCntCode = 0;
+        await LoadSummaryAsync();
+    }
+
+    public void Dispose()
+    {
+        RoleService.OnPermissionsChanged -= HandlePermissionsChanged;
+    }
+}
