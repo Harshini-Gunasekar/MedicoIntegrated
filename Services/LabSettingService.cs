@@ -185,6 +185,21 @@ namespace Booking.Services
             }
         }
 
+        public async Task<bool> RevertBranchSettingAsync(int bhCode)
+        {
+            try
+            {
+                ClearCache();
+                var response = await _http.PostAsync($"api/LabSetting/delete-branch?bh_code={bhCode}", null);
+                return response.IsSuccessStatusCode;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error reverting branch settings: {ex.Message}");
+                return false;
+            }
+        }
+
         public async Task<LabSettingModel?> GetLabSettingsAsync()
         {
             return await GetLabSettingAsync();

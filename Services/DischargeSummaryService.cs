@@ -33,6 +33,7 @@ namespace Booking.Services
             public Guid category_id { get; set; }
             public string category_name { get; set; } = string.Empty;
             public string template_text { get; set; } = string.Empty;
+            public int sort_order { get; set; } = 0;
         }
 
         public class PdsMasterDto

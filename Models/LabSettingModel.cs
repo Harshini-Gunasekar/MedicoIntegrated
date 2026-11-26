@@ -180,5 +180,15 @@ namespace Booking.Models
         // Shift timing: FIXED = system closes at shift_end_time (or midnight); VARIABLE = user closes / closes at midnight
         public string? shift_timing_mode { get; set; } = "VARIABLE";
         public string? shift_end_time { get; set; }   // "HH:mm", used only when FIXED
+
+        public string? report_bill_common_address { get; set; }
+        public string? report_bill_branch_address { get; set; }
+        public string? company { get; set; }
+        public string? address { get; set; }
+        public string? landline_no { get; set; }
+        public string? mobile_no { get; set; }
+        public string? email { get; set; }
+        public string? website { get; set; }
+        public string? ip_consolidated_bill_format { get; set; } = "BOTH";
     }
 }

@@ -972,7 +972,26 @@
             }
             else
             {
-                categoryList = allCategories.ToList();
+                if (patSummaryRes?.Details != null && patSummaryRes.Details.Any())
+                {
+                    var orderedSaved = new List<DischargeSummaryService.DsCategoryDto>();
+                    var seen = new HashSet<Guid>();
+                    foreach (var d in patSummaryRes.Details.OrderBy(x => x.sort_order))
+                    {
+                        var c = allCategories.FirstOrDefault(x => x.category_id == d.category_id)
+                             ?? allCategories.FirstOrDefault(x => x.category_name.Trim().Equals(d.category_name.Trim(), StringComparison.OrdinalIgnoreCase));
+                        if (c != null && seen.Add(c.category_id)) orderedSaved.Add(c);
+                    }
+                    foreach (var c in allCategories)
+                    {
+                        if (seen.Add(c.category_id)) orderedSaved.Add(c);
+                    }
+                    categoryList = orderedSaved;
+                }
+                else
+                {
+                    categoryList = allCategories.ToList();
+                }
                 if (categoryList.Any()) await SelectCategory(categoryList.First());
             }
         }
@@ -1081,7 +1100,9 @@
     private async Task ApplyTemplateFilter(string tName)
     {
         var allPresets = await DsService.GetTemplatesAsync(null);
-        var tPresets = allPresets.Where(p => p.template_name != null && p.template_name.Trim().Equals(tName, StringComparison.OrdinalIgnoreCase)).ToList();
+        var tPresets = allPresets.Where(p => p.template_name != null && p.template_name.Trim().Equals(tName, StringComparison.OrdinalIgnoreCase))
+                                 .OrderBy(p => p.sort_order)
+                                 .ToList();
 
         var matchedCatIds = new HashSet<Guid>();
 
@@ -1120,11 +1141,47 @@
             }
         }
 
-        // Filter categoryList to include template categories OR any category that ALREADY has saved content for this patient
-        categoryList = allCategories.Where(c => 
-            matchedCatIds.Contains(c.category_id) || 
-            IsCategoryFilled(c.category_id)
-        ).ToList();
+        // Build categoryList preserving the EXACT defined order:
+        // 1. Template categories in template sort_order
+        // 2. Previously saved patient categories
+        // 3. Any additional filled categories
+        var orderedCategories = new List<DischargeSummaryService.DsCategoryDto>();
+        var addedIds = new HashSet<Guid>();
+
+        foreach (var p in tPresets)
+        {
+            var targetCat = allCategories.FirstOrDefault(c => c.category_id == p.category_id)
+                         ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Equals(p.category_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                         ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Contains(p.category_name.Trim(), StringComparison.OrdinalIgnoreCase) || p.category_name.Trim().Contains(c.category_name.Trim(), StringComparison.OrdinalIgnoreCase));
+            if (targetCat != null && addedIds.Add(targetCat.category_id))
+            {
+                orderedCategories.Add(targetCat);
+            }
+        }
+
+        if (patSummaryRes?.Details != null)
+        {
+            foreach (var d in patSummaryRes.Details.OrderBy(x => x.sort_order))
+            {
+                var targetCat = allCategories.FirstOrDefault(c => c.category_id == d.category_id)
+                             ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Equals(d.category_name.Trim(), StringComparison.OrdinalIgnoreCase))
+                             ?? allCategories.FirstOrDefault(c => c.category_name.Trim().Contains(d.category_name.Trim(), StringComparison.OrdinalIgnoreCase) || d.category_name.Trim().Contains(c.category_name.Trim(), StringComparison.OrdinalIgnoreCase));
+                if (targetCat != null && addedIds.Add(targetCat.category_id))
+                {
+                    orderedCategories.Add(targetCat);
+                }
+            }
+        }
+
+        foreach (var cat in allCategories)
+        {
+            if (IsCategoryFilled(cat.category_id) && addedIds.Add(cat.category_id))
+            {
+                orderedCategories.Add(cat);
+            }
+        }
+
+        categoryList = orderedCategories;
 
         if (!categoryList.Any())
         {
@@ -1395,9 +1452,12 @@
                 RebuildCategoryContent(cat.category_id);
             }
 
-            // Collect all categories with non-empty content
+            // Collect all categories with non-empty content in their exact given/displayed order
             int sortOrder = 1;
-            foreach (var cat in allCategories)
+            var savedCatIds = new HashSet<Guid>();
+
+            // 1. First save in the exact order shown in categoryList (as seen and entered by the user)
+            foreach (var cat in categoryList)
             {
                 if (categoryContents.TryGetValue(cat.category_id, out var content) && !string.IsNullOrWhiteSpace(content))
                 {
@@ -1408,6 +1468,25 @@
                         category_content = content,
                         sort_order = sortOrder++
                     });
+                    savedCatIds.Add(cat.category_id);
+                }
+            }
+
+            // 2. Next, any remaining categories from allCategories with content
+            foreach (var cat in allCategories)
+            {
+                if (!savedCatIds.Contains(cat.category_id) && 
+                    categoryContents.TryGetValue(cat.category_id, out var content) && 
+                    !string.IsNullOrWhiteSpace(content))
+                {
+                    details.Add(new DischargeSummaryService.PdsCategoryContentDto
+                    {
+                        category_id = cat.category_id,
+                        category_name = cat.category_name,
+                        category_content = content,
+                        sort_order = sortOrder++
+                    });
+                    savedCatIds.Add(cat.category_id);
                 }
             }
 
