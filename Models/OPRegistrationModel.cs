@@ -111,6 +111,32 @@ namespace Booking.Models
             public TimeOnly? slot_end_time { get; set; }
         }
 
+        public class OpServiceItemModel
+        {
+            public string? unbilledid { get; set; }
+            public string? op_id { get; set; }
+            public string? entrytype { get; set; }
+            public int? tcode { get; set; }
+            public string? service_name { get; set; }
+            public double? rate { get; set; }
+            public double? amount { get; set; }
+            public double? quantity { get; set; }
+            public bool billed_status { get; set; }
+            public string? billid { get; set; }
+            public DateTime? chargedate { get; set; }
+        }
+
+        public class OpServicesResponse
+        {
+            public Guid op_id { get; set; }
+            public string? op_no { get; set; }
+            public string? visit_status { get; set; }
+            public int total_items { get; set; }
+            public double total_amount { get; set; }
+            public double unbilled_amount { get; set; }
+            public List<OpServiceItemModel> items { get; set; } = new();
+        }
+
         [Dapper.Contrib.Extensions.Table("patient_vitals")]
         public class PatientVitalsModel
         {

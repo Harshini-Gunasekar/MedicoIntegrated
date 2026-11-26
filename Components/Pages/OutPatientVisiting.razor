@@ -50,6 +50,30 @@
         box-shadow: 0 0 6px rgba(22, 163, 74, 0.3);
         user-select: none;
     }
+    .add-services-previous-services {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 4px;
+        margin-top: 3px;
+        max-width: 360px;
+        font-size: 0.68rem;
+    }
+    .add-services-previous-label {
+        color: #64748b;
+        font-weight: 700;
+    }
+    .add-services-previous-item {
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: #eff6ff;
+        color: #1d4ed8;
+        font-weight: 600;
+    }
 </style>
 
 <div class="animated-background">
@@ -676,7 +700,7 @@
                                                          }
                                                          @if (canAccessServices)
                                                          {
-                                                             <button type="button" class="action-icon-btn add-services" title="Add Services" @onclick="() => { OpenAddServicesModal(opData); ToggleDropdown(booking.booking_id); }">
+                                                             <button type="button" class="action-icon-btn add-services" title="Add Services" @onclick="async () => { ToggleDropdown(booking.booking_id); await OpenAddServicesModalAsync(opData); }">
                                                                  <i class="bi bi-bag-plus-fill"></i>
                                                              </button>
                                                          }
@@ -930,6 +954,51 @@
                     </div>
                 </div>
 
+                <div class="add-services-section-box">
+                    <div class="add-services-section-header">
+                        <div class="add-services-section-title">
+                            <i class="bi bi-clock-history text-primary"></i>
+                            <span>Previous Services</span>
+                        </div>
+                    </div>
+                    @if (loadingPreviousOpServices)
+                    {
+                        <div class="add-services-previous-services">
+                            <span class="text-muted">Loading previous services...</span>
+                        </div>
+                    }
+                    else if (!string.IsNullOrWhiteSpace(previousOpServicesError))
+                    {
+                        <div class="add-services-previous-services">
+                            <span class="text-danger" title="@previousOpServicesError">Unable to load previous services.</span>
+                        </div>
+                    }
+                    else
+                    {
+                        var previousItems = (previousOpServices?.items ?? new List<OPRegistrationModel.OpServiceItemModel>())
+                            .Where(service => !string.IsNullOrWhiteSpace(service.service_name) || !string.IsNullOrWhiteSpace(service.entrytype))
+                            .ToList();
+                        if (previousItems.Any())
+                        {
+                            <div class="add-services-previous-services">
+                                @foreach (var service in previousItems)
+                                {
+                                    var serviceName = string.IsNullOrWhiteSpace(service.service_name) ? service.entrytype : service.service_name;
+                                    <span class="add-services-previous-item" title="@serviceName">
+                                        @serviceName@if (service.amount.HasValue) { <text> · ₹@service.amount.Value.ToString("N2")</text> }
+                                    </span>
+                                }
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="add-services-previous-services">
+                                <span class="text-muted">No previous services added</span>
+                            </div>
+                        }
+                    }
+                </div>
+
                 <!-- Additional Services Section -->
                 <div class="add-services-section-box">
                     <div class="add-services-section-header">
@@ -988,15 +1057,6 @@
                     }
                 </div>
 
-                <!-- Collapsible Payload Preview -->
-                <div class="cancel-payload-wrapper">
-                    <details class="payload-details">
-                        <summary class="payload-summary">
-                            <i class="bi bi-code-slash"></i> View API Request Details
-                        </summary>
-                        <pre class="payload-code-block">@System.Text.Json.JsonSerializer.Serialize(GetAddServicesPreviewPayload(), new System.Text.Json.JsonSerializerOptions { WriteIndented = true, DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull })</pre>
-                    </details>
-                </div>
             </div>
 
             <!-- Modal Footer -->
@@ -5486,11 +5546,15 @@
     private bool showAddServicesModal = false;
     private bool savingAddServices = false;
     private OPRegistrationModel.OpRegistrationModel? selectedOpForServices;
+    private OPRegistrationModel.OpServicesResponse? previousOpServices;
+    private bool loadingPreviousOpServices;
+    private string? previousOpServicesError;
+    private int previousOpServicesRequestVersion;
     private bool isAddServicesDressingIncluded = false;
     private double? addServicesDressingAmount = null;
     private List<OPRegistrationModel.ComboRegistrationItemRequest> addServicesList = new();
 
-    private void OpenAddServicesModal(OPRegistrationModel.OpRegistrationModel opData)
+    private async Task OpenAddServicesModalAsync(OPRegistrationModel.OpRegistrationModel opData)
     {
         if (!canAccessServices)
         {
@@ -5499,6 +5563,10 @@
         }
 
         selectedOpForServices = opData;
+        previousOpServices = null;
+        previousOpServicesError = null;
+        loadingPreviousOpServices = true;
+        var requestVersion = ++previousOpServicesRequestVersion;
         isAddServicesDressingIncluded = false;
         addServicesDressingAmount = null;
         addServicesList = new List<OPRegistrationModel.ComboRegistrationItemRequest>();
@@ -5513,12 +5581,46 @@
         });
 
         showAddServicesModal = true;
+        StateHasChanged();
+        await LoadPreviousOpServicesAsync(opData.op_id, requestVersion);
+    }
+
+    private async Task LoadPreviousOpServicesAsync(Guid opId, int requestVersion)
+    {
+        try
+        {
+            var result = await BookingService.GetOpServicesAsync(opId);
+            if (requestVersion == previousOpServicesRequestVersion && selectedOpForServices?.op_id == opId)
+            {
+                previousOpServices = result;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (requestVersion == previousOpServicesRequestVersion && selectedOpForServices?.op_id == opId)
+            {
+                previousOpServicesError = ex.Message;
+            }
+            Console.Error.WriteLine($"Unable to load previous OP services for {opId}: {ex.Message}");
+        }
+        finally
+        {
+            if (requestVersion == previousOpServicesRequestVersion && selectedOpForServices?.op_id == opId)
+            {
+                loadingPreviousOpServices = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
     }
 
     private void CloseAddServicesModal()
     {
+        previousOpServicesRequestVersion++;
         showAddServicesModal = false;
         selectedOpForServices = null;
+        previousOpServices = null;
+        loadingPreviousOpServices = false;
+        previousOpServicesError = null;
         addServicesList.Clear();
         isAddServicesDressingIncluded = false;
         addServicesDressingAmount = null;
@@ -5590,40 +5692,6 @@
                 addServicesList[index].amount = null;
             }
         }
-    }
-
-    private object GetAddServicesPreviewPayload()
-    {
-        if (selectedOpForServices == null) return new { };
-
-        var items = new List<OPRegistrationModel.ComboRegistrationItemRequest>();
-        if (isAddServicesDressingIncluded)
-        {
-            items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
-            {
-                item_type = "DRESSING",
-                amount = addServicesDressingAmount
-            });
-        }
-        foreach (var s in addServicesList.Where(x => x.service_id.HasValue && x.service_id.Value > 0))
-        {
-            items.Add(new OPRegistrationModel.ComboRegistrationItemRequest
-            {
-                item_type = "SERVICE",
-                service_id = s.service_id.Value,
-                amount = s.amount
-            });
-        }
-
-        return new OPRegistrationModel.AddServicesToOpRequest
-        {
-            op_id = selectedOpForServices.op_id,
-            op_no = selectedOpForServices.op_no,
-            items = items,
-            enteredbhcode = TenantState?.BranchCode ?? TenantState?.UserData?.BranchCode ?? 1,
-            cntcode = TenantState?.CounterCode ?? TenantState?.UserData?.CounterCode ?? 1,
-            usercode = currentUserCode > 0 ? currentUserCode : 1
-        };
     }
 
     private async Task SubmitAddServicesAsync()

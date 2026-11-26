@@ -786,6 +786,19 @@ namespace Booking.Services
             }
         }
 
+        public async Task<OPRegistrationModel.OpServicesResponse> GetOpServicesAsync(Guid opId)
+        {
+            using var response = await _http.GetAsync($"api/OpRegistration/op-services?op_id={Uri.EscapeDataString(opId.ToString())}");
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                throw new HttpRequestException($"Unable to load OP services ({(int)response.StatusCode}): {errorContent}");
+            }
+
+            return await response.Content.ReadFromJsonAsync<OPRegistrationModel.OpServicesResponse>()
+                ?? throw new InvalidOperationException("The OP services endpoint returned an empty response.");
+        }
+
         public async Task<List<DoctorBookingListModel>> GetDoctorBookingsAsync(int dcode, DateOnly appointmentDate)
         {
             try

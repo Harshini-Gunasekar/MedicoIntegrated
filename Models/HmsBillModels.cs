@@ -294,6 +294,10 @@ namespace Booking.Models
         public double collected_amount { get; set; }
         public double due_amount { get; set; }
         public double advance_adjusted { get; set; }
+        public double? total_collected { get; set; }
+        public double? due_collected { get; set; }
+        public double? sales_return { get; set; }
+        public double? cancelled_bill_total_amount { get; set; }
         public List<HmsOpPaymodeAmount> paymodes { get; set; } = new();
 
         public double CashAmount
@@ -536,6 +540,59 @@ namespace Booking.Models
         public List<HmsOpCategoryAmountRow> categories { get; set; } = new();
         public List<HmsOpServiceAmountRow> services { get; set; } = new();
         public List<HmsOpVisitCategoryRow> visits { get; set; } = new();
+    }
+
+    public class HmsFastCollectionSummaryResponse
+    {
+        public DateTime fromdate { get; set; }
+        public DateTime todate { get; set; }
+        public HmsFastCollectionTotals totals { get; set; } = new();
+        public List<HmsFastCollectionDepartmentSummary> department_summary { get; set; } = new();
+        public List<HmsFastCollectionPaymode> paymode_wise { get; set; } = new();
+        public List<HmsOpPaymodeAmount> advance_deposited_paymodes { get; set; } = new();
+    }
+
+    public class HmsFastCollectionTotals
+    {
+        public double gross_amount { get; set; }
+        public double discount_amount { get; set; }
+        public double net_amount { get; set; }
+        public double bill_collected { get; set; }
+        public double due_collected { get; set; }
+        public double total_collected { get; set; }
+        public double due_amount { get; set; }
+        public double advance_used { get; set; }
+        public double advance_deposited { get; set; }
+        public double advance_refunded { get; set; }
+        public double sales_return { get; set; }
+        public double? cancelled_bill_total_amount { get; set; }
+    }
+
+    public class HmsFastCollectionDepartmentSummary
+    {
+        public string dept { get; set; } = "";
+        public int visit_count { get; set; }
+        public int bill_count { get; set; }
+        public double gross_amount { get; set; }
+        public double discount_amount { get; set; }
+        public double net_amount { get; set; }
+        public double collected_amount { get; set; }
+        public double? due_collected { get; set; }
+        public double? total_collected { get; set; }
+        public double advance_used { get; set; }
+        public double advance_deposited { get; set; }
+        public double advance_refunded { get; set; }
+        public double? sales_return { get; set; }
+        public double due_amount { get; set; }
+        public double? cancelled_bill_total_amount { get; set; }
+    }
+
+    public class HmsFastCollectionPaymode
+    {
+        public string dept { get; set; } = "";
+        public string source { get; set; } = "";
+        public string paymode { get; set; } = "";
+        public double amount { get; set; }
     }
 
     // internal row used by the query

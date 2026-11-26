@@ -247,26 +247,23 @@
 
                 <div class="pharmacy-header-summary pharmacy-billing-summary">
                     <div class="pharmacy-summary-item">
-                        <span>Total Bill Amount</span>
+                        <span>Total Gross Amt</span>
+                        <strong>₹@TotalGrossAmount.ToString("N2")</strong>
+                    </div>
+                    <div class="pharmacy-summary-item">
+                        <span>Dis Amt</span>
+                        <strong>₹@TotalDiscountAmount.ToString("N2")</strong>
+                    </div>
+                    <div class="pharmacy-summary-item">
+                        <span>Total Net Bill</span>
                         <strong>₹@TotalSalesAmount.ToString("N2")</strong>
                     </div>
                     <div class="pharmacy-summary-item pharmacy-summary-collected">
-                        <span>Collected Amount</span>
+                        <span>Collected</span>
                         <strong>@CollectedAmountDisplay</strong>
                     </div>
-                    @foreach (var paymode in ActivePaymodes)
-                    {
-                        <div class="pharmacy-summary-item pharmacy-summary-paymode" title="@paymode.name">
-                            <span>@paymode.name</span>
-                            <strong>@GetPaymodeCollectedDisplay(paymode)</strong>
-                        </div>
-                    }
-                    <div class="pharmacy-summary-item">
-                        <span>Discount</span>
-                        <strong>₹@TotalDiscountAmount.ToString("N2")</strong>
-                    </div>
                     <div class="pharmacy-summary-item" title="@DueCollectionSummaryTitle">
-                        <span>Due Collected</span>
+                        <span>Old Due Collected</span>
                         <strong>@DueCollectedDisplay</strong>
                     </div>
                     <div class="pharmacy-summary-item pharmacy-summary-return" title="@SalesReturnSummaryTitle">
@@ -274,7 +271,7 @@
                         <strong>@SalesReturnAmountDisplay</strong>
                     </div>
                     <div class="pharmacy-summary-item pharmacy-summary-collected" title="@FinalCollectedSummaryTitle">
-                        <span>Final Collected</span>
+                        <span>Final Total Collected</span>
                         <strong>@FinalCollectedDisplay</strong>
                     </div>
                 </div>
@@ -7927,6 +7924,7 @@
                (sale.warehousefield?.Contains(warehouseName, StringComparison.OrdinalIgnoreCase) ?? false);
     }
 
+    private decimal TotalGrossAmount => SalesInSelectedPeriod.Sum(s => s.grossamount);
     private decimal TotalSalesAmount => SalesInSelectedPeriod.Sum(s => s.netamount);
     private decimal TotalDiscountAmount => SalesInSelectedPeriod.Sum(s => s.discountamount);
 
@@ -7981,13 +7979,71 @@
         {
             var dueCollectedSalesCodes = DueCollectedSalesCodes;
             return SalesInSelectedPeriod
-                .Where(IsSalesCollected)
+                .Where(s => s.collectedamount > 0m || IsSalesCollected(s))
                 .Where(s => !dueCollectedSalesCodes.Contains(s.salescode));
         }
     }
 
-    private decimal TotalDueCollected => DueCollectionsInSelectedPeriod.Sum(r => r.master?.totalcollectedamount ?? 0);
-    private decimal TotalCollectedAmount => DirectlyCollectedSales.Sum(s => s.netamount) + TotalDueCollected;
+    private decimal DirectDueCollected => DueCollectionsInSelectedPeriod.Sum(r => r.master?.totalcollectedamount ?? 0);
+    private decimal TotalDueCollected => AccountSummaryOldDueCollected;
+    private decimal TotalDirectCollectedAmount => DirectlyCollectedSales.Sum(GetDirectlyCollectedAmount);
+    private decimal TotalCollectedAmount => AccountSummaryCollectedAmount;
+    private static decimal GetDirectlyCollectedAmount(sales_master sale)
+    {
+        if (sale.collectedamount > 0m)
+        {
+            return sale.collectedamount;
+        }
+
+        return IsSalesCollected(sale) ? sale.netamount : 0m;
+    }
+
+    private HmsOpCategoryCollectionResponse? AccountSummaryReport;
+    private decimal AccountSummaryCollectedAmount
+    {
+        get
+        {
+            if (AccountSummaryReport?.categories == null)
+            {
+                return (decimal)TotalDirectCollectedAmount;
+            }
+
+            return (decimal)AccountSummaryReport.categories
+                .Where(row => !string.IsNullOrWhiteSpace(row.category) &&
+                              row.category.Contains("PHARMACY", StringComparison.OrdinalIgnoreCase) &&
+                              !row.category.Contains("SALES RETURN", StringComparison.OrdinalIgnoreCase))
+                .Sum(row => row.collected_amount != 0 ? row.collected_amount : row.collected);
+        }
+    }
+
+    private decimal AccountSummaryOldDueCollected
+    {
+        get
+        {
+            if (AccountSummaryReport == null)
+            {
+                return (decimal)DirectDueCollected;
+            }
+
+            var pharmacyRows = AccountSummaryReport.categories?
+                .Where(row => !string.IsNullOrWhiteSpace(row.category) &&
+                              row.category.Contains("PHARMACY", StringComparison.OrdinalIgnoreCase) &&
+                              !row.category.Contains("SALES RETURN", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+
+            if (pharmacyRows?.Any(row => row.due_collected.HasValue) == true)
+            {
+                return (decimal)pharmacyRows.Sum(row => row.due_collected.GetValueOrDefault());
+            }
+
+            if (AccountSummaryReport.total_due_cleared != 0)
+            {
+                return (decimal)AccountSummaryReport.total_due_cleared;
+            }
+
+            return (decimal)AccountSummaryReport.due_cleared_today;
+        }
+    }
     private decimal GetTotalCollectedForPaymode(PaymodeMasterModel paymode)
     {
         var directlyCollected = DirectlyCollectedSales.Sum(sale => GetDirectlyCollectedForPaymode(sale, paymode));
@@ -8064,12 +8120,12 @@
     private decimal TotalSalesReturnAmount => SalesReturnsInSelectedPeriod
         .Where(r => r.refundamount.GetValueOrDefault() > 0 && IsSalesReturnRefundReceived(r))
         .Sum(r => r.refundamount.GetValueOrDefault());
-    private decimal TotalFinalCollected => TotalCollectedAmount - TotalSalesReturnAmount;
+    private decimal TotalFinalCollected => TotalCollectedAmount + TotalDueCollected - TotalSalesReturnAmount;
     private string SalesReturnAmountDisplay => SalesReturnLoadError == null ? $"₹{TotalSalesReturnAmount:N2}" : "Unavailable";
     private string FinalCollectedDisplay => SalesReturnLoadError == null && DueCollectionLoadError == null ? $"₹{TotalFinalCollected:N2}" : "Unavailable";
     private string SalesReturnSummaryTitle => SalesReturnLoadError ?? "Received sales return refunds for the selected store and date range.";
     private string DueCollectedDisplay => DueCollectionLoadError == null ? $"₹{TotalDueCollected:N2}" : "Unavailable";
-    private string CollectedAmountDisplay => DueCollectionLoadError == null ? $"₹{TotalCollectedAmount:N2}" : "Unavailable";
+    private string CollectedAmountDisplay => $"₹{TotalCollectedAmount:N2}";
     private string GetPaymodeCollectedDisplay(PaymodeMasterModel paymode) =>
         DueCollectionLoadError == null ? $"₹{GetTotalCollectedForPaymode(paymode):N2}" : "Unavailable";
     private string DueCollectionSummaryTitle => DueCollectionLoadError ?? "Pharmacy due collections for the selected date range.";
@@ -8159,9 +8215,145 @@
         return bNo.StartsWith("#") ? bNo : $"#{bNo}";
     }
 
-    private void OnFilterChanged()
+    private async Task OnFilterChanged()
     {
         CurrentPage = 1;
+        await LoadAccountSummaryTotalsAsync();
+    }
+
+    private async Task LoadAccountSummaryTotalsAsync()
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(DefaultTenant))
+            {
+                var tenantCodeResult = await _sessionStorage.GetAsync<string>("tenant_code");
+                if (tenantCodeResult.Success && !string.IsNullOrWhiteSpace(tenantCodeResult.Value))
+                {
+                    DefaultTenant = tenantCodeResult.Value;
+                }
+            }
+
+            var client = ClientFactory.CreateClient("Medico");
+            client.DefaultRequestHeaders.Remove("tenant_code");
+            client.DefaultRequestHeaders.Remove("tenantcode");
+            client.DefaultRequestHeaders.TryAddWithoutValidation("tenant_code", DefaultTenant);
+            client.DefaultRequestHeaders.TryAddWithoutValidation("tenantcode", DefaultTenant);
+            if (!string.IsNullOrWhiteSpace(AuthToken))
+            {
+                client.DefaultRequestHeaders.Authorization =
+                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", AuthToken);
+            }
+
+            var queryParams = new List<string>
+            {
+                $"fromdate={selectedReportFromDate:yyyy-MM-dd}",
+                $"todate={selectedReportToDate:yyyy-MM-dd}",
+                $"tenant_code={Uri.EscapeDataString(DefaultTenant)}"
+            };
+            if (SelectedBhCode > 0)
+            {
+                queryParams.Add($"bhcode={SelectedBhCode}");
+            }
+
+            using var response = await client.GetAsync(
+                $"api/HmsBilling/reports/fast-collection-summary?{string.Join("&", queryParams)}");
+            if (!response.IsSuccessStatusCode)
+            {
+                AccountSummaryReport = null;
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            AccountSummaryReport = DeserializeAccountSummaryReport(json);
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[SalesMaster] Unable to load Account Summary totals: {ex.Message}");
+            AccountSummaryReport = null;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private static HmsOpCategoryCollectionResponse? DeserializeAccountSummaryReport(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+
+        while (root.ValueKind == JsonValueKind.Object)
+        {
+            JsonElement? payload = null;
+            foreach (var property in root.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.Object &&
+                    (string.Equals(property.Name, "data", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(property.Name, "result", StringComparison.OrdinalIgnoreCase) ||
+                     string.Equals(property.Name, "value", StringComparison.OrdinalIgnoreCase)))
+                {
+                    payload = property.Value;
+                    break;
+                }
+            }
+
+            if (!payload.HasValue)
+            {
+                break;
+            }
+            root = payload.Value;
+        }
+
+        var rootFields = root.ValueKind == JsonValueKind.Object
+            ? root.EnumerateObject().Select(property => property.Name).ToHashSet(StringComparer.OrdinalIgnoreCase)
+            : new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!rootFields.Contains("totals") || !rootFields.Contains("department_summary"))
+        {
+            return null;
+        }
+
+        var fastSummary = JsonSerializer.Deserialize<HmsFastCollectionSummaryResponse>(
+            root.GetRawText(),
+            new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+        if (fastSummary == null)
+        {
+            return null;
+        }
+
+        var categories = fastSummary.department_summary
+            .Select(department => new HmsOpCategoryAmountRow
+            {
+                category = department.dept,
+                visit_count = department.visit_count,
+                bill_count = department.bill_count,
+                gross_amount = department.gross_amount,
+                discount_amount = department.discount_amount,
+                net_amount = department.net_amount,
+                collected_amount = department.collected_amount,
+                collected = department.collected_amount,
+                due_amount = department.due_amount,
+                due = department.due_amount,
+                advance_adjusted = department.advance_used,
+                total_collected = department.total_collected,
+                due_collected = department.due_collected,
+                sales_return = department.sales_return,
+                cancelled_bill_total_amount = department.cancelled_bill_total_amount
+            })
+            .ToList();
+
+        return new HmsOpCategoryCollectionResponse
+        {
+            fromdate = fastSummary.fromdate,
+            todate = fastSummary.todate,
+            total_gross = fastSummary.totals.gross_amount,
+            total_discount = fastSummary.totals.discount_amount,
+            total_net = fastSummary.totals.net_amount,
+            total_collected = fastSummary.totals.total_collected,
+            total_due = fastSummary.totals.due_amount,
+            total_due_cleared = fastSummary.totals.due_collected,
+            due_cleared_today = fastSummary.totals.due_collected,
+            categories = categories
+        };
     }
 
     private IEnumerable<sales_master> PagedSales => 
@@ -8300,6 +8492,7 @@
             EvaluateRights();
 
             await Task.WhenAll(LoadSales(), LoadSalesReturnLogs(), LoadDueCollectionsAsync(), LoadCustomers(), LoadItems(), LoadCategories(), LoadStocks(), LoadWarehouses(), LoadBranches(), LoadCounters(), LoadPatientPartition(), LoadOpRegistrations(), LoadIpRegistrations(), LoadDoctors(), LoadLabSetting(), LoadPurchases(), LoadPaymodesAsync());
+            await LoadAccountSummaryTotalsAsync();
             await LoadBranchAndCounterFromSessionAsync();
             await LoadDraftTabsFromSessionAsync();
             await LoadBilledPrescriptionsFromSessionAsync();
