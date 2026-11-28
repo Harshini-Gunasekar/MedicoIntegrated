@@ -5,11 +5,14 @@
 @using Booking.Models
 @using Booking.Services
 @using Booking.Helpers
+@using System.Net.Http.Json
 @inject GroupMasterService GroupService
 @inject ToastService ToastService
 @inject IJSRuntime JSRuntime
 @inject NavigationManager Navigation
 @inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject IHttpClientFactory ClientFactory
+@inject ProtectedLocalStorage SessionStorage
 
 <div class="referral-page lc-fadeInUp">
     @* --- HEADER CONSOLE --- *@
@@ -50,8 +53,7 @@
                         <th style="width: 100px;">ORDER NO</th>
                         <th style="width: 130px;">SHORT NAME</th>
                         <th>GROUP NAME</th>
-                        <th style="width: 100px;">DCODE</th>
-                        <th style="width: 150px;">DEPT. CODE</th>
+                        <th style="width: 180px;">DEPARTMENT</th>
                         <th>STATUS / FLAGS</th>
                         <th style="width: 180px;">ENTERED DATE</th>
                         <th style="width: 180px;">MODIFIED DATE</th>
@@ -67,8 +69,7 @@
                                 <td><span class="font-bold text-indigo-600">@($"{g.orderno:00}")</span></td>
                                 <td class="lc-color-slate-500 lc-font-mono lc-font-700 lc-font-13">@g.shortname</td>
                                 <td class="font-bold text-slate-800">@g.name</td>
-                                <td><span class="lc-color-slate-600 font-bold">@(g.dcode?.ToString("0") ?? "-")</span></td>
-                                <td><span class="lc-color-slate-600 font-bold">@(g.departmentcode?.ToString("0") ?? "-")</span></td>
+                                <td><span class="lc-color-slate-600 font-bold">@GetDepartmentName(g.dptcode)</span></td>
                                 <td>
                                     <div class="display-flex flex-wrap gap-4" style="flex-wrap: wrap;">
                                         @if (g.islab == true) { <span class="flag-badge bg-lab">LAB</span> }
@@ -105,7 +106,7 @@
                     else
                     {
                         <tr>
-                            <td colspan="9" class="text-center p-48 text-slate-400 italic">No group records found.</td>
+                            <td colspan="8" class="text-center p-48 text-slate-400 italic">No group records found.</td>
                         </tr>
                     }
                 </tbody>
@@ -144,8 +145,8 @@
                             </div>
                         </div>
 
-                        @* Line 2: Order no, Short Name, DCode, Dept. Code *@
-                        <div class="um-grid-cols-4">
+                        @* Line 2: Order no, Short Name, Department *@
+                        <div class="um-grid-cols-3">
                             <div class="form-group">
                                 <label>Order no</label>
                                 <input type="number" class="lab-input" @bind="current.orderno" />
@@ -155,12 +156,14 @@
                                 <input type="text" class="lab-input" @bind="current.shortname" placeholder="e.g. BIOCHEM" />
                             </div>
                             <div class="form-group">
-                                <label>DCode</label>
-                                <input type="number" class="lab-input" @bind="current.dcode" />
-                            </div>
-                            <div class="form-group">
-                                <label>Dept. Code</label>
-                                <input type="number" class="lab-input" @bind="current.departmentcode" />
+                                <label>Department</label>
+                                <select class="lab-input" @bind="current.dptcode">
+                                    <option value="">Select department</option>
+                                    @foreach (var department in departments)
+                                    {
+                                        <option value="@department.dptcode">@department.name</option>
+                                    }
+                                </select>
                             </div>
                         </div>
 
@@ -242,10 +245,13 @@
     }
 
     private List<Booking.Models.GroupMasterModel> groups = new();
+    private List<Medico_Backend.Model.DepartmentMasterModel> departments = new();
     private Booking.Models.GroupMasterModel current = new();
     private bool isEditMode = false;
     private bool showForm = false;
     private bool isSubmitted = false;
+    private bool departmentsLoaded = false;
+    private string departmentTenantCode = string.Empty;
     private string SearchQuery = "";
 
     private IEnumerable<Booking.Models.GroupMasterModel> FilteredGroups =>
@@ -256,11 +262,55 @@
             string.IsNullOrWhiteSpace(SearchQuery) || 
             (g.name != null && g.name.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)) ||
             (g.shortname != null && g.shortname.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)) ||
-            (g.description != null && g.description.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)));
+            (g.description != null && g.description.Contains(SearchQuery, StringComparison.OrdinalIgnoreCase)) ||
+            GetDepartmentName(g.dptcode).Contains(SearchQuery, StringComparison.OrdinalIgnoreCase));
 
     protected override async Task OnInitializedAsync()
     {
         await LoadGroups();
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || departmentsLoaded)
+        {
+            return;
+        }
+
+        departmentsLoaded = true;
+        try
+        {
+            var storedTenant = await SessionStorage.GetAsync<string>("tenant_code");
+            departmentTenantCode = !string.IsNullOrWhiteSpace(TenantState.TenantCode)
+                ? TenantState.TenantCode
+                : storedTenant.Success ? storedTenant.Value ?? string.Empty : string.Empty;
+
+            if (string.IsNullOrWhiteSpace(departmentTenantCode))
+            {
+                throw new InvalidOperationException("Tenant code is unavailable; departments cannot be loaded.");
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Get, "api/DepartmentMaster/get");
+            request.Headers.TryAddWithoutValidation("tenant_code", departmentTenantCode);
+            using var response = await ClientFactory.CreateClient("MedicoAPI").SendAsync(request);
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                throw new HttpRequestException($"Department request failed ({(int)response.StatusCode}): {error}");
+            }
+
+            var result = await response.Content.ReadFromJsonAsync<List<Medico_Backend.Model.DepartmentMasterModel>>();
+            departments = (result ?? new List<Medico_Backend.Model.DepartmentMasterModel>())
+                .Where(department => !department.deleted && department.dptcode.HasValue)
+                .OrderBy(department => department.orderno)
+                .ThenBy(department => department.name)
+                .ToList();
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            ToastService.ShowError($"Failed to load departments: {ex.Message}");
+        }
     }
 
     private async Task LoadGroups()
@@ -293,8 +343,7 @@
             ibsdate = DateTime.Now,
             orderno = groups.Count + 1,
             tenant_code = "TEN007",
-            dcode = 1,
-            departmentcode = 1,
+            dptcode = departments.FirstOrDefault()?.dptcode,
             islab = true,
             isscan = false,
             ischarges = true,
@@ -314,13 +363,12 @@
         {
             gcode = g.gcode,
             tenant_code = g.tenant_code,
-            dcode = g.dcode,
+            dptcode = g.dptcode,
             orderno = g.orderno,
             shortname = g.shortname,
             name = g.name,
             description = g.description,
             footer = g.footer,
-            departmentcode = g.departmentcode,
             isscan = g.isscan,
             islab = g.islab,
             deleted = g.deleted,
@@ -344,6 +392,12 @@
         if (string.IsNullOrWhiteSpace(current.name))
         {
             ToastService.ShowError("Group Name is required.");
+            StateHasChanged();
+            return;
+        }
+        if (current.dptcode is null)
+        {
+            ToastService.ShowError("Department is required.");
             StateHasChanged();
             return;
         }
@@ -425,5 +479,16 @@
         isEditMode = false;
         showForm = false;
         isSubmitted = false;
+    }
+
+    private string GetDepartmentName(decimal? departmentCode)
+    {
+        if (departmentCode is null)
+        {
+            return "-";
+        }
+
+        return departments.FirstOrDefault(department => department.dptcode == departmentCode)?.name
+            ?? departmentCode.Value.ToString("0");
     }
 }

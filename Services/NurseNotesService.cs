@@ -450,6 +450,29 @@ namespace Booking.Services
             }
         }
 
+        public async Task<(bool Success, string Message)> AuthorizeMedicineAsync(AuthorizeMedicineRequest request, string? tenantCode = null, int? userCode = null)
+        {
+            try
+            {
+                if (request.usercode <= 0 && userCode.HasValue && userCode.Value > 0)
+                    request.usercode = userCode.Value;
+                if (request.usercode <= 0)
+                    request.usercode = 1;
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/medicine/authorize");
+                req.Content = JsonContent.Create(request);
+                AddTenantHeaders(req, tenantCode, userCode ?? request.usercode);
+
+                var response = await _http.SendAsync(req);
+                var raw = await response.Content.ReadAsStringAsync();
+                return (response.IsSuccessStatusCode, ParseResponseMessage(raw, response.IsSuccessStatusCode, "Medicine authorized and sent to pharmacy unbilled."));
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error authorizing medicine: {ex.Message}");
+            }
+        }
+
         public async Task<(bool Success, string Message)> DeleteMedicineAsync(Guid medId, string? tenantCode = null, int? userCode = null)
         {
             try
@@ -487,37 +510,6 @@ namespace Booking.Services
             catch (Exception ex)
             {
                 return (false, $"Error saving prescription: {ex.Message}");
-            }
-        }
-
-        public async Task<(bool Success, string Message)> SendMedicinesToPharmacyAsync(Guid ipId, decimal custId = 0, int userCode = 1, string? tenantCode = null)
-        {
-            try
-            {
-                // 1. Try dedicated endpoint: POST api/IpBedsideChart/medicine/send-to-pharmacy
-                using var req = new HttpRequestMessage(HttpMethod.Post, "api/IpBedsideChart/medicine/send-to-pharmacy");
-                req.Content = JsonContent.Create(new { ip_id = ipId });
-                AddTenantHeaders(req, tenantCode, userCode);
-
-                var response = await _http.SendAsync(req);
-                if (response.IsSuccessStatusCode)
-                {
-                    var raw = await response.Content.ReadAsStringAsync();
-                    return (true, ParseResponseMessage(raw, true, "Medicines dispatched to pharmacy queue successfully."));
-                }
-
-                // 2. Fallback to BedsideChart Authorize which marks medications authorized & pushes to pharmacy
-                var authReq = new AuthorizeNurseNotesRequest
-                {
-                    ip_id = ipId,
-                    custid = custId,
-                    usercode = userCode
-                };
-                return await AuthorizeNurseNotesAsync(authReq, tenantCode, userCode);
-            }
-            catch (Exception ex)
-            {
-                return (false, $"Error sending medicines to pharmacy: {ex.Message}");
             }
         }
 

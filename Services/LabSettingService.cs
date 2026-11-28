@@ -74,6 +74,8 @@ namespace Booking.Services
                 if (!setting.auto_route_billing_after_register.HasValue) setting.auto_route_billing_after_register = false;
                 if (!setting.use_inventory_billno_sequence.HasValue) setting.use_inventory_billno_sequence = true;
                 if (string.IsNullOrWhiteSpace(setting.inventory_bill_seq_mode)) setting.inventory_bill_seq_mode = "OLD";
+                if (!setting.pharmacy_purchase_against_master.HasValue) setting.pharmacy_purchase_against_master = false;
+                if (!setting.status_change_on_casesheet_save.HasValue) setting.status_change_on_casesheet_save = false;
 
                 _cachedSetting = setting;
                 _cachedTenantCode = currentTenant;
@@ -97,7 +99,9 @@ namespace Booking.Services
                     show_physical_bill = true,
                     payment_required_online_reg = false,
                     enable_combo_registration = false,
-                    auto_route_billing_after_register = false
+                    auto_route_billing_after_register = false,
+                    pharmacy_purchase_against_master = false,
+                    status_change_on_casesheet_save = false
                 };
             }
         }

@@ -183,6 +183,10 @@ namespace Booking.Models
         public bool? use_inventory_billno_sequence { get; set; } = true;
         public string? inventory_bill_seq_mode { get; set; } = "OLD";
         public bool? is_pharmacy_payment_required { get; set; } = false;
+        // Pharmacy purchase must be raised against a master (PO / indent) entry.
+        public bool? pharmacy_purchase_against_master { get; set; } = false;
+        // Change patient/OP status automatically when a case sheet is saved.
+        public bool? status_change_on_casesheet_save { get; set; } = false;
         // Shift timing: FIXED = system closes at shift_end_time (or midnight); VARIABLE = user closes / closes at midnight
         public string? shift_timing_mode { get; set; } = "VARIABLE";
         public string? shift_end_time { get; set; }   // "HH:mm", used only when FIXED

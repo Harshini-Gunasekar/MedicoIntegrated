@@ -174,8 +174,8 @@ namespace medico_backend.Model
             [ExplicitKey] public Guid med_id { get; set; } = Guid.NewGuid();
             public Guid ip_id { get; set; }
             public decimal custid { get; set; }
-            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.Today);
-            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.Now);
+            public DateOnly entry_date { get; set; } = DateOnly.FromDateTime(DateTime.UtcNow);
+            public TimeOnly entry_time { get; set; } = TimeOnly.FromDateTime(DateTime.UtcNow);
             public string shift { get; set; } = "MORNING";
             public string medicine_name { get; set; } = string.Empty;
             public decimal? dose { get; set; }
@@ -189,6 +189,9 @@ namespace medico_backend.Model
             public bool isdeleted { get; set; } = false;
             public bool sent_to_pharmacy { get; set; } = false;
             public DateTime? sent_to_pharmacy_at { get; set; }
+            public bool is_authorized { get; set; } = false;
+            public int? authorized_by { get; set; }
+            public DateTime? authorized_at { get; set; }
             public DateTime created_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
             public DateTime updated_at { get; set; } = DateTime.SpecifyKind(DateTime.UtcNow, DateTimeKind.Utc);
 
@@ -214,10 +217,17 @@ namespace medico_backend.Model
             public decimal? mrp { get; set; }
             public string? batch_no { get; set; }
             public string? batchno { get => batch_no; set => batch_no = value; }
-            public DateTime? batch_expiry_date { get; set; }
+            public DateOnly? batch_expiry_date { get; set; }
             public long? stockcode { get; set; }
             public long? warehousecode { get; set; }
             public string? notes { get; set; }
+        }
+
+        public class AuthorizeMedicineRequest
+        {
+            public Guid ip_id { get; set; }
+            public int usercode { get; set; }
+            public List<Guid> med_ids { get; set; } = new();
         }
 
         public class AddMedicineRequest

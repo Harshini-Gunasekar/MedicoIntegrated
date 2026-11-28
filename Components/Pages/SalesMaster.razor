@@ -2935,6 +2935,12 @@
                     if (queueId.HasValue && queueId.Value != Guid.Empty && d.queue_id == queueId.Value) return true;
                     if (prDetId.HasValue && prDetId.Value != Guid.Empty && d.pr_det_id == prDetId.Value) return true;
 
+                    bool saleDetailHasSpecificId =
+                        (d.queue_id.HasValue && d.queue_id.Value != Guid.Empty) ||
+                        (d.pr_det_id.HasValue && d.pr_det_id.Value != Guid.Empty);
+                    if (hasSpecificId && saleDetailHasSpecificId)
+                        continue;
+
                     // Match by batch if specified: "once billed that respective medicine for that batch once then remove from unbilled"
                     if (!string.IsNullOrWhiteSpace(batchNo) && batchNo != "-" &&
                         !string.IsNullOrWhiteSpace(d.batchno) && d.batchno != "-" &&
@@ -3003,7 +3009,9 @@
         long itemCode = r.matched_itemcode ?? 0;
         var batchNo = (!string.IsNullOrWhiteSpace(r.batch_no) ? r.batch_no : r.batchno)?.Trim();
 
-        if (!string.IsNullOrWhiteSpace(drugName))
+        bool hasSpecificId = r.queue_id != Guid.Empty ||
+                             (r.pr_det_id.HasValue && r.pr_det_id.Value != Guid.Empty);
+        if (!hasSpecificId && !string.IsNullOrWhiteSpace(drugName))
         {
             var cleanDrugNorm = System.Text.RegularExpressions.Regex.Replace(drugName.Trim().ToUpperInvariant(), @"[^A-Z0-9]", "");
             if (!string.IsNullOrWhiteSpace(cleanDrugNorm))
@@ -3159,7 +3167,7 @@
         var batchNo = (!string.IsNullOrWhiteSpace(med.batch_no) ? med.batch_no : med.batchno)?.Trim();
 
         // Check if item was cancelled/discarded for this patient
-        if (!string.IsNullOrWhiteSpace(cleanDrugNorm))
+        if (med.med_id == Guid.Empty && !string.IsNullOrWhiteSpace(cleanDrugNorm))
         {
             if (custId > 0 && (CancelledItemKeys.Contains($"{custId}_{cleanDrugNorm}") || CancelledItemKeys.Contains($"CUST_{custId}_{cleanDrugNorm}"))) return true;
             var pId = CurrentRequest?.master?.patientid ?? PatientIdSearchText;
@@ -3200,7 +3208,7 @@
             }
 
             // 2. Batch-level match: "once billed that respective medicine for that batch once then remove from unbilled"
-            if (!string.IsNullOrWhiteSpace(batchNo) && batchNo != "-")
+            if (med.med_id == Guid.Empty && !string.IsNullOrWhiteSpace(batchNo) && batchNo != "-")
             {
                 foreach (var sale in patSales)
                 {
@@ -3225,7 +3233,7 @@
             }
 
             // 3. Date-aware matching for past/legacy bills where pr_det_id was not populated
-            if (medDate.HasValue && (!string.IsNullOrWhiteSpace(cleanDrugNorm) || itemCode > 0))
+            if (med.med_id == Guid.Empty && medDate.HasValue && (!string.IsNullOrWhiteSpace(cleanDrugNorm) || itemCode > 0))
             {
                 foreach (var sale in patSales)
                 {
@@ -3317,6 +3325,7 @@
     private void AddNurseMedToPendingPrescriptions(NurseMedicineModel nm)
     {
         if (nm == null) return;
+        if (!nm.is_authorized) return;
         long itemCode = nm.drug_code.HasValue ? (long)nm.drug_code.Value : 0;
         string drugName = !string.IsNullOrWhiteSpace(nm.medicine_name) ? nm.medicine_name : "Medicine";
 
@@ -3381,7 +3390,9 @@
             Date = nm.created_at,
             PrDetId = nm.med_id,
             BatchNo = bNo,
-            ExpiryDate = nm.batch_expiry_date,
+            ExpiryDate = nm.batch_expiry_date.HasValue
+                ? nm.batch_expiry_date.Value.ToDateTime(TimeOnly.MinValue)
+                : (DateTime?)null,
             StockCode = nm.stockcode,
             WarehouseCode = nm.warehousecode,
             Source = "Nurse Notes",
@@ -5660,6 +5671,14 @@
             // patient-specific view if the API returns unfiltered tenant rows.
             var validRows = rows?
                 .Where(r => r.custid == custId && !IsQueueRowBilledOrDispensed(r, custId))
+                .Where(r =>
+                {
+                    if (!r.pr_det_id.HasValue || nurseMeds == null)
+                        return true;
+
+                    var nurseMed = nurseMeds.FirstOrDefault(nm => nm.med_id == r.pr_det_id.Value);
+                    return nurseMed == null || nurseMed.is_authorized;
+                })
                 .ToList();
 
             if (validRows != null && validRows.Any())
@@ -5752,7 +5771,7 @@
                             }
                             if (matchedNurseMed.batch_expiry_date.HasValue)
                             {
-                                rowExpiry = matchedNurseMed.batch_expiry_date.Value;
+                                rowExpiry = matchedNurseMed.batch_expiry_date.Value.ToDateTime(TimeOnly.MinValue);
                             }
                             if (matchedNurseMed.stockcode.HasValue && matchedNurseMed.stockcode.Value > 0)
                             {
@@ -5950,7 +5969,7 @@
                                     }
                                     if (matchedNurseMed.batch_expiry_date.HasValue)
                                     {
-                                        csExpiry = matchedNurseMed.batch_expiry_date.Value;
+                                        csExpiry = matchedNurseMed.batch_expiry_date.Value.ToDateTime(TimeOnly.MinValue);
                                     }
                                     if (matchedNurseMed.stockcode.HasValue && matchedNurseMed.stockcode.Value > 0)
                                     {
@@ -6300,11 +6319,18 @@
                 {
                     var responseString = await client.GetStringAsync($"api/ItemMaster/pharmacy-queue/by-custid?custid={custId}");
                     var rows = ParsePharmacyQueueJson(responseString);
+                    Guid? rawQueueId = item.RawQueueRow?.queue_id;
+                    bool hasSpecificItemId =
+                        (queueId.HasValue && queueId.Value != Guid.Empty) ||
+                        (rawQueueId.HasValue && rawQueueId.Value != Guid.Empty) ||
+                        (item.PrDetId.HasValue && item.PrDetId.Value != Guid.Empty);
+
                     var matches = rows?.Where(r =>
                         (queueId.HasValue && r.queue_id == queueId.Value) ||
                         (item.PrDetId.HasValue && r.pr_det_id.HasValue && r.pr_det_id.Value == item.PrDetId.Value) ||
-                        (item.MatchedItemCode.HasValue && item.MatchedItemCode.Value > 0 && r.matched_itemcode.HasValue && r.matched_itemcode.Value == item.MatchedItemCode.Value) ||
-                        (!string.IsNullOrWhiteSpace(item.DrugName) && !string.IsNullOrWhiteSpace(r.drug_name) &&
+                        (rawQueueId.HasValue && rawQueueId.Value != Guid.Empty && r.queue_id == rawQueueId.Value) ||
+                        (!hasSpecificItemId && item.MatchedItemCode.HasValue && item.MatchedItemCode.Value > 0 && r.matched_itemcode.HasValue && r.matched_itemcode.Value == item.MatchedItemCode.Value) ||
+                        (!hasSpecificItemId && !string.IsNullOrWhiteSpace(item.DrugName) && !string.IsNullOrWhiteSpace(r.drug_name) &&
                          string.Equals(item.DrugName.Trim(), r.drug_name.Trim(), StringComparison.OrdinalIgnoreCase))
                     ).ToList();
 
@@ -6374,7 +6400,6 @@
                     try
                     {
                         var effTenant = !string.IsNullOrWhiteSpace(DefaultTenant) ? DefaultTenant : (TenantState?.TenantCode ?? "0010");
-                        await NurseNotesService.DeleteMedicineAsync(item.PrDetId.Value, effTenant, 1);
                         await NurseNotesService.UpdateMedicineAsync(new UpdateMedicineRequest
                         {
                             med_id = item.PrDetId.Value,
@@ -7924,9 +7949,26 @@
                (sale.warehousefield?.Contains(warehouseName, StringComparison.OrdinalIgnoreCase) ?? false);
     }
 
-    private decimal TotalGrossAmount => SalesInSelectedPeriod.Sum(s => s.grossamount);
-    private decimal TotalSalesAmount => SalesInSelectedPeriod.Sum(s => s.netamount);
-    private decimal TotalDiscountAmount => SalesInSelectedPeriod.Sum(s => s.discountamount);
+    private IEnumerable<HmsOpCategoryAmountRow> AccountSummaryPharmacyRows =>
+        AccountSummaryReport?.categories?
+            .Where(row => !string.IsNullOrWhiteSpace(row.category) &&
+                          row.category.Contains("PHARMACY", StringComparison.OrdinalIgnoreCase) &&
+                          !row.category.Contains("SALES RETURN", StringComparison.OrdinalIgnoreCase))
+        ?? Enumerable.Empty<HmsOpCategoryAmountRow>();
+    private decimal TotalGrossAmount => AccountSummaryReport?.categories == null
+        ? SalesInSelectedPeriod.Sum(s => s.grossamount)
+        : (decimal)AccountSummaryPharmacyRows.Sum(row => row.gross_amount != 0 ? row.gross_amount : row.gross);
+    private decimal TotalSalesAmount => AccountSummaryReport?.categories == null
+        ? SalesInSelectedPeriod.Sum(s => s.netamount)
+        : (decimal)AccountSummaryPharmacyRows.Sum(row =>
+            row.net_amount != 0 ? row.net_amount :
+            row.net != 0 ? row.net :
+            (row.gross_amount != 0 ? row.gross_amount : row.gross) -
+            (row.discount_amount != 0 ? row.discount_amount : row.discount));
+    private decimal TotalDiscountAmount => AccountSummaryReport?.categories == null
+        ? SalesInSelectedPeriod.Sum(s => s.discountamount)
+        : (decimal)AccountSummaryPharmacyRows.Sum(row =>
+            row.discount_amount != 0 ? row.discount_amount : row.discount);
 
     private IEnumerable<PharmacyDueCollectionRecord> DueCollectionsInSelectedPeriod
     {
@@ -7999,6 +8041,7 @@
     }
 
     private HmsOpCategoryCollectionResponse? AccountSummaryReport;
+    private int accountSummaryRequestVersion;
     private decimal AccountSummaryCollectedAmount
     {
         get
@@ -8008,10 +8051,7 @@
                 return (decimal)TotalDirectCollectedAmount;
             }
 
-            return (decimal)AccountSummaryReport.categories
-                .Where(row => !string.IsNullOrWhiteSpace(row.category) &&
-                              row.category.Contains("PHARMACY", StringComparison.OrdinalIgnoreCase) &&
-                              !row.category.Contains("SALES RETURN", StringComparison.OrdinalIgnoreCase))
+            return (decimal)AccountSummaryPharmacyRows
                 .Sum(row => row.collected_amount != 0 ? row.collected_amount : row.collected);
         }
     }
@@ -8025,11 +8065,7 @@
                 return (decimal)DirectDueCollected;
             }
 
-            var pharmacyRows = AccountSummaryReport.categories?
-                .Where(row => !string.IsNullOrWhiteSpace(row.category) &&
-                              row.category.Contains("PHARMACY", StringComparison.OrdinalIgnoreCase) &&
-                              !row.category.Contains("SALES RETURN", StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var pharmacyRows = AccountSummaryPharmacyRows.ToList();
 
             if (pharmacyRows?.Any(row => row.due_collected.HasValue) == true)
             {
@@ -8117,14 +8153,28 @@
         }
     }
 
-    private decimal TotalSalesReturnAmount => SalesReturnsInSelectedPeriod
-        .Where(r => r.refundamount.GetValueOrDefault() > 0 && IsSalesReturnRefundReceived(r))
-        .Sum(r => r.refundamount.GetValueOrDefault());
+    private bool AccountSummarySalesReturnAvailable =>
+        AccountSummaryPharmacyRows.Any(row => row.sales_return.HasValue);
+    private decimal TotalSalesReturnAmount => AccountSummarySalesReturnAvailable
+        ? (decimal)AccountSummaryPharmacyRows.Sum(row => row.sales_return.GetValueOrDefault())
+        : SalesReturnsInSelectedPeriod
+            .Where(r => r.refundamount.GetValueOrDefault() > 0 && IsSalesReturnRefundReceived(r))
+            .Sum(r => r.refundamount.GetValueOrDefault());
     private decimal TotalFinalCollected => TotalCollectedAmount + TotalDueCollected - TotalSalesReturnAmount;
-    private string SalesReturnAmountDisplay => SalesReturnLoadError == null ? $"₹{TotalSalesReturnAmount:N2}" : "Unavailable";
-    private string FinalCollectedDisplay => SalesReturnLoadError == null && DueCollectionLoadError == null ? $"₹{TotalFinalCollected:N2}" : "Unavailable";
+    private string SalesReturnAmountDisplay =>
+        AccountSummarySalesReturnAvailable || SalesReturnLoadError == null
+            ? $"₹{TotalSalesReturnAmount:N2}"
+            : "Unavailable";
+    private string FinalCollectedDisplay =>
+        (AccountSummarySalesReturnAvailable || SalesReturnLoadError == null) &&
+        (AccountSummaryReport != null || DueCollectionLoadError == null)
+            ? $"₹{TotalFinalCollected:N2}"
+            : "Unavailable";
     private string SalesReturnSummaryTitle => SalesReturnLoadError ?? "Received sales return refunds for the selected store and date range.";
-    private string DueCollectedDisplay => DueCollectionLoadError == null ? $"₹{TotalDueCollected:N2}" : "Unavailable";
+    private string DueCollectedDisplay =>
+        AccountSummaryReport != null || DueCollectionLoadError == null
+            ? $"₹{TotalDueCollected:N2}"
+            : "Unavailable";
     private string CollectedAmountDisplay => $"₹{TotalCollectedAmount:N2}";
     private string GetPaymodeCollectedDisplay(PaymodeMasterModel paymode) =>
         DueCollectionLoadError == null ? $"₹{GetTotalCollectedForPaymode(paymode):N2}" : "Unavailable";
@@ -8223,6 +8273,7 @@
 
     private async Task LoadAccountSummaryTotalsAsync()
     {
+        var requestVersion = ++accountSummaryRequestVersion;
         try
         {
             if (string.IsNullOrWhiteSpace(DefaultTenant))
@@ -8260,20 +8311,34 @@
                 $"api/HmsBilling/reports/fast-collection-summary?{string.Join("&", queryParams)}");
             if (!response.IsSuccessStatusCode)
             {
-                AccountSummaryReport = null;
-                await InvokeAsync(StateHasChanged);
+                if (requestVersion == accountSummaryRequestVersion)
+                {
+                    AccountSummaryReport = null;
+                }
                 return;
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            AccountSummaryReport = DeserializeAccountSummaryReport(json);
-            await InvokeAsync(StateHasChanged);
+            var report = DeserializeAccountSummaryReport(json);
+            if (requestVersion == accountSummaryRequestVersion)
+            {
+                AccountSummaryReport = report;
+            }
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[SalesMaster] Unable to load Account Summary totals: {ex.Message}");
-            AccountSummaryReport = null;
-            await InvokeAsync(StateHasChanged);
+            if (requestVersion == accountSummaryRequestVersion)
+            {
+                AccountSummaryReport = null;
+            }
+        }
+        finally
+        {
+            if (requestVersion == accountSummaryRequestVersion)
+            {
+                await InvokeAsync(StateHasChanged);
+            }
         }
     }
 

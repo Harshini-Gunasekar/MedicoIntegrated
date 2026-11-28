@@ -9,11 +9,11 @@ namespace Booking.Models
     {
         [Key]
         public decimal gcode { get; set; }
+                    
+        public decimal? dptcode { get; set; }
 
         public string? tenant_code { get; set; }
-
-        public decimal? dcode { get; set; }
-
+        
         public int orderno { get; set; }
 
         [Required(ErrorMessage = "Group Name is required")]
@@ -25,7 +25,7 @@ namespace Booking.Models
 
         public string? footer { get; set; }
 
-        public decimal? departmentcode { get; set; }
+
 
         public bool? isscan { get; set; }
 

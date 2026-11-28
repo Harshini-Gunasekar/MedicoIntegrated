@@ -1,0 +1,656 @@
+@page "/department-wise-collection"
+@rendermode @(new InteractiveServerRenderMode(prerender: false))
+@using System.Globalization
+@using System.Net.Http.Headers
+@using System.Text.Json
+@using Booking.Models
+@using Medico_Backend.Model
+@inject IHttpClientFactory ClientFactory
+@inject SharedComponents.Rcl.Services.TenantSessionState TenantState
+@inject Microsoft.AspNetCore.Components.Server.ProtectedBrowserStorage.ProtectedLocalStorage SessionStorage
+@inject Booking.Services.ToastService ToastService
+
+<PageTitle>Departmental Collection | Medico</PageTitle>
+
+<div class="department-collection-page">
+    <header class="dc-header">
+        <div class="dc-title">
+            <span class="dc-title-icon"><i class="bi bi-bar-chart-line"></i></span>
+            <div>
+                <h1>Departmental Collection</h1>
+                <p>Collection, dues, advances and billing breakdown by department</p>
+            </div>
+        </div>
+    </header>
+
+    <section class="dc-filters" aria-label="Departmental collection filters">
+        <div class="dc-filter-field">
+            <label for="dc-department">Department</label>
+            <select id="dc-department" class="form-select" @bind="selectedDptCode">
+                <option value="0">All departments</option>
+                @foreach (var department in departments)
+                {
+                    if (department.dptcode.HasValue)
+                    {
+                        <option value="@department.dptcode.Value">
+                            @(string.IsNullOrWhiteSpace(department.name) ? $"Department {department.dptcode}" : department.name)
+                        </option>
+                    }
+                }
+            </select>
+        </div>
+        <div class="dc-filter-field">
+            <label for="dc-branch">Branch</label>
+            <select id="dc-branch" class="form-select" @bind="selectedBhCode" @bind:after="OnBranchChanged">
+                <option value="0">All branches</option>
+                @foreach (var branch in branches)
+                {
+                    <option value="@branch.bh_code">@branch.name</option>
+                }
+            </select>
+        </div>
+        <div class="dc-filter-field">
+            <label for="dc-counter">Counter</label>
+            <select id="dc-counter" class="form-select" @bind="selectedCntCode">
+                <option value="0">All counters</option>
+                @foreach (var counter in FilteredCounters)
+                {
+                    <option value="@counter.cntcode">
+                        @(string.IsNullOrWhiteSpace(counter.name) ? $"Counter {counter.cntcode}" : counter.name)
+                    </option>
+                }
+            </select>
+        </div>
+        <div class="dc-filter-field">
+            <label for="dc-from-date">From date</label>
+            <input id="dc-from-date" class="form-control" type="date" @bind="fromDate" />
+        </div>
+        <div class="dc-filter-field">
+            <label for="dc-to-date">To date</label>
+            <input id="dc-to-date" class="form-control" type="date" @bind="toDate" />
+        </div>
+        <div class="dc-filter-actions">
+            <button type="button" class="dc-button dc-button-primary" @onclick="LoadSummaryAsync" disabled="@isLoading">
+                @if (isLoading)
+                {
+                    <span class="spinner-border spinner-border-sm" role="status"></span>
+                    <span>Loading</span>
+                }
+                else
+                {
+                    <i class="bi bi-search"></i>
+                    <span>Search</span>
+                }
+            </button>
+            <button type="button" class="dc-button dc-button-secondary" @onclick="ResetFiltersAsync" disabled="@isLoading">
+                <i class="bi bi-arrow-clockwise"></i>
+                <span>Reset</span>
+            </button>
+        </div>
+    </section>
+
+    @if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <div class="dc-error" role="alert">
+            <i class="bi bi-exclamation-circle"></i>
+            <span>@errorMessage</span>
+        </div>
+    }
+
+    @if (isLoading)
+    {
+        <div class="dc-state">
+            <span class="spinner-border text-primary" role="status"></span>
+            <span>Loading departmental collection...</span>
+        </div>
+    }
+    else if (reportData is null)
+    {
+        <div class="dc-state">No collection summary is available for the selected filters.</div>
+    }
+    else
+    {
+        <main class="dc-results">
+            <div class="dc-results-heading">
+                <div>
+                    <h2>Collection Summary</h2>
+                    <span>@fromDate.ToString("dd MMM yyyy") – @toDate.ToString("dd MMM yyyy")</span>
+                </div>
+                @if (reportData.filtered_dptcode.HasValue)
+                {
+                    <span class="dc-filter-chip">Department code: @reportData.filtered_dptcode</span>
+                }
+            </div>
+
+            <section class="dc-metrics" aria-label="Collection totals">
+                <article class="dc-metric"><span>Gross amount</span><strong>@Money(reportData.total_gross_amount)</strong></article>
+                <article class="dc-metric"><span>Discount</span><strong>@Money(reportData.total_discount_amount)</strong></article>
+                <article class="dc-metric"><span>Net amount</span><strong>@Money(reportData.total_net_amount)</strong></article>
+                <article class="dc-metric dc-metric-highlight"><span>Collected</span><strong>@Money(reportData.total_collected_amount)</strong></article>
+                <article class="dc-metric"><span>Old due collected</span><strong>@Money(reportData.total_old_due_collected)</strong></article>
+                <article class="dc-metric"><span>Advance used</span><strong>@Money(reportData.total_advance_used)</strong></article>
+                <article class="dc-metric"><span>Today's due</span><strong>@Money(reportData.total_today_due)</strong></article>
+                <article class="dc-metric"><span>Overall due</span><strong>@Money(reportData.total_overall_due)</strong></article>
+                <article class="dc-metric dc-metric-cancelled"><span>Cancelled (@reportData.total_cancelled_count)</span><strong>@Money(reportData.total_cancelled_amount)</strong></article>
+                <article class="dc-metric dc-metric-highlight"><span>Net cash in</span><strong>@Money(reportData.total_net_cash_in)</strong></article>
+            </section>
+
+            <section class="dc-panel-grid">
+                <article class="dc-panel">
+                    <header class="dc-panel-heading">
+                        <div><i class="bi bi-credit-card"></i><h3>Collected by paymode</h3></div>
+                    </header>
+                    @if (PaymodeRows.Count == 0)
+                    {
+                        <p class="dc-empty">No paymode summary returned.</p>
+                    }
+                    else
+                    {
+                        <div class="dc-table-wrap">
+                            <table class="dc-table">
+                                <thead><tr><th>Paymode</th><th>Bill collections</th><th>Old due</th><th>Total</th></tr></thead>
+                                <tbody>
+                                    @foreach (var mode in PaymodeRows)
+                                    {
+                                        <tr>
+                                            <td>@mode.paymode</td>
+                                            <td>@Money(mode.bill_amount)</td>
+                                            <td>@Money(mode.old_due_amount)</td>
+                                            <td class="dc-number">@Money(mode.amount)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </article>
+
+                <article class="dc-panel">
+                    <header class="dc-panel-heading">
+                        <div><i class="bi bi-piggy-bank"></i><h3>Advance summary</h3></div>
+                    </header>
+                    <div class="dc-advance-metrics">
+                        <div><span>Deposited</span><strong>@Money(AdvanceSummary.deposited)</strong></div>
+                        <div><span>Used</span><strong>@Money(AdvanceSummary.used)</strong></div>
+                        <div><span>Refunded</span><strong>@Money(AdvanceSummary.refunded)</strong></div>
+                        <div><span>Net movement</span><strong>@Money(AdvanceSummary.net_advance_movement)</strong></div>
+                        <div><span>Deposit count</span><strong>@AdvanceSummary.deposit_count</strong></div>
+                        <div><span>Used bill count</span><strong>@AdvanceSummary.used_bill_count</strong></div>
+                        <div><span>Refund count</span><strong>@AdvanceSummary.refund_count</strong></div>
+                    </div>
+                    <div class="dc-advance-totals">
+                        <span>Total deposited <strong>@Money(reportData.total_advance_deposited)</strong></span>
+                        <span>Total refunded <strong>@Money(reportData.total_advance_refunded)</strong></span>
+                    </div>
+                    @if (AdvanceSummary.deposited_by_paymode?.Count > 0 || AdvanceSummary.refunded_by_paymode?.Count > 0)
+                    {
+                        <div class="dc-advance-paymodes">
+                            @if (AdvanceSummary.deposited_by_paymode?.Count > 0)
+                            {
+                                <div>
+                                    <h4>Deposits by paymode</h4>
+                                    @foreach (var mode in AdvanceSummary.deposited_by_paymode)
+                                    {
+                                        <span>@mode.paymode <strong>@Money(mode.amount)</strong> (@mode.count)</span>
+                                    }
+                                </div>
+                            }
+                            @if (AdvanceSummary.refunded_by_paymode?.Count > 0)
+                            {
+                                <div>
+                                    <h4>Refunds by paymode</h4>
+                                    @foreach (var mode in AdvanceSummary.refunded_by_paymode)
+                                    {
+                                        <span>@mode.paymode <strong>@Money(mode.amount)</strong> (@mode.count)</span>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    }
+                </article>
+            </section>
+
+            @if (AdvanceSummary.deposits?.Count > 0 || AdvanceSummary.refunds?.Count > 0)
+            {
+                <section class="dc-panel">
+                    <header class="dc-panel-heading">
+                        <div><i class="bi bi-receipt"></i><h3>Advance receipts</h3></div>
+                    </header>
+                    @if (AdvanceSummary.deposits?.Count > 0)
+                    {
+                        <h4 class="dc-subheading">Deposits</h4>
+                        <div class="dc-table-wrap">
+                            <table class="dc-table">
+                                <thead><tr><th>Receipt</th><th>Date</th><th>Patient</th><th>Mobile</th><th>Paymode</th><th>Reference</th><th>Amount</th></tr></thead>
+                                <tbody>
+                                    @foreach (var receipt in AdvanceSummary.deposits)
+                                    {
+                                        <tr>
+                                            <td>@receipt.receipt_no</td>
+                                            <td>@Date(receipt.receipt_date)</td>
+                                            <td>@receipt.patient_name</td>
+                                            <td>@receipt.mobileno</td>
+                                            <td>@receipt.paymode</td>
+                                            <td>@receipt.reference_no</td>
+                                            <td class="dc-number">@Money(receipt.amount)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                    @if (AdvanceSummary.refunds?.Count > 0)
+                    {
+                        <h4 class="dc-subheading">Refunds</h4>
+                        <div class="dc-table-wrap">
+                            <table class="dc-table">
+                                <thead><tr><th>Receipt</th><th>Date</th><th>Patient</th><th>Mobile</th><th>Paymode</th><th>Reference</th><th>Amount</th></tr></thead>
+                                <tbody>
+                                    @foreach (var receipt in AdvanceSummary.refunds)
+                                    {
+                                        <tr>
+                                            <td>@receipt.receipt_no</td>
+                                            <td>@Date(receipt.receipt_date)</td>
+                                            <td>@receipt.patient_name</td>
+                                            <td>@receipt.mobileno</td>
+                                            <td>@receipt.paymode</td>
+                                            <td>@receipt.reference_no</td>
+                                            <td class="dc-number">@Money(receipt.amount)</td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    }
+                </section>
+            }
+
+            <section class="dc-departments">
+                <header class="dc-section-heading">
+                    <div><i class="bi bi-diagram-3"></i><h3>Department breakdown</h3></div>
+                    <span>@DepartmentRows.Count department(s)</span>
+                </header>
+                @if (DepartmentRows.Count == 0)
+                {
+                    <p class="dc-empty">No department collection details were returned for these filters.</p>
+                }
+                else
+                {
+                    @foreach (var department in DepartmentRows)
+                    {
+                        <article class="dc-department-card">
+                            <header class="dc-department-heading">
+                                <div>
+                                    <h4>@department.department_name</h4>
+                                    <span>Department code: @department.dptcode</span>
+                                </div>
+                                <strong>@Money(department.total_amount)</strong>
+                            </header>
+                            <div class="dc-department-metrics">
+                                <div><span>Gross</span><strong>@Money(department.gross_amount)</strong></div>
+                                <div><span>Discount</span><strong>@Money(department.discount_amount)</strong></div>
+                                <div><span>Collected</span><strong>@Money(department.collected_amount)</strong></div>
+                                <div><span>Old due collected</span><strong>@Money(department.old_due_collected)</strong></div>
+                                <div><span>Total cash in</span><strong>@Money(department.total_cash_in)</strong></div>
+                                <div><span>Advance used</span><strong>@Money(department.advance_used)</strong></div>
+                                <div><span>Today's due</span><strong>@Money(department.today_due)</strong></div>
+                                <div><span>Overall due</span><strong>@Money(department.overall_due)</strong></div>
+                                <div><span>Cancelled (@department.cancelled_count)</span><strong>@Money(department.cancelled_amount)</strong></div>
+                            </div>
+
+                            @if (department.paymodes?.Count > 0)
+                            {
+                                <details class="dc-details">
+                                    <summary>Paymode breakdown (@department.paymodes.Count)</summary>
+                                    <div class="dc-table-wrap">
+                                        <table class="dc-table">
+                                            <thead><tr><th>Paymode</th><th>Bill collections</th><th>Old due</th><th>Total</th></tr></thead>
+                                            <tbody>
+                                                @foreach (var mode in department.paymodes)
+                                                {
+                                                    <tr>
+                                                        <td>@mode.paymode</td>
+                                                        <td>@Money(mode.bill_amount)</td>
+                                                        <td>@Money(mode.old_due_amount)</td>
+                                                        <td class="dc-number">@Money(mode.amount)</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </details>
+                            }
+
+                            @if (department.cancelled_bills?.Count > 0)
+                            {
+                                <details class="dc-details">
+                                    <summary>Cancelled bills (@department.cancelled_bills.Count)</summary>
+                                    <div class="dc-table-wrap">
+                                        <table class="dc-table">
+                                            <thead><tr><th>Bill no.</th><th>Date</th><th>Patient</th><th>Mobile</th><th>Reason</th><th>Amount</th></tr></thead>
+                                            <tbody>
+                                                @foreach (var bill in department.cancelled_bills)
+                                                {
+                                                    <tr>
+                                                        <td>@bill.bill_no</td>
+                                                        <td>@Date(bill.bill_date)</td>
+                                                        <td>@bill.patient_name</td>
+                                                        <td>@bill.mobileno</td>
+                                                        <td>@bill.reason</td>
+                                                        <td class="dc-number">@Money(bill.amount)</td>
+                                                    </tr>
+                                                }
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                </details>
+                            }
+
+                            @if (department.groups?.Count > 0)
+                            {
+                                <details class="dc-details">
+                                    <summary>Group and test breakdown (@department.groups.Count groups)</summary>
+                                    <div class="dc-groups">
+                                        @foreach (var group in department.groups)
+                                        {
+                                            <details class="dc-group">
+                                                <summary>
+                                                    <span>@group.group_name</span>
+                                                    <span>Total @Money(group.total_amount) · Collected @Money(group.collected_amount) · Due @Money(group.due_amount)</span>
+                                                </summary>
+                                                @if (group.tests?.Count > 0)
+                                                {
+                                                    <div class="dc-table-wrap">
+                                                        <table class="dc-table">
+                                                            <thead><tr><th>Test</th><th>Billed</th><th>Gross</th><th>Discount</th><th>Total</th><th>Collected</th><th>Advance</th><th>Due</th></tr></thead>
+                                                            <tbody>
+                                                                @foreach (var test in group.tests)
+                                                                {
+                                                                    <tr>
+                                                                        <td>@test.test_name</td>
+                                                                        <td>@test.billed_count</td>
+                                                                        <td>@Money(test.gross_amount)</td>
+                                                                        <td>@Money(test.discount_amount)</td>
+                                                                        <td>@Money(test.total_amount)</td>
+                                                                        <td>@Money(test.collected_amount)</td>
+                                                                        <td>@Money(test.advance_used)</td>
+                                                                        <td class="dc-number">@Money(test.due_amount)</td>
+                                                                    </tr>
+                                                                }
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                }
+                                                else
+                                                {
+                                                    <p class="dc-empty">No tests returned for this group.</p>
+                                                }
+                                            </details>
+                                        }
+                                    </div>
+                                </details>
+                            }
+                        </article>
+                    }
+                }
+            </section>
+        </main>
+    }
+</div>
+
+@code {
+    private static readonly JsonSerializerOptions JsonOptions = new()
+    {
+        PropertyNameCaseInsensitive = true
+    };
+
+    private List<DepartmentMasterModel> departments = new();
+    private List<Booking.Models.BranchModel> branches = new();
+    private List<CounterMasterModel> counters = new();
+    private DepartmentCollectionSummaryResponse? reportData;
+    private DateTime fromDate = DateTime.Today;
+    private DateTime toDate = DateTime.Today;
+    private decimal selectedDptCode;
+    private int selectedBhCode;
+    private decimal selectedCntCode;
+    private int defaultBhCode;
+    private decimal defaultCntCode;
+    private string tenantCode = string.Empty;
+    private string authToken = string.Empty;
+    private string errorMessage = string.Empty;
+    private bool isLoading = true;
+    private bool initialized;
+
+    private DepartmentAdvanceSummary AdvanceSummary => reportData?.advance_summary ?? new();
+    private List<DepartmentCollectionItem> DepartmentRows => reportData?.departments ?? new();
+    private List<DepartmentPaymodeSummary> PaymodeRows => reportData?.paymode_summary ?? new();
+
+    private IEnumerable<CounterMasterModel> FilteredCounters =>
+        selectedBhCode <= 0
+            ? counters
+            : counters.Where(counter => counter.bhcode == selectedBhCode || counter.bhcode == 0 || counter.bhcode == null);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender || initialized)
+        {
+            return;
+        }
+
+        initialized = true;
+        try
+        {
+            var storedTenant = await SessionStorage.GetAsync<string>("tenant_code");
+            tenantCode = !string.IsNullOrWhiteSpace(TenantState.TenantCode)
+                ? TenantState.TenantCode
+                : storedTenant.Success ? storedTenant.Value ?? string.Empty : string.Empty;
+
+            var storedToken = await SessionStorage.GetAsync<string>("authToken");
+            if (!storedToken.Success || string.IsNullOrWhiteSpace(storedToken.Value))
+            {
+                storedToken = await SessionStorage.GetAsync<string>("auth_token");
+            }
+            authToken = !string.IsNullOrWhiteSpace(TenantState.AuthToken)
+                ? TenantState.AuthToken
+                : storedToken.Success ? storedToken.Value ?? string.Empty : string.Empty;
+
+            if (string.IsNullOrWhiteSpace(tenantCode))
+            {
+                throw new InvalidOperationException("Tenant code is unavailable; departmental collection cannot be loaded.");
+            }
+
+            departments = await GetListAsync<DepartmentMasterModel>("api/DepartmentMaster/get");
+            departments = departments
+                .Where(department => !department.deleted)
+                .OrderBy(department => department.orderno)
+                .ThenBy(department => department.name)
+                .ToList();
+
+            branches = (await GetListAsync<Booking.Models.BranchModel>("api/Branch/get", "LabCareUrl"))
+                .Where(branch => !branch.deleted)
+                .OrderBy(branch => branch.order_no)
+                .ThenBy(branch => branch.name)
+                .ToList();
+
+            counters = (await GetListAsync<CounterMasterModel>("api/CounterMaster/get"))
+                .Where(counter => !counter.deleted)
+                .OrderBy(counter => counter.orderno)
+                .ThenBy(counter => counter.name)
+                .ToList();
+
+            var sessionBranchCode = TenantState.BranchCode.GetValueOrDefault();
+            defaultBhCode = branches.Any(branch => branch.bh_code == sessionBranchCode) ? sessionBranchCode : 0;
+            var sessionCounterCode = TenantState.CounterCode.GetValueOrDefault();
+            defaultCntCode = counters.Any(counter => counter.cntcode == sessionCounterCode) ? sessionCounterCode : 0;
+            selectedBhCode = defaultBhCode;
+            selectedCntCode = defaultCntCode;
+
+            await LoadSummaryAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Unable to initialize departmental collection: {ex.Message}";
+            ToastService.ShowError(errorMessage);
+            isLoading = false;
+        }
+
+        StateHasChanged();
+    }
+
+    private async Task<List<T>> GetListAsync<T>(string uri, string clientName = "MedicoAPI")
+    {
+        using var request = CreateApiRequest(uri);
+        using var response = await ClientFactory.CreateClient(clientName).SendAsync(request);
+        var json = await response.Content.ReadAsStringAsync();
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException(
+                $"Request to {uri} failed with {(int)response.StatusCode} {response.ReasonPhrase}: {json}");
+        }
+
+        return JsonSerializer.Deserialize<List<T>>(json, JsonOptions)
+            ?? throw new JsonException($"The API returned no list for {uri}.");
+    }
+
+    private async Task LoadSummaryAsync()
+    {
+        if (fromDate.Date > toDate.Date)
+        {
+            errorMessage = "The from date must be on or before the to date.";
+            ToastService.ShowWarning(errorMessage);
+            return;
+        }
+
+        isLoading = true;
+        errorMessage = string.Empty;
+        StateHasChanged();
+
+        try
+        {
+            var query = new List<string>
+            {
+                $"from_date={fromDate:yyyy-MM-dd}",
+                $"to_date={toDate:yyyy-MM-dd}"
+            };
+            if (selectedDptCode > 0)
+            {
+                query.Add($"dptcode={selectedDptCode.ToString(CultureInfo.InvariantCulture)}");
+            }
+            if (selectedBhCode > 0)
+            {
+                query.Add($"bhcode={selectedBhCode.ToString(CultureInfo.InvariantCulture)}");
+            }
+            if (selectedCntCode > 0)
+            {
+                query.Add($"cntcode={selectedCntCode.ToString(CultureInfo.InvariantCulture)}");
+            }
+
+            var route = $"api/DepartmentMaster/collection-summary?{string.Join("&", query)}";
+            using var request = CreateApiRequest(route);
+            using var response = await ClientFactory.CreateClient("MedicoAPI").SendAsync(request);
+            var json = await response.Content.ReadAsStringAsync();
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new HttpRequestException(
+                    $"Collection summary request failed with {(int)response.StatusCode} {response.ReasonPhrase}: {json}");
+            }
+
+            reportData = DeserializeSummary(json);
+        }
+        catch (Exception ex)
+        {
+            reportData = null;
+            errorMessage = $"Unable to load departmental collection: {ex.Message}";
+            ToastService.ShowError(errorMessage);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private static DepartmentCollectionSummaryResponse DeserializeSummary(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        var payload = document.RootElement;
+
+        if (TryGetProperty(payload, "success", out var success) && success.ValueKind == JsonValueKind.False)
+        {
+            var message = TryGetProperty(payload, "message", out var error)
+                ? error.GetString()
+                : null;
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(message) ? "The collection API reported a failure." : message);
+        }
+
+        if (TryGetProperty(payload, "data", out var data))
+        {
+            payload = data;
+        }
+
+        if (payload.ValueKind != JsonValueKind.Object)
+        {
+            throw new JsonException("The collection API returned an invalid summary.");
+        }
+
+        return payload.Deserialize<DepartmentCollectionSummaryResponse>(JsonOptions)
+            ?? throw new JsonException("The collection API returned an empty summary.");
+    }
+
+    private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)
+    {
+        if (element.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var property in element.EnumerateObject())
+            {
+                if (string.Equals(property.Name, propertyName, StringComparison.OrdinalIgnoreCase))
+                {
+                    value = property.Value;
+                    return true;
+                }
+            }
+        }
+
+        value = default;
+        return false;
+    }
+
+    private HttpRequestMessage CreateApiRequest(string uri)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        if (!request.Headers.TryAddWithoutValidation("tenant_code", tenantCode))
+        {
+            request.Dispose();
+            throw new InvalidOperationException("Unable to add tenant_code to the API request.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(authToken))
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", authToken);
+        }
+
+        return request;
+    }
+
+    private void OnBranchChanged()
+    {
+        if (selectedCntCode > 0 && !FilteredCounters.Any(counter => counter.cntcode == selectedCntCode))
+        {
+            selectedCntCode = 0;
+        }
+    }
+
+    private async Task ResetFiltersAsync()
+    {
+        fromDate = DateTime.Today;
+        toDate = DateTime.Today;
+        selectedDptCode = 0;
+        selectedBhCode = defaultBhCode;
+        selectedCntCode = defaultCntCode;
+        await LoadSummaryAsync();
+    }
+
+    private static string Money(decimal amount) => $"₹{amount.ToString("N2", CultureInfo.CurrentCulture)}";
+
+    private static string Date(DateTime? value) =>
+        value.HasValue ? value.Value.ToString("dd MMM yyyy", CultureInfo.CurrentCulture) : "—";
+}
